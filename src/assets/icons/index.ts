@@ -1,0 +1,67 @@
+/**
+ * Wave's icon set.
+ *
+ * Every icon in this folder is a standalone SVG drawn in `currentColor`, so it
+ * picks up the `color` of whatever it is dropped into. They are imported as raw
+ * markup so they can be inlined into buttons and styled by the surrounding CSS
+ * (an <img> tag would not inherit `color`).
+ *
+ * Sizing lives in `icons.css` — import it once from your entry point:
+ *
+ *   import "./assets/icons/icons.css";
+ */
+
+import appIcon from "./app-icon.svg?raw";
+import close from "./close.svg?raw";
+import importIcon from "./import.svg?raw";
+import library from "./library.svg?raw";
+import like from "./like.svg?raw";
+import likeFilled from "./like-filled.svg?raw";
+import next from "./next.svg?raw";
+import pause from "./pause.svg?raw";
+import play from "./play.svg?raw";
+import previous from "./previous.svg?raw";
+import queue from "./queue.svg?raw";
+import repeat from "./repeat.svg?raw";
+import shuffle from "./shuffle.svg?raw";
+import theme from "./theme.svg?raw";
+
+export const icons = {
+  "app-icon": appIcon,
+  close,
+  import: importIcon,
+  library,
+  like,
+  "like-filled": likeFilled,
+  next,
+  pause,
+  play,
+  previous,
+  queue,
+  repeat,
+  shuffle,
+  theme,
+} as const;
+
+export type IconName = keyof typeof icons;
+
+/** Raw SVG markup for an icon. */
+export function iconMarkup(name: IconName): string {
+  return icons[name];
+}
+
+/** A fresh SVG element for an icon, ready to be inserted into the DOM. */
+export function createIcon(name: IconName): SVGSVGElement {
+  const template = document.createElement("template");
+  template.innerHTML = icons[name].trim();
+  const svg = template.content.firstElementChild;
+  if (!(svg instanceof SVGSVGElement)) {
+    throw new Error(`Icon "${name}" did not parse into an SVG element`);
+  }
+  return svg;
+}
+
+/** Swaps the icon shown by an element, replacing whatever was there before. */
+export function setIcon(target: Element, name: IconName): void {
+  target.replaceChildren(createIcon(name));
+}

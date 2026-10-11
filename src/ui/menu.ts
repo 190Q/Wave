@@ -1,0 +1,107 @@
+import { escapeHtml } from "../lib/format";
+
+export interface MenuItem {
+  label: string;
+  action: () => void;
+  /** Rendered in the warning colour, for destructive entries. */
+  danger?: boolean;
+  disabled?: boolean;
+  /** Marks the currently selected entry, for menus that act as a picker. */
+  active?: boolean;
+}
+
+let open: HTMLElement | null = null;
+let dismiss: (() => void) | null = null;
+
+export function openMenu(anchor: HTMLElement, items: MenuItem[]): void {
+  closeMenu();
+
+  if (items.length === 0) {
+    return;
+  }
+
+  const menu = document.createElement("div");
+  menu.className = "menu";
+  menu.setAttribute("role", "menu");
+  menu.innerHTML = items
+    .map((item, index) => {
+      const classes = ["menu-item"];
+      if (item.danger) {
+        classes.push("is-danger");
+      }
+      if (item.active) {
+        classes.push("is-active");
+      }
+      return `<button type="button" role="menuitem" class="${classes.join(" ")}" data-index="${index}"${item.disabled ? " disabled" : ""}>${escapeHtml(item.label)}</button>`;
+    })
+    .join("");
+
+  menu.addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLElement>(".menu-item");
+    if (!button || button.hasAttribute("disabled")) {
+      return;
+    }
+    const item = items[Number(button.dataset.index)];
+    closeMenu();
+    item?.action();
+  });
+
+  document.body.appendChild(menu);
+  position(menu, anchor);
+
+  const onPointerDown = (event: PointerEvent) => {
+    if (!menu.contains(event.target as Node)) {
+      closeMenu();
+    }
+  };
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      closeMenu();
+    }
+  };
+  const onMove = () => closeMenu();
+
+  // Deferred so the click that opened the menu does not immediately close it.
+  window.setTimeout(() => {
+    document.addEventListener("pointerdown", onPointerDown, true);
+  }, 0);
+  document.addEventListener("keydown", onKeyDown, true);
+  window.addEventListener("resize", onMove);
+  window.addEventListener("scroll", onMove, true);
+
+  dismiss = () => {
+    document.removeEventListener("pointerdown", onPointerDown, true);
+    document.removeEventListener("keydown", onKeyDown, true);
+    window.removeEventListener("resize", onMove);
+    window.removeEventListener("scroll", onMove, true);
+  };
+  open = menu;
+}
+
+export function closeMenu(): void {
+  dismiss?.();
+  dismiss = null;
+  open?.remove();
+  open = null;
+}
+
+function position(menu: HTMLElement, anchor: HTMLElement): void {
+  const rect = anchor.getBoundingClientRect();
+  const margin = 8;
+
+  // Measure before placing, so the flip decision uses the real size.
+  const width = menu.offsetWidth;
+  const height = menu.offsetHeight;
+
+  let left = rect.right - width;
+  let top = rect.bottom + margin;
+
+  if (top + height > window.innerHeight - margin) {
+    top = Math.max(margin, rect.top - height - margin);
+  }
+  left = Math.min(Math.max(margin, left), window.innerWidth - width - margin);
+
+  menu.style.left = `${Math.round(left)}px`;
+  menu.style.top = `${Math.round(top)}px`;
+}

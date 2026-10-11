@@ -1,0 +1,642 @@
+import type {
+  Collection,
+  CollectionFilter,
+  LyricLine,
+  PersistedState,
+  Playlist,
+  Settings,
+  Track,
+} from "../types";
+import { buildCollections, findCollection, sortAlbumTracks } from "./collections";
+import { FALLBACK_COLOR, colorFromId, isUsableAccent } from "./color";
+import * as ipc from "./ipc";
+import { plural } from "./format";
+import { parseLrc } from "./lrc";
+import { Player } from "./player";
+import { DEFAULT_THEME_ID, findTheme } from "./themes";
+
+export interface AppState {
+  ready: boolean;
+  scanning: boolean;
+  tracks: Track[];
+  tracksById: Map<string, Track>;
+  collections: Collection[];
+  root: string;
+  skipped: number;
+  scanErrors: string[];
+  likes: Set<string>;
+  playlists: Playlist[];
+  /** Track id -> `#rrggbb`, mirrored from the persisted cache. */
+  colors: Map<string, string>;
+  settings: Settings;
+  filter: CollectionFilter;
+  query: string;
+  sort: "name" | "size";
+  libraryOpen: boolean;
+  queueOpen: boolean;
+  recents: string[];
+  search: string;
+  lyrics: LyricLine[];
+  lyricsTrackId: string | null;
+  /** Transient message shown in the status strip. */
+  notice: string | null;
+}
+
+const state: AppState = {
+  ready: false,
+  scanning: false,
+  tracks: [],
+  tracksById: new Map(),
+  collections: [],
+  root: "",
+  skipped: 0,
+  scanErrors: [],
+  likes: new Set(),
+  playlists: [],
+  colors: new Map(),
+  settings: { theme: DEFAULT_THEME_ID, volume: 70 },
+  filter: "all",
+  query: "",
+  sort: "name",
+  libraryOpen: false,
+  queueOpen: false,
+  recents: [],
+  search: "",
+  lyrics: [],
+  lyricsTrackId: null,
+  notice: null,
+};
+
+const listeners = new Set<() => void>();
+
+/** Ids whose colour has been requested but not resolved yet. */
+const colorsInFlight = new Set<string>();
+const colorQueue: string[] = [];
+let drainingColors = false;
+
+export type ArtworkTier = "now" | "queue" | "background" | "idle";
+
+const TIER_PRIORITY: Record<ArtworkTier, number> = { now: 0, queue: 1, background: 2, idle: 3 };
+const TIER_CONCURRENCY: Record<ArtworkTier, number> = { now: 1, queue: 7, background: 2, idle: 0 };
+/** Track id -> object URL for its artwork. */
+const artworkUrls = new Map<string, string>();
+const artworkPending = new Map<string, ArtworkTier>();
+const artworkInFlight = new Set<string>();
+const artworkRunning: Record<ArtworkTier, number> = { now: 0, queue: 0, background: 0, idle: 0 };
+/** Tracks whose artwork could not be read; not retried this session. */
+const artworkFailed = new Set<string>();
+
+let emitScheduled = false;
+
+export const player = new Player((trackId) => state.tracksById.get(trackId)?.durationMs ?? 0);
+
+export function getState(): AppState {
+  return state;
+}
+
+export function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+export function trackById(id: string | null): Track | undefined {
+  return id ? state.tracksById.get(id) : undefined;
+}
+
+export function collectionById(id: string): Collection | undefined {
+  return findCollection(state.collections, id);
+}
+
+export function currentTrack(): Track | undefined {
+  return trackById(player.currentId);
+}
+
+export function themeColor(): string {
+  const theme = findTheme(state.settings.theme);
+  if (theme.color) {
+    return theme.color;
+  }
+  const track = currentTrack();
+  return track ? colorFor(track) : FALLBACK_COLOR;
+}
+
+export function colorFor(track: Track): string {
+  return state.colors.get(track.id) ?? colorFromId(track.id);
+}
+
+export function artworkUrlFor(track: Track, tier: ArtworkTier = "background"): string | null {
+  const path = track.artworkPath;
+  if (!path || artworkFailed.has(track.id)) {
+    return null;
+  }
+
+  const cached = artworkUrls.get(track.id);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  if (tier === "idle") {
+    return null;
+  }
+
+  if (!artworkInFlight.has(track.id) && !artworkPending.has(track.id)) {
+    artworkPending.set(track.id, tier);
+    pumpArtwork();
+  }
+
+  return null;
+}
+
+export function pruneArtworkQueue(keep: Set<string>): void {
+  for (const [id, tier] of artworkPending) {
+    if (tier === "queue" && !keep.has(id)) {
+      artworkPending.delete(id);
+    }
+  }
+}
+
+/** Starts as many pending reads as the per-tier limits allow, best tier first. */
+function pumpArtwork(): void {
+  for (;;) {
+    let chosen: string | null = null;
+    let chosenTier: ArtworkTier = "background";
+
+    for (const [id, tier] of artworkPending) {
+      if (artworkRunning[tier] >= TIER_CONCURRENCY[tier]) {
+        continue;
+      }
+      if (chosen === null || TIER_PRIORITY[tier] < TIER_PRIORITY[chosenTier]) {
+        chosen = id;
+        chosenTier = tier;
+      }
+    }
+
+    if (chosen === null) {
+      return;
+    }
+
+    artworkPending.delete(chosen);
+    startArtwork(chosen, chosenTier);
+  }
+}
+
+function startArtwork(trackId: string, tier: ArtworkTier): void {
+  const path = state.tracksById.get(trackId)?.artworkPath;
+  if (!path) {
+    return;
+  }
+
+  artworkInFlight.add(trackId);
+  artworkRunning[tier] += 1;
+
+  void ipc
+    .artworkBytes(path)
+    .then((buffer) => {
+      artworkUrls.set(trackId, URL.createObjectURL(new Blob([buffer], { type: imageMime(path) })));
+      scheduleEmit();
+    })
+    .catch(() => {
+      // Recorded so a failed read is not retried on every re-render.
+      artworkFailed.add(trackId);
+    })
+    .finally(() => {
+      artworkInFlight.delete(trackId);
+      artworkRunning[tier] -= 1;
+      pumpArtwork();
+    });
+}
+
+/** Collection cover key -> object URL for its composed image. */
+const coverUrls = new Map<string, string>();
+const coverPending = new Map<string, string[]>();
+const coversInFlight = new Set<string>();
+const coverWaiters = new Map<string, ((url: string | null) => void)[]>();
+let coversRunning = 0;
+const COVER_CONCURRENCY = 1;
+
+export function coverUrl(paths: string[]): Promise<string | null> {
+  const usable = paths.filter(Boolean).slice(0, 4);
+  if (usable.length === 0) {
+    return Promise.resolve(null);
+  }
+
+  const key = usable.join("|");
+  const cached = coverUrls.get(key);
+  if (cached !== undefined) {
+    return Promise.resolve(cached);
+  }
+
+  return new Promise((resolve) => {
+    const waiters = coverWaiters.get(key) ?? [];
+    waiters.push(resolve);
+    coverWaiters.set(key, waiters);
+
+    if (!coversInFlight.has(key) && !coverPending.has(key)) {
+      coverPending.set(key, usable);
+      pumpCovers();
+    }
+  });
+}
+
+function pumpCovers(): void {
+  while (coversRunning < COVER_CONCURRENCY) {
+    const next = coverPending.entries().next();
+    if (next.done) {
+      return;
+    }
+    const [key, paths] = next.value;
+    coverPending.delete(key);
+    startCover(key, paths);
+  }
+}
+
+function startCover(key: string, paths: string[]): void {
+  coversInFlight.add(key);
+  coversRunning += 1;
+
+  void ipc
+    .coverBytes(paths)
+    .then((buffer) => {
+      const url = URL.createObjectURL(new Blob([buffer], { type: "image/jpeg" }));
+      coverUrls.set(key, url);
+      resolveCover(key, url);
+    })
+    .catch(() => {
+      // Left uncached, so a later request gets another try.
+      resolveCover(key, null);
+    })
+    .finally(() => {
+      coversInFlight.delete(key);
+      coversRunning -= 1;
+      pumpCovers();
+    });
+}
+
+function resolveCover(key: string, url: string | null): void {
+  const waiters = coverWaiters.get(key);
+  coverWaiters.delete(key);
+  for (const resolve of waiters ?? []) {
+    resolve(url);
+  }
+}
+
+function imageMime(path: string): string {
+  switch (path.split(".").pop()?.toLowerCase()) {
+    case "png":
+      return "image/png";
+    case "webp":
+      return "image/webp";
+    case "gif":
+      return "image/gif";
+    case "bmp":
+      return "image/bmp";
+    default:
+      return "image/jpeg";
+  }
+}
+
+/**
+ * Queues an artwork colour. Requests run one at a time: a 250 track queue would
+ * otherwise fire 250 image decodes and 250 state writes at once.
+ */
+export function ensureColor(track: Track): void {
+  if (!track.artworkPath || state.colors.has(track.id) || colorsInFlight.has(track.id)) {
+    return;
+  }
+  colorsInFlight.add(track.id);
+  colorQueue.push(track.id);
+  void drainColors();
+}
+
+async function drainColors(): Promise<void> {
+  if (drainingColors) {
+    return;
+  }
+  drainingColors = true;
+
+  while (colorQueue.length > 0) {
+    const id = colorQueue.shift();
+    if (id === undefined) {
+      break;
+    }
+
+    const track = state.tracksById.get(id);
+    if (!track?.artworkPath) {
+      colorsInFlight.delete(id);
+      continue;
+    }
+
+    try {
+      const hex = await ipc.artworkColor(id, track.artworkPath);
+      state.colors.set(id, hex);
+    } catch {
+      // Session-only fallback; the failure is not persisted, so a later launch retries.
+      state.colors.set(id, FALLBACK_COLOR);
+    }
+    colorsInFlight.delete(id);
+    scheduleEmit();
+  }
+
+  drainingColors = false;
+}
+
+/** Colours and artwork arrive in a stream, so re-render on a trailing edge. */
+function scheduleEmit(): void {
+  if (emitScheduled) {
+    return;
+  }
+  emitScheduled = true;
+  window.setTimeout(() => {
+    emitScheduled = false;
+    emit();
+  }, 150);
+}
+
+export async function init(): Promise<void> {
+  try {
+    applyPersisted(await ipc.loadState());
+    player.setVolume(state.settings.volume);
+    await rescan();
+    state.ready = true;
+  } catch (error) {
+    state.notice = describe(error);
+    state.ready = true;
+  }
+  emit();
+}
+
+export async function rescan(): Promise<void> {
+  state.scanning = true;
+  emit();
+
+  try {
+    const summary = await ipc.scanLibrary();
+    state.tracks = summary.tracks;
+    state.tracksById = new Map(summary.tracks.map((track) => [track.id, track]));
+    state.root = summary.root;
+    state.skipped = summary.skipped;
+    state.scanErrors = summary.errors;
+    recomputeCollections();
+    repairQueue();
+    applyPersisted(await ipc.loadState());
+  } catch (error) {
+    state.scanErrors = [describe(error)];
+  }
+
+  state.scanning = false;
+  emit();
+}
+
+export async function importFolder(createPlaylist: boolean): Promise<void> {
+  try {
+    const folder = await ipc.pickFolder();
+    if (!folder) {
+      return;
+    }
+
+    setNotice("Importing...");
+    const outcome = await ipc.importFolder(folder, createPlaylist, null);
+    applyPersisted(outcome.state);
+    await rescan();
+
+    const parts = [`${plural(outcome.songs, "song")} imported`];
+    if (outcome.images > 0) {
+      parts.push(plural(outcome.images, "image"));
+    }
+    if (outcome.playlist) {
+      parts.push(`playlist "${outcome.playlist}" created`);
+    }
+    if (outcome.errors.length > 0) {
+      parts.push(`${outcome.errors.length} failed`);
+    }
+    setNotice(parts.join(", "));
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
+export function setFilter(filter: CollectionFilter): void {
+  state.filter = filter;
+  emit();
+}
+
+export function setQuery(query: string): void {
+  state.query = query;
+  emit();
+}
+
+export function setSort(sort: "name" | "size"): void {
+  state.sort = sort;
+  emit();
+}
+
+export function setSearch(search: string): void {
+  state.search = search;
+  emit();
+}
+
+export function toggleLibrary(open?: boolean): void {
+  state.libraryOpen = open ?? !state.libraryOpen;
+  emit();
+}
+
+export function toggleQueue(): void {
+  state.queueOpen = !state.queueOpen;
+  emit();
+}
+
+export function setNotice(notice: string | null): void {
+  state.notice = notice;
+  emit();
+}
+
+/** Loads a collection into the queue without starting playback. */
+export function openCollection(id: string, startTrackId?: string): void {
+  const collection = findCollection(state.collections, id);
+  if (!collection || collection.trackIds.length === 0) {
+    return;
+  }
+
+  const ids =
+    collection.kind === "album"
+      ? sortAlbumTracks(collection.trackIds, state.tracksById)
+      : collection.trackIds;
+
+  player.setQueue(collection.id, collection.name, ids, startTrackId);
+  state.recents = [id, ...state.recents.filter((entry) => entry !== id)].slice(0, 3);
+  emit();
+}
+
+/** Used by search results and card clicks: load the collection and start there. */
+export function playFromCollection(id: string, trackId: string): void {
+  openCollection(id, trackId);
+  player.playTrack(trackId);
+}
+
+/** Loads a collection into the queue and starts it from the top. */
+export function playCollection(id: string): void {
+  openCollection(id);
+  player.play();
+}
+
+/** Loads a collection, turns shuffle on and starts it. */
+export function shuffleCollection(id: string): void {
+  openCollection(id);
+  player.setShuffle(true);
+  player.play();
+}
+
+export async function toggleLikeTrack(trackId: string): Promise<void> {
+  try {
+    applyPersisted(await ipc.toggleLike(trackId));
+    emit();
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
+export async function createPlaylist(name: string): Promise<void> {
+  try {
+    applyPersisted(await ipc.createPlaylist(name));
+    emit();
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
+export async function renamePlaylist(id: string, name: string): Promise<void> {
+  try {
+    applyPersisted(await ipc.renamePlaylist(id, name));
+    emit();
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
+export async function deletePlaylist(id: string): Promise<void> {
+  try {
+    applyPersisted(await ipc.deletePlaylist(id));
+    state.recents = state.recents.filter((entry) => entry !== id);
+    emit();
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
+export async function addTracksToPlaylist(id: string, trackIds: string[]): Promise<void> {
+  try {
+    applyPersisted(await ipc.addToPlaylist(id, trackIds));
+    emit();
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
+export async function removeTracksFromPlaylist(id: string, trackIds: string[]): Promise<void> {
+  try {
+    applyPersisted(await ipc.removeFromPlaylist(id, trackIds));
+    emit();
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
+export async function reorderPlaylist(id: string, trackIds: string[]): Promise<void> {
+  try {
+    applyPersisted(await ipc.reorderPlaylist(id, trackIds));
+    emit();
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
+export async function setTheme(id: string): Promise<void> {
+  try {
+    applyPersisted(await ipc.saveSettings({ ...state.settings, theme: id }));
+    emit();
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
+export function setVolume(volume: number): void {
+  player.setVolume(volume);
+  void ipc
+    .saveSettings({ ...state.settings, volume: player.snapshot().volume })
+    .then((next) => {
+      applyPersisted(next);
+      emit();
+    })
+    .catch(() => {
+      // Volume is cosmetic; a failed write is not worth interrupting playback.
+    });
+}
+
+/** Reads the `.lrc` sidecar for a track. Empty when there is none. */
+export async function ensureLyrics(track: Track | undefined): Promise<void> {
+  const trackId = track?.id ?? null;
+  if (state.lyricsTrackId === trackId) {
+    return;
+  }
+
+  state.lyricsTrackId = trackId;
+  state.lyrics = [];
+  emit();
+
+  if (!track) {
+    return;
+  }
+
+  try {
+    const raw = await ipc.loadLyrics(track.path);
+    if (state.lyricsTrackId !== trackId) {
+      return; // a newer track was requested while this one was loading
+    }
+    state.lyrics = raw ? parseLrc(raw) : [];
+  } catch {
+    state.lyrics = [];
+  }
+  emit();
+}
+
+function applyPersisted(next: PersistedState): void {
+  state.settings = next.settings ?? state.settings;
+  state.playlists = next.playlists ?? [];
+  state.likes = new Set(next.likes ?? []);
+  state.colors = new Map(
+    Object.entries(next.artworkColors ?? {}).filter(([, hex]) => isUsableAccent(hex)),
+  );
+  recomputeCollections();
+}
+
+function recomputeCollections(): void {
+  state.collections = buildCollections(state.tracks, state.playlists, state.likes);
+}
+
+/** If the playing track vanished (folder removed), fall back gracefully. */
+function repairQueue(): void {
+  const currentId = player.currentId;
+  if (currentId && state.tracksById.has(currentId)) {
+    return;
+  }
+
+  const all = findCollection(state.collections, "all");
+  if (all && all.trackIds.length > 0) {
+    player.setQueue(all.id, all.name, all.trackIds);
+  }
+}
+
+function emit(): void {
+  for (const listener of listeners) {
+    listener();
+  }
+}
+
+function describe(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}

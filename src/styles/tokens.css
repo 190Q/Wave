@@ -1,0 +1,115 @@
+/* Alte Haas Grotesk, loaded from public/fonts. Nothing is fetched remotely. */
+@font-face {
+  font-family: "Alte Haas Grotesk";
+  src: url("/fonts/AlteHaasGroteskRegular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Alte Haas Grotesk";
+  src: url("/fonts/AlteHaasGroteskBold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: dark;
+
+  --font-sans: "Alte Haas Grotesk", "Segoe UI", system-ui, sans-serif;
+
+  /* Overwritten at runtime from the current artwork. */
+  --accent: #3b4a63;
+  --accent-dark: #2f3c50;
+  --accent-dim: #5d6572;
+  --accent-soft: rgb(59 74 99 / 0.28);
+  --accent-ink: #f6f6f8;
+  --stage-background: linear-gradient(180deg, #14141c 0%, #07070a 100%);
+
+  --text: #ececf1;
+  --muted: #a3a3b0;
+  --raise: rgb(255 255 255 / 0.08);
+  --raise-strong: rgb(255 255 255 / 0.16);
+  --surface: #1c1c22;
+  --danger: #ff8b7a;
+
+  --card-size: 12rem;
+  --card-height: 15rem;
+  /* Every transport button is this square, so the row spaces out evenly. */
+  --control: 2.5rem;
+  --thumb: 2.5rem;
+  --lyric-line-height: 3rem;
+
+  --ease: cubic-bezier(0.22, 0.8, 0.28, 1);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+}
+
+/* Component display values would otherwise override the hidden attribute. */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: #07070a;
+  color: var(--text);
+  font-family: var(--font-sans);
+  overflow: hidden;
+  line-height: 1.4;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled,
+input:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+:focus-visible {
+  outline: 0.125rem solid var(--accent);
+  outline-offset: 0.125rem;
+}
+
+/* Thin, unobtrusive scrollbars everywhere. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 0.16) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 0.5rem;
+  height: 0.5rem;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 0.16);
+  border-radius: 62rem;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(255 255 255 / 0.28);
+}

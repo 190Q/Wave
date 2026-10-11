@@ -1,16 +1,3 @@
-/**
- * Wave's icon set.
- *
- * Every icon in this folder is a standalone SVG drawn in `currentColor`, so it
- * picks up the `color` of whatever it is dropped into. They are imported as raw
- * markup so they can be inlined into buttons and styled by the surrounding CSS
- * (an <img> tag would not inherit `color`).
- *
- * Sizing lives in `icons.css` — import it once from your entry point:
- *
- *   import "./assets/icons/icons.css";
- */
-
 import appIcon from "./app-icon.svg?raw";
 import close from "./close.svg?raw";
 import importIcon from "./import.svg?raw";

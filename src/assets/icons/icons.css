@@ -1,9 +1,5 @@
-/*
- * Icon sizing. Colour is intentionally not set here: each SVG declares
- * fill/stroke as currentColor, so an icon inherits `color` from its parent.
- * Setting `fill` on this class would override that and break outline icons
- * such as like.svg.
- */
+/* Colour is deliberately not set: each SVG declares currentColor, so an icon
+   inherits `color`. Setting `fill` here would break outline icons like like.svg. */
 .icon {
   display: inline-block;
   flex: none;

@@ -25,6 +25,8 @@ Thumbs.db
 
 demo/
 
+library/
+
 # local env overrides
 *.local
 

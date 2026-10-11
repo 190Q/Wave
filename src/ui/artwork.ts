@@ -21,9 +21,6 @@ export function plainCoverStyle(track: Track, tier: ArtworkTier = "background"):
   return `background-color: ${colour}; background-image: ${cssUrl(url)};`;
 }
 
-const mosaicCache = new Map<string, string>();
-const MOSAIC_CACHE_LIMIT = 500;
-
 export function mosaicHtml(
   trackIds: string[],
   tracksById: Map<string, Track>,
@@ -40,24 +37,13 @@ export function mosaicHtml(
     }
   }
 
-  const key = tracks.map((track) => `${track.id}:${colourFor(track)}`).join("|");
-  const cached = mosaicCache.get(key);
-  if (cached !== undefined) {
-    return cached;
-  }
-
   const paths = tracks
     .map((track) => track.artworkPath)
     .filter((path): path is string => Boolean(path))
     .slice(0, 4);
   const marker = paths.length > 0 ? ` data-cover="${escapeHtml(paths.join("|"))}"` : "";
 
-  const html = buildMosaic(tracks, tier, marker);
-  if (mosaicCache.size >= MOSAIC_CACHE_LIMIT) {
-    mosaicCache.clear();
-  }
-  mosaicCache.set(key, html);
-  return html;
+  return buildMosaic(tracks, tier, marker);
 }
 
 function buildMosaic(tracks: Track[], tier: ArtworkTier, marker: string): string {

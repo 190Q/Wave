@@ -113,18 +113,27 @@ export function mountDock(): void {
     timeNow.textContent = formatDuration(positionMs);
   };
 
+  let lastPlaying: boolean | null = null;
+  let lastLiked: boolean | null = null;
+
   const renderTransport = (): void => {
     const snapshot = player.snapshot();
     const track = currentTrack();
     const idle = !track;
 
-    play.replaceChildren(createIcon(snapshot.playing ? "pause" : "play"));
-    play.setAttribute("aria-label", snapshot.playing ? "Pause" : "Play");
+    if (snapshot.playing !== lastPlaying) {
+      lastPlaying = snapshot.playing;
+      play.replaceChildren(createIcon(snapshot.playing ? "pause" : "play"));
+      play.setAttribute("aria-label", snapshot.playing ? "Pause" : "Play");
+    }
 
     const liked = track ? getState().likes.has(track.id) : false;
-    like.replaceChildren(createIcon(liked ? "like-filled" : "like"));
-    like.classList.toggle("is-on", liked);
-    like.setAttribute("aria-label", liked ? "Remove from Liked Songs" : "Add to Liked Songs");
+    if (liked !== lastLiked) {
+      lastLiked = liked;
+      like.replaceChildren(createIcon(liked ? "like-filled" : "like"));
+      like.classList.toggle("is-on", liked);
+      like.setAttribute("aria-label", liked ? "Remove from Liked Songs" : "Add to Liked Songs");
+    }
 
     shuffle.classList.toggle("is-on", snapshot.shuffle);
     shuffle.setAttribute("aria-pressed", String(snapshot.shuffle));

@@ -5,11 +5,14 @@ import {
   ensureColour,
   getState,
   player,
+  prefetchArtwork,
   pruneArtworkQueue,
+  stepTrack,
   subscribe,
   toggleLikeTrack,
   trackById,
 } from "../lib/state";
+import { stepLater } from "../lib/steps";
 import { coverStyle } from "./artwork";
 import { openMenu, type MenuItem } from "./menu";
 
@@ -28,6 +31,11 @@ const WHEEL_STEP = 100;
 const WHEEL_MAX = 400;
 const WHEEL_LINE_PX = 33;
 
+const EDGE_RESISTANCE = 0.35;
+const EDGE_LIMIT = 1.1;
+const SPRING_TRANSITION =
+  "transform 0.42s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s ease";
+
 export function mountQueue(): void {
   const carousel = element("carousel");
   const stage = document.querySelector<HTMLElement>(".stage");
@@ -40,6 +48,32 @@ export function mountQueue(): void {
   let renderedOrder = "";
   let renderedLooping: boolean | null = null;
   let windowCenter = Number.NaN;
+
+  const remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  let dragging = false;
+  let dragStartX = 0;
+  let dragRem = 0;
+  let suppressClick = false;
+
+  const RAPID_WINDOW_MS = 300;
+  let lastCursor = -1;
+  let lastCursorAt = 0;
+  let rapid = false;
+  let bouncing = false;
+
+  const resist = (value: number, total: number, looping: boolean): number => {
+    if (looping || total <= 1) {
+      return value;
+    }
+    const last = total - 1;
+    if (value < 0) {
+      return -Math.min(-value * EDGE_RESISTANCE, EDGE_LIMIT);
+    }
+    if (value > last) {
+      return last + Math.min((value - last) * EDGE_RESISTANCE, EDGE_LIMIT);
+    }
+    return value;
+  };
 
   /**
    * A card's position relative to the cursor. With repeat on the queue is a
@@ -119,14 +153,22 @@ export function mountQueue(): void {
     }
   };
 
-  const place = (order: string[], cursor: number, looping: boolean): void => {
+  const place = (
+    order: string[],
+    cursor: number,
+    looping: boolean,
+    offsetRem = 0,
+    animate = true,
+  ): void => {
     const total = order.length;
     if (total === 0) {
       return;
     }
 
+    const virtual = resist(cursor - offsetRem / SPACING_REM, total, looping);
+
     for (const [index, card] of cards) {
-      const offset = offsetFor(index, cursor, total, looping);
+      const offset = offsetFor(index, virtual, total, looping);
 
       // A card that wraps around the loop has moved a whole queue, not one step.
       const jumped =
@@ -142,13 +184,12 @@ export function mountQueue(): void {
         `rotate(${offset * ARC_ANGLE_DEG}deg) ` +
         `scale(${1 - Math.min(distance, VISIBLE_RANGE) * 0.04})`;
 
-      if (jumped) {
-        card.style.transition = "none";
-        card.style.transform = transform;
+      const normal = bouncing ? SPRING_TRANSITION : rapid ? "transform 0.16s linear" : "";
+      card.style.transition = !animate || jumped ? "none" : normal;
+      card.style.transform = transform;
+      if (jumped && animate) {
         void card.offsetWidth;
-        card.style.transition = "";
-      } else {
-        card.style.transform = transform;
+        card.style.transition = normal;
       }
       card.style.zIndex = String(100 - distance);
       card.style.opacity = hidden ? "0" : "1";
@@ -179,7 +220,71 @@ export function mountQueue(): void {
     }
   };
 
+  const settle = (): void => {
+    const snapshot = player.snapshot();
+    const total = snapshot.order.length;
+    const looping = snapshot.repeat !== "off";
+
+    const virtual = snapshot.cursor - dragRem / SPACING_REM;
+    bouncing = !looping && total > 1 && (virtual < 0 || virtual > total - 1);
+
+    const steps = Math.round(-dragRem / SPACING_REM);
+    suppressClick = Math.abs(dragRem) > 4 / remPx;
+    dragRem = 0;
+
+    if (steps !== 0 && total > 0) {
+      const target = snapshot.cursor + steps;
+      const index = looping
+        ? ((target % total) + total) % total
+        : Math.min(Math.max(target, 0), total - 1);
+      const trackId = snapshot.order[index];
+      if (trackId) {
+        player.moveTo(trackId);
+      }
+    }
+
+    render();
+    bouncing = false;
+  };
+
+  carousel.addEventListener("pointerdown", (event) => {
+    if ((event.target as HTMLElement).closest("button")) {
+      return;
+    }
+    dragging = true;
+    dragStartX = event.clientX;
+    dragRem = 0;
+    suppressClick = false;
+    carousel.setPointerCapture(event.pointerId);
+  });
+
+  carousel.addEventListener("pointermove", (event) => {
+    if (!dragging) {
+      return;
+    }
+    dragRem = (event.clientX - dragStartX) / remPx;
+    render();
+  });
+
+  const endDrag = (event: PointerEvent): void => {
+    if (!dragging) {
+      return;
+    }
+    dragging = false;
+    if (carousel.hasPointerCapture(event.pointerId)) {
+      carousel.releasePointerCapture(event.pointerId);
+    }
+    settle();
+  };
+
+  carousel.addEventListener("pointerup", endDrag);
+  carousel.addEventListener("pointercancel", endDrag);
+
   carousel.addEventListener("click", (event) => {
+    if (suppressClick) {
+      return;
+    }
+
     const target = event.target as HTMLElement;
     const more = target.closest<HTMLElement>("[data-more]");
     if (more) {
@@ -202,33 +307,6 @@ export function mountQueue(): void {
 
   let wheelAccumulator = 0;
   let wheelDirection = 0;
-  let stepsPending = 0;
-  let stepScheduled = false;
-
-  const runStep = (): void => {
-    stepScheduled = false;
-    if (stepsPending === 0) {
-      return;
-    }
-    const direction = Math.sign(stepsPending);
-    stepsPending -= direction;
-    if (direction > 0) {
-      player.next();
-    } else {
-      player.previous();
-    }
-    if (stepsPending !== 0) {
-      scheduleStep();
-    }
-  };
-
-  function scheduleStep(): void {
-    if (stepScheduled) {
-      return;
-    }
-    stepScheduled = true;
-    requestAnimationFrame(runStep);
-  }
 
   carousel.addEventListener(
     "wheel",
@@ -249,10 +327,8 @@ export function mountQueue(): void {
 
       while (Math.abs(wheelAccumulator) >= WHEEL_STEP) {
         wheelAccumulator -= WHEEL_STEP * direction;
-        stepsPending += direction;
+        stepLater(direction, stepTrack);
       }
-
-      scheduleStep();
     },
     { passive: true },
   );
@@ -261,33 +337,49 @@ export function mountQueue(): void {
     const snapshot = player.snapshot();
     const looping = snapshot.repeat !== "off";
     const total = snapshot.order.length;
+    const signature = snapshot.order.join("|");
 
     stage.classList.toggle("queue-open", getState().queueOpen);
 
+    const now = performance.now();
+    if (snapshot.cursor !== lastCursor) {
+      rapid = now - lastCursorAt < RAPID_WINDOW_MS;
+      lastCursor = snapshot.cursor;
+      lastCursorAt = now;
+    }
+
+    const centre = dragging
+      ? Math.round(resist(snapshot.cursor - dragRem / SPACING_REM, total, looping))
+      : snapshot.cursor;
+
     const drift =
       looping && total > 1
-        ? Math.abs(offsetFor(snapshot.cursor, windowCenter, total, true))
-        : Math.abs(snapshot.cursor - windowCenter);
+        ? Math.abs(offsetFor(centre, windowCenter, total, true))
+        : Math.abs(centre - windowCenter);
 
-    if (renderedOrder !== snapshot.order.join("|") || renderedLooping !== looping || !(drift <= REBUILD_MARGIN)) {
-      renderedOrder = snapshot.order.join("|");
+    if (renderedOrder !== signature || renderedLooping !== looping || !(drift <= REBUILD_MARGIN)) {
+      const fresh = renderedOrder !== signature;
+      renderedOrder = signature;
       renderedLooping = looping;
-      windowCenter = snapshot.cursor;
-      syncWindow(snapshot.order, snapshot.cursor, looping);
+      windowCenter = centre;
+      syncWindow(snapshot.order, centre, looping);
+      if (fresh) {
+        prefetchArtwork(snapshot.order);
+      }
     }
 
     carousel.classList.toggle("is-empty", total === 0);
-    place(snapshot.order, snapshot.cursor, looping);
+    place(snapshot.order, snapshot.cursor, looping, dragRem, !dragging);
     syncArtwork(snapshot.order);
 
-    const wanted = new Set<string>();
+    const window = new Set<string>();
     for (const [index] of cards) {
       const id = snapshot.order[index];
       if (id) {
-        wanted.add(id);
+        window.add(id);
       }
     }
-    pruneArtworkQueue(wanted);
+    pruneArtworkQueue(window, new Set(snapshot.order));
   };
 
   player.onChange(render);

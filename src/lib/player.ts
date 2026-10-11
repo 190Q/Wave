@@ -118,6 +118,17 @@ export class Player {
     this.startCurrent();
   }
 
+  moveTo(trackId: string): void {
+    const index = this.order.indexOf(trackId);
+    if (index < 0) {
+      return;
+    }
+    this.cursor = index;
+    this.positionMs = 0;
+    this.emitChange();
+    this.emitProgress();
+  }
+
   play(): void {
     if (!this.hasQueue) {
       return;

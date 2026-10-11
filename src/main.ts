@@ -1,5 +1,6 @@
 import "./assets/icons/icons.css";
-import { getState, init, player, setNotice, subscribe } from "./lib/state";
+import { getState, init, player, setNotice, stepTrack, subscribe } from "./lib/state";
+import { stepLater } from "./lib/steps";
 import { mountDock } from "./ui/dock";
 import { mountHero } from "./ui/hero";
 import { mountIcons } from "./ui/icons";
@@ -68,6 +69,20 @@ function mountStatus(): void {
 }
 
 function mountShortcuts(): void {
+  window.addEventListener("contextmenu", (event) => event.preventDefault());
+
+  const root = document.documentElement;
+  window.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key === "Tab") {
+        root.classList.add("is-tabbing");
+      }
+    },
+    true,
+  );
+  window.addEventListener("pointerdown", () => root.classList.remove("is-tabbing"), true);
+
   window.addEventListener("keydown", (event) => {
     const target = event.target;
     // Never steal keys from a field the user is typing in.
@@ -85,11 +100,11 @@ function mountShortcuts(): void {
         break;
       case "ArrowRight":
         event.preventDefault();
-        player.next();
+        stepLater(1, stepTrack);
         break;
       case "ArrowLeft":
         event.preventDefault();
-        player.previous();
+        stepLater(-1, stepTrack);
         break;
       default:
         break;

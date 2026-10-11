@@ -79,21 +79,30 @@ const coloursInFlight = new Set<string>();
 const colourQueue: string[] = [];
 let drainingColours = false;
 
-export type ArtworkTier = "now" | "queue" | "background" | "idle";
+export type ArtworkTier = "now" | "queue" | "background" | "prefetch" | "idle";
 
-const TIER_PRIORITY: Record<ArtworkTier, number> = { now: 0, queue: 1, background: 2, idle: 3 };
-const TIER_CONCURRENCY: Record<ArtworkTier, number> = { now: 1, queue: 7, background: 2, idle: 0 };
+const TIER_PRIORITY: Record<ArtworkTier, number> = { now: 0, queue: 1, background: 2, prefetch: 3, idle: 4 };
+const TIER_CONCURRENCY: Record<ArtworkTier, number> = { now: 1, queue: 7, background: 2, prefetch: 2, idle: 0 };
 /** Track id -> object URL for its artwork. */
 const artworkUrls = new Map<string, string>();
 const artworkPending = new Map<string, ArtworkTier>();
 const artworkInFlight = new Set<string>();
-const artworkRunning: Record<ArtworkTier, number> = { now: 0, queue: 0, background: 0, idle: 0 };
+const artworkRunning: Record<ArtworkTier, number> = { now: 0, queue: 0, background: 0, prefetch: 0, idle: 0 };
 /** Tracks whose artwork could not be read; not retried this session. */
 const artworkFailed = new Set<string>();
 
 let emitScheduled = false;
 
 export const player = new Player((trackId) => state.tracksById.get(trackId)?.durationMs ?? 0);
+
+/** One queue step, shared by the arrow keys and the wheel. */
+export function stepTrack(direction: number): void {
+  if (direction > 0) {
+    player.next();
+  } else {
+    player.previous();
+  }
+}
 
 export function getState(): AppState {
   return state;
@@ -155,10 +164,40 @@ export function artworkUrlFor(track: Track, tier: ArtworkTier = "background"): s
   return null;
 }
 
-export function pruneArtworkQueue(keep: Set<string>): void {
+export function pruneArtworkQueue(window: Set<string>, queue: Set<string>): void {
   for (const [id, tier] of artworkPending) {
-    if (tier === "queue" && !keep.has(id)) {
+    const wanted = tier === "queue" ? window.has(id) : tier === "prefetch" ? queue.has(id) : true;
+    if (!wanted) {
       artworkPending.delete(id);
+    }
+  }
+}
+
+export function prefetchArtwork(trackIds: string[]): void {
+  for (const id of trackIds) {
+    const track = state.tracksById.get(id);
+    if (!track?.artworkPath || artworkUrls.has(id) || artworkFailed.has(id)) {
+      continue;
+    }
+    if (!artworkInFlight.has(id) && !artworkPending.has(id)) {
+      artworkPending.set(id, "prefetch");
+    }
+  }
+  pumpArtwork();
+}
+
+function retainArtwork(): void {
+  const keep = new Set<string>(player.snapshot().order);
+  for (const id of state.recents) {
+    for (const trackId of findCollection(state.collections, id)?.trackIds ?? []) {
+      keep.add(trackId);
+    }
+  }
+
+  for (const [trackId, url] of artworkUrls) {
+    if (!keep.has(trackId)) {
+      URL.revokeObjectURL(url);
+      artworkUrls.delete(trackId);
     }
   }
 }
@@ -472,6 +511,7 @@ export function openCollection(id: string, startTrackId?: string): void {
 
   player.setQueue(collection.id, collection.name, ids, startTrackId);
   state.recents = [id, ...state.recents.filter((entry) => entry !== id)].slice(0, 3);
+  retainArtwork();
   emit();
 }
 
@@ -629,16 +669,14 @@ function recomputeCollections(): void {
   state.collections = buildCollections(state.tracks, state.playlists, state.likes);
 }
 
-/** If the playing track vanished (folder removed), fall back gracefully. */
 function repairQueue(): void {
   const currentId = player.currentId;
   if (currentId && state.tracksById.has(currentId)) {
     return;
   }
 
-  const all = findCollection(state.collections, "all");
-  if (all && all.trackIds.length > 0) {
-    player.setQueue(all.id, all.name, all.trackIds);
+  if (findCollection(state.collections, "all")?.trackIds.length) {
+    openCollection("all");
   }
 }
 

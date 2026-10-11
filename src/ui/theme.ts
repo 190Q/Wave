@@ -20,17 +20,33 @@ import {
 } from "../lib/state";
 import { fillIcons } from "./icons";
 
-/** Pushes the current accent into the CSS custom properties the stylesheet uses. */
+let appliedAccent = "";
+let appliedStage = "";
+let stageTimer: number | null = null;
+
 export function applyAccent(colour: string): void {
   const root = document.documentElement;
-  root.style.setProperty("--accent", colour);
-  // Hover state for toggled controls, and the translucent progress fill.
-  root.style.setProperty("--accent-dark", darken(colour, 0.18));
-  // Hover state for a toggled control: the theme colour, greyed out a little.
-  root.style.setProperty("--accent-dim", mix(colour, "#8f8f9c", 0.4));
-  root.style.setProperty("--accent-soft", withAlpha(colour, 0.28));
-  root.style.setProperty("--accent-ink", readableInk(colour));
-  root.style.setProperty("--stage-background", stageGradient(colour));
+
+  if (colour !== appliedAccent) {
+    appliedAccent = colour;
+    root.style.setProperty("--accent", colour);
+    root.style.setProperty("--accent-dark", darken(colour, 0.18));
+    root.style.setProperty("--accent-dim", mix(colour, "#8f8f9c", 0.4));
+    root.style.setProperty("--accent-soft", withAlpha(colour, 0.28));
+    root.style.setProperty("--accent-ink", readableInk(colour));
+  }
+
+  if (colour === appliedStage) {
+    return;
+  }
+  if (stageTimer !== null) {
+    window.clearTimeout(stageTimer);
+  }
+  stageTimer = window.setTimeout(() => {
+    stageTimer = null;
+    appliedStage = colour;
+    root.style.setProperty("--stage-background", stageGradient(colour));
+  }, 160);
 }
 
 export function mountTheme(): void {

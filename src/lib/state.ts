@@ -8,12 +8,17 @@ import type {
   Track,
 } from "../types";
 import { buildCollections, findCollection, sortAlbumTracks } from "./collections";
-import { FALLBACK_COLOR, colorFromId, isUsableAccent } from "./color";
+import { FALLBACK_COLOUR, colourFromId, isUsableAccent } from "./colour";
 import * as ipc from "./ipc";
 import { plural } from "./format";
 import { parseLrc } from "./lrc";
 import { Player } from "./player";
-import { DEFAULT_THEME_ID, findTheme } from "./themes";
+
+/** Follows whatever the current artwork produced. */
+export const ADAPTIVE_THEME = "adaptive";
+
+/** How many custom accents are remembered. */
+export const RECENT_THEME_LIMIT = 3;
 
 export interface AppState {
   ready: boolean;
@@ -27,7 +32,7 @@ export interface AppState {
   likes: Set<string>;
   playlists: Playlist[];
   /** Track id -> `#rrggbb`, mirrored from the persisted cache. */
-  colors: Map<string, string>;
+  colours: Map<string, string>;
   settings: Settings;
   filter: CollectionFilter;
   query: string;
@@ -53,8 +58,8 @@ const state: AppState = {
   scanErrors: [],
   likes: new Set(),
   playlists: [],
-  colors: new Map(),
-  settings: { theme: DEFAULT_THEME_ID, volume: 70 },
+  colours: new Map(),
+  settings: { theme: ADAPTIVE_THEME, volume: 70, recentColours: [] },
   filter: "all",
   query: "",
   sort: "name",
@@ -70,9 +75,9 @@ const state: AppState = {
 const listeners = new Set<() => void>();
 
 /** Ids whose colour has been requested but not resolved yet. */
-const colorsInFlight = new Set<string>();
-const colorQueue: string[] = [];
-let drainingColors = false;
+const coloursInFlight = new Set<string>();
+const colourQueue: string[] = [];
+let drainingColours = false;
 
 export type ArtworkTier = "now" | "queue" | "background" | "idle";
 
@@ -113,17 +118,18 @@ export function currentTrack(): Track | undefined {
   return trackById(player.currentId);
 }
 
-export function themeColor(): string {
-  const theme = findTheme(state.settings.theme);
-  if (theme.color) {
-    return theme.color;
-  }
+export function adaptiveColour(): string {
   const track = currentTrack();
-  return track ? colorFor(track) : FALLBACK_COLOR;
+  return track ? colourFor(track) : FALLBACK_COLOUR;
 }
 
-export function colorFor(track: Track): string {
-  return state.colors.get(track.id) ?? colorFromId(track.id);
+export function themeColour(): string {
+  const { theme } = state.settings;
+  return theme === ADAPTIVE_THEME ? adaptiveColour() : theme;
+}
+
+export function colourFor(track: Track): string {
+  return state.colours.get(track.id) ?? colourFromId(track.id);
 }
 
 export function artworkUrlFor(track: Track, tier: ArtworkTier = "background"): string | null {
@@ -301,45 +307,45 @@ function imageMime(path: string): string {
  * Queues an artwork colour. Requests run one at a time: a 250 track queue would
  * otherwise fire 250 image decodes and 250 state writes at once.
  */
-export function ensureColor(track: Track): void {
-  if (!track.artworkPath || state.colors.has(track.id) || colorsInFlight.has(track.id)) {
+export function ensureColour(track: Track): void {
+  if (!track.artworkPath || state.colours.has(track.id) || coloursInFlight.has(track.id)) {
     return;
   }
-  colorsInFlight.add(track.id);
-  colorQueue.push(track.id);
-  void drainColors();
+  coloursInFlight.add(track.id);
+  colourQueue.push(track.id);
+  void drainColours();
 }
 
-async function drainColors(): Promise<void> {
-  if (drainingColors) {
+async function drainColours(): Promise<void> {
+  if (drainingColours) {
     return;
   }
-  drainingColors = true;
+  drainingColours = true;
 
-  while (colorQueue.length > 0) {
-    const id = colorQueue.shift();
+  while (colourQueue.length > 0) {
+    const id = colourQueue.shift();
     if (id === undefined) {
       break;
     }
 
     const track = state.tracksById.get(id);
     if (!track?.artworkPath) {
-      colorsInFlight.delete(id);
+      coloursInFlight.delete(id);
       continue;
     }
 
     try {
-      const hex = await ipc.artworkColor(id, track.artworkPath);
-      state.colors.set(id, hex);
+      const hex = await ipc.artworkColour(id, track.artworkPath);
+      state.colours.set(id, hex);
     } catch {
       // Session-only fallback; the failure is not persisted, so a later launch retries.
-      state.colors.set(id, FALLBACK_COLOR);
+      state.colours.set(id, FALLBACK_COLOUR);
     }
-    colorsInFlight.delete(id);
+    coloursInFlight.delete(id);
     scheduleEmit();
   }
 
-  drainingColors = false;
+  drainingColours = false;
 }
 
 /** Colours and artwork arrive in a stream, so re-render on a trailing edge. */
@@ -552,9 +558,17 @@ export async function reorderPlaylist(id: string, trackIds: string[]): Promise<v
   }
 }
 
-export async function setTheme(id: string): Promise<void> {
+export async function setTheme(theme: string): Promise<void> {
+  const recentColours =
+    theme === ADAPTIVE_THEME
+      ? state.settings.recentColours
+      : [theme, ...state.settings.recentColours.filter((colour) => colour !== theme)].slice(
+          0,
+          RECENT_THEME_LIMIT,
+        );
+
   try {
-    applyPersisted(await ipc.saveSettings({ ...state.settings, theme: id }));
+    applyPersisted(await ipc.saveSettings({ ...state.settings, theme, recentColours }));
     emit();
   } catch (error) {
     setNotice(describe(error));
@@ -605,8 +619,8 @@ function applyPersisted(next: PersistedState): void {
   state.settings = next.settings ?? state.settings;
   state.playlists = next.playlists ?? [];
   state.likes = new Set(next.likes ?? []);
-  state.colors = new Map(
-    Object.entries(next.artworkColors ?? {}).filter(([, hex]) => isUsableAccent(hex)),
+  state.colours = new Map(
+    Object.entries(next.artworkColours ?? {}).filter(([, hex]) => isUsableAccent(hex)),
   );
   recomputeCollections();
 }

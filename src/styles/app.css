@@ -50,19 +50,68 @@
 .btn-icon svg {
   width: 1rem;
   height: 1rem;
-  fill: currentColor;
 }
 
-.brand {
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex: none;
+  height: 2.25rem;
+  padding-left: 0.9rem;
+  user-select: none;
+}
+
+.titlebar-brand {
   display: inline-flex;
   flex: none;
   color: var(--accent);
+  pointer-events: none;
 }
 
-.brand svg {
-  width: 1.6rem;
-  height: 1.6rem;
-  fill: currentColor;
+.titlebar-brand svg {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+.titlebar-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.titlebar-controls {
+  display: flex;
+  align-self: stretch;
+  margin-left: auto;
+}
+
+.titlebar-button {
+  width: 2.9rem;
+  display: grid;
+  place-items: center;
+  background: none;
+  border: 0;
+  color: var(--muted);
+  transition: background 0.15s, color 0.15s;
+}
+
+.titlebar-button .btn-icon,
+.titlebar-button svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.titlebar-button:hover {
+  background: var(--raise);
+  color: var(--text);
+}
+
+.titlebar-button.is-close:hover {
+  background: #c42b1c;
+  color: #fff;
 }
 
 .search {
@@ -296,27 +345,118 @@
   color: var(--muted);
 }
 
-.theme {
-  position: relative;
-}
-
-.theme-menu {
-  position: absolute;
-  right: 0;
-  top: 2.75rem;
-  min-width: 11rem;
-  z-index: 600;
-  padding: 0.4rem;
-  border-radius: 0.75rem;
+/* Theme dialog: a colour picker plus the recent accents. */
+.theme-dialog {
+  margin: auto;
+  width: min(22rem, 92vw);
+  padding: 1.25rem;
+  border: 0.0625rem solid rgb(255 255 255 / 0.12);
+  border-radius: 1rem;
   background: var(--surface);
-  box-shadow: 0 0.5rem 2rem rgb(0 0 0 / 0.6);
+  color: var(--text);
+  box-shadow: 0 2rem 5rem rgb(0 0 0 / 0.65);
 }
 
-.theme-menu[hidden] {
-  display: none;
+.theme-dialog::backdrop {
+  background: rgb(0 0 0 / 0.6);
+  backdrop-filter: blur(0.25rem);
 }
 
-.theme-option {
+.theme-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.theme-dialog-head h2 {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.picker-area {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 0.7;
+  border-radius: 0.75rem;
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.picker-knob {
+  position: absolute;
+  width: 0.9rem;
+  height: 0.9rem;
+  margin: -0.45rem 0 0 -0.45rem;
+  border-radius: 50%;
+  border: 0.125rem solid #fff;
+  box-shadow: 0 0 0 0.0625rem rgb(0 0 0 / 0.45);
+  pointer-events: none;
+}
+
+.picker-hue {
+  width: 100%;
+  height: 1.25rem;
+  margin: 0.9rem 0 0;
+  appearance: none;
+  background: none;
+}
+
+.picker-hue::-webkit-slider-runnable-track {
+  height: 0.6rem;
+  border-radius: 62rem;
+  background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+}
+
+.picker-hue::-webkit-slider-thumb {
+  appearance: none;
+  width: 1rem;
+  height: 1rem;
+  margin-top: -0.2rem;
+  border-radius: 50%;
+  background: #fff;
+  border: 0.125rem solid var(--surface);
+}
+
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+}
+
+.picker-preview {
+  flex: none;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.5rem;
+  border: 0.0625rem solid rgb(255 255 255 / 0.18);
+}
+
+.picker-hex {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.85rem;
+  background: rgb(0 0 0 / 0.35);
+  border: 0.0625rem solid rgb(255 255 255 / 0.12);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  outline: none;
+}
+
+.picker-hex:focus {
+  border-color: var(--accent);
+}
+
+.theme-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-top: 1rem;
+}
+
+.theme-swatch {
   display: flex;
   align-items: center;
   gap: 0.6rem;
@@ -329,9 +469,13 @@
   text-align: left;
 }
 
-.theme-option:hover,
-.theme-option.is-on {
+.theme-swatch:hover {
   background: var(--raise);
+}
+
+.theme-swatch.is-on {
+  color: var(--accent);
+  font-weight: 700;
 }
 
 .swatch {
@@ -535,7 +679,6 @@
 .icon svg {
   width: 1.1rem;
   height: 1.1rem;
-  fill: currentColor;
 }
 
 .icon-pill svg {

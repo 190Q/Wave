@@ -30,7 +30,7 @@ pub fn run() {
             playlists::add_to_playlist,
             playlists::remove_from_playlist,
             playlists::reorder_playlist,
-            artwork::artwork_color,
+            artwork::artwork_colour,
             artwork::artwork_bytes,
             artwork::cover_bytes,
             lyrics::load_lyrics,

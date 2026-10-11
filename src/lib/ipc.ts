@@ -52,8 +52,8 @@ export function importFolder(
   return invoke("import_folder", { folder, createPlaylist, playlistName });
 }
 
-export function artworkColor(trackId: string, path: string): Promise<string> {
-  return invoke("artwork_color", { trackId, path });
+export function artworkColour(trackId: string, path: string): Promise<string> {
+  return invoke("artwork_colour", { trackId, path });
 }
 
 export function loadLyrics(path: string): Promise<string | null> {

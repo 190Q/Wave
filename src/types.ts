@@ -29,8 +29,11 @@ export interface Playlist {
 }
 
 export interface Settings {
+  /** `adaptive`, or a `#rrggbb` the user picked. */
   theme: string;
   volume: number;
+  /** The last few custom accents, most recent first. */
+  recentColours: string[];
 }
 
 export interface PersistedState {
@@ -38,7 +41,7 @@ export interface PersistedState {
   playlists: Playlist[];
   likes: string[];
   /** Track id -> `#rrggbb`. */
-  artworkColors: Record<string, string>;
+  artworkColours: Record<string, string>;
 }
 
 export interface ScanSummary {
@@ -81,5 +84,5 @@ export interface ThemeDefinition {
   id: string;
   name: string;
   /** `null` means "follow the current track's artwork". */
-  color: string | null;
+  colour: string | null;
 }

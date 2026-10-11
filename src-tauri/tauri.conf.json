@@ -14,8 +14,11 @@
     "windows": [
       {
         "title": "Wave",
-        "width": 800,
-        "height": 600
+        "width": 900,
+        "height": 650,
+        "decorations": false,
+        "shadow": true,
+        "additionalBrowserArgs": "--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion"
       }
     ],
     "security": {

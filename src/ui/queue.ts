@@ -2,7 +2,7 @@ import { escapeHtml } from "../lib/format";
 import {
   addTracksToPlaylist,
   artworkUrlFor,
-  ensureColor,
+  ensureColour,
   getState,
   player,
   pruneArtworkQueue,
@@ -78,7 +78,7 @@ export function mountQueue(): void {
     }
 
     if (visible) {
-      ensureColor(track);
+      ensureColour(track);
     }
 
     const card = document.createElement("article");
@@ -132,21 +132,24 @@ export function mountQueue(): void {
       const jumped =
         card.dataset.offset !== undefined && Math.abs(offset - Number(card.dataset.offset)) > VISIBLE_RANGE + 1;
       card.dataset.offset = String(offset);
-      card.style.transition = jumped ? "none" : "";
-      if (jumped) {
-        requestAnimationFrame(() => {
-          card.style.transition = "";
-        });
-      }
 
       const distance = Math.abs(offset);
       const hidden = distance > VISIBLE_RANGE;
 
-      card.style.transform =
+      const transform =
         `translateX(${offset * SPACING_REM}rem) ` +
         `translateY(${(distance * distance * ARC_DROP_REM).toFixed(3)}rem) ` +
         `rotate(${offset * ARC_ANGLE_DEG}deg) ` +
         `scale(${1 - Math.min(distance, VISIBLE_RANGE) * 0.04})`;
+
+      if (jumped) {
+        card.style.transition = "none";
+        card.style.transform = transform;
+        void card.offsetWidth;
+        card.style.transition = "";
+      } else {
+        card.style.transform = transform;
+      }
       card.style.zIndex = String(100 - distance);
       card.style.opacity = hidden ? "0" : "1";
       card.style.pointerEvents = hidden ? "none" : "auto";

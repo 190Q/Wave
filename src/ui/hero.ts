@@ -1,6 +1,6 @@
 import { activeLyricIndex } from "../lib/lrc";
 import { escapeHtml, joinMeta } from "../lib/format";
-import { currentTrack, ensureColor, ensureLyrics, getState, player, subscribe } from "../lib/state";
+import { currentTrack, ensureColour, ensureLyrics, getState, player, subscribe } from "../lib/state";
 import type { LyricLine } from "../types";
 import { plainCoverStyle } from "./artwork";
 
@@ -92,7 +92,7 @@ export function mountHero(): void {
 
     if (track.id !== lastTrackId) {
       lastTrackId = track.id;
-      void ensureColor(track);
+      void ensureColour(track);
       void ensureLyrics(track);
     }
 

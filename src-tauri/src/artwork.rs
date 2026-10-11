@@ -20,7 +20,7 @@ type Bucket = (u64, u64, u64, u64);
 
 const ACCENT_CANDIDATES: usize = 12;
 const ACCENT_MIN_BRIGHTNESS: f32 = 80.0;
-pub fn dominant_colors(path: &Path) -> Result<Vec<String>, String> {
+pub fn dominant_colours(path: &Path) -> Result<Vec<String>, String> {
     let image = image::open(path).map_err(|e| format!("could not decode {}: {e}", path.display()))?;
 
     // 64x64 is small enough to be fast and large enough that a cover's accent
@@ -138,28 +138,28 @@ fn average_hex(bucket: Bucket) -> String {
 }
 
 #[tauri::command]
-pub fn artwork_color(
+pub fn artwork_colour(
     app: AppHandle,
     store: State<'_, Store>,
     track_id: String,
     path: String,
 ) -> Result<String, String> {
 
-    if let Some(cached) = store.snapshot().artwork_colors.get(&track_id) {
+    if let Some(cached) = store.snapshot().artwork_colours.get(&track_id) {
         if brightness(cached) >= ACCENT_MIN_BRIGHTNESS {
             return Ok(cached.clone());
         }
     }
 
-    let candidates = dominant_colors(Path::new(&path))?;
-    let color = usable_accent(&candidates).ok_or_else(|| format!("{path} had no usable colour"))?;
+    let candidates = dominant_colours(Path::new(&path))?;
+    let colour = usable_accent(&candidates).ok_or_else(|| format!("{path} had no usable colour"))?;
 
     let next = store.update(|state| {
-        state.artwork_colors.insert(track_id, color.clone());
+        state.artwork_colours.insert(track_id, colour.clone());
     });
     // Failing to cache is not a reason to withhold the colour we just computed.
     let _ = state::save(&app, &next);
-    Ok(color)
+    Ok(colour)
 }
 
 const ARTWORK_MAX_EDGE: u32 = 640;
@@ -323,11 +323,11 @@ mod tests {
     use super::*;
 
     /// A small source image on disk, so the tests exercise real decoding.
-    fn test_image(dir: &Path, name: &str, color: [u8; 3]) -> String {
+    fn test_image(dir: &Path, name: &str, colour: [u8; 3]) -> String {
         let path = dir.join(name);
         let mut image = image::RgbImage::new(96, 96);
         for pixel in image.pixels_mut() {
-            *pixel = image::Rgb(color);
+            *pixel = image::Rgb(colour);
         }
         image.save(&path).expect("could not write a test image");
         path.to_string_lossy().into_owned()

@@ -1,31 +1,39 @@
 import appIcon from "./app-icon.svg?raw";
 import close from "./close.svg?raw";
+import closeWindow from "./close-window.svg?raw";
 import importIcon from "./import.svg?raw";
 import library from "./library.svg?raw";
 import like from "./like.svg?raw";
 import likeFilled from "./like-filled.svg?raw";
+import maximise from "./maximise.svg?raw";
+import minimise from "./minimise.svg?raw";
 import next from "./next.svg?raw";
 import pause from "./pause.svg?raw";
 import play from "./play.svg?raw";
 import previous from "./previous.svg?raw";
 import queue from "./queue.svg?raw";
 import repeat from "./repeat.svg?raw";
+import restore from "./restore.svg?raw";
 import shuffle from "./shuffle.svg?raw";
 import theme from "./theme.svg?raw";
 
 export const icons = {
   "app-icon": appIcon,
   close,
+  "close-window": closeWindow,
   import: importIcon,
   library,
   like,
   "like-filled": likeFilled,
+  maximise,
+  minimise,
   next,
   pause,
   play,
   previous,
   queue,
   repeat,
+  restore,
   shuffle,
   theme,
 } as const;

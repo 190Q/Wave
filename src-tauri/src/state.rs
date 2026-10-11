@@ -16,6 +16,7 @@ const STATE_FILE: &str = "state.json";
 pub struct Settings {
     pub theme: String,
     pub volume: u8,
+    pub recent_colours: Vec<String>,
 }
 
 impl Default for Settings {
@@ -23,6 +24,7 @@ impl Default for Settings {
         Self {
             theme: "adaptive".to_string(),
             volume: 70,
+            recent_colours: Vec::new(),
         }
     }
 }
@@ -42,7 +44,7 @@ pub struct PersistedState {
     pub settings: Settings,
     pub playlists: Vec<Playlist>,
     pub likes: Vec<String>,
-    pub artwork_colors: HashMap<String, String>,
+    pub artwork_colours: HashMap<String, String>,
 }
 
 /// In-memory copy of [`PersistedState`], guarded for the command handlers.

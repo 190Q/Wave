@@ -6,12 +6,14 @@ import { mountIcons } from "./ui/icons";
 import { mountLibrary } from "./ui/library";
 import { mountQueue } from "./ui/queue";
 import { mountTheme } from "./ui/theme";
+import { mountTitlebar } from "./ui/titlebar";
 import { mountTopbar } from "./ui/topbar";
 
 const NOTICE_TIMEOUT_MS = 6000;
 
 function mount(): void {
   mountIcons();
+  mountTitlebar();
   mountTopbar();
   mountHero();
   mountDock();

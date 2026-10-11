@@ -1,24 +1,24 @@
-import { cardGradient } from "../lib/color";
+import { cardGradient } from "../lib/colour";
 import { escapeHtml } from "../lib/format";
-import { artworkUrlFor, colorFor, type ArtworkTier } from "../lib/state";
+import { artworkUrlFor, colourFor, type ArtworkTier } from "../lib/state";
 import type { Track } from "../types";
 
 export function coverStyle(track: Track, tier: ArtworkTier = "background"): string {
-  const color = colorFor(track);
+  const colour = colourFor(track);
   const url = artworkUrlFor(track, tier);
   if (!url) {
-    return `background-color: ${color}; background-image: ${cardGradient(color)};`;
+    return `background-color: ${colour}; background-image: ${cardGradient(colour)};`;
   }
-  return `background-color: ${color}; background-image: linear-gradient(180deg, rgb(0 0 0 / 0.08) 40%, rgb(0 0 0 / 0.62) 100%), ${cssUrl(url)};`;
+  return `background-color: ${colour}; background-image: linear-gradient(180deg, rgb(0 0 0 / 0.08) 40%, rgb(0 0 0 / 0.62) 100%), ${cssUrl(url)};`;
 }
 
 export function plainCoverStyle(track: Track, tier: ArtworkTier = "background"): string {
-  const color = colorFor(track);
+  const colour = colourFor(track);
   const url = artworkUrlFor(track, tier);
   if (!url) {
-    return `background-color: ${color}; background-image: ${cardGradient(color)};`;
+    return `background-color: ${colour}; background-image: ${cardGradient(colour)};`;
   }
-  return `background-color: ${color}; background-image: ${cssUrl(url)};`;
+  return `background-color: ${colour}; background-image: ${cssUrl(url)};`;
 }
 
 const mosaicCache = new Map<string, string>();
@@ -40,7 +40,7 @@ export function mosaicHtml(
     }
   }
 
-  const key = tracks.map((track) => `${track.id}:${colorFor(track)}`).join("|");
+  const key = tracks.map((track) => `${track.id}:${colourFor(track)}`).join("|");
   const cached = mosaicCache.get(key);
   if (cached !== undefined) {
     return cached;

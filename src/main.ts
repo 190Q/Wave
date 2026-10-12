@@ -1,7 +1,9 @@
 import "./assets/icons/icons.css";
-import { getState, init, player, setNotice, stepTrack, subscribe } from "./lib/state";
+import { showMainWindow } from "./lib/ipc";
+import { getState, init, player, setNotice, stepTrack, subscribe, whenArtworkReady } from "./lib/state";
 import { stepLater } from "./lib/steps";
 import { mountDock } from "./ui/dock";
+import { mountDockTitle } from "./ui/dock-title";
 import { mountHero } from "./ui/hero";
 import { mountIcons } from "./ui/icons";
 import { mountLibrary } from "./ui/library";
@@ -18,12 +20,25 @@ function mount(): void {
   mountTopbar();
   mountHero();
   mountDock();
+  mountDockTitle();
   mountQueue();
   mountLibrary();
   mountTheme();
   mountStatus();
   mountShortcuts();
-  void init();
+  revealWhenReady();
+}
+
+/** The window stays hidden until the theme and current song are applied. */
+function revealWhenReady(): void {
+  void init()
+    .then(() => whenArtworkReady())
+    .catch(() => {
+      // A failed boot should still reveal the window.
+    })
+    .finally(() => {
+      void showMainWindow();
+    });
 }
 
 function mountStatus(): void {

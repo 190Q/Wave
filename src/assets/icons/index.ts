@@ -14,6 +14,7 @@ import previous from "./previous.svg?raw";
 import queue from "./queue.svg?raw";
 import repeat from "./repeat.svg?raw";
 import restore from "./restore.svg?raw";
+import search from "./search.svg?raw";
 import shuffle from "./shuffle.svg?raw";
 import theme from "./theme.svg?raw";
 
@@ -34,6 +35,7 @@ export const icons = {
   queue,
   repeat,
   restore,
+  search,
   shuffle,
   theme,
 } as const;

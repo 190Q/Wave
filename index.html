@@ -70,13 +70,14 @@
       </aside>
 
       <header class="topbar">
-        <button class="pill pill-strong" id="library-open" type="button">
+        <button class="pill pill-strong" id="library-open" type="button" aria-label="Library">
           <span class="btn-icon" data-icon="library"></span>
-          <span>Library</span>
+          <span class="pill-label">Library</span>
         </button>
         <nav class="crates" id="recents" aria-label="Recent collections"></nav>
 
         <div class="search-wrap">
+          <span class="search-icon" data-icon="search" aria-hidden="true"></span>
           <input
             class="search"
             id="search"
@@ -88,24 +89,39 @@
           <div class="results" id="results" hidden></div>
         </div>
 
-        <button class="pill" id="add-folder" type="button">
+        <button class="pill" id="add-folder" type="button" aria-label="Add folder">
           <span class="btn-icon" data-icon="import"></span>
-          <span>Add folder</span>
+          <span class="pill-label">Add folder</span>
         </button>
 
-        <button class="pill" id="theme-toggle" type="button" aria-haspopup="dialog">
-          <span class="btn-icon" data-icon="theme"></span>
-          <span>Theme</span>
-        </button>
+        <div class="theme-toggle" id="theme-toggle">
+          <button
+            class="pill"
+            id="theme-toggle-face"
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+            aria-label="Theme"
+          >
+            <span class="btn-icon" data-icon="theme"></span>
+            <span class="pill-label">Theme</span>
+          </button>
+
+          <div class="theme-drop" id="theme-drop">
+            <div class="theme-drop-inner">
+              <div class="theme-drop-list" id="theme-drop-list"></div>
+            </div>
+          </div>
+        </div>
       </header>
 
       <section class="hero" id="hero">
         <div class="now-cover" id="now-cover"></div>
         <div class="now">
-          <p class="kicker" id="now-source"></p>
-          <h1 class="now-title" id="now-title"></h1>
-          <p class="now-artist" id="now-artist"></p>
-          <p class="now-meta" id="now-meta"></p>
+          <p class="kicker now-part" id="now-source"></p>
+          <h1 class="now-title now-part" id="now-title"></h1>
+          <p class="now-artist now-part" id="now-artist"></p>
+          <p class="now-meta now-part" id="now-meta"></p>
         </div>
         <div class="lyrics" id="lyrics-panel" hidden>
           <div class="lyrics-track" id="lyrics"></div>
@@ -118,6 +134,9 @@
         <div class="dock-inner">
           <div class="seek-row">
             <span class="time" id="time-now">0:00</span>
+            <p class="dock-title" id="dock-title" aria-hidden="true">
+              <span class="dock-title-text" id="dock-title-text"></span>
+            </p>
             <span class="time" id="time-total">0:00</span>
           </div>
 
@@ -127,7 +146,7 @@
               <span class="dock-position" id="dock-position"></span>
             </div>
 
-            <div class="buttons">
+            <div class="buttons" id="dock-buttons">
               <button class="pill icon-pill" id="shuffle" type="button" aria-label="Shuffle">
                 <span class="btn-icon" data-icon="shuffle"></span>
               </button>
@@ -147,7 +166,18 @@
               <button class="pill icon-pill" id="queue-toggle" type="button" aria-label="Queue">
                 <span class="btn-icon" data-icon="queue"></span>
               </button>
-              <input class="volume" id="volume" type="range" min="0" max="100" value="70" aria-label="Volume" />
+              <div class="volume">
+                <input
+                  class="volume-input"
+                  id="volume"
+                  type="range"
+                  min="0"
+                  max="100"
+                  value="70"
+                  aria-label="Volume"
+                />
+                <span class="volume-bars" id="volume-bars" aria-hidden="true"></span>
+              </div>
             </div>
           </div>
         </div>
@@ -166,31 +196,35 @@
           </button>
         </div>
 
-        <div class="picker-area" id="picker-area">
-          <span class="picker-knob" id="picker-knob"></span>
-        </div>
+        <div class="picker">
+          <div class="picker-inner" id="picker-inner">
+            <div class="picker-area" id="picker-area">
+              <span class="picker-knob" id="picker-knob"></span>
+            </div>
 
-        <input
-          class="picker-hue"
-          id="picker-hue"
-          type="range"
-          min="0"
-          max="360"
-          value="210"
-          aria-label="Hue"
-        />
+            <input
+              class="picker-hue"
+              id="picker-hue"
+              type="range"
+              min="0"
+              max="360"
+              value="210"
+              aria-label="Hue"
+            />
 
-        <div class="picker-row">
-          <span class="picker-preview" id="picker-preview"></span>
-          <input
-            class="picker-hex"
-            id="picker-hex"
-            type="text"
-            spellcheck="false"
-            maxlength="7"
-            aria-label="Hex colour"
-          />
-          <button class="pill pill-strong" id="picker-apply" type="button">Use</button>
+            <div class="picker-row">
+              <span class="picker-preview" id="picker-preview"></span>
+              <input
+                class="picker-hex"
+                id="picker-hex"
+                type="text"
+                spellcheck="false"
+                maxlength="7"
+                aria-label="Hex colour"
+              />
+              <button class="pill pill-strong" id="picker-apply" type="button">Use</button>
+            </div>
+          </div>
         </div>
 
         <div class="theme-list" id="theme-list"></div>

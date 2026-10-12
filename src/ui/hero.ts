@@ -1,6 +1,14 @@
 import { activeLyricIndex } from "../lib/lrc";
 import { escapeHtml, joinMeta } from "../lib/format";
-import { currentTrack, ensureColour, ensureLyrics, getState, player, subscribe } from "../lib/state";
+import {
+  currentTrack,
+  ensureColour,
+  ensureLyrics,
+  getState,
+  player,
+  subscribe,
+  toggleLibrary,
+} from "../lib/state";
 import type { LyricLine } from "../types";
 import { plainCoverStyle } from "./artwork";
 
@@ -20,12 +28,78 @@ export function mountHero(): void {
     return;
   }
 
+  const COVER_MAX_REM = 24;
+  const COVER_MIN_REM = 6;
+  const COVER_GAP_REM = 2.5;
+  const COVER_WIDTH_SHARE = 0.5;
+
+  const narrowLayout = window.matchMedia("(max-width: 48rem)");
+
+  const fitCover = (): void => {
+    const rootPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    const styles = getComputedStyle(hero);
+    const padX = parseFloat(styles.paddingLeft) + parseFloat(styles.paddingRight);
+    const byHeight = hero.clientHeight - COVER_GAP_REM * rootPx;
+    const byWidth = (hero.clientWidth - padX) * COVER_WIDTH_SHARE;
+    const size = Math.max(0, Math.min(byHeight, byWidth, COVER_MAX_REM * rootPx));
+    hero.style.setProperty("--cover-height", `${size}px`);
+
+    const tooShort = byHeight < COVER_MIN_REM * rootPx;
+    hero.classList.toggle("is-cover-hidden", narrowLayout.matches || size < COVER_MIN_REM * rootPx);
+
+    // With no room for even a small cover, the library is out of reach.
+    document.documentElement.classList.toggle("is-short", tooShort);
+    if (tooShort && getState().libraryOpen) {
+      toggleLibrary(false);
+    }
+  };
+
+  const outerHeight = (el: HTMLElement): number => {
+    const styles = getComputedStyle(el);
+    return el.scrollHeight + parseFloat(styles.marginTop) + parseFloat(styles.marginBottom);
+  };
+
+  const fold = (el: HTMLElement, hidden: boolean): void => {
+    const height = el.scrollHeight;
+    el.style.maxHeight = hidden ? "0px" : height > 0 ? `${height}px` : "";
+    el.style.opacity = hidden ? "0" : "1";
+  };
+
+  const fitText = (): void => {
+    const available = hero.clientHeight;
+    const full = outerHeight(source) + outerHeight(title) + outerHeight(artist) + outerHeight(meta);
+    const withoutMeta = full - outerHeight(meta);
+    const withoutSource = withoutMeta - outerHeight(source);
+
+    const level =
+      full <= available ? 0 : withoutMeta <= available ? 1 : withoutSource <= available ? 2 : 3;
+
+    fold(meta, level >= 1);
+    fold(source, level >= 2);
+    fold(title, level >= 3);
+    fold(artist, level >= 3);
+
+    document.documentElement.classList.toggle("is-title-folded", level >= 3);
+  };
+
+  const layout = (): void => {
+    fitCover();
+    fitText();
+  };
+
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(layout).observe(hero);
+  }
+  narrowLayout.addEventListener("change", layout);
+  void document.fonts?.ready.then(layout);
+  layout();
+
   let lastTrackId: string | null = null;
   let renderedLyrics: LyricLine[] | null = null;
   let lyricLines: HTMLElement[] = [];
 
   const highlight = (positionMs: number): void => {
-    if (lyricLines.length === 0) {
+    if (lyricLines.length === 0 || document.documentElement.classList.contains("is-theming")) {
       return;
     }
     const index = activeLyricIndex(renderedLyrics ?? [], positionMs);
@@ -96,6 +170,7 @@ export function mountHero(): void {
       void ensureLyrics(track);
     }
 
+    fitText();
     renderLyrics();
   };
 

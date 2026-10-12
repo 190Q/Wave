@@ -19,17 +19,25 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
 pub const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp"];
 pub const SOURCE_ARTWORK_DIR: &str = "images";
 
+/// Extensions treated as lyrics.
+pub const LYRICS_EXTENSIONS: &[&str] = &["lrc"];
+pub const SOURCE_LYRICS_DIR: &str = "lyrics";
+
 pub const SONGS_DIR: &str = "songs";
 pub const IMAGES_DIR: &str = "images";
+pub const LYRICS_DIR: &str = "lyrics";
 pub const PLAYLISTS_DIR: &str = "playlists";
 pub const CONFIG_DIR: &str = "config";
 pub const INDEX_FILE: &str = "index.json";
 
-/// Song path relative to the library root, mapped to its artwork's relative path.
+/// Song path relative to the library root, mapped to the relative paths of its
+/// sidecars.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct LibraryIndex {
     #[serde(default)]
     pub songs: HashMap<String, String>,
+    #[serde(default)]
+    pub lyrics: HashMap<String, String>,
 }
 
 #[derive(Default)]
@@ -74,6 +82,8 @@ pub struct Track {
     pub sample_rate: Option<u32>,
     /// Copied sidecar image if the index has one, otherwise extracted tag art.
     pub artwork_path: Option<String>,
+    /// Copied sidecar lyrics if the index has one.
+    pub lyrics_path: Option<String>,
     pub has_embedded_art: bool,
 }
 
@@ -94,7 +104,7 @@ pub fn library_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
         .map_err(|e| format!("could not resolve the app data directory: {e}"))?
         .join("library");
 
-    for dir in [SONGS_DIR, IMAGES_DIR, PLAYLISTS_DIR, CONFIG_DIR] {
+    for dir in [SONGS_DIR, IMAGES_DIR, LYRICS_DIR, PLAYLISTS_DIR, CONFIG_DIR] {
         let path = root.join(dir);
         fs::create_dir_all(&path).map_err(|e| format!("could not create {}: {e}", path.display()))?;
     }
@@ -115,17 +125,18 @@ pub fn write_index(root: &Path, index: &LibraryIndex) -> Result<(), String> {
     fs::write(&path, json).map_err(|e| format!("could not write {}: {e}", path.display()))
 }
 
-/// Lookup table for the sidecar images in an imported folder.
+/// Lookup table for the sidecar files in an imported folder. Covers and lyrics
+/// are matched the same way, so one index serves both.
 #[derive(Default)]
-pub struct ArtworkIndex {
-    /// Keyed by the song part of `artist - song.jpg`.
+pub struct SidecarIndex {
+    /// Keyed by the song part of `artist - song.ext`.
     by_song: HashMap<String, PathBuf>,
     /// Keyed by the whole lowercased file stem.
     by_stem: HashMap<String, PathBuf>,
 }
 
-impl ArtworkIndex {
-    pub fn build(dir: &Path) -> Self {
+impl SidecarIndex {
+    pub fn build(dir: &Path, extensions: &[&str]) -> Self {
         let mut index = Self::default();
         let Ok(entries) = fs::read_dir(dir) else {
             return index;
@@ -133,7 +144,7 @@ impl ArtworkIndex {
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_file() || !has_extension(&path, IMAGE_EXTENSIONS) {
+            if !path.is_file() || !has_extension(&path, extensions) {
                 continue;
             }
             let stem = file_stem_lower(&path);
@@ -176,12 +187,12 @@ impl ArtworkIndex {
     }
 }
 
-/// Locates an artwork subfolder, matching the name case-insensitively.
-pub fn artwork_dir(root: &Path) -> Option<PathBuf> {
+/// Locates a subfolder of an imported folder, matching the name case-insensitively.
+pub fn source_subdir(root: &Path, name: &str) -> Option<PathBuf> {
     let entries = fs::read_dir(root).ok()?;
     for entry in entries.flatten() {
         let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
-        if is_dir && entry.file_name().to_string_lossy().eq_ignore_ascii_case(SOURCE_ARTWORK_DIR) {
+        if is_dir && entry.file_name().to_string_lossy().eq_ignore_ascii_case(name) {
             return Some(entry.path());
         }
     }
@@ -314,6 +325,11 @@ fn read_track(
             .and_then(|(data, extension)| cache_embedded(data, extension, &id, artwork_cache)),
     };
 
+    let lyrics_path = index
+        .lyrics
+        .get(&relative_path)
+        .map(|relative| root.join(relative).to_string_lossy().into_owned());
+
     Ok(Track {
         id,
         path: path.to_string_lossy().into_owned(),
@@ -331,6 +347,7 @@ fn read_track(
         bitrate,
         sample_rate,
         artwork_path,
+        lyrics_path,
         has_embedded_art,
     })
 }

@@ -3,7 +3,9 @@ import type {
   CollectionFilter,
   LyricLine,
   PersistedState,
+  Playback,
   Playlist,
+  Session,
   Settings,
   Track,
 } from "../types";
@@ -186,6 +188,46 @@ export function prefetchArtwork(trackIds: string[]): void {
   pumpArtwork();
 }
 
+/**
+ * Resolves once the current track's artwork is ready to paint, so the window
+ * can be revealed without the cover flashing in. Gives up after a moment.
+ */
+export function whenArtworkReady(): Promise<void> {
+  const track = currentTrack();
+  if (!track?.artworkPath || artworkUrls.has(track.id)) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    let timer = 0;
+    let unsubscribe = (): void => {};
+    let settled = false;
+
+    const ready = (): boolean => artworkUrls.has(track.id) || artworkFailed.has(track.id);
+
+    const finish = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      window.clearTimeout(timer);
+      unsubscribe();
+      resolve();
+    };
+
+    unsubscribe = subscribe(() => {
+      if (ready()) {
+        finish();
+      }
+    });
+    timer = window.setTimeout(finish, 1200);
+
+    if (ready()) {
+      finish();
+    }
+  });
+}
+
 function retainArtwork(): void {
   const keep = new Set<string>(player.snapshot().order);
   for (const id of state.recents) {
@@ -260,6 +302,14 @@ const coversInFlight = new Set<string>();
 const coverWaiters = new Map<string, ((url: string | null) => void)[]>();
 let coversRunning = 0;
 const COVER_CONCURRENCY = 1;
+
+export function cachedCoverUrl(paths: string[]): string | null {
+  const usable = paths.filter(Boolean).slice(0, 4);
+  if (usable.length === 0) {
+    return null;
+  }
+  return coverUrls.get(usable.join("|")) ?? null;
+}
 
 export function coverUrl(paths: string[]): Promise<string | null> {
   const usable = paths.filter(Boolean).slice(0, 4);
@@ -401,9 +451,13 @@ function scheduleEmit(): void {
 
 export async function init(): Promise<void> {
   try {
-    applyPersisted(await ipc.loadState());
+    const persisted = await ipc.loadState();
+    applyPersisted(persisted);
+    applySession(persisted.session);
     player.setVolume(state.settings.volume);
     await rescan();
+    restorePlayback(persisted.session?.playback);
+    wirePersistence();
     state.ready = true;
   } catch (error) {
     state.notice = describe(error);
@@ -450,6 +504,9 @@ export async function importFolder(createPlaylist: boolean): Promise<void> {
     if (outcome.images > 0) {
       parts.push(plural(outcome.images, "image"));
     }
+    if (outcome.lyrics > 0) {
+      parts.push(plural(outcome.lyrics, "lyric file"));
+    }
     if (outcome.playlist) {
       parts.push(`playlist "${outcome.playlist}" created`);
     }
@@ -464,6 +521,7 @@ export async function importFolder(createPlaylist: boolean): Promise<void> {
 
 export function setFilter(filter: CollectionFilter): void {
   state.filter = filter;
+  schedulePersist();
   emit();
 }
 
@@ -474,6 +532,7 @@ export function setQuery(query: string): void {
 
 export function setSort(sort: "name" | "size"): void {
   state.sort = sort;
+  schedulePersist();
   emit();
 }
 
@@ -487,8 +546,9 @@ export function toggleLibrary(open?: boolean): void {
   emit();
 }
 
-export function toggleQueue(): void {
-  state.queueOpen = !state.queueOpen;
+export function toggleQueue(open?: boolean): void {
+  state.queueOpen = open ?? !state.queueOpen;
+  schedulePersist();
   emit();
 }
 
@@ -512,6 +572,7 @@ export function openCollection(id: string, startTrackId?: string): void {
   player.setQueue(collection.id, collection.name, ids, startTrackId);
   state.recents = [id, ...state.recents.filter((entry) => entry !== id)].slice(0, 3);
   retainArtwork();
+  schedulePersist();
   emit();
 }
 
@@ -628,7 +689,10 @@ export function setVolume(volume: number): void {
     });
 }
 
-/** Reads the `.lrc` sidecar for a track. Empty when there is none. */
+/**
+ * Reads the lyrics for a track. The index points at the copied `.lrc`; without
+ * one, a sidecar sitting beside the song is used. Empty when there is neither.
+ */
 export async function ensureLyrics(track: Track | undefined): Promise<void> {
   const trackId = track?.id ?? null;
   if (state.lyricsTrackId === trackId) {
@@ -644,7 +708,7 @@ export async function ensureLyrics(track: Track | undefined): Promise<void> {
   }
 
   try {
-    const raw = await ipc.loadLyrics(track.path);
+    const raw = await ipc.loadLyrics(track.lyricsPath ?? track.path);
     if (state.lyricsTrackId !== trackId) {
       return; // a newer track was requested while this one was loading
     }
@@ -678,6 +742,98 @@ function repairQueue(): void {
   if (findCollection(state.collections, "all")?.trackIds.length) {
     openCollection("all");
   }
+}
+
+/** Restores the browsing bits of the session: history, filter and sort. */
+function applySession(session: Session | undefined): void {
+  if (!session) {
+    return;
+  }
+  state.recents = session.recents ?? [];
+  state.filter = session.filter ?? "all";
+  state.sort = session.sort ?? "name";
+  state.queueOpen = session.queueOpen ?? false;
+}
+
+function restorePlayback(playback: Playback | undefined): void {
+  if (!playback || playback.order.length === 0) {
+    return;
+  }
+
+  const currentId = playback.order[playback.cursor] ?? null;
+  const order = playback.order.filter((id) => state.tracksById.has(id));
+  if (order.length === 0) {
+    return;
+  }
+
+  const sourceOrder = playback.sourceOrder.filter((id) => state.tracksById.has(id));
+  const cursor = currentId ? Math.max(order.indexOf(currentId), 0) : 0;
+  player.restore({ ...playback, order, sourceOrder, cursor });
+}
+
+/** How long changes are coalesced before the session is written. */
+const PERSIST_DELAY_MS = 350;
+let persistTimer: number | null = null;
+let persistenceWired = false;
+
+/** Persists the session on every playback change. */
+function wirePersistence(): void {
+  if (persistenceWired) {
+    return;
+  }
+  persistenceWired = true;
+  player.onChange(schedulePersist);
+}
+
+/** Writes the session soon, coalescing a burst of changes into one write. */
+function schedulePersist(): void {
+  if (!state.ready || persistTimer !== null) {
+    return;
+  }
+  persistTimer = window.setTimeout(() => {
+    persistTimer = null;
+    void persistSession();
+  }, PERSIST_DELAY_MS);
+}
+
+function currentSession(): Session {
+  const snapshot = player.snapshot();
+  return {
+    playback: {
+      sourceId: snapshot.sourceId,
+      sourceName: snapshot.sourceName,
+      sourceOrder: snapshot.sourceOrder,
+      order: snapshot.order,
+      cursor: snapshot.cursor,
+      positionMs: Math.round(snapshot.positionMs),
+      shuffle: snapshot.shuffle,
+      repeat: snapshot.repeat,
+      muted: snapshot.muted,
+    },
+    recents: state.recents,
+    filter: state.filter,
+    sort: state.sort,
+    queueOpen: state.queueOpen,
+  };
+}
+
+async function persistSession(): Promise<void> {
+  if (!state.ready) {
+    return;
+  }
+  try {
+    await ipc.saveSession(currentSession());
+  } catch {
+    // Persistence is best-effort; a failed write must not disturb playback.
+  }
+}
+
+export async function flushSession(): Promise<void> {
+  if (persistTimer !== null) {
+    window.clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  await persistSession();
 }
 
 function emit(): void {

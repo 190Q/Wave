@@ -15,7 +15,10 @@
       {
         "title": "Wave",
         "width": 900,
-        "height": 650,
+        "height": 655,
+        "minWidth": 485,
+        "minHeight": 240,
+        "visible": false,
         "decorations": false,
         "shadow": true,
         "additionalBrowserArgs": "--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion"

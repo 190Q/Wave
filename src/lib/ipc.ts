@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
-import type { ImportOutcome, PersistedState, ScanSummary, Settings } from "../types";
+import type { ImportOutcome, PersistedState, ScanSummary, Session, Settings } from "../types";
 
 
 export function loadState(): Promise<PersistedState> {
@@ -10,6 +10,26 @@ export function loadState(): Promise<PersistedState> {
 
 export function saveSettings(settings: Settings): Promise<PersistedState> {
   return invoke("set_settings", { settings });
+}
+
+/** Persists the playback and browsing session. */
+export function saveSession(session: Session): Promise<PersistedState> {
+  return invoke("set_session", { session });
+}
+
+/** Remembers the current window size and position for the next launch. */
+export function saveWindowGeometry(): Promise<void> {
+  return invoke("save_window_geometry");
+}
+
+/** Forgets the remembered window geometry, so the defaults apply again. */
+export function resetWindowGeometry(): Promise<void> {
+  return invoke("reset_window_geometry");
+}
+
+/** Reveals the main window once the shell is ready to be seen. */
+export function showMainWindow(): Promise<void> {
+  return invoke("show_main_window");
 }
 
 export function createPlaylist(name: string): Promise<PersistedState> {

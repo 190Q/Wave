@@ -1,10 +1,11 @@
-import type { RepeatMode } from "../types";
+import type { Playback, RepeatMode } from "../types";
 
 const TICK_MS = 250;
 
 export interface PlayerSnapshot {
   sourceId: string | null;
   sourceName: string;
+  sourceOrder: string[];
   order: string[];
   cursor: number;
   currentId: string | null;
@@ -78,6 +79,7 @@ export class Player {
     return {
       sourceId: this.sourceId,
       sourceName: this.sourceName,
+      sourceOrder: [...this.sourceOrder],
       order: [...this.order],
       cursor: this.cursor,
       currentId: this.currentId,
@@ -104,6 +106,27 @@ export class Player {
     if (this.playing && keep) {
       this.startTimer();
     }
+    this.emitChange();
+    this.emitProgress();
+  }
+
+  restore(playback: Playback): void {
+    const order = playback.order.length > 0 ? playback.order : playback.sourceOrder;
+    if (order.length === 0) {
+      return;
+    }
+
+    this.sourceId = playback.sourceId;
+    this.sourceName = playback.sourceName;
+    this.sourceOrder = [...playback.sourceOrder];
+    this.order = [...order];
+    this.cursor = Math.min(Math.max(playback.cursor, 0), order.length - 1);
+    this.positionMs = Math.max(playback.positionMs, 0);
+    this.shuffle = playback.shuffle;
+    this.repeat = playback.repeat === "all" ? "all" : "off";
+    this.muted = playback.muted;
+    this.playing = false;
+    this.stopTimer();
     this.emitChange();
     this.emitProgress();
   }

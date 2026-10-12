@@ -17,6 +17,8 @@ export interface Track {
   sampleRate: number | null;
   /** Copied sidecar image if the index has one, otherwise extracted tag art. */
   artworkPath: string | null;
+  /** Copied lyrics sidecar if the index has one. */
+  lyricsPath: string | null;
   hasEmbeddedArt: boolean;
   relativePath: string;
 }
@@ -36,12 +38,46 @@ export interface Settings {
   recentColours: string[];
 }
 
+/** The playback session, so a restart resumes where the user left off. */
+export interface Playback {
+  sourceId: string | null;
+  sourceName: string;
+  sourceOrder: string[];
+  order: string[];
+  cursor: number;
+  positionMs: number;
+  shuffle: boolean;
+  repeat: RepeatMode;
+  muted: boolean;
+}
+
+/** The parts of the browsing session worth remembering between launches. */
+export interface Session {
+  playback: Playback;
+  recents: string[];
+  filter: CollectionFilter;
+  sort: "name" | "size";
+  queueOpen: boolean;
+}
+
+/** Where the window sat when it was last closed. */
+export interface WindowGeometry {
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+  monitor: string | null;
+  maximized: boolean;
+}
+
 export interface PersistedState {
   settings: Settings;
   playlists: Playlist[];
   likes: string[];
   /** Track id -> `#rrggbb`. */
   artworkColours: Record<string, string>;
+  session: Session;
+  window: WindowGeometry | null;
 }
 
 export interface ScanSummary {
@@ -54,6 +90,7 @@ export interface ScanSummary {
 export interface ImportOutcome {
   songs: number;
   images: number;
+  lyrics: number;
   skipped: number;
   playlist: string | null;
   errors: string[];

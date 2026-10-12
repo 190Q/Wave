@@ -34,18 +34,37 @@ export function mountTopbar(): void {
     ]);
   });
 
-  search.addEventListener("input", () => setSearch(search.value));
+  let resultsOpen = false;
+
+  const refreshResults = (): void => {
+    const state = getState();
+    renderResults(state.search, state.tracks, results, resultsOpen);
+  };
+
+  search.addEventListener("input", () => {
+    resultsOpen = true;
+    setSearch(search.value);
+  });
   search.addEventListener("focus", () => {
     if (search.value.trim()) {
-      results.hidden = false;
+      resultsOpen = true;
+      refreshResults();
     }
   });
   search.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       search.value = "";
+      resultsOpen = false;
       setSearch("");
       search.blur();
     }
+  });
+
+  search.closest(".search-wrap")?.addEventListener("click", (event) => {
+    if ((event.target as HTMLElement).closest(".results")) {
+      return;
+    }
+    search.focus();
   });
 
   results.addEventListener("click", (event) => {
@@ -53,6 +72,9 @@ export function mountTopbar(): void {
     if (!row?.dataset.track) {
       return;
     }
+    resultsOpen = false;
+    search.value = "";
+    setSearch("");
     // Search covers the whole library.
     playFromCollection("all", row.dataset.track);
     results.hidden = true;
@@ -60,7 +82,8 @@ export function mountTopbar(): void {
 
   document.addEventListener("pointerdown", (event) => {
     const target = event.target as Node;
-    if (!results.hidden && !results.contains(target) && !search.contains(target)) {
+    if (resultsOpen && !results.contains(target) && !search.contains(target)) {
+      resultsOpen = false;
       results.hidden = true;
     }
   });
@@ -72,17 +95,47 @@ export function mountTopbar(): void {
     }
   });
 
+  let cratesNatural = 0;
+
+  const decideCrates = (): void => {
+    recents.classList.toggle("is-compact", cratesNatural > recents.clientWidth + 1);
+  };
+
+  const resetCrates = (): void => {
+    recents.classList.add("no-anim");
+    recents.classList.remove("is-compact");
+    cratesNatural = recents.scrollWidth;
+    decideCrates();
+    void recents.offsetWidth;
+    recents.classList.remove("no-anim");
+  };
+
+  const fitCrates = (): void => {
+    if (!recents.classList.contains("is-compact")) {
+      cratesNatural = recents.scrollWidth;
+    }
+    decideCrates();
+  };
+
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(fitCrates).observe(recents);
+  }
+  // Text metrics settle once the display font has loaded.
+  void document.fonts?.ready.then(resetCrates);
+
+  let renderedCrates = "";
+
   const render = (): void => {
     const state = getState();
 
-    recents.innerHTML = state.recents
+    const crates = state.recents
       .map((id) => state.collections.find((collection) => collection.id === id))
       .filter((collection) => collection !== undefined)
       .map(
         (collection) => `
           <button class="crate" type="button" data-collection="${escapeHtml(collection.id)}">
             ${mosaicHtml(collection.trackIds, state.tracksById)}
-            <span>
+            <span class="crate-text">
               <span class="crate-name">${escapeHtml(collection.name)}</span>
               <span class="crate-sub">${escapeHtml(collection.subtitle)}</span>
             </span>
@@ -90,17 +143,23 @@ export function mountTopbar(): void {
       )
       .join("");
 
-    hydrateCovers(recents);
-    renderResults(state.search, state.tracks, results);
+    if (crates !== renderedCrates) {
+      renderedCrates = crates;
+      recents.innerHTML = crates;
+      hydrateCovers(recents);
+      resetCrates();
+    }
+
+    renderResults(state.search, state.tracks, results, resultsOpen);
   };
 
   subscribe(render);
   render();
 }
 
-function renderResults(query: string, tracks: Track[], container: HTMLElement): void {
+function renderResults(query: string, tracks: Track[], container: HTMLElement, open: boolean): void {
   const needle = query.trim().toLowerCase();
-  if (!needle) {
+  if (!open || !needle) {
     container.hidden = true;
     container.innerHTML = "";
     return;

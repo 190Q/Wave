@@ -25,11 +25,12 @@ export function mountDock(): void {
   const repeat = element<HTMLButtonElement>("repeat");
   const queueToggle = element<HTMLButtonElement>("queue-toggle");
   const volume = element<HTMLInputElement>("volume");
+  const volumeBars = element("volume-bars");
   const position = element("dock-position");
 
   if (
     !dock || !fill || !timeNow || !timeTotal || !like || !shuffle || !previous ||
-    !play || !next || !repeat || !queueToggle || !volume || !position
+    !play || !next || !repeat || !queueToggle || !volume || !volumeBars || !position
   ) {
     return;
   }
@@ -82,6 +83,23 @@ export function mountDock(): void {
   repeat.addEventListener("click", () => player.cycleRepeat());
   queueToggle.addEventListener("click", () => toggleQueue());
 
+  const barCount = 10;
+  const bars = Array.from({ length: barCount }, (_, index) => {
+    const bar = document.createElement("span");
+    bar.className = "volume-bar";
+    bar.style.height = `${((7 + index) / 16) * 100}%`;
+    return bar;
+  });
+  volumeBars.replaceChildren(...bars);
+
+  const paintVolume = (level: number): void => {
+    const reached = (level / 100) * barCount;
+    bars.forEach((bar, index) => {
+      const fill = Math.min(Math.max(reached - index, 0), 1);
+      bar.style.setProperty("--fill", `${fill}`);
+    });
+  };
+
   volume.addEventListener("input", () => setVolume(Number(volume.value)));
 
   like.addEventListener("click", () => {
@@ -108,6 +126,9 @@ export function mountDock(): void {
   });
 
   const paintProgress = (positionMs: number, durationMs: number): void => {
+    if (document.documentElement.classList.contains("is-theming")) {
+      return;
+    }
     const fraction = durationMs > 0 ? Math.min(positionMs / durationMs, 1) : 0;
     fill.style.width = `${fraction * 100}%`;
     timeNow.textContent = formatDuration(positionMs);
@@ -116,6 +137,11 @@ export function mountDock(): void {
   let lastPlaying: boolean | null = null;
   let lastLiked: boolean | null = null;
 
+  const swap = document.createElement("span");
+  swap.className = "icon-swap";
+  swap.append(createIcon("play"), createIcon("pause"));
+  play.replaceChildren(swap);
+
   const renderTransport = (): void => {
     const snapshot = player.snapshot();
     const track = currentTrack();
@@ -123,7 +149,7 @@ export function mountDock(): void {
 
     if (snapshot.playing !== lastPlaying) {
       lastPlaying = snapshot.playing;
-      play.replaceChildren(createIcon(snapshot.playing ? "pause" : "play"));
+      play.classList.toggle("is-playing", snapshot.playing);
       play.setAttribute("aria-label", snapshot.playing ? "Pause" : "Play");
     }
 
@@ -146,6 +172,7 @@ export function mountDock(): void {
 
     volume.value = String(snapshot.volume);
     volume.disabled = idle;
+    paintVolume(snapshot.volume);
 
     timeTotal.textContent = formatDuration(snapshot.durationMs);
     position.textContent = track ? `${snapshot.cursor + 1} / ${snapshot.order.length}` : "";

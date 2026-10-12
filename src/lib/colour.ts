@@ -59,13 +59,14 @@ export function cardGradient(colour: string): string {
   return `linear-gradient(158deg, ${lighten(colour, 0.14)} 0%, ${darken(colour, 0.42)} 62%, ${darken(colour, 0.68)} 100%)`;
 }
 
-/** The stage backdrop: three soft pools of the same colour. */
+/** The stage backdrop: three soft pools of the theme colour, a touch darker. */
 export function stageGradient(colour: string): string {
+  const base = darken(colour, 0.35);
   return [
-    `radial-gradient(46rem 30rem at 12% 4%, ${withAlpha(lighten(colour, 0.1), 0.42)}, transparent 68%)`,
-    `radial-gradient(52rem 34rem at 88% 38%, ${withAlpha(colour, 0.34)}, transparent 70%)`,
-    `radial-gradient(58rem 28rem at 50% 104%, ${withAlpha(darken(colour, 0.12), 0.5)}, transparent 72%)`,
-    `linear-gradient(180deg, ${darken(colour, 0.86)} 0%, #07070a 100%)`,
+    `radial-gradient(46rem 30rem at 12% 4%, ${withAlpha(lighten(base, 0.1), 0.42)}, transparent 68%)`,
+    `radial-gradient(52rem 34rem at 88% 38%, ${withAlpha(base, 0.34)}, transparent 70%)`,
+    `radial-gradient(58rem 28rem at 50% 104%, ${withAlpha(darken(base, 0.12), 0.5)}, transparent 72%)`,
+    `linear-gradient(180deg, ${darken(base, 0.86)} 0%, #07070a 100%)`,
   ].join(", ");
 }
 

@@ -1,6 +1,5 @@
 import { escapeHtml } from "../lib/format";
 import {
-  addTracksToPlaylist,
   artworkUrlFor,
   ensureColour,
   getState,
@@ -9,12 +8,10 @@ import {
   pruneArtworkQueue,
   stepTrack,
   subscribe,
-  toggleLikeTrack,
   trackById,
 } from "../lib/state";
 import { stepLater } from "../lib/steps";
 import { coverStyle } from "./artwork";
-import { openMenu, type MenuItem } from "./menu";
 
 const VISIBLE_RANGE = 5;
 const SPACING_REM = 6.5;
@@ -23,7 +20,7 @@ const ARC_ANGLE_DEG = 5.5;
 
 /** Cards kept in the DOM beyond what is visible. */
 const WINDOW = VISIBLE_RANGE + 3;
-/** How far the cursor may drift before the window is rebuilt. */
+/** How far the strip may drift before the window of cards is rebuilt. */
 const REBUILD_MARGIN = 2;
 
 /** Wheel deltas are normalised to pixels before accumulating. */
@@ -36,6 +33,15 @@ const EDGE_LIMIT = 1.1;
 const SPRING_TRANSITION =
   "transform 0.42s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s ease";
 
+const LEAVE_MS = 320;
+const WASH_MS = 700;
+
+/**
+ * Room the hero must keep: its smallest cover plus the column gap, matching the
+ * height at which the hero itself folds the cover away.
+ */
+const HERO_MIN_REM = 8.5;
+
 export function mountQueue(): void {
   const carousel = element("carousel");
   const stage = document.querySelector<HTMLElement>(".stage");
@@ -43,11 +49,30 @@ export function mountQueue(): void {
     return;
   }
 
-  /** The cards currently in the DOM, keyed by their index in the queue. */
   const cards = new Map<number, HTMLElement>();
+  const leaving = new Map<number, HTMLElement>();
+  const entering = new Set<HTMLElement>();
+
+  const live = document.createElement("div");
+  live.className = "carousel-live";
+
+  const wash = document.createElement("div");
+  wash.className = "carousel-wash";
+
+  carousel.append(live, wash);
+
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+  let washFrame: number | null = null;
+  let washStart = 0;
+  let washCentre = Number.NaN;
   let renderedOrder = "";
+  let renderedIds = new Set<string>();
   let renderedLooping: boolean | null = null;
   let windowCenter = Number.NaN;
+
+  let centerSlot = 0;
+  let lastCursor = 0;
 
   const remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
   let dragging = false;
@@ -56,10 +81,23 @@ export function mountQueue(): void {
   let suppressClick = false;
 
   const RAPID_WINDOW_MS = 300;
-  let lastCursor = -1;
   let lastCursorAt = 0;
   let rapid = false;
   let bouncing = false;
+
+  const indexAt = (slot: number, total: number, looping: boolean): number =>
+    looping ? ((slot % total) + total) % total : slot;
+
+  const loopDelta = (delta: number, total: number): number => {
+    if (total <= 1) {
+      return 0;
+    }
+    let step = ((delta % total) + total) % total;
+    if (step > total / 2) {
+      step -= total;
+    }
+    return step;
+  };
 
   const resist = (value: number, total: number, looping: boolean): number => {
     if (looping || total <= 1) {
@@ -75,37 +113,52 @@ export function mountQueue(): void {
     return value;
   };
 
-  /**
-   * A card's position relative to the cursor. With repeat on the queue is a
-   * loop, so the offset wraps and the first card follows the last.
-   */
-  const offsetFor = (index: number, cursor: number, total: number, looping: boolean): number => {
-    if (looping && total > 1) {
-      const half = Math.floor(total / 2);
-      return ((((index - cursor + half) % total) + total) % total) - half;
+  /** Every slot the strip needs, clamped to the queue when it does not loop. */
+  const requiredSlots = (centre: number, total: number, looping: boolean): number[] => {
+    if (total === 0) {
+      return [];
     }
-    return index - cursor;
+    const slots: number[] = [];
+    for (let slot = centre - WINDOW; slot <= centre + WINDOW; slot += 1) {
+      if (!looping && (slot < 0 || slot >= total)) {
+        continue;
+      }
+      slots.push(slot);
+    }
+    return slots;
   };
 
-  const requiredIndices = (total: number, cursor: number, looping: boolean): number[] => {
-    const span = Math.min(total, WINDOW * 2 + 1);
-    const start = cursor - Math.floor(span / 2);
-    const indices: number[] = [];
+  const isReshuffle = (order: string[]): boolean =>
+    order.length > 0 && order.length === renderedIds.size && order.every((id) => renderedIds.has(id));
 
-    for (let step = 0; step < span; step += 1) {
-      let index = start + step;
-      if (looping) {
-        index = ((index % total) + total) % total;
-      }
-      if (index >= 0 && index < total && !indices.includes(index)) {
-        indices.push(index);
-      }
+  const recentre = (centre: number): void => {
+    const shift = centre - centerSlot;
+    if (shift === 0) {
+      return;
     }
 
-    return indices;
+    const moved: [number, HTMLElement][] = [];
+    for (const [slot, card] of cards) {
+      const next = slot + shift;
+      card.dataset.slot = String(next);
+      moved.push([next, card]);
+    }
+
+    cards.clear();
+    for (const [slot, card] of moved) {
+      cards.set(slot, card);
+    }
+    centerSlot = centre;
   };
 
-  const createCard = (order: string[], index: number, visible: boolean): HTMLElement | null => {
+  const createCard = (
+    order: string[],
+    slot: number,
+    total: number,
+    looping: boolean,
+    visible: boolean,
+  ): HTMLElement | null => {
+    const index = indexAt(slot, total, looping);
     const track = trackById(order[index]);
     if (!track) {
       return null;
@@ -117,10 +170,10 @@ export function mountQueue(): void {
 
     const card = document.createElement("article");
     card.className = "card";
+    card.dataset.slot = String(slot);
     card.dataset.index = String(index);
     card.innerHTML = `
       <div class="card-body" style="${coverStyle(track, visible ? "queue" : "idle")}">
-        <button class="card-more" type="button" data-more="${index}" aria-label="Actions for ${escapeHtml(track.title)}">...</button>
         <div class="card-text">
           <p class="card-title">${escapeHtml(track.title)}</p>
           <p class="card-artist">${escapeHtml(track.artist ?? "Unknown artist")}</p>
@@ -130,47 +183,135 @@ export function mountQueue(): void {
     return card;
   };
 
-  const syncWindow = (order: string[], cursor: number, looping: boolean): void => {
-    const wanted = new Set(requiredIndices(order.length, cursor, looping));
+  const clearCards = (): void => {
+    for (const card of cards.values()) {
+      card.remove();
+    }
+    cards.clear();
+  };
 
-    for (const [index, card] of cards) {
-      if (!wanted.has(index)) {
-        card.remove();
-        cards.delete(index);
+  /** Fades a card out, then takes it away once the fade has run. */
+  const dismiss = (slot: number, card: HTMLElement): void => {
+    card.classList.add("is-leaving");
+    card.style.pointerEvents = "none";
+    leaving.set(slot, card);
+
+    window.setTimeout(() => {
+      card.remove();
+      if (leaving.get(slot) === card) {
+        leaving.delete(slot);
+      }
+    }, LEAVE_MS);
+  };
+
+  const endWash = (): void => {
+    if (washFrame !== null) {
+      window.cancelAnimationFrame(washFrame);
+      washFrame = null;
+    }
+    live.style.clipPath = "";
+    wash.style.clipPath = "";
+    wash.replaceChildren();
+  };
+
+  const washAway = (): void => {
+    endWash();
+
+    for (const card of cards.values()) {
+      wash.appendChild(card);
+    }
+    cards.clear();
+
+    if (reducedMotion.matches) {
+      wash.replaceChildren();
+      return;
+    }
+
+    const rect = carousel.getBoundingClientRect();
+    const left = -rect.left;
+    const right = window.innerWidth - rect.left;
+    const top = -rect.top;
+    const bottom = window.innerHeight - rect.top;
+    const trail = window.innerHeight * 0.24;
+    const span = right - left + trail;
+
+    const paint = (progress: number): void => {
+      const lead = left + progress * span;
+      wash.style.clipPath =
+        `polygon(${lead}px ${top}px, ${right + trail}px ${top}px, ` +
+        `${right + trail}px ${bottom}px, ${lead - trail}px ${bottom}px)`;
+      live.style.clipPath =
+        `polygon(${left - trail}px ${top}px, ${lead}px ${top}px, ` +
+        `${lead - trail}px ${bottom}px, ${left - trail}px ${bottom}px)`;
+    };
+
+    const sweep = (now: number): void => {
+      const progress = Math.min((now - washStart) / WASH_MS, 1);
+      paint(progress);
+
+      if (progress < 1) {
+        washFrame = requestAnimationFrame(sweep);
+        return;
+      }
+      endWash();
+    };
+
+    paint(0);
+    washStart = performance.now();
+    washFrame = requestAnimationFrame(sweep);
+  };
+
+  const syncWindow = (
+    order: string[],
+    total: number,
+    looping: boolean,
+    centre: number,
+    animate: boolean,
+  ): void => {
+    const wanted = requiredSlots(centre, total, looping);
+    const wantedSet = new Set(wanted);
+
+    for (const [slot, card] of cards) {
+      if (!wantedSet.has(slot)) {
+        cards.delete(slot);
+        dismiss(slot, card);
       }
     }
 
-    for (const index of wanted) {
-      if (cards.has(index)) {
+    for (const slot of wanted) {
+      if (cards.has(slot)) {
         continue;
       }
-      const visible = Math.abs(offsetFor(index, cursor, order.length, looping)) <= VISIBLE_RANGE;
-      const card = createCard(order, index, visible);
+
+      // A slot can come back before its old card has finished fading out.
+      const stale = leaving.get(slot);
+      if (stale) {
+        leaving.delete(slot);
+        stale.remove();
+      }
+
+      const visible = Math.abs(slot - centre) <= VISIBLE_RANGE;
+      const card = createCard(order, slot, total, looping, visible);
       if (card) {
-        cards.set(index, card);
-        carousel.appendChild(card);
+        cards.set(slot, card);
+        if (animate) {
+          card.classList.add("is-entering");
+          entering.add(card);
+        }
+        live.appendChild(card);
       }
     }
   };
 
-  const place = (
-    order: string[],
-    cursor: number,
-    looping: boolean,
-    offsetRem = 0,
-    animate = true,
-  ): void => {
-    const total = order.length;
+  const place = (total: number, virtualCenter: number, animate: boolean): void => {
     if (total === 0) {
       return;
     }
 
-    const virtual = resist(cursor - offsetRem / SPACING_REM, total, looping);
+    for (const [slot, card] of cards) {
+      const offset = slot - virtualCenter;
 
-    for (const [index, card] of cards) {
-      const offset = offsetFor(index, virtual, total, looping);
-
-      // A card that wraps around the loop has moved a whole queue, not one step.
+      // A card that was re-centred has moved a whole strip, not one step.
       const jumped =
         card.dataset.offset !== undefined && Math.abs(offset - Number(card.dataset.offset)) > VISIBLE_RANGE + 1;
       card.dataset.offset = String(offset);
@@ -200,9 +341,25 @@ export function mountQueue(): void {
     }
   };
 
-  const syncArtwork = (order: string[]): void => {
-    for (const [index, card] of cards) {
-      const track = trackById(order[index]);
+  const flushEntering = (): void => {
+    if (entering.size === 0) {
+      return;
+    }
+
+    const arrived = [...entering];
+    entering.clear();
+    void carousel.offsetWidth;
+
+    requestAnimationFrame(() => {
+      for (const card of arrived) {
+        card.classList.remove("is-entering");
+      }
+    });
+  };
+
+  const syncArtwork = (order: string[], total: number, looping: boolean): void => {
+    for (const [slot, card] of cards) {
+      const track = trackById(order[indexAt(slot, total, looping)]);
       if (!track) {
         continue;
       }
@@ -225,7 +382,7 @@ export function mountQueue(): void {
     const total = snapshot.order.length;
     const looping = snapshot.repeat !== "off";
 
-    const virtual = snapshot.cursor - dragRem / SPACING_REM;
+    const virtual = centerSlot - dragRem / SPACING_REM;
     bouncing = !looping && total > 1 && (virtual < 0 || virtual > total - 1);
 
     const steps = Math.round(-dragRem / SPACING_REM);
@@ -233,12 +390,15 @@ export function mountQueue(): void {
     dragRem = 0;
 
     if (steps !== 0 && total > 0) {
-      const target = snapshot.cursor + steps;
-      const index = looping
-        ? ((target % total) + total) % total
-        : Math.min(Math.max(target, 0), total - 1);
+      const targetSlot = looping
+        ? centerSlot + steps
+        : Math.min(Math.max(centerSlot + steps, 0), total - 1);
+      const index = indexAt(targetSlot, total, looping);
       const trackId = snapshot.order[index];
       if (trackId) {
+        // Move the strip first, so the render `moveTo` triggers is a no-op.
+        centerSlot = targetSlot;
+        lastCursor = index;
         player.moveTo(trackId);
       }
     }
@@ -286,21 +446,19 @@ export function mountQueue(): void {
     }
 
     const target = event.target as HTMLElement;
-    const more = target.closest<HTMLElement>("[data-more]");
-    if (more) {
-      const trackId = player.snapshot().order[Number(more.dataset.more)];
-      if (trackId) {
-        openTrackMenu(more, trackId);
-      }
+
+    // Cards carried by the wash are the old strip, so they act on nothing.
+    const card = target.closest<HTMLElement>(".card");
+    if (!card?.dataset.slot || !cards.has(Number(card.dataset.slot))) {
       return;
     }
 
-    const card = target.closest<HTMLElement>(".card");
-    if (card?.dataset.index === undefined) {
-      return;
-    }
-    const trackId = player.snapshot().order[Number(card.dataset.index)];
+    const index = Number(card.dataset.index);
+    const trackId = player.snapshot().order[index];
     if (trackId) {
+      // Bring the clicked card to the centre, then start it.
+      centerSlot = Number(card.dataset.slot);
+      lastCursor = index;
       player.playTrack(trackId);
     }
   });
@@ -333,87 +491,129 @@ export function mountQueue(): void {
     { passive: true },
   );
 
+  /** True while the stage cannot spare the room the carousel needs. */
+  const isCramped = (): boolean =>
+    document.documentElement.classList.contains("is-cramped");
+
+  /** The carousel shows while the user wants it and the stage has the room. */
+  const queueShown = (cramped: boolean): boolean => getState().queueOpen && !cramped;
+
   const render = (): void => {
     const snapshot = player.snapshot();
     const looping = snapshot.repeat !== "off";
     const total = snapshot.order.length;
     const signature = snapshot.order.join("|");
 
-    stage.classList.toggle("queue-open", getState().queueOpen);
+    stage.classList.toggle("queue-open", queueShown(isCramped()));
 
     const now = performance.now();
     if (snapshot.cursor !== lastCursor) {
       rapid = now - lastCursorAt < RAPID_WINDOW_MS;
-      lastCursor = snapshot.cursor;
       lastCursorAt = now;
     }
 
-    const centre = dragging
-      ? Math.round(resist(snapshot.cursor - dragRem / SPACING_REM, total, looping))
-      : snapshot.cursor;
+    const fresh = renderedOrder !== signature;
+    let washed = false;
 
-    const drift =
-      looping && total > 1
-        ? Math.abs(offsetFor(centre, windowCenter, total, true))
-        : Math.abs(centre - windowCenter);
-
-    if (renderedOrder !== signature || renderedLooping !== looping || !(drift <= REBUILD_MARGIN)) {
-      const fresh = renderedOrder !== signature;
+    if (fresh) {
+      if (isReshuffle(snapshot.order)) {
+        washAway();
+        washed = true;
+      } else {
+        clearCards();
+      }
+      renderedIds = new Set(snapshot.order);
+      windowCenter = Number.NaN;
+      centerSlot = snapshot.cursor;
+      lastCursor = snapshot.cursor;
       renderedOrder = signature;
       renderedLooping = looping;
-      windowCenter = centre;
-      syncWindow(snapshot.order, centre, looping);
-      if (fresh) {
-        prefetchArtwork(snapshot.order);
+      prefetchArtwork(snapshot.order);
+    } else {
+      if (looping !== renderedLooping) {
+        recentre(snapshot.cursor);
+        renderedLooping = looping;
+        windowCenter = Number.NaN;
       }
+
+      if (looping) {
+        // Follow the cursor around the loop, so a short queue keeps scrolling.
+        centerSlot += loopDelta(snapshot.cursor - lastCursor, total);
+        lastCursor = snapshot.cursor;
+      } else {
+        centerSlot = snapshot.cursor;
+        lastCursor = snapshot.cursor;
+      }
+    }
+
+    const rawCenter = centerSlot - dragRem / SPACING_REM;
+    const virtualCenter = looping ? rawCenter : resist(rawCenter, total, false);
+    const materialCenter = Math.round(virtualCenter);
+
+    if (washed) {
+      washCentre = virtualCenter;
+    } else if (washFrame !== null && Math.abs(virtualCenter - washCentre) > 0.01) {
+      endWash();
+    }
+
+    if (!(Math.abs(materialCenter - windowCenter) <= REBUILD_MARGIN)) {
+      windowCenter = materialCenter;
+      syncWindow(snapshot.order, total, looping, materialCenter, !fresh);
     }
 
     carousel.classList.toggle("is-empty", total === 0);
-    place(snapshot.order, snapshot.cursor, looping, dragRem, !dragging);
-    syncArtwork(snapshot.order);
+    place(total, virtualCenter, !dragging);
+    syncArtwork(snapshot.order, total, looping);
 
-    const window = new Set<string>();
-    for (const [index] of cards) {
-      const id = snapshot.order[index];
-      if (id) {
-        window.add(id);
+    if (total > 0) {
+      const window = new Set<string>();
+      for (const slot of cards.keys()) {
+        window.add(snapshot.order[indexAt(slot, total, looping)]);
       }
+      pruneArtworkQueue(window, new Set(snapshot.order));
     }
-    pruneArtworkQueue(window, new Set(snapshot.order));
+
+    flushEntering();
   };
+
+  /**
+   * The carousel is paid for out of the hero's height, so it is only offered
+   * while the stage can spare its room. Once it cannot, the carousel and its
+   * toggle fold away, but the toggle itself is the user's and is kept.
+   */
+  const fitCarousel = (): void => {
+    const root = getComputedStyle(document.documentElement);
+    const rootPx = parseFloat(root.fontSize) || 16;
+    const reserved = parseFloat(root.getPropertyValue("--carousel-space")) * rootPx;
+
+    const titlebar = document.getElementById("titlebar");
+    const dock = document.getElementById("dock");
+    const dockStyles = dock ? getComputedStyle(dock) : null;
+    const dockBox = dock
+      ? dock.offsetHeight +
+        parseFloat(dockStyles?.marginTop ?? "0") +
+        parseFloat(dockStyles?.marginBottom ?? "0")
+      : 0;
+
+    // What the stage has left once the titlebar and the dock are paid for.
+    const free = stage.clientHeight - (titlebar?.offsetHeight ?? 0) - dockBox;
+    const cramped = free < reserved + HERO_MIN_REM * rootPx;
+
+    const wasCramped = document.documentElement.classList.contains("is-cramped");
+    document.documentElement.classList.toggle("is-cramped", cramped);
+    if (cramped !== wasCramped) {
+      stage.classList.toggle("queue-open", queueShown(cramped));
+    }
+  };
+
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(fitCarousel).observe(stage);
+  }
+  fitCarousel();
 
   player.onChange(render);
   subscribe(render);
   render();
-}
-
-function openTrackMenu(anchor: HTMLElement, trackId: string): void {
-  const state = getState();
-  const liked = state.likes.has(trackId);
-
-  const items: MenuItem[] = [
-    {
-      label: liked ? "Remove from Liked Songs" : "Add to Liked Songs",
-      action: () => void toggleLikeTrack(trackId),
-    },
-    { label: "Play next", action: () => player.insertAfterCurrent(trackId) },
-    { label: "Add to queue", action: () => player.appendToQueue(trackId) },
-  ];
-
-  for (const playlist of state.playlists) {
-    items.push({
-      label: `Add to ${playlist.name}`,
-      action: () => void addTracksToPlaylist(playlist.id, [trackId]),
-    });
-  }
-
-  items.push({
-    label: "Remove from queue",
-    action: () => player.removeFromQueue(trackId),
-    danger: true,
-  });
-
-  openMenu(anchor, items);
 }
 
 function element(id: string): HTMLElement | null {

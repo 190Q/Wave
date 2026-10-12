@@ -37,7 +37,7 @@
 
   --card-size: 12rem;
   --card-height: 15rem;
-  /* Every transport button is this square, so the row spaces out evenly. */
+  --carousel-space: 19rem;
   --control: 2.5rem;
   --control-large: 2.85rem;
   --control-glyph: 1.25rem;

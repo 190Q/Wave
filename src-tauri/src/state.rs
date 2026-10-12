@@ -38,6 +38,72 @@ pub struct Playlist {
     pub created_at: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Playback {
+    pub source_id: Option<String>,
+    pub source_name: String,
+    pub source_order: Vec<String>,
+    pub order: Vec<String>,
+    pub cursor: usize,
+    pub position_ms: u64,
+    pub shuffle: bool,
+    pub repeat: String,
+    pub muted: bool,
+}
+
+impl Default for Playback {
+    fn default() -> Self {
+        Self {
+            source_id: None,
+            source_name: String::new(),
+            source_order: Vec::new(),
+            order: Vec::new(),
+            cursor: 0,
+            position_ms: 0,
+            shuffle: false,
+            repeat: "off".to_string(),
+            muted: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Session {
+    pub playback: Playback,
+    pub recents: Vec<String>,
+    pub filter: String,
+    pub sort: String,
+    pub queue_open: bool,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            playback: Playback::default(),
+            recents: Vec::new(),
+            filter: "all".to_string(),
+            sort: "name".to_string(),
+            queue_open: false,
+        }
+    }
+}
+
+/// Where the window sat when it was last closed: its outer size in logical
+/// units, its position in physical pixels, the monitor it was on, and whether
+/// it was maximised.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WindowGeometry {
+    pub width: u32,
+    pub height: u32,
+    pub x: i32,
+    pub y: i32,
+    pub monitor: Option<String>,
+    pub maximized: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PersistedState {
@@ -45,6 +111,8 @@ pub struct PersistedState {
     pub playlists: Vec<Playlist>,
     pub likes: Vec<String>,
     pub artwork_colours: HashMap<String, String>,
+    pub session: Session,
+    pub window: Option<WindowGeometry>,
 }
 
 /// In-memory copy of [`PersistedState`], guarded for the command handlers.
@@ -139,6 +207,107 @@ pub fn set_settings(
     settings: Settings,
 ) -> Result<PersistedState, String> {
     let next = store.update(|state| state.settings = settings);
+    commit(&app, next)
+}
+
+/// Applies the remembered geometry to the main window, before it is shown.
+pub fn restore_window_geometry<R: Runtime>(app: &AppHandle<R>, store: &Store) {
+    let Some(geometry) = store.snapshot().window else {
+        return;
+    };
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let wanted = tauri::PhysicalSize::new(
+        (f64::from(geometry.width) * scale).round() as u32,
+        (f64::from(geometry.height) * scale).round() as u32,
+    );
+
+    let frame = match (window.outer_size(), window.inner_size()) {
+        (Ok(outer), Ok(inner)) => tauri::PhysicalSize::new(
+            outer.width.saturating_sub(inner.width),
+            outer.height.saturating_sub(inner.height),
+        ),
+        _ => tauri::PhysicalSize::new(0, 0),
+    };
+
+    let _ = window.set_size(tauri::PhysicalSize::new(
+        wanted.width.saturating_sub(frame.width),
+        wanted.height.saturating_sub(frame.height),
+    ));
+
+    // Only restore the position while the monitor it lived on is still around.
+    let monitor_present = match &geometry.monitor {
+        Some(name) => app
+            .available_monitors()
+            .map(|monitors| monitors.iter().any(|m| m.name().map(|n| n == name).unwrap_or(false)))
+            .unwrap_or(false),
+        None => true,
+    };
+    if monitor_present {
+        let _ = window.set_position(tauri::PhysicalPosition::new(geometry.x, geometry.y));
+    }
+
+    if geometry.maximized {
+        let _ = window.maximize();
+    }
+}
+
+#[tauri::command]
+pub fn save_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+
+    let maximized = window.is_maximized().unwrap_or(false);
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let size = window
+        .outer_size()
+        .map_err(|e| e.to_string())?
+        .to_logical::<u32>(scale);
+    let position = window.outer_position().map_err(|e| e.to_string())?;
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .and_then(|m| m.name().map(|n| n.to_string()));
+
+    let next = store.update(|state| {
+        if maximized {
+            // Keep the windowed geometry, so unmaximising stays sensible.
+            let mut geometry = state.window.clone().unwrap_or_default();
+            geometry.maximized = true;
+            state.window = Some(geometry);
+        } else {
+            state.window = Some(WindowGeometry {
+                width: size.width,
+                height: size.height,
+                x: position.x,
+                y: position.y,
+                monitor,
+                maximized: false,
+            });
+        }
+    });
+    save(&app, &next)
+}
+
+/// Forgets the remembered geometry, so the next launch uses the defaults.
+#[tauri::command]
+pub fn reset_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<(), String> {
+    let next = store.update(|state| state.window = None);
+    save(&app, &next)
+}
+
+#[tauri::command]
+pub fn set_session(
+    app: AppHandle,
+    store: State<'_, Store>,
+    session: Session,
+) -> Result<PersistedState, String> {
+    let next = store.update(|state| state.session = session);
     commit(&app, next)
 }
 

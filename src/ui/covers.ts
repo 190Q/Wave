@@ -1,7 +1,15 @@
-import { coverUrl } from "../lib/state";
+import { cachedCoverUrl, coverUrl } from "../lib/state";
 
 let observer: IntersectionObserver | null = null;
 const observed = new Map<ParentNode, Set<Element>>();
+const sources = new WeakMap<Element, string[]>();
+
+/** Swaps the placeholder mosaic for the composed image. */
+function paint(element: HTMLElement, url: string): void {
+  element.replaceChildren();
+  element.classList.add("composed");
+  element.style.backgroundImage = `url('${url.replace(/'/g, "%27")}')`;
+}
 
 function ensureObserver(): IntersectionObserver {
   if (observer) {
@@ -25,12 +33,9 @@ function ensureObserver(): IntersectionObserver {
         }
 
         void coverUrl(paths).then((url) => {
-          if (!url) {
-            return;
+          if (url) {
+            paint(element, url);
           }
-          element.replaceChildren();
-          element.classList.add("composed");
-          element.style.backgroundImage = `url('${url.replace(/'/g, "%27")}')`;
         });
       }
     },
@@ -40,8 +45,6 @@ function ensureObserver(): IntersectionObserver {
 
   return observer;
 }
-
-const sources = new WeakMap<Element, string[]>();
 
 /** Queues a composed cover for every `data-cover` element inside `root`. */
 export function hydrateCovers(root: ParentNode): void {
@@ -58,6 +61,12 @@ export function hydrateCovers(root: ParentNode): void {
     const paths = (element.dataset.cover ?? "").split("|").filter(Boolean);
     element.removeAttribute("data-cover");
     if (paths.length === 0) {
+      continue;
+    }
+
+    const cached = cachedCoverUrl(paths);
+    if (cached) {
+      paint(element, cached);
       continue;
     }
 

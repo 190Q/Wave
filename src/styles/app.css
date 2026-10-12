@@ -1,11 +1,11 @@
 .stage {
   position: relative;
+  isolation: isolate;
   height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   background: var(--stage-background);
-  transition: background 0.6s ease;
 }
 
 /* Shared bits */
@@ -258,7 +258,8 @@
 
 .crate {
   flex: none;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto 1fr;
   align-items: center;
   gap: 0.6rem;
   text-align: left;
@@ -266,11 +267,35 @@
   border: 0.0625rem solid transparent;
   border-radius: 0.75rem;
   padding: 0.4rem 0.9rem 0.4rem 0.4rem;
-  transition: background 0.2s, border-color 0.2s;
+  transition: background 0.2s, border-color 0.2s, grid-template-columns 0.3s var(--ease),
+    gap 0.3s var(--ease), padding 0.3s var(--ease);
 }
 
 .crate:hover {
   background: var(--raise-strong);
+}
+
+.crate-text {
+  min-width: 0;
+  overflow: hidden;
+  transition: opacity 0.2s ease;
+}
+
+/* The row cannot fit the names, so only the covers remain. */
+.crates.is-compact .crate {
+  grid-template-columns: auto 0fr;
+  gap: 0;
+  padding: 0.4rem;
+}
+
+.crates.is-compact .crate-text {
+  opacity: 0;
+}
+
+/* Used while re-measuring, so a fresh render never animates. */
+.crates.no-anim .crate,
+.crates.no-anim .crate-text {
+  transition: none;
 }
 
 .crate-name {
@@ -287,12 +312,53 @@
   white-space: nowrap;
 }
 
+.topbar .pill {
+  display: inline-grid;
+  grid-template-columns: auto 1fr;
+  transition: background 0.2s, color 0.2s, grid-template-columns 0.3s var(--ease),
+    gap 0.3s var(--ease), padding 0.3s var(--ease);
+}
+
+/* The label collapses as a grid column, which animates smoothly. */
+.topbar .pill-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: opacity 0.2s ease;
+}
+
 .search-wrap {
   position: relative;
+  flex: none;
+  width: 16rem;
+  transition: width 0.3s var(--ease);
 }
 
 .search-wrap .search {
-  width: 16rem;
+  width: 100%;
+  padding: 0.4rem 1rem 0.4rem 2.3rem;
+  font-size: 0.8125rem;
+  border: 0;
+  box-shadow: inset 0 0 0 0.0625rem transparent;
+}
+
+.search-wrap .search:focus {
+  box-shadow: inset 0 0 0 0.0625rem var(--accent);
+}
+
+.search-wrap .search-icon {
+  position: absolute;
+  left: 0.85rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.search-wrap .search-icon svg {
+  width: 0.95rem;
+  height: 0.95rem;
 }
 
 .results {
@@ -349,17 +415,128 @@
 .theme-dialog {
   margin: auto;
   width: min(22rem, 92vw);
+  max-height: calc(100vh - 2rem);
   padding: 1.25rem;
+  overflow: hidden;
   border: 0.0625rem solid rgb(255 255 255 / 0.12);
   border-radius: 1rem;
   background: var(--surface);
   color: var(--text);
   box-shadow: 0 2rem 5rem rgb(0 0 0 / 0.65);
+  transform-origin: center;
+  transition: transform 0.22s var(--ease), opacity 0.2s ease;
+}
+
+.theme-dialog.is-closed {
+  transform: scale(0.12);
+  opacity: 0;
+}
+
+/* Off-screen measurement box for dialogFits(); never shown to anyone. */
+.theme-dialog.is-measuring {
+  display: block;
+  position: absolute;
+  top: -10000rem;
+  left: -10000rem;
+  visibility: hidden;
+}
+
+/* The toggle and its list are one shape: the drop paints the pill and grows
+   downwards, so opening it looks like the button getting taller. */
+.theme-toggle {
+  position: relative;
+  z-index: 1;
+  isolation: isolate;
+  display: inline-flex;
+}
+
+#theme-toggle .btn-icon {
+  transition: transform 0.4s var(--ease);
+}
+
+#theme-toggle.is-open .btn-icon {
+  transform: rotate(180deg);
+}
+
+/* The drop paints the whole shape, so the face is only its top row. */
+#theme-toggle-face {
+  background: none;
+}
+
+/* Hovering the face lifts its cap by one shade, exactly like a pill hover. */
+#theme-toggle-face:hover {
+  background: var(--raise);
+}
+
+.theme-drop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: -1;
+  display: grid;
+  grid-template-rows: 0fr;
+  padding: var(--theme-toggle-h, 2rem) var(--theme-drop-pad, 0.85rem) 0;
+  overflow: hidden;
+  border-radius: var(--theme-toggle-radius, 1rem);
+  background-image: linear-gradient(var(--raise), var(--raise)), var(--stage-background);
+  background-size: 100vw 100vh;
+  background-position: 0 calc(-1 * var(--theme-drop-top, 0px));
+  background-repeat: no-repeat;
+  transition: grid-template-rows 0.4s var(--ease);
+}
+
+.theme-toggle.is-open .theme-drop {
+  grid-template-rows: 1fr;
+}
+
+.theme-drop-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.theme-drop-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  padding-bottom: 0.4rem;
+  max-height: var(--theme-drop-max, 20rem);
+  overflow-y: auto;
+}
+
+/* The drop is only as wide as the button, so the names never fit. */
+.theme-drop .swatch-name {
+  display: none;
+}
+
+.theme-drop .theme-swatch {
+  width: auto;
+  padding: 0;
+  margin: 0.3rem 0;
+}
+
+.theme-drop .theme-swatch:hover {
+  background: none;
+}
+
+.theme-drop .swatch {
+  transition: filter 0.15s ease;
+}
+
+/* Hovering a colour only lightens the colour itself. */
+.theme-drop .theme-swatch:hover .swatch {
+  filter: brightness(1.35);
 }
 
 .theme-dialog::backdrop {
   background: rgb(0 0 0 / 0.6);
   backdrop-filter: blur(0.25rem);
+  transition: opacity 0.22s ease;
+}
+
+.theme-dialog.is-closed::backdrop {
+  opacity: 0;
 }
 
 .theme-dialog-head {
@@ -485,6 +662,35 @@
   flex: none;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .theme-drop,
+  #theme-toggle .btn-icon {
+    transition-duration: 0s;
+  }
+}
+
+/* Theme change: the browser snapshots the old and new looks, and the sweep
+   reveals the new one behind a steep diagonal edge, so every surface it
+   crosses turns over as the edge arrives. While that runs nothing may animate
+   on its own, or the new snapshot would catch it mid-flight. */
+.is-theming,
+.is-theming *,
+.is-theming *::before,
+.is-theming *::after {
+  transition: none !important;
+}
+
+/* The sweep is the whole effect, so the default cross-fade is off. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-new(root) {
+  clip-path: polygon(-100vh -10vh, 0 -10vh, -24vh 110vh, -100vh 110vh);
+}
+
 /* Hero */
 
 .hero {
@@ -492,9 +698,11 @@
   min-height: 0;
   display: grid;
   grid-template-columns: auto 1fr;
+  grid-template-rows: minmax(0, 1fr);
   align-items: center;
   gap: 2.5rem;
   padding: 0 3rem;
+  transition: padding 0.4s var(--ease), gap 0.4s var(--ease);
 }
 
 .hero.has-lyrics {
@@ -502,7 +710,7 @@
 }
 
 .now-cover {
-  height: 24rem;
+  height: var(--cover-height, 24rem);
   max-height: 100%;
   aspect-ratio: 1;
   border-radius: 1rem;
@@ -510,6 +718,17 @@
   background-position: center;
   border: 0.0625rem solid rgb(255 255 255 / 0.18);
   box-shadow: 0 1.5rem 3rem rgb(0 0 0 / 0.55);
+  transition: height 0.4s var(--ease), opacity 0.3s ease;
+}
+
+/* Too short for even a small cover: fold it away and close the column gap. */
+.hero.is-cover-hidden .now-cover {
+  height: 0;
+  opacity: 0;
+}
+
+.hero.is-cover-hidden {
+  column-gap: 0;
 }
 
 .hero.is-empty .now-cover {
@@ -537,6 +756,12 @@
 .now-artist {
   font-size: 1.25rem;
   color: var(--accent);
+}
+
+/* Hero text lines fold away as the hero runs out of room. */
+.now-part {
+  overflow: hidden;
+  transition: max-height 0.35s var(--ease), opacity 0.25s ease;
 }
 
 .lyrics {
@@ -618,6 +843,7 @@
 }
 
 .time {
+  flex: 1 1 0;
   font-size: 0.72rem;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
@@ -725,9 +951,145 @@
   height: var(--control-glyph);
 }
 
+/* Play and pause share one icon slot, so the swap can cross-fade between them. */
+.icon-swap {
+  display: inline-grid;
+  place-items: center;
+}
+
+.icon-swap > svg {
+  grid-area: 1 / 1;
+  transition: opacity 0.2s ease, transform 0.3s var(--ease);
+}
+
+.icon-swap > svg:last-child,
+.is-playing .icon-swap > svg:first-child {
+  opacity: 0;
+  transform: scale(0.5);
+}
+
+.is-playing .icon-swap > svg:last-child {
+  opacity: 1;
+  transform: none;
+}
+
+@property --fade-left {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --fade-right {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+.dock-title {
+  flex: 0 1 auto;
+  width: max-content;
+  max-width: min(var(--dock-title-max, 24rem), calc(100% - 6rem));
+  overflow: hidden;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  line-height: 1rem;
+  max-height: 0;
+  opacity: 0;
+  --fade-left: 0px;
+  --fade-right: 0px;
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--fade-left),
+    #000 calc(100% - var(--fade-right)),
+    transparent 100%
+  );
+  transition:
+    max-height 0.35s var(--ease),
+    opacity 0.3s ease,
+    --fade-left 0.35s var(--ease),
+    --fade-right 0.35s var(--ease);
+}
+
+.dock-title.is-shown {
+  max-height: 1.2rem;
+  opacity: 1;
+}
+
+.dock-title.is-fade-left {
+  --fade-left: 1.5rem;
+}
+
+.dock-title.is-fade-right {
+  --fade-right: 1.5rem;
+}
+
+.dock-title-text {
+  display: block;
+  width: max-content;
+  white-space: nowrap;
+  color: var(--text);
+  transition: transform 0.5s var(--ease);
+}
+
 .volume {
-  width: 5rem;
-  accent-color: var(--accent);
+  --volume-width: 4.875rem;
+  position: relative;
+  flex: none;
+  width: var(--volume-width);
+  height: 1rem;
+}
+
+.volume-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.125rem;
+  height: 100%;
+  pointer-events: none;
+}
+
+.volume-bar {
+  position: relative;
+  flex: none;
+  width: 0.375rem;
+  overflow: hidden;
+  border-radius: 0.125rem;
+  background: var(--raise-strong);
+}
+
+.volume-bar::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: calc(var(--fill, 0) * 100%);
+  background: var(--accent);
+}
+
+.volume .volume-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  appearance: none;
+}
+
+.volume .volume-input::-webkit-slider-thumb {
+  appearance: none;
+  width: 0.0625rem;
+  height: 1rem;
+}
+
+.volume-input:disabled ~ .volume-bars {
+  opacity: 0.4;
+}
+
+.is-tabbing .volume:focus-within {
+  outline: 0.125rem solid var(--accent);
+  outline-offset: 0.1875rem;
+  border-radius: 0.25rem;
 }
 
 /* Queue carousel */
@@ -738,7 +1100,7 @@
 }
 
 .queue-open .carousel-space {
-  height: 19rem;
+  height: var(--carousel-space);
 }
 
 .carousel {
@@ -760,6 +1122,29 @@
   visibility: visible;
   pointer-events: auto;
   transition: transform 0.5s var(--ease), opacity 0.4s ease, visibility 0s;
+}
+
+/* No room to give the carousel its height: only its toggle folds away. */
+.is-cramped #queue-toggle {
+  display: none;
+}
+
+.carousel-live {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+}
+
+.carousel-wash {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  z-index: 200;
+  clip-path: polygon(-50vw -110vh, 60vw -110vh, 60vw 2rem, calc(-50vw - 24vh) 2rem);
 }
 
 .card {
@@ -787,27 +1172,7 @@
   box-shadow: 0 1rem 2rem rgb(0 0 0 / 0.6);
   border: 0.0625rem solid rgb(255 255 255 / 0.12);
   overflow: hidden;
-}
-
-.card-more {
-  position: absolute;
-  top: 0.5rem;
-  right: 0.5rem;
-  width: 1.6rem;
-  height: 1.6rem;
-  line-height: 1;
-  letter-spacing: 0.05em;
-  border: 0;
-  border-radius: 50%;
-  color: #fff;
-  background: rgb(0 0 0 / 0.45);
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-
-.card:hover .card-more,
-.card-more:focus-visible {
-  opacity: 1;
+  transition: transform 0.42s var(--ease);
 }
 
 .card-text {
@@ -837,6 +1202,15 @@
 
 .card.is-current .card-body {
   border-color: rgb(255 255 255 / 0.55);
+}
+
+.card.is-entering .card-body,
+.card.is-leaving .card-body {
+  transform: translateY(calc(100% + 2rem));
+}
+
+.card.is-leaving .card-body {
+  transition: transform 0.3s cubic-bezier(0.45, 0, 1, 1);
 }
 
 /* Library sheet */
@@ -925,6 +1299,11 @@
   color: var(--muted);
 }
 
+/* No room for even a small cover: the library is out of reach. */
+.is-short #library-open {
+  display: none;
+}
+
 .entry {
   display: flex;
   align-items: center;
@@ -958,14 +1337,15 @@
   flex: none;
   width: 1.6rem;
   height: 1.6rem;
+  display: grid;
+  place-items: center;
   line-height: 1;
   letter-spacing: 0.05em;
   background: none;
   border: 0;
-  border-radius: 50%;
   color: var(--muted);
   opacity: 0;
-  transition: opacity 0.15s, background 0.15s;
+  transition: opacity 0.15s, color 0.15s;
 }
 
 .entry:hover .row-more,
@@ -975,7 +1355,6 @@
 }
 
 .row-more:hover {
-  background: var(--raise-strong);
   color: var(--text);
 }
 
@@ -1249,8 +1628,59 @@
     display: none;
   }
 
-  .search-wrap .search {
+  .search-wrap {
     width: 12rem;
+  }
+}
+
+@media (max-width: 52rem) {
+  .topbar .pill-label {
+    opacity: 0;
+  }
+
+  .topbar .pill {
+    grid-template-columns: auto 0fr;
+    gap: 0;
+    padding: 0.4rem 0.5rem;
+  }
+
+  .search-wrap {
+    width: 2rem;
+    background: rgb(0 0 0 / 0.35);
+    border-radius: 62rem;
+    cursor: pointer;
+  }
+
+  .search-wrap .search {
+    padding: 0.4rem 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .search-wrap .search-icon {
+    left: 50%;
+    transform: translate(-50%, -50%);
+    transition: left 0.25s var(--ease), transform 0.25s var(--ease);
+  }
+
+  .search-wrap:focus-within {
+    width: 16rem;
+    cursor: text;
+  }
+
+  .search-wrap:focus-within .search {
+    padding: 0.4rem 1rem 0.4rem 2.3rem;
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .search-wrap:focus-within .search-icon {
+    left: 0.85rem;
+    transform: translateY(-50%);
+  }
+
+  .results {
+    width: min(22rem, calc(100vw - 3rem));
   }
 }
 
@@ -1258,18 +1688,7 @@
   :root {
     --card-size: 8.5rem;
     --card-height: 11rem;
-  }
-
-  .queue-open .carousel-space {
-    height: 14rem;
-  }
-
-  .hero {
-    grid-template-columns: 1fr;
-  }
-
-  .now-cover {
-    display: none;
+    --carousel-space: 14rem;
   }
 
   .dock-side {
@@ -1279,17 +1698,33 @@
   .dock-row {
     justify-content: center;
   }
+}
 
-  .search-wrap {
+/* A short sidebar cannot spare the footer; the list needs the room. */
+@media (max-height: 40rem) {
+  .sheet-foot {
     display: none;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .card,
+  .card-body,
   .sheet,
   .carousel,
-  .lyrics-track {
+  .lyrics-track,
+  .crate,
+  .crate-text,
+  .pill,
+  .pill-label,
+  .hero,
+  .search-wrap,
+  .now-cover,
+  .now-part,
+  .dock-title,
+  .dock-title-text,
+  .icon-swap > svg,
+  .theme-dialog {
     transition: none;
   }
 }

@@ -137,7 +137,7 @@ fn average_hex(bucket: Bucket) -> String {
     format!("#{:02x}{:02x}{:02x}", channel(r), channel(g), channel(b))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn artwork_colour(
     app: AppHandle,
     store: State<'_, Store>,
@@ -164,7 +164,7 @@ pub fn artwork_colour(
 
 const ARTWORK_MAX_EDGE: u32 = 640;
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn artwork_bytes(app: AppHandle, path: String) -> Result<tauri::ipc::Response, String> {
     let bytes = fs::read(&path).map_err(|e| format!("could not read {path}: {e}"))?;
     Ok(tauri::ipc::Response::new(cached_thumbnail(&app, &path, &bytes)))
@@ -192,7 +192,7 @@ fn cached_thumbnail(app: &AppHandle, path: &str, bytes: &[u8]) -> Vec<u8> {
 
 const COVER_CELL: u32 = 256;
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn cover_bytes(app: AppHandle, paths: Vec<String>) -> Result<tauri::ipc::Response, String> {
     if paths.is_empty() {
         return Err("no artwork to compose".to_string());

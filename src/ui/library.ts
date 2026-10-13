@@ -5,8 +5,8 @@ import {
   collectionById,
   createPlaylist,
   deletePlaylist,
+  deleteTrack,
   getState,
-  importFolder,
   playCollection,
   playFromCollection,
   renamePlaylist,
@@ -27,7 +27,8 @@ import { confirmDialog } from "./confirm";
 import { hydrateCovers } from "./covers";
 import { fillIcons } from "./icons";
 import { highlightHtml } from "./highlight";
-import { openMenu } from "./menu";
+import { openImport } from "./import-dialog";
+import { openMenu, type MenuPoint } from "./menu";
 
 const SWIPE_TRAVEL = 1.75;
 const SWIPE_MS = 260;
@@ -224,6 +225,16 @@ export function mountLibrary(): void {
     }
   });
 
+  list.addEventListener("contextmenu", (event) => {
+    const row = (event.target as HTMLElement).closest<HTMLElement>("[data-track]");
+    const trackId = row?.dataset.track;
+    if (!row || !trackId) {
+      return;
+    }
+    event.preventDefault();
+    openTrackMenu(row, trackId, { x: event.clientX, y: event.clientY });
+  });
+
   list.addEventListener("keydown", (event) => {
     const input = event.target;
     if (!(input instanceof HTMLInputElement)) {
@@ -350,10 +361,7 @@ export function mountLibrary(): void {
   folders.addEventListener("click", (event) => {
     const button = (event.target as HTMLElement).closest<HTMLElement>("#sheet-add-folder");
     if (button) {
-      openMenu(button, [
-        { label: "Import as a playlist", action: () => void importFolder(true) },
-        { label: "Import songs only", action: () => void importFolder(false) },
-      ]);
+      openImport(button);
     }
   });
 
@@ -365,7 +373,9 @@ export function mountLibrary(): void {
     const target = event.target as HTMLElement;
     if (
       sheet.contains(target) ||
-      target.closest(".menu, .results, .theme-dialog, .settings-dialog, .confirm-dialog, .add-to")
+      target.closest(
+        ".menu, .results, .theme-dialog, .settings-dialog, .import-dialog, .confirm-dialog, .add-to",
+      )
     ) {
       return;
     }
@@ -643,11 +653,46 @@ function renderLibrary(state: AppState): string {
   return `
     <div class="folders-head">
       <span>Library</span>
-      <button class="pill" type="button" id="sheet-add-folder">Import folder</button>
+      <button class="pill" type="button" id="sheet-add-folder">Import</button>
     </div>
     ${state.root ? `<p class="folder-path" title="${escapeHtml(state.root)}">${escapeHtml(state.root)}</p>` : ""}
     <p class="folders-note">${escapeHtml(notes.join(". "))}</p>
     ${errors ? `<ul class="folder-list">${errors}</ul>` : ""}`;
+}
+
+/** The right-click menu for a song, opened where the pointer is. */
+function openTrackMenu(row: HTMLElement, trackId: string, at: MenuPoint): void {
+  const liked = getState().likes.has(trackId);
+
+  openMenu(
+    row,
+    [
+      { label: liked ? "Unlike" : "Like", action: () => void toggleLikeTrack(trackId) },
+      { label: "Add to playlist", action: () => openAddToPlaylist(addAnchor(row), trackId) },
+      { label: "Delete song", danger: true, action: () => void removeTrack(trackId) },
+    ],
+    at,
+  );
+}
+
+/** The panel hangs off the row's add button, the way the click path opens it. */
+function addAnchor(row: HTMLElement): HTMLElement {
+  return row.querySelector<HTMLElement>("[data-track-add]") ?? row;
+}
+
+async function removeTrack(trackId: string): Promise<void> {
+  const track = getState().tracksById.get(trackId);
+  const confirmed = await confirmDialog({
+    title: "Delete song",
+    message: `Are you sure you want to delete "${track?.title ?? "this song"}"? The file is removed from your library and from every playlist.`,
+    confirmLabel: "Delete",
+    danger: true,
+  });
+  if (!confirmed) {
+    return;
+  }
+
+  await deleteTrack(trackId);
 }
 
 function openPlaylistMenu(anchor: HTMLElement, id: string, onRename: () => void): void {

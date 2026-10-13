@@ -14,6 +14,7 @@ import {
   type AppState,
 } from "../lib/state";
 import type { ReduceMotionMode, SearchAlgorithm, Settings, WindowGeometry } from "../types";
+import { placePicker } from "./picker";
 
 const DIALOG_MS = 220;
 
@@ -101,7 +102,7 @@ export function mountSettings(): void {
     }, DIALOG_MS);
   };
 
-  const placePicker = (): void => {
+  const placeSlotPicker = (): void => {
     if (openSlot === null) {
       return;
     }
@@ -111,26 +112,7 @@ export function mountSettings(): void {
       return;
     }
 
-    const frame = dialog.getBoundingClientRect();
-    const rect = anchor.getBoundingClientRect();
-    const width = anchor.offsetWidth;
-    const height = picker.offsetHeight;
-    const margin = 8;
-
-    const below = rect.bottom + 6;
-    const wanted = below + height > frame.bottom - margin ? rect.top - height - 6 : below;
-    const top = Math.max(
-      frame.top + margin,
-      Math.min(wanted, frame.bottom - height - margin),
-    );
-    const left = Math.min(
-      Math.max(rect.left, frame.left + margin),
-      frame.right - width - margin,
-    );
-
-    picker.style.width = `${width}px`;
-    picker.style.left = `${left}px`;
-    picker.style.top = `${top}px`;
+    placePicker(picker, anchor, dialog.getBoundingClientRect());
   };
 
   const render = (): void => {
@@ -143,7 +125,7 @@ export function mountSettings(): void {
       searchHtml(draft),
       shortcutsHtml(draft, state.windowSlots, openSlot),
     ].join("");
-    placePicker();
+    placeSlotPicker();
     placeThumb(false);
     paintSave();
   };

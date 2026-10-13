@@ -111,6 +111,38 @@ pub fn delete<R: Runtime>(app: &AppHandle<R>, name: &str) -> Result<(), String> 
     Ok(())
 }
 
+pub fn remove_file_from_all<R: Runtime>(app: &AppHandle<R>, file: &str) -> Result<(), String> {
+    let Ok(root) = library_root(app) else {
+        return Ok(());
+    };
+    let Ok(entries) = fs::read_dir(root.join(PLAYLISTS_DIR)) else {
+        return Ok(());
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+
+        let Ok(raw) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(files) = serde_json::from_str::<Vec<String>>(&raw) else {
+            continue;
+        };
+        if !files.iter().any(|saved| saved == file) {
+            continue;
+        }
+
+        let kept: Vec<&String> = files.iter().filter(|saved| *saved != file).collect();
+        let json = serde_json::to_string_pretty(&kept).map_err(|e| e.to_string())?;
+        fs::write(&path, json).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub fn create_playlist(
     app: AppHandle,

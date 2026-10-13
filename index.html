@@ -79,9 +79,9 @@
           <span class="btn-icon" data-icon="search"></span>
         </button>
 
-        <button class="pill" id="add-folder" type="button" aria-label="Add folder">
+        <button class="pill" id="import-open" type="button" aria-label="Import">
           <span class="btn-icon" data-icon="import"></span>
-          <span class="pill-label">Add folder</span>
+          <span class="pill-label">Import</span>
         </button>
 
         <div class="theme-toggle" id="theme-toggle">
@@ -258,6 +258,17 @@
         <div class="settings-foot">
           <button class="pill pill-strong" id="settings-save" type="button" hidden>Save</button>
         </div>
+      </dialog>
+
+      <dialog class="import-dialog" id="import-dialog" aria-labelledby="import-title">
+        <div class="import-head">
+          <h2 id="import-title">Import</h2>
+          <button class="pill icon-only" id="import-close" type="button" aria-label="Close">
+            <span class="btn-icon" data-icon="close"></span>
+          </button>
+        </div>
+
+        <div class="import-body" id="import-body"></div>
       </dialog>
 
       <dialog

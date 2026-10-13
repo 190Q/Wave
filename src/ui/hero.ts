@@ -14,6 +14,14 @@ import { plainCoverStyle } from "./artwork";
 
 const LYRIC_LINE_HEIGHT_REM = 3;
 
+/** Wheel deltas are normalised to pixels before accumulating. */
+const WHEEL_STEP_PX = 100;
+const WHEEL_LINE_PX = 33;
+const CHASE_TAU_MS = 80;
+const CHASE_LINES_PER_SEC = 40;
+const CHASE_LINE_LIMIT = 0.9;
+const CHASE_SETTLE_LINES = 0.005;
+
 export function mountHero(): void {
   const hero = document.getElementById("hero");
   const cover = document.getElementById("now-cover");
@@ -101,15 +109,190 @@ export function mountHero(): void {
   let lastTrackId: string | null = null;
   let renderedLyrics: LyricLine[] | null = null;
   let lyricLines: HTMLElement[] = [];
+  let activeLine: HTMLElement | null = null;
+
+  let shownLine = 0;
+  let targetLine = 0;
+  let scrubbing = false;
+  let dragging = false;
+  let dragOriginY = 0;
+  let dragOriginLine = 0;
+  let chaseFrame: number | null = null;
+  let chaseAt = 0;
+  let seekedLine = -1;
+  let wheelTravel = 0;
+
+  const lineHeightPx = (): number =>
+    lyricLines[0]?.getBoundingClientRect().height ||
+    LYRIC_LINE_HEIGHT_REM * (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16);
+
+  const clampLine = (line: number): number =>
+    Math.min(Math.max(line, 0), Math.max(lyricLines.length - 1, 0));
+
+  const paintActive = (index: number): void => {
+    const next = lyricLines[index] ?? null;
+    if (next === activeLine) {
+      return;
+    }
+    activeLine?.classList.remove("is-active");
+    next?.classList.add("is-active");
+    activeLine = next;
+  };
+
+  const paintLine = (line: number): void => {
+    paintActive(Math.round(line));
+    lyricTrack.style.transform = `translateY(${-(line + 0.5) * LYRIC_LINE_HEIGHT_REM}rem)`;
+  };
+
+  /** Moves playback onto a line, so the clock and the dock follow the lyrics. */
+  const seekToLine = (index: number): void => {
+    const lyrics = renderedLyrics ?? [];
+    if (lyrics.length === 0 || index === seekedLine) {
+      return;
+    }
+    seekedLine = index;
+    player.seek(lyrics[Math.min(Math.max(index, 0), lyrics.length - 1)].timeMs);
+  };
+
+  const endScrub = (): void => {
+    scrubbing = false;
+    panel.classList.remove("is-scrubbing");
+  };
+
+  const stopChase = (): void => {
+    if (chaseFrame !== null) {
+      window.cancelAnimationFrame(chaseFrame);
+      chaseFrame = null;
+    }
+    endScrub();
+  };
+
+  const chase = (now: number): void => {
+    chaseFrame = null;
+
+    const elapsed = now - chaseAt;
+    chaseAt = now;
+
+    const gap = targetLine - shownLine;
+    const reach = Math.min(elapsed / CHASE_TAU_MS, 1);
+    const limit = Math.min(CHASE_LINE_LIMIT, (CHASE_LINES_PER_SEC * elapsed) / 1000);
+    shownLine += Math.max(-limit, Math.min(limit, gap * reach));
+    if (Math.abs(targetLine - shownLine) < CHASE_SETTLE_LINES) {
+      shownLine = targetLine;
+    }
+
+    paintLine(shownLine);
+    seekToLine(Math.round(shownLine));
+
+    if (shownLine !== targetLine) {
+      chaseFrame = requestAnimationFrame(chase);
+    } else if (!dragging) {
+      endScrub();
+    }
+  };
+
+  const startChase = (): void => {
+    scrubbing = true;
+    panel.classList.add("is-scrubbing");
+    if (chaseFrame === null) {
+      chaseAt = performance.now();
+      chaseFrame = requestAnimationFrame(chase);
+    }
+  };
+
+  /** Forgets where the scrub was, ready for a fresh set of lines. */
+  const resetScrub = (): void => {
+    stopChase();
+    activeLine = null;
+    shownLine = 0;
+    targetLine = 0;
+    seekedLine = -1;
+    wheelTravel = 0;
+  };
+
+  const clearLines = (): void => {
+    resetScrub();
+    lyricTrack.innerHTML = "";
+    lyricLines = [];
+    renderedLyrics = null;
+  };
 
   const highlight = (positionMs: number): void => {
     if (lyricLines.length === 0 || document.documentElement.classList.contains("is-theming")) {
       return;
     }
+    if (scrubbing) {
+      return;
+    }
     const index = activeLyricIndex(renderedLyrics ?? [], positionMs);
-    lyricLines.forEach((line, position) => line.classList.toggle("is-active", position === index));
-    lyricTrack.style.transform = `translateY(${-(index + 0.5) * LYRIC_LINE_HEIGHT_REM}rem)`;
+    shownLine = index;
+    targetLine = index;
+    seekedLine = index;
+    paintLine(index);
   };
+
+  panel.addEventListener(
+    "wheel",
+    (event) => {
+      if (lyricLines.length === 0) {
+        return;
+      }
+      event.preventDefault();
+
+      const perLine = event.deltaMode === 1 ? WHEEL_LINE_PX : event.deltaMode === 2 ? WHEEL_STEP_PX : 1;
+      wheelTravel += event.deltaY * perLine;
+
+      const steps = Math.trunc(wheelTravel / WHEEL_STEP_PX);
+      if (steps === 0) {
+        return;
+      }
+      wheelTravel -= steps * WHEEL_STEP_PX;
+      targetLine = clampLine(Math.round(targetLine) + steps);
+      startChase();
+    },
+    { passive: false },
+  );
+
+  panel.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || lyricLines.length === 0) {
+      return;
+    }
+    dragging = true;
+    dragOriginY = event.clientY;
+    dragOriginLine = shownLine;
+    scrubbing = true;
+    panel.classList.add("is-scrubbing");
+    panel.setPointerCapture(event.pointerId);
+  });
+
+  panel.addEventListener("pointermove", (event) => {
+    if (!dragging) {
+      return;
+    }
+    // Pulling the lyrics up brings the later ones into the centre.
+    targetLine = clampLine(dragOriginLine + (dragOriginY - event.clientY) / lineHeightPx());
+    startChase();
+  });
+
+  const endDrag = (event: PointerEvent): void => {
+    if (!dragging) {
+      return;
+    }
+    dragging = false;
+    if (panel.hasPointerCapture(event.pointerId)) {
+      panel.releasePointerCapture(event.pointerId);
+    }
+    // Settle on the nearest line, so the highlight and the offset agree.
+    targetLine = clampLine(Math.round(targetLine));
+    if (shownLine === targetLine) {
+      endScrub();
+      return;
+    }
+    startChase();
+  };
+
+  panel.addEventListener("pointerup", endDrag);
+  panel.addEventListener("pointercancel", endDrag);
 
   const renderLyrics = (): void => {
     const { lyrics } = getState();
@@ -119,9 +302,7 @@ export function mountHero(): void {
       panel.hidden = true;
       hero.classList.remove("has-lyrics");
       if (renderedLyrics !== null) {
-        lyricTrack.innerHTML = "";
-        lyricLines = [];
-        renderedLyrics = null;
+        clearLines();
       }
       return;
     }
@@ -130,6 +311,7 @@ export function mountHero(): void {
     hero.classList.add("has-lyrics");
 
     if (lyrics !== renderedLyrics) {
+      resetScrub();
       renderedLyrics = lyrics;
       lyricTrack.innerHTML = lyrics
         .map((line) => `<p class="lyric">${escapeHtml(line.text)}</p>`)
@@ -154,9 +336,7 @@ export function mountHero(): void {
       meta.textContent = "";
       panel.hidden = true;
       hero.classList.remove("has-lyrics");
-      lyricTrack.innerHTML = "";
-      lyricLines = [];
-      renderedLyrics = null;
+      clearLines();
       lastTrackId = null;
       return;
     }

@@ -30,6 +30,9 @@
 }
 
 .menu-item.is-danger {
+  margin-top: 0.3rem;
+  border-top: 0.0625rem solid rgb(255 255 255 / 0.1);
+  padding-top: 0.6rem;
   color: var(--danger);
 }
 

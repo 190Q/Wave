@@ -4,6 +4,8 @@ export interface ConfirmOptions {
   title: string;
   message: string;
   confirmLabel: string;
+  /** Defaults to `Cancel`, for questions whose answer is not one. */
+  cancelLabel?: string;
   danger?: boolean;
 }
 
@@ -80,6 +82,7 @@ export function mountConfirm(): void {
       title.textContent = options.title;
       message.textContent = options.message;
       accept.textContent = options.confirmLabel;
+      cancel.textContent = options.cancelLabel ?? "Cancel";
       accept.classList.toggle("pill-danger", options.danger === true);
       settle = resolve;
 

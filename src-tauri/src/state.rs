@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalSize, Runtime, State, 
 
 use crate::library::TrackPaths;
 use crate::playlists;
+use crate::spotify::SpotifyStatus;
 
 const STATE_FILE: &str = "state.json";
 
@@ -143,6 +144,21 @@ pub enum SnapPart {
     Position,
 }
 
+/// One entry in the import history, newest first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportRecord {
+    /// Where it came from: `spotify` or `folder`.
+    pub source: String,
+    /// The playlist or folder it brought in.
+    pub name: String,
+    /// A short summary, such as `12 songs`.
+    pub detail: String,
+}
+
+/// How many imports the history keeps.
+pub const RECENT_IMPORT_LIMIT: usize = 3;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PersistedState {
@@ -154,6 +170,10 @@ pub struct PersistedState {
     pub window: Option<WindowGeometry>,
     /// One saved frame per `Ctrl+Shift+1..9` slot, for the snap action.
     pub window_slots: Vec<Option<WindowGeometry>>,
+    /// The last few imports, newest first.
+    pub recent_imports: Vec<ImportRecord>,
+    /// The last Spotify setup answer, so a restart does not start from nothing.
+    pub spotify: Option<SpotifyStatus>,
 }
 
 /// In-memory copy of [`PersistedState`], guarded for the command handlers.
@@ -229,6 +249,17 @@ fn commit<R: Runtime>(app: &AppHandle<R>, state: PersistedState) -> Result<Persi
 /// Persists a snapshot produced by [`Store::update`].
 pub fn save<R: Runtime>(app: &AppHandle<R>, state: &PersistedState) -> Result<(), String> {
     write_state(app, state)
+}
+
+/// Pushes an import onto the history and writes it, newest first.
+pub fn remember_import<R: Runtime>(app: &AppHandle<R>, record: ImportRecord) {
+    let store = app.state::<Store>();
+    let next = store.update(|state| {
+        state.recent_imports.insert(0, record);
+        state.recent_imports.truncate(RECENT_IMPORT_LIMIT);
+    });
+    // The history is a nicety; a failed write must not fail the import.
+    let _ = write_state(app, &next);
 }
 
 #[tauri::command]

@@ -1,7 +1,6 @@
 import { escapeHtml } from "../lib/format";
 import {
   getState,
-  importFolder,
   openCollection,
   playFromCollection,
   setSearch,
@@ -13,7 +12,7 @@ import type { SearchAlgorithm, Track } from "../types";
 import { collectionCoverHtml } from "./artwork";
 import { hydrateCovers } from "./covers";
 import { highlightHtml } from "./highlight";
-import { openMenu } from "./menu";
+import { openImport } from "./import-dialog";
 
 const RESULT_LIMIT = 40;
 
@@ -27,17 +26,9 @@ export function focusSearch(): void {
   openSearchModal?.();
 }
 
-/** Set while the topbar is mounted, so a shortcut can open the import menu. */
-let openImportMenu: (() => void) | null = null;
-
-/** Opens the folder import menu, anchored to the Add folder button. */
-export function chooseFolder(): void {
-  openImportMenu?.();
-}
-
 export function mountTopbar(): void {
   const libraryButton = element("library-open");
-  const addFolderButton = element("add-folder");
+  const importButton = element("import-open");
   const searchButton = element<HTMLButtonElement>("search-open");
   const searchModal = element("search-modal");
   const searchPanel = element("search-panel");
@@ -49,7 +40,7 @@ export function mountTopbar(): void {
 
   if (
     !libraryButton ||
-    !addFolderButton ||
+    !importButton ||
     !searchButton ||
     !searchModal ||
     !searchPanel ||
@@ -63,15 +54,7 @@ export function mountTopbar(): void {
   }
 
   libraryButton.addEventListener("click", () => toggleLibrary());
-
-  const chooseImport = (): void => {
-    openMenu(addFolderButton, [
-      { label: "Import as a playlist", action: () => void importFolder(true) },
-      { label: "Import songs only", action: () => void importFolder(false) },
-    ]);
-  };
-  addFolderButton.addEventListener("click", chooseImport);
-  openImportMenu = chooseImport;
+  importButton.addEventListener("click", () => openImport(importButton));
 
   let resultsOpen = false;
 

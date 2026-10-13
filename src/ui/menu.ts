@@ -10,10 +10,16 @@ export interface MenuItem {
   active?: boolean;
 }
 
+/** Where a menu opened from a right-click should appear, in viewport pixels. */
+export interface MenuPoint {
+  x: number;
+  y: number;
+}
+
 let open: HTMLElement | null = null;
 let dismiss: (() => void) | null = null;
 
-export function openMenu(anchor: HTMLElement, items: MenuItem[]): void {
+export function openMenu(anchor: HTMLElement, items: MenuItem[], at?: MenuPoint): void {
   closeMenu();
 
   if (items.length === 0) {
@@ -47,7 +53,7 @@ export function openMenu(anchor: HTMLElement, items: MenuItem[]): void {
   });
 
   document.body.appendChild(menu);
-  position(menu, anchor);
+  position(menu, anchor, at);
 
   const onPointerDown = (event: PointerEvent) => {
     if (!menu.contains(event.target as Node)) {
@@ -120,19 +126,20 @@ export function closeMenu(): void {
   open = null;
 }
 
-function position(menu: HTMLElement, anchor: HTMLElement): void {
-  const rect = anchor.getBoundingClientRect();
+function position(menu: HTMLElement, anchor: HTMLElement, at?: MenuPoint): void {
   const margin = 8;
 
   // Measure before placing, so the flip decision uses the real size.
   const width = menu.offsetWidth;
   const height = menu.offsetHeight;
 
-  let left = rect.right - width;
-  let top = rect.bottom + margin;
+  // A pointer position hangs the menu off the cursor; an anchor off its corner.
+  const rect = anchor.getBoundingClientRect();
+  let left = at ? at.x : rect.right - width;
+  let top = at ? at.y : rect.bottom + margin;
 
   if (top + height > window.innerHeight - margin) {
-    top = Math.max(margin, rect.top - height - margin);
+    top = at ? Math.max(margin, at.y - height) : Math.max(margin, rect.top - height - margin);
   }
   left = Math.min(Math.max(margin, left), window.innerWidth - width - margin);
 

@@ -1,0 +1,300 @@
+.import-dialog {
+  width: min(26rem, 94vw);
+  padding: 0;
+  max-height: min(calc(100vh - 2rem), 34rem);
+}
+
+.import-dialog,
+.import-dialog * {
+  user-select: none;
+}
+
+.import-dialog input {
+  user-select: text;
+}
+
+.import-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.import-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+  padding: 1.25rem 1.25rem 0.75rem;
+}
+
+.import-head h2 {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.import-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 1.25rem 1.25rem;
+}
+
+.import-section {
+  padding: 0.9rem 0;
+  border-top: 0.0625rem solid rgb(255 255 255 / 0.08);
+}
+
+.import-section:first-child {
+  padding-top: 0.25rem;
+  border-top: 0;
+}
+
+.import-title {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Flags a block whose logic has not landed yet. */
+.import-tag {
+  padding: 0.05rem 0.4rem;
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  border-radius: 62rem;
+  background: var(--raise);
+  color: var(--accent);
+}
+
+.import-hint {
+  margin-bottom: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.import-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.import-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.import-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.8125rem;
+  color: var(--text);
+  background: rgb(0 0 0 / 0.35);
+  border: 0;
+  border-radius: 0.6rem;
+  box-shadow: inset 0 0 0 0.0625rem transparent;
+  transition: box-shadow 0.2s;
+}
+
+.import-input::placeholder,
+.import-combo::placeholder {
+  color: var(--muted);
+}
+
+.import-input:focus {
+  box-shadow: inset 0 0 0 0.0625rem var(--accent);
+}
+
+/* The selector reads as the settings trigger, but takes typing. */
+.import-combo {
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.78rem;
+  color: var(--text);
+  background: var(--raise);
+  border: 0.0625rem solid transparent;
+  border-radius: 62rem;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.import-combo:hover {
+  background: var(--raise-strong);
+}
+
+.import-combo:focus,
+.import-combo.is-open {
+  border-color: var(--accent);
+}
+
+.import-picker .slot-option {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  overflow: hidden;
+}
+
+.import-picker .slot-option-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.import-picker .slot-option-sub {
+  flex: none;
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+/* The row Tab is on, distinct from the one the field is pointed at. */
+.import-picker .slot-option.is-highlighted {
+  background: var(--raise-strong);
+}
+
+.import-picker-empty {
+  padding: 0.5rem 0.6rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.import-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.import-dot {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.import-dot.is-ok {
+  background: var(--accent);
+}
+
+.import-dot.is-warn {
+  background: var(--danger);
+}
+
+.import-status-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.import-setup,
+.import-progress {
+  margin-top: 0.6rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: 0.6rem;
+  background: rgb(0 0 0 / 0.25);
+}
+
+.import-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0 0 0.6rem;
+  padding-left: 1.1rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+/* Long enough to be worth copying by hand, so it is selectable. */
+.import-uri,
+.import-path {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.72rem;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.import-path {
+  margin-bottom: 0.6rem;
+  color: var(--muted);
+}
+
+/* A failure stays up until the next attempt, so it is worth reading twice. */
+.import-progress.is-failed {
+  background: rgb(255 139 122 / 0.12);
+  box-shadow: inset 0 0 0 0.0625rem rgb(255 139 122 / 0.4);
+}
+
+.import-progress.is-failed .import-hint {
+  color: var(--text);
+}
+
+.import-progress-line {
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.import-progress .import-hint {
+  margin-bottom: 0;
+}
+
+.import-failures {
+  margin: 0.4rem 0 0;
+  padding-left: 1rem;
+  font-size: 0.72rem;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+.import-history {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.import-history-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  padding: 0.25rem 0;
+  font-size: 0.78rem;
+}
+
+.import-history-source {
+  flex: none;
+  width: 3.8rem;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.import-history-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-history-detail {
+  flex: none;
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.import-history-empty {
+  font-size: 0.78rem;
+  color: var(--muted);
+}

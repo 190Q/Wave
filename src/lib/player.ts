@@ -183,17 +183,14 @@ export class Player {
     if (!this.hasQueue) {
       return;
     }
-    const target = this.cursor + 1;
-    if (target < this.order.length) {
-      this.cursor = target;
+    if (this.cursor + 1 < this.order.length) {
+      this.cursor += 1;
       this.travel += 1;
       this.startCurrent();
     } else if (this.repeat === "all") {
       this.cursor = 0;
       this.travel += 1;
       this.startCurrent();
-    } else {
-      this.finish();
     }
   }
 
@@ -209,8 +206,6 @@ export class Player {
       this.cursor = this.order.length - 1;
       this.travel -= 1;
       this.startCurrent();
-    } else {
-      this.seek(0);
     }
   }
 
@@ -354,7 +349,11 @@ export class Player {
     this.positionMs += TICK_MS;
 
     if (duration > 0 && this.positionMs >= duration) {
-      this.next();
+      if (this.cursor + 1 < this.order.length || this.repeat === "all") {
+        this.next();
+      } else {
+        this.finish();
+      }
       return;
     }
 

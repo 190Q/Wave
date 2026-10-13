@@ -23,7 +23,7 @@ export const KEYBIND_GROUPS: KeybindGroup[] = [
       { keys: "s", action: "Toggle shuffle" },
       { keys: "r", action: "Toggle repeat" },
       { keys: "q", action: "Toggle queue" },
-      { keys: "i", action: "Add a folder" },
+      { keys: "i", action: "Open the import dialog" },
       { keys: "p", action: "Open settings" },
       { keys: "t", action: "Toggle always on top" },
       { keys: "m", action: "Toggle the mini player, in the bottom right corner" },
@@ -34,7 +34,7 @@ export const KEYBIND_GROUPS: KeybindGroup[] = [
   {
     title: "Contextual",
     binds: [
-      { keys: "Escape", action: "Close the theme or settings dialog, close a menu, clear search, cancel a playlist create or rename" },
+      { keys: "Escape", action: "Close the theme, settings or import dialog, close a menu, clear search, cancel a playlist create or rename" },
       { keys: "Enter", action: "Commit a playlist create or rename" },
       { keys: "Shift + click close", action: "Close and forget the saved window geometry" },
     ],

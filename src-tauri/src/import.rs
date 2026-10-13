@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager};
 
 use crate::library::{
     file_stem_lower, has_extension, library_root, read_index, source_subdir, write_index,
@@ -25,26 +25,46 @@ pub struct ImportOutcome {
     pub state: PersistedState,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_folder(
     app: AppHandle,
-    store: State<'_, Store>,
-    paths: State<'_, TrackPaths>,
     folder: String,
     create_playlist: bool,
     playlist_name: Option<String>,
 ) -> Result<ImportOutcome, String> {
-    let root = library_root(&app)?;
     let source = PathBuf::from(&folder);
     if !source.is_dir() {
         return Err(format!("{folder} is not a folder"));
     }
 
-    let artwork_index = match source_subdir(&source, SOURCE_ARTWORK_DIR) {
+    let mut outcome = import_into_library(&app, &source, create_playlist, playlist_name.as_deref())?;
+
+    let name = outcome
+        .playlist
+        .clone()
+        .or_else(|| source.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "Imported folder".to_string());
+    remember_import(&app, "folder", &name, &outcome);
+
+    outcome.state = app.state::<Store>().snapshot();
+    Ok(outcome)
+}
+
+pub fn import_into_library(
+    app: &AppHandle,
+    source: &Path,
+    create_playlist: bool,
+    playlist_name: Option<&str>,
+) -> Result<ImportOutcome, String> {
+    let store = app.state::<Store>();
+    let paths = app.state::<TrackPaths>();
+    let root = library_root(app)?;
+
+    let artwork_index = match source_subdir(source, SOURCE_ARTWORK_DIR) {
         Some(dir) => SidecarIndex::build(&dir, IMAGE_EXTENSIONS),
         None => SidecarIndex::default(),
     };
-    let lyrics_index = match source_subdir(&source, SOURCE_LYRICS_DIR) {
+    let lyrics_index = match source_subdir(source, SOURCE_LYRICS_DIR) {
         Some(dir) => SidecarIndex::build(&dir, LYRICS_EXTENSIONS),
         None => SidecarIndex::default(),
     };
@@ -61,7 +81,8 @@ pub fn import_folder(
     let mut skipped = 0usize;
     let mut errors = Vec::new();
 
-    let entries = fs::read_dir(&source).map_err(|e| format!("could not read {folder}: {e}"))?;
+    let entries =
+        fs::read_dir(source).map_err(|e| format!("could not read {}: {e}", source.display()))?;
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_file() {
@@ -131,13 +152,13 @@ pub fn import_folder(
             .filter(|value| !value.is_empty())
             .or_else(|| source.file_name().map(|name| name.to_string_lossy().into_owned()))
             .unwrap_or_else(|| "Imported".to_string());
-        playlists::write(&app, &name, &imported)?;
+        playlists::write(app, &name, &imported)?;
         Some(name)
     } else {
         None
     };
 
-    let state = playlists::refresh(&app, &store, &paths);
+    let state = playlists::refresh(app, &store, &paths);
 
     Ok(ImportOutcome {
         songs,
@@ -148,6 +169,30 @@ pub fn import_folder(
         errors,
         state,
     })
+}
+
+/// Adds an import to the history the dialog shows.
+pub fn remember_import(app: &AppHandle, source: &str, name: &str, outcome: &ImportOutcome) {
+    let mut parts = vec![format!(
+        "{} song{}",
+        outcome.songs,
+        if outcome.songs == 1 { "" } else { "s" }
+    )];
+    if outcome.lyrics > 0 {
+        parts.push(format!("{} lyrics", outcome.lyrics));
+    }
+    if !outcome.errors.is_empty() {
+        parts.push(format!("{} failed", outcome.errors.len()));
+    }
+
+    crate::state::remember_import(
+        app,
+        crate::state::ImportRecord {
+            source: source.to_string(),
+            name: name.to_string(),
+            detail: parts.join(", "),
+        },
+    );
 }
 
 /// The `.lrc` sitting next to a song, matching how the scanner looks for lyrics.

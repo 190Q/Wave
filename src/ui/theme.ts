@@ -34,6 +34,7 @@ export function applyAccent(colour: string): void {
   const root = document.documentElement;
 
   if (colour === appliedAccent && colour === appliedStage) {
+    wipePending = false;
     return;
   }
 
@@ -215,7 +216,6 @@ export function mountTheme(): void {
   apply.addEventListener("click", () => {
     wipePending = true;
     void setTheme(hsvToHex(draft));
-    closeDialog();
   });
 
   const chooseTheme = (value: string): void => {

@@ -1,8 +1,14 @@
 mod artwork;
+mod cover_fetch;
+mod download;
 mod import;
 mod library;
 mod lyrics;
+mod lyrics_fetch;
 mod playlists;
+mod progress;
+mod spotify;
+mod spotify_import;
 mod state;
 
 use tauri::Manager;
@@ -62,6 +68,7 @@ pub fn run() {
             // Filled in by every scan; playlist files store paths, not ids.
             app.manage(library::TrackPaths::default());
             state::watch_window(app.handle());
+            spotify_import::watch_config(app.handle());
 
             #[cfg(windows)]
             disable_browser_shortcuts(app.handle());
@@ -85,6 +92,7 @@ pub fn run() {
             state::place_mini_player,
             state::toggle_like,
             library::scan_library,
+            library::delete_track,
             import::import_folder,
             playlists::create_playlist,
             playlists::rename_playlist,
@@ -96,6 +104,12 @@ pub fn run() {
             artwork::artwork_bytes,
             artwork::cover_bytes,
             lyrics::load_lyrics,
+            spotify::spotify_status,
+            spotify::open_spotify_config,
+            spotify_import::spotify_import,
+            spotify_import::spotify_plan,
+            lyrics_fetch::fetch_lyrics,
+            cover_fetch::fetch_covers,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

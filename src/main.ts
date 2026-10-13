@@ -20,12 +20,13 @@ import { mountDock, stepVolumeFromKey } from "./ui/dock";
 import { mountDockTitle } from "./ui/dock-title";
 import { mountHero } from "./ui/hero";
 import { mountIcons } from "./ui/icons";
+import { mountImportDialog, openImport } from "./ui/import-dialog";
 import { mountLibrary } from "./ui/library";
 import { mountQueue } from "./ui/queue";
 import { mountSettings, openSettings } from "./ui/settings";
 import { mountTheme } from "./ui/theme";
 import { mountTitlebar } from "./ui/titlebar";
-import { chooseFolder, focusSearch, mountTopbar } from "./ui/topbar";
+import { focusSearch, mountTopbar } from "./ui/topbar";
 
 const NOTICE_TIMEOUT_MS = 6000;
 
@@ -39,6 +40,7 @@ function mount(): void {
   mountDockTitle();
   mountQueue();
   mountLibrary();
+  mountImportDialog();
   mountConfirm();
   mountTheme();
   mountSettings();
@@ -221,7 +223,7 @@ function mountShortcuts(): void {
       case "i":
       case "I":
         event.preventDefault();
-        chooseFolder();
+        openImport();
         break;
       case "p":
       case "P":

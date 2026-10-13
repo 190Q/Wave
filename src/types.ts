@@ -111,6 +111,102 @@ export interface PersistedState {
   session: Session;
   window: WindowGeometry | null;
   windowSlots: (WindowGeometry | null)[];
+  /** The last few imports, newest first. */
+  recentImports: ImportRecord[];
+  /** The last Spotify setup answer, so a restart does not start from nothing. */
+  spotify: SpotifyStatus | null;
+}
+
+/** One entry in the import history. */
+export interface ImportRecord {
+  /** Where it came from. */
+  source: "spotify" | "folder";
+  /** The playlist or folder it brought in. */
+  name: string;
+  /** A short summary, such as `12 songs`. */
+  detail: string;
+}
+
+/** What the backend reports about the Spotify credentials and the tools. */
+export interface SpotifyStatus {
+  /** Where the config `.env` has to live. */
+  envPath: string;
+  /** The Redirect URI the Spotify app has to list, character for character. */
+  redirectUri: string;
+  /** Both variables are present in the file. */
+  configured: boolean;
+  /** Spotify accepted the client ID and secret. */
+  accepted: boolean;
+  ytDlp: boolean;
+  /** How yt-dlp was found, empty when it was not. */
+  ytDlpSource: string;
+  ffmpeg: boolean;
+  /** What to tell the user, in one line. */
+  message: string;
+}
+
+/** How far along a Spotify import is. */
+export interface ImportProgress {
+  phase:
+    | "authorising"
+    | "resolving"
+    | "downloading"
+    | "importing"
+    | "lyrics"
+    | "covers"
+    | "done"
+    | "failed";
+  /** Tracks handled so far, including the one underway. */
+  done: number;
+  total: number;
+  /** The track being worked on. */
+  label: string;
+  message: string;
+  failures: string[];
+  /** Tracks left alone because the library already had them. */
+  reused: number;
+}
+
+/** How a lyrics fetch went. */
+export interface LyricsOutcome {
+  /** Looked up and written. */
+  fetched: number;
+  /** Of those, the ones with timings, which the player can scroll. */
+  synced: number;
+  /** Already had lyrics, so they were left alone. */
+  skipped: number;
+  /** LRCLIB had nothing for them. */
+  missing: number;
+  /** No artist tag to look them up by. */
+  untagged: number;
+  errors: string[];
+}
+
+/** How a covers fetch went. */
+export interface CoversOutcome {
+  /** Written and linked. */
+  restored: number;
+  /** Of those, the ones the file already carried. */
+  embedded: number;
+  /** Of those, fetched from a service. */
+  online: number;
+  /** Already had a cover, so they were left alone. */
+  skipped: number;
+  /** Nothing found anywhere. */
+  missing: number;
+  /** No artist to look them up by. */
+  untagged: number;
+  errors: string[];
+}
+
+/** What a Spotify link holds, and how much of it the library already has. */
+export interface ImportPlan {
+  name: string;
+  total: number;
+  /** Tracks matched in the library on title, artist and album. */
+  duplicates: number;
+  /** A few of them, so the prompt can name what it found. */
+  examples: string[];
 }
 
 export interface ScanSummary {

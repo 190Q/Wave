@@ -2,12 +2,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import type {
+  CoversOutcome,
   ImportOutcome,
+  ImportPlan,
+  LyricsOutcome,
   PersistedState,
   ScanSummary,
   Session,
   Settings,
   SnapPart,
+  SpotifyStatus,
 } from "../types";
 
 
@@ -82,6 +86,11 @@ export function toggleLike(trackId: string): Promise<PersistedState> {
   return invoke("toggle_like", { trackId });
 }
 
+/** Deletes a song from the library, with its copies and its playlist entries. */
+export function deleteTrack(trackId: string): Promise<PersistedState> {
+  return invoke("delete_track", { trackId });
+}
+
 export function scanLibrary(): Promise<ScanSummary> {
   return invoke("scan_library");
 }
@@ -92,6 +101,39 @@ export function importFolder(
   playlistName: string | null,
 ): Promise<ImportOutcome> {
   return invoke("import_folder", { folder, createPlaylist, playlistName });
+}
+
+/** Reads the config and asks Spotify whether the credentials work. */
+export function spotifyStatus(): Promise<SpotifyStatus> {
+  return invoke("spotify_status");
+}
+
+/** Opens the folder holding the config `.env`, writing the template first. */
+export function openSpotifyConfig(): Promise<void> {
+  return invoke("open_spotify_config");
+}
+
+/**
+ * Reads a Spotify link and reports which of its tracks the library already has,
+ * so the dialog can ask about them before anything is downloaded.
+ */
+export function spotifyPlan(url: string): Promise<ImportPlan> {
+  return invoke("spotify_plan", { url });
+}
+
+/** Downloads a Spotify playlist or track into the library. */
+export function importSpotify(url: string, downloadDuplicates: boolean): Promise<ImportOutcome> {
+  return invoke("spotify_import", { url, downloadDuplicates });
+}
+
+/** Looks lyrics up for the given songs and files them with the library. */
+export function fetchLyrics(trackIds: string[]): Promise<LyricsOutcome> {
+  return invoke("fetch_lyrics", { trackIds });
+}
+
+/** Restores missing cover art for the given songs. */
+export function fetchCovers(trackIds: string[]): Promise<CoversOutcome> {
+  return invoke("fetch_covers", { trackIds });
 }
 
 export function artworkColour(trackId: string, path: string): Promise<string> {

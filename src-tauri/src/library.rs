@@ -8,7 +8,7 @@ use lofty::prelude::{Accessor, AudioFile, ItemKey, TaggedFileExt};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Runtime, State};
 
-use crate::state::Store;
+use crate::state::{save, PersistedState, Store};
 
 /// Extensions treated as music. `mp4`/`m4v` are deliberately absent.
 pub const AUDIO_EXTENSIONS: &[&str] = &[
@@ -50,6 +50,14 @@ impl TrackPaths {
             .iter()
             .filter_map(|id| guard.get(id).cloned())
             .collect()
+    }
+
+    /// Drops an id, for a song that is no longer in the library.
+    pub fn forget(&self, track_id: &str) {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(track_id);
     }
 
     /// A copy of the whole map, for resolving every playlist file at once.
@@ -374,6 +382,22 @@ pub fn has_extension(path: &Path, allowed: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+/// The file stem of a song, used to name the files that go beside it.
+pub fn song_stem(path: &str) -> String {
+    Path::new(path)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// `artist - title`, or just the title when the file carries no artist.
+pub fn track_label(track: &Track) -> String {
+    match track.artist.as_deref() {
+        Some(artist) if !artist.trim().is_empty() => format!("{artist} - {}", track.title),
+        _ => track.title.clone(),
+    }
+}
+
 pub fn file_stem_lower(path: &Path) -> String {
     path.file_stem()
         .and_then(|stem| stem.to_str())
@@ -409,7 +433,7 @@ fn codec_label(file_type: FileType) -> String {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn scan_library(
     app: AppHandle,
     store: State<'_, Store>,
@@ -419,4 +443,46 @@ pub fn scan_library(
     // Playlist files store paths, so they can only be resolved after a scan.
     let _ = crate::playlists::refresh(&app, &store, &paths);
     summary
+}
+
+#[tauri::command]
+pub fn delete_track(
+    app: AppHandle,
+    store: State<'_, Store>,
+    paths: State<'_, TrackPaths>,
+    track_id: String,
+) -> Result<PersistedState, String> {
+    let relative = paths
+        .ids_to_files(std::slice::from_ref(&track_id))
+        .into_iter()
+        .next()
+        .ok_or_else(|| "that song is not in the library".to_string())?;
+
+    let root = library_root(&app)?;
+
+    let song = root.join(&relative);
+    if song.exists() {
+        fs::remove_file(&song).map_err(|e| format!("could not delete {}: {e}", song.display()))?;
+    }
+
+    // The copied cover and lyrics go with the song that used them.
+    let mut index = read_index(&root);
+    if let Some(artwork) = index.songs.remove(&relative) {
+        let _ = fs::remove_file(root.join(artwork));
+    }
+    if let Some(lyrics) = index.lyrics.remove(&relative) {
+        let _ = fs::remove_file(root.join(lyrics));
+    }
+    write_index(&root, &index)?;
+
+    crate::playlists::remove_file_from_all(&app, &relative)?;
+    paths.forget(&track_id);
+
+    let next = store.update(|state| {
+        state.likes.retain(|id| *id != track_id);
+        state.artwork_colours.remove(&track_id);
+    });
+    save(&app, &next)?;
+
+    Ok(crate::playlists::refresh(&app, &store, &paths))
 }

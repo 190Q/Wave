@@ -73,7 +73,13 @@
   position: relative;
   height: 100%;
   overflow: hidden;
+  cursor: grab;
+  touch-action: none;
   mask-image: linear-gradient(transparent, #000 25%, #000 75%, transparent);
+}
+
+.lyrics.is-scrubbing {
+  cursor: grabbing;
 }
 
 .lyrics[hidden] {
@@ -88,19 +94,25 @@
   transition: transform 0.5s var(--ease);
 }
 
+.lyrics.is-scrubbing .lyrics-track {
+  transition: none;
+}
+
 .lyric {
   height: var(--lyric-line-height);
   line-height: var(--lyric-line-height);
-  font-size: 1.5rem;
-  font-weight: 700;
+  font-size: 1.35rem;
+  font-weight: 400;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   color: rgb(255 255 255 / 0.3);
-  transition: color 0.4s;
+  transition: color 0.4s, font-size 0.4s var(--ease);
 }
 
 .lyric.is-active {
+  font-size: 1.75rem;
+  font-weight: 700;
   color: #fff;
 }
 

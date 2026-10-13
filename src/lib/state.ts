@@ -3,12 +3,19 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   Collection,
   CollectionFilter,
+  CoversOutcome,
+  ImportOutcome,
+  ImportPlan,
+  ImportProgress,
+  ImportRecord,
   LyricLine,
+  LyricsOutcome,
   PersistedState,
   Playback,
   Playlist,
   Session,
   Settings,
+  SpotifyStatus,
   Track,
   WindowGeometry,
 } from "../types";
@@ -28,6 +35,21 @@ export const RECENT_THEME_LIMIT = 3;
 /** Sent by the backend when it changes a setting without the UI asking. */
 const SETTINGS_EVENT = "settings-changed";
 
+/** Follows one Spotify import, track by track. */
+const SPOTIFY_PROGRESS_EVENT = "spotify-import";
+
+/** Sent when the config `.env` is saved, so the credentials can be re-checked. */
+const SPOTIFY_CONFIG_EVENT = "spotify-config-changed";
+
+/** Follows one lyrics fetch, song by song. */
+const LYRICS_PROGRESS_EVENT = "lyrics-fetch";
+
+/** Follows one covers fetch, song by song. */
+const COVERS_PROGRESS_EVENT = "covers-fetch";
+
+/** How long a burst of saves is left to settle before re-checking. */
+const CONFIG_SETTLE_MS = 400;
+
 /** Where `m` on its own puts the mini player. */
 const MINI_CORNER = 4;
 
@@ -42,6 +64,8 @@ export interface AppState {
   scanErrors: string[];
   likes: Set<string>;
   playlists: Playlist[];
+  /** The last few imports, newest first. */
+  recentImports: ImportRecord[];
   /** One saved window frame per shortcut slot, `null` while unset. */
   windowSlots: (WindowGeometry | null)[];
   /** Track id -> `#rrggbb`, mirrored from the persisted cache. */
@@ -58,6 +82,15 @@ export interface AppState {
   lyricsTrackId: string | null;
   /** Transient message shown in the status strip. */
   notice: string | null;
+  /** What the import dialog shows about the Spotify credentials. */
+  spotify: SpotifyStatus | null;
+  spotifyChecking: boolean;
+  /** The Spotify import in flight, `null` when nothing is running. */
+  importing: ImportProgress | null;
+  /** The lyrics fetch in flight, and its last result. */
+  lyricsProgress: ImportProgress | null;
+  /** The covers fetch in flight, and its last result. */
+  coversProgress: ImportProgress | null;
 }
 
 const state: AppState = {
@@ -71,6 +104,7 @@ const state: AppState = {
   scanErrors: [],
   likes: new Set(),
   playlists: [],
+  recentImports: [],
   windowSlots: [],
   colours: new Map(),
   settings: {
@@ -96,6 +130,11 @@ const state: AppState = {
   lyrics: [],
   lyricsTrackId: null,
   notice: null,
+  spotify: null,
+  spotifyChecking: false,
+  importing: null,
+  lyricsProgress: null,
+  coversProgress: null,
 };
 
 const listeners = new Set<() => void>();
@@ -253,15 +292,8 @@ export function whenArtworkReady(): Promise<void> {
 }
 
 function retainArtwork(): void {
-  const keep = new Set<string>(player.snapshot().order);
-  for (const id of state.recents) {
-    for (const trackId of findCollection(state.collections, id)?.trackIds ?? []) {
-      keep.add(trackId);
-    }
-  }
-
   for (const [trackId, url] of artworkUrls) {
-    if (!keep.has(trackId)) {
+    if (!state.tracksById.has(trackId)) {
       URL.revokeObjectURL(url);
       artworkUrls.delete(trackId);
     }
@@ -475,6 +507,7 @@ function scheduleEmit(): void {
 
 export async function init(): Promise<void> {
   watchSettings();
+  watchSpotify();
   try {
     const persisted = await ipc.loadState();
     applyPersisted(persisted);
@@ -501,6 +534,8 @@ export async function rescan(): Promise<void> {
     const summary = await ipc.scanLibrary();
     state.tracks = summary.tracks;
     state.tracksById = new Map(summary.tracks.map((track) => [track.id, track]));
+    artworkFailed.clear();
+    retainArtwork();
     state.root = summary.root;
     state.skipped = summary.skipped;
     state.scanErrors = summary.errors;
@@ -515,6 +550,24 @@ export async function rescan(): Promise<void> {
   emit();
 }
 
+/** The one-line summary both import paths finish with. */
+function importSummary(outcome: ImportOutcome): string {
+  const parts = [`${plural(outcome.songs, "song")} imported`];
+  if (outcome.images > 0) {
+    parts.push(plural(outcome.images, "image"));
+  }
+  if (outcome.lyrics > 0) {
+    parts.push(plural(outcome.lyrics, "lyric file"));
+  }
+  if (outcome.playlist) {
+    parts.push(`playlist "${outcome.playlist}" created`);
+  }
+  if (outcome.errors.length > 0) {
+    parts.push(`${outcome.errors.length} failed`);
+  }
+  return parts.join(", ");
+}
+
 export async function importFolder(createPlaylist: boolean): Promise<void> {
   try {
     const folder = await ipc.pickFolder();
@@ -526,24 +579,266 @@ export async function importFolder(createPlaylist: boolean): Promise<void> {
     const outcome = await ipc.importFolder(folder, createPlaylist, null);
     applyPersisted(outcome.state);
     await rescan();
-
-    const parts = [`${plural(outcome.songs, "song")} imported`];
-    if (outcome.images > 0) {
-      parts.push(plural(outcome.images, "image"));
-    }
-    if (outcome.lyrics > 0) {
-      parts.push(plural(outcome.lyrics, "lyric file"));
-    }
-    if (outcome.playlist) {
-      parts.push(`playlist "${outcome.playlist}" created`);
-    }
-    if (outcome.errors.length > 0) {
-      parts.push(`${outcome.errors.length} failed`);
-    }
-    setNotice(parts.join(", "));
+    setNotice(importSummary(outcome));
   } catch (error) {
     setNotice(describe(error));
   }
+}
+
+/** Re-reads the config and asks Spotify whether the credentials work. */
+export async function refreshSpotifyStatus(): Promise<void> {
+  state.spotifyChecking = true;
+  emit();
+
+  try {
+    state.spotify = await ipc.spotifyStatus();
+  } catch (error) {
+    state.spotify = {
+      envPath: "",
+      redirectUri: "",
+      configured: false,
+      accepted: false,
+      ytDlp: false,
+      ytDlpSource: "",
+      ffmpeg: false,
+      message: describe(error),
+    };
+  }
+
+  state.spotifyChecking = false;
+  emit();
+}
+
+/** A background job is only in the way while it is actually running. */
+function jobRunning(progress: ImportProgress | null): boolean {
+  return progress !== null && progress.phase !== "done" && progress.phase !== "failed";
+}
+
+/** The one-line summary a finished covers fetch leaves behind. */
+function coversSummary(outcome: CoversOutcome): string {
+  const parts = [`${outcome.restored} restored`];
+  if (outcome.embedded > 0) {
+    parts.push(`${outcome.embedded} from the files`);
+  }
+  if (outcome.online > 0) {
+    parts.push(`${outcome.online} fetched`);
+  }
+  if (outcome.skipped > 0) {
+    parts.push(`${outcome.skipped} already had covers`);
+  }
+  if (outcome.untagged > 0) {
+    parts.push(`${outcome.untagged} with no artist tag`);
+  }
+  if (outcome.missing > 0) {
+    parts.push(`${outcome.missing} not found`);
+  }
+  if (outcome.errors.length > 0) {
+    parts.push(`${outcome.errors.length} failed`);
+  }
+  return parts.join(", ");
+}
+
+/** Restores missing cover art for every song in a collection. */
+export async function fetchCovers(collectionId: string): Promise<void> {
+  const collection = collectionById(collectionId);
+  if (!collection || collection.trackIds.length === 0 || jobRunning(state.coversProgress)) {
+    return;
+  }
+
+  state.coversProgress = {
+    phase: "covers",
+    done: 0,
+    total: collection.trackIds.length,
+    label: "",
+    message: "Starting...",
+    failures: [],
+    reused: 0,
+  };
+  emit();
+
+  try {
+    const outcome = await ipc.fetchCovers(collection.trackIds);
+    // The new covers are linked in the index, so the songs need re-reading.
+    await rescan();
+
+    const message = coversSummary(outcome);
+    setNotice(message);
+    state.coversProgress = {
+      phase: "done",
+      done: collection.trackIds.length,
+      total: collection.trackIds.length,
+      label: "",
+      message,
+      failures: outcome.errors,
+      reused: 0,
+    };
+  } catch (error) {
+    const message = describe(error);
+    setNotice(message);
+    state.coversProgress = failedProgress(message);
+  }
+  emit();
+}
+
+/** The one-line summary a finished lyrics fetch leaves behind. */
+function lyricsSummary(outcome: LyricsOutcome): string {
+  const parts = [`${outcome.fetched} with lyrics`];
+  if (outcome.synced > 0) {
+    parts.push(`${outcome.synced} with timings`);
+  }
+  if (outcome.skipped > 0) {
+    parts.push(`${outcome.skipped} already had them`);
+  }
+  if (outcome.untagged > 0) {
+    parts.push(`${outcome.untagged} with no artist tag`);
+  }
+  if (outcome.missing > 0) {
+    parts.push(`${outcome.missing} not found`);
+  }
+  if (outcome.errors.length > 0) {
+    parts.push(`${outcome.errors.length} failed`);
+  }
+  return parts.join(", ");
+}
+
+/** Looks lyrics up for every song in a collection and files them. */
+export async function fetchLyrics(collectionId: string): Promise<void> {
+  const collection = collectionById(collectionId);
+  if (!collection || collection.trackIds.length === 0 || jobRunning(state.lyricsProgress)) {
+    return;
+  }
+
+  state.lyricsProgress = {
+    phase: "lyrics",
+    done: 0,
+    total: collection.trackIds.length,
+    label: "",
+    message: "Starting...",
+    failures: [],
+    reused: 0,
+  };
+  emit();
+
+  try {
+    const outcome = await ipc.fetchLyrics(collection.trackIds);
+    // The new sidecars are linked in the index, so the songs need re-reading.
+    await rescan();
+
+    const message = lyricsSummary(outcome);
+    setNotice(message);
+    state.lyricsProgress = {
+      phase: "done",
+      done: collection.trackIds.length,
+      total: collection.trackIds.length,
+      label: "",
+      message,
+      failures: outcome.errors,
+      reused: 0,
+    };
+  } catch (error) {
+    const message = describe(error);
+    setNotice(message);
+    state.lyricsProgress = failedProgress(message);
+  }
+  emit();
+}
+
+/** Opens the folder holding the config `.env`, writing the template first. */
+export async function openSpotifyConfig(): Promise<void> {
+  try {
+    await ipc.openSpotifyConfig();
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
+/** A Spotify import is only in the way while it is actually running. */
+function spotifyBusy(): boolean {
+  return state.importing !== null && state.importing.phase !== "failed";
+}
+
+/** A failure that stays on screen, rather than a notice that times out. */
+function failedProgress(message: string, failures: string[] = []): ImportProgress {
+  return {
+    phase: "failed",
+    done: 0,
+    total: 0,
+    label: "",
+    message,
+    failures,
+    reused: 0,
+  };
+}
+
+export async function planSpotify(url: string): Promise<ImportPlan | null> {
+  const link = url.trim();
+  if (!link || spotifyBusy()) {
+    return null;
+  }
+
+  // The backend refines this from here; it is the first paint.
+  state.importing = {
+    phase: "resolving",
+    done: 0,
+    total: 0,
+    label: "",
+    message: "Checking your library...",
+    failures: [],
+    reused: 0,
+  };
+  emit();
+
+  try {
+    const plan = await ipc.spotifyPlan(link);
+    state.importing = null;
+    emit();
+    return plan;
+  } catch (error) {
+    const message = describe(error);
+    setNotice(message);
+    state.importing = failedProgress(message);
+    emit();
+    return null;
+  }
+}
+
+/** Downloads a Spotify playlist or track and adds it to the library. */
+export async function importSpotify(url: string, downloadDuplicates: boolean): Promise<void> {
+  const link = url.trim();
+  if (!link || spotifyBusy()) {
+    return;
+  }
+
+  // The backend sends its own updates from here; this is the first paint.
+  state.importing = {
+    phase: "authorising",
+    done: 0,
+    total: 0,
+    label: "",
+    message: "Starting...",
+    failures: [],
+    reused: 0,
+  };
+  emit();
+
+  try {
+    const outcome = await ipc.importSpotify(link, downloadDuplicates);
+    applyPersisted(outcome.state);
+    await rescan();
+    setNotice(importSummary(outcome));
+    state.importing =
+      outcome.errors.length > 0
+        ? failedProgress(
+            `${plural(outcome.songs, "song")} imported, ${outcome.errors.length} failed.`,
+            outcome.errors,
+          )
+        : null;
+  } catch (error) {
+    const message = describe(error);
+    setNotice(message);
+    state.importing = failedProgress(message);
+  }
+  emit();
 }
 
 export function setFilter(filter: CollectionFilter): void {
@@ -598,7 +893,6 @@ export function openCollection(id: string, startTrackId?: string): void {
 
   player.setQueue(collection.id, collection.name, ids, startTrackId);
   state.recents = [id, ...state.recents.filter((entry) => entry !== id)].slice(0, 3);
-  retainArtwork();
   schedulePersist();
   emit();
 }
@@ -668,6 +962,20 @@ export async function deletePlaylist(id: string): Promise<void> {
     applyPersisted(await ipc.deletePlaylist(id));
     state.recents = state.recents.filter((entry) => entry !== id);
     emit();
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
+/** Deletes a song from the library and takes it out of the queue with it. */
+export async function deleteTrack(trackId: string): Promise<void> {
+  const title = state.tracksById.get(trackId)?.title;
+
+  try {
+    applyPersisted(await ipc.deleteTrack(trackId));
+    player.removeFromQueue(trackId);
+    await rescan();
+    setNotice(title ? `Deleted "${title}".` : "Song deleted.");
   } catch (error) {
     setNotice(describe(error));
   }
@@ -754,6 +1062,45 @@ export async function toggleMiniPlayer(corner?: number): Promise<void> {
   await updateSettings({ miniPlayer: true, miniCorner: corner ?? MINI_CORNER });
 }
 
+let configTimer: number | null = null;
+
+/** Follows the Spotify import and the config file, for the dialog. */
+function watchSpotify(): void {
+  void listen<ImportProgress>(SPOTIFY_PROGRESS_EVENT, (event) => {
+    state.importing = event.payload;
+    emit();
+  }).catch(() => {
+    // Not running inside Tauri, for example `npm run dev` in a browser.
+  });
+
+  void listen<ImportProgress>(LYRICS_PROGRESS_EVENT, (event) => {
+    state.lyricsProgress = event.payload;
+    emit();
+  }).catch(() => {
+    // Same as above.
+  });
+
+  void listen<ImportProgress>(COVERS_PROGRESS_EVENT, (event) => {
+    state.coversProgress = event.payload;
+    emit();
+  }).catch(() => {
+    // Same as above.
+  });
+
+  void listen(SPOTIFY_CONFIG_EVENT, () => {
+    // One save can arrive as several events, so wait for the dust to settle.
+    if (configTimer !== null) {
+      window.clearTimeout(configTimer);
+    }
+    configTimer = window.setTimeout(() => {
+      configTimer = null;
+      void refreshSpotifyStatus();
+    }, CONFIG_SETTLE_MS);
+  }).catch(() => {
+    // Same as above: the browser has no config watcher.
+  });
+}
+
 function watchSettings(): void {
   void listen<Settings>(SETTINGS_EVENT, (event) => {
     state.settings = event.payload;
@@ -838,6 +1185,8 @@ function applyPersisted(next: PersistedState): void {
   state.playlists = next.playlists ?? [];
   state.likes = new Set(next.likes ?? []);
   state.windowSlots = next.windowSlots ?? [];
+  state.recentImports = next.recentImports ?? [];
+  state.spotify = next.spotify ?? null;
   state.colours = new Map(
     Object.entries(next.artworkColours ?? {}).filter(([, hex]) => isUsableAccent(hex)),
   );

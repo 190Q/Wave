@@ -19,12 +19,13 @@ import type {
   Track,
   WindowGeometry,
 } from "../types";
+import { AudioEngine } from "./audio";
 import { COLLECTION_FILTERS, buildCollections, findCollection, sortAlbumTracks } from "./collections";
 import { FALLBACK_COLOUR, colourFromId, isUsableAccent } from "./colour";
 import * as ipc from "./ipc";
 import { plural } from "./format";
 import { parseLrc } from "./lrc";
-import { Player } from "./player";
+import { MAX_VOLUME, MIN_VOLUME, Player, easeOutCubic } from "./player";
 
 /** Follows whatever the current artwork produced. */
 export const ADAPTIVE_THEME = "adaptive";
@@ -158,7 +159,20 @@ const artworkFailed = new Set<string>();
 
 let emitScheduled = false;
 
-export const player = new Player((trackId) => state.tracksById.get(trackId)?.durationMs ?? 0);
+const engine = new AudioEngine({
+  onEnded: () => player.handleEnded(),
+  onLoaded: () => player.handleLoaded(),
+  onError: () => {
+    const title = currentTrack()?.title;
+    setNotice(title ? `Could not play "${title}".` : "That song could not be played.");
+    player.handleError();
+  },
+});
+
+export const player = new Player(engine, (trackId) => {
+  const track = state.tracksById.get(trackId);
+  return track ? { path: track.path, durationMs: track.durationMs } : undefined;
+});
 
 /** One queue step, shared by the arrow keys and the wheel. */
 export function stepTrack(direction: number): void {
@@ -1131,23 +1145,68 @@ export async function updateSettings(patch: Partial<Settings>): Promise<boolean>
 
 export function setVolume(volume: number): void {
   player.setVolume(volume);
-  void ipc
-    .saveSettings({ ...state.settings, volume: player.snapshot().volume })
-    .then((next) => {
-      applyPersisted(next);
-      emit();
-    })
-    .catch(() => {
-      // Volume is cosmetic; a failed write is not worth interrupting playback.
-    });
+  scheduleVolumeSave();
+}
+
+/** How long a burst of volume changes is left to settle before it is written. */
+const VOLUME_SAVE_MS = 400;
+let volumeTimer: number | null = null;
+let volumeUnsaved = false;
+
+/** The volume is written once, after a burst of changes has settled. */
+function scheduleVolumeSave(): void {
+  volumeUnsaved = true;
+  if (volumeTimer !== null) {
+    window.clearTimeout(volumeTimer);
+  }
+  volumeTimer = window.setTimeout(() => {
+    volumeTimer = null;
+    void saveVolume();
+  }, VOLUME_SAVE_MS);
+}
+
+async function saveVolume(): Promise<void> {
+  if (!volumeUnsaved) {
+    return;
+  }
+  try {
+    applyPersisted(await ipc.saveSettings({ ...state.settings, volume: player.snapshot().volume }));
+    volumeUnsaved = false;
+    emit();
+  } catch {
+    // Volume is cosmetic; a failed write is not worth interrupting playback.
+  }
 }
 
 /** How far one volume step moves. The player clamps the result. */
 const VOLUME_STEP = 10;
 
-/** One volume step, shared by the arrow keys and the slider. */
+/** How long one step takes to run its course. */
+const VOLUME_RAMP_MS = 200;
+
+let volumeRamp: number | null = null;
+
 export function stepVolume(direction: number): void {
-  setVolume(player.snapshot().volume + direction * VOLUME_STEP);
+  const from = player.snapshot().volume;
+  const to = Math.min(Math.max(from + direction * VOLUME_STEP, MIN_VOLUME), MAX_VOLUME);
+
+  if (to === from) {
+    setVolume(to);
+    return;
+  }
+
+  if (volumeRamp !== null) {
+    window.cancelAnimationFrame(volumeRamp);
+    volumeRamp = null;
+  }
+
+  const startedAt = performance.now();
+  const run = (now: number): void => {
+    const progress = Math.min((now - startedAt) / VOLUME_RAMP_MS, 1);
+    setVolume(from + (to - from) * easeOutCubic(progress));
+    volumeRamp = progress < 1 ? requestAnimationFrame(run) : null;
+  };
+  volumeRamp = requestAnimationFrame(run);
 }
 
 /**
@@ -1301,6 +1360,11 @@ export async function flushSession(): Promise<void> {
     window.clearTimeout(persistTimer);
     persistTimer = null;
   }
+  if (volumeTimer !== null) {
+    window.clearTimeout(volumeTimer);
+    volumeTimer = null;
+  }
+  await saveVolume();
   await persistSession();
 }
 

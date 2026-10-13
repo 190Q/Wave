@@ -164,12 +164,29 @@ function groupByArtist(tracks: Track[]): Map<string, ArtistGroup> {
     names: featuredNames(track.artist ?? ""),
   }));
 
+  const spellings = new Map<string, Set<string>>();
   const known = new Set<string>();
   for (const credit of credits) {
     for (const name of credit.names) {
-      if (nameCandidates(name).length < 2) {
+      const candidates = nameCandidates(name);
+      if (candidates.length < 2) {
         known.add(name.toLowerCase());
       }
+      const spelling = candidates
+        .map((candidate) => candidate.toLowerCase())
+        .sort()
+        .join("\u0000");
+      for (const candidate of candidates) {
+        const key = candidate.toLowerCase();
+        const seen = spellings.get(key) ?? new Set<string>();
+        seen.add(spelling);
+        spellings.set(key, seen);
+      }
+    }
+  }
+  for (const [name, seen] of spellings) {
+    if (seen.size > 1) {
+      known.add(name);
     }
   }
 

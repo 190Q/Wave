@@ -1,6 +1,6 @@
 import { COLLECTION_FILTERS, filterCollections, isPinned } from "../lib/collections";
 import { escapeHtml, formatDuration, formatTotalDuration, plural, songCount } from "../lib/format";
-import { reduceMotionActive } from "../lib/motion";
+import { bounce, reduceMotionActive } from "../lib/motion";
 import {
   collectionById,
   createPlaylist,
@@ -203,6 +203,7 @@ export function mountLibrary(): void {
 
     const likeButton = target.closest<HTMLElement>("[data-like]");
     if (likeButton?.dataset.like) {
+      bounce(likeButton);
       void toggleLikeTrack(likeButton.dataset.like);
       return;
     }
@@ -663,11 +664,18 @@ function renderLibrary(state: AppState): string {
 /** The right-click menu for a song, opened where the pointer is. */
 function openTrackMenu(row: HTMLElement, trackId: string, at: MenuPoint): void {
   const liked = getState().likes.has(trackId);
+  const heart = row.querySelector<HTMLElement>("[data-like]");
 
   openMenu(
     row,
     [
-      { label: liked ? "Unlike" : "Like", action: () => void toggleLikeTrack(trackId) },
+      {
+        label: liked ? "Unlike" : "Like",
+        action: () => {
+          bounce(heart);
+          void toggleLikeTrack(trackId);
+        },
+      },
       { label: "Add to playlist", action: () => openAddToPlaylist(addAnchor(row), trackId) },
       { label: "Delete song", danger: true, action: () => void removeTrack(trackId) },
     ],

@@ -20,7 +20,7 @@
   width: 0;
   background: var(--accent-soft);
   border-right: 0.125rem solid var(--accent);
-  transition: width 0.2s linear;
+  transition: width 0.08s linear;
 }
 
 .dock.is-scrubbing .dock-fill {

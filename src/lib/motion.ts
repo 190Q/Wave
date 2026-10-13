@@ -19,6 +19,25 @@ export function reduceMotionActive(): boolean {
   return query.matches;
 }
 
+const BOUNCE_MS = 420;
+
+export function bounce(element: Element | null): void {
+  if (!element || reduceMotionActive()) {
+    return;
+  }
+
+  element.animate(
+    [
+      { transform: "scale(1)" },
+      { transform: "scale(1.3)", offset: 0.3 },
+      { transform: "scale(0.9)", offset: 0.55 },
+      { transform: "scale(1.08)", offset: 0.78 },
+      { transform: "scale(1)" },
+    ],
+    { duration: BOUNCE_MS, easing: "ease-out" },
+  );
+}
+
 /** Runs `listener` when the setting or the OS preference changes the answer. */
 export function subscribeMotion(listener: () => void): void {
   listeners.add(listener);

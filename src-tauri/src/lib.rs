@@ -67,6 +67,11 @@ pub fn run() {
             app.manage(store);
             // Filled in by every scan; playlist files store paths, not ids.
             app.manage(library::TrackPaths::default());
+            if let Ok(root) = library::library_root(app.handle()) {
+                if let Err(error) = app.asset_protocol_scope().allow_directory(&root, true) {
+                    eprintln!("could not allow the library on the asset protocol: {error}");
+                }
+            }
             state::watch_window(app.handle());
             spotify_import::watch_config(app.handle());
 

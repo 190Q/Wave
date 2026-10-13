@@ -12,8 +12,6 @@ import {
 import type { LyricLine } from "../types";
 import { plainCoverStyle } from "./artwork";
 
-const LYRIC_LINE_HEIGHT_REM = 3;
-
 /** Wheel deltas are normalised to pixels before accumulating. */
 const WHEEL_STEP_PX = 100;
 const WHEEL_LINE_PX = 33;
@@ -97,6 +95,7 @@ export function mountHero(): void {
   const layout = (): void => {
     fitCover();
     fitText();
+    refitLines();
   };
 
   if (typeof ResizeObserver !== "undefined") {
@@ -104,7 +103,6 @@ export function mountHero(): void {
   }
   narrowLayout.addEventListener("change", layout);
   void document.fonts?.ready.then(layout);
-  layout();
 
   let lastTrackId: string | null = null;
   let renderedLyrics: LyricLine[] | null = null;
@@ -116,18 +114,55 @@ export function mountHero(): void {
   let scrubbing = false;
   let dragging = false;
   let dragOriginY = 0;
-  let dragOriginLine = 0;
+  let dragOriginCentre = 0;
   let chaseFrame: number | null = null;
   let chaseAt = 0;
   let seekedLine = -1;
   let wheelTravel = 0;
+  let heldAtEnd = false;
 
-  const lineHeightPx = (): number =>
-    lyricLines[0]?.getBoundingClientRect().height ||
-    LYRIC_LINE_HEIGHT_REM * (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16);
+  let lineCentres: number[] = [];
 
-  const clampLine = (line: number): number =>
-    Math.min(Math.max(line, 0), Math.max(lyricLines.length - 1, 0));
+  const endLine = (): number => Math.max(lyricLines.length - 1, 0);
+  const clampLine = (line: number): number => Math.min(Math.max(line, 0), endLine());
+
+  const centreAt = (line: number): number => {
+    if (lineCentres.length === 0) {
+      return 0;
+    }
+    const clamped = Math.min(Math.max(line, 0), lineCentres.length - 1);
+    const above = Math.floor(clamped);
+    const below = Math.min(above + 1, lineCentres.length - 1);
+    return lineCentres[above] + (lineCentres[below] - lineCentres[above]) * (clamped - above);
+  };
+
+  /** The line sitting `offset` px down the track: `centreAt` read backwards, for dragging. */
+  const lineAt = (offset: number): number => {
+    for (let index = 1; index < lineCentres.length; index += 1) {
+      if (offset <= lineCentres[index]) {
+        const above = lineCentres[index - 1];
+        const span = lineCentres[index] - above;
+        return index - 1 + (span > 0 ? (offset - above) / span : 0);
+      }
+    }
+    return Math.max(lineCentres.length - 1, 0);
+  };
+
+  const markWrapped = (): void => {
+    lyricTrack.classList.add("is-fitting", "is-measuring");
+    const range = document.createRange();
+    for (const line of lyricLines) {
+      range.selectNodeContents(line);
+      line.classList.toggle("is-wrapped", range.getClientRects().length > 1);
+    }
+    lyricTrack.classList.remove("is-fitting");
+    void lyricTrack.offsetHeight;
+    lyricTrack.classList.remove("is-measuring");
+  };
+
+  const measureLines = (): void => {
+    lineCentres = lyricLines.map((line) => line.offsetTop + line.offsetHeight / 2);
+  };
 
   const paintActive = (index: number): void => {
     const next = lyricLines[index] ?? null;
@@ -141,7 +176,21 @@ export function mountHero(): void {
 
   const paintLine = (line: number): void => {
     paintActive(Math.round(line));
-    lyricTrack.style.transform = `translateY(${-(line + 0.5) * LYRIC_LINE_HEIGHT_REM}rem)`;
+    applyTransform(line);
+  };
+
+  const applyTransform = (line: number): void => {
+    lyricTrack.style.transform = `translateY(${-centreAt(clampLine(line))}px)`;
+  };
+
+  /** Reads the lines back off the page: a resize re-wraps them and moves their middles. */
+  const refitLines = (): void => {
+    if (lyricLines.length === 0) {
+      return;
+    }
+    markWrapped();
+    measureLines();
+    applyTransform(shownLine);
   };
 
   /** Moves playback onto a line, so the clock and the dock follow the lyrics. */
@@ -208,12 +257,15 @@ export function mountHero(): void {
     targetLine = 0;
     seekedLine = -1;
     wheelTravel = 0;
+    heldAtEnd = false;
   };
 
   const clearLines = (): void => {
     resetScrub();
     lyricTrack.innerHTML = "";
+    lyricTrack.style.transform = "";
     lyricLines = [];
+    lineCentres = [];
     renderedLyrics = null;
   };
 
@@ -221,10 +273,30 @@ export function mountHero(): void {
     if (lyricLines.length === 0 || document.documentElement.classList.contains("is-theming")) {
       return;
     }
+
+    const last = endLine();
+    const index = Math.min(Math.max(activeLyricIndex(renderedLyrics ?? [], positionMs), -1), last);
+    heldAtEnd = last >= 0 && index === last;
+
+    // The song has run past its last lyric: hold the panel there, highlighted, to the end.
+    if (heldAtEnd) {
+      stopChase();
+      wheelTravel = 0;
+      targetLine = last;
+      seekedLine = last;
+      if (shownLine !== last || activeLine !== lyricLines[last]) {
+        shownLine = last;
+        paintLine(last);
+      }
+      return;
+    }
+
     if (scrubbing) {
       return;
     }
-    const index = activeLyricIndex(renderedLyrics ?? [], positionMs);
+    if (index === shownLine && index === targetLine && index === seekedLine) {
+      return;
+    }
     shownLine = index;
     targetLine = index;
     seekedLine = index;
@@ -238,6 +310,9 @@ export function mountHero(): void {
         return;
       }
       event.preventDefault();
+      if (heldAtEnd) {
+        return;
+      }
 
       const perLine = event.deltaMode === 1 ? WHEEL_LINE_PX : event.deltaMode === 2 ? WHEEL_STEP_PX : 1;
       wheelTravel += event.deltaY * perLine;
@@ -254,23 +329,23 @@ export function mountHero(): void {
   );
 
   panel.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || lyricLines.length === 0) {
+    if (event.button !== 0 || lyricLines.length === 0 || heldAtEnd) {
       return;
     }
     dragging = true;
     dragOriginY = event.clientY;
-    dragOriginLine = shownLine;
+    dragOriginCentre = centreAt(shownLine);
     scrubbing = true;
     panel.classList.add("is-scrubbing");
     panel.setPointerCapture(event.pointerId);
   });
 
   panel.addEventListener("pointermove", (event) => {
-    if (!dragging) {
+    if (!dragging || heldAtEnd) {
       return;
     }
-    // Pulling the lyrics up brings the later ones into the centre.
-    targetLine = clampLine(dragOriginLine + (dragOriginY - event.clientY) / lineHeightPx());
+    // Pulling the lyrics up brings the later ones into the centre, however tall they are.
+    targetLine = clampLine(lineAt(dragOriginCentre + (dragOriginY - event.clientY)));
     startChase();
   });
 
@@ -281,6 +356,10 @@ export function mountHero(): void {
     dragging = false;
     if (panel.hasPointerCapture(event.pointerId)) {
       panel.releasePointerCapture(event.pointerId);
+    }
+    if (heldAtEnd) {
+      endScrub();
+      return;
     }
     // Settle on the nearest line, so the highlight and the offset agree.
     targetLine = clampLine(Math.round(targetLine));
@@ -317,6 +396,7 @@ export function mountHero(): void {
         .map((line) => `<p class="lyric">${escapeHtml(line.text)}</p>`)
         .join("");
       lyricLines = Array.from(lyricTrack.querySelectorAll<HTMLElement>(".lyric"));
+      refitLines();
     }
 
     highlight(player.snapshot().positionMs);
@@ -361,5 +441,6 @@ export function mountHero(): void {
   subscribe(render);
   player.onChange(render);
   player.onProgress((positionMs) => highlight(positionMs));
+  layout();
   render();
 }

@@ -87,6 +87,7 @@
 }
 
 .lyrics-track {
+  --lyric-active-size: 1.75rem;
   position: absolute;
   left: 0;
   right: 0;
@@ -99,21 +100,34 @@
 }
 
 .lyric {
-  height: var(--lyric-line-height);
-  line-height: var(--lyric-line-height);
+  display: flex;
+  align-items: center;
+  min-height: var(--lyric-line-height);
+  line-height: 1.3;
   font-size: 1.35rem;
   font-weight: 400;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
   color: rgb(255 255 255 / 0.3);
   transition: color 0.4s, font-size 0.4s var(--ease);
 }
 
 .lyric.is-active {
-  font-size: 1.75rem;
   font-weight: 700;
   color: #fff;
+}
+
+.lyric.is-active:not(.is-wrapped) {
+  font-size: var(--lyric-active-size);
+}
+
+.lyrics-track.is-fitting .lyric {
+  font-size: var(--lyric-active-size);
+  font-weight: 700;
+  transition: none;
+}
+
+.lyrics-track.is-measuring .lyric {
+  transition: none;
 }
 
 @media (max-width: 64rem) {

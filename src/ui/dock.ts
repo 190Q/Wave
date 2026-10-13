@@ -1,6 +1,7 @@
 import { createIcon } from "../assets/icons/index";
 import { formatDuration } from "../lib/format";
-import { reduceMotionActive } from "../lib/motion";
+import { bounce, reduceMotionActive } from "../lib/motion";
+import { MAX_VOLUME, MIN_VOLUME } from "../lib/player";
 import {
   currentTrack,
   getState,
@@ -45,15 +46,25 @@ export function mountDock(): void {
     return;
   }
 
-  // The dock background is the seek bar: pressing anywhere on it jumps to that
-  // point and dragging scrubs. Buttons keep their own clicks.
+  // The dock background is the seek bar: pressing anywhere on it shows where
+  // the track would land, and letting go takes it there. Buttons keep their own
+  // clicks.
   let scrubbing = false;
+  let scrubFraction = 0;
 
-  const seekTo = (clientX: number): void => {
+  const fractionAt = (clientX: number): number => {
     const rect = dock.getBoundingClientRect();
-    if (rect.width > 0) {
-      player.seekFraction((clientX - rect.left) / rect.width);
+    if (rect.width <= 0) {
+      return 0;
     }
+    return Math.min(Math.max((clientX - rect.left) / rect.width, 0), 1);
+  };
+
+  /** Follows the pointer while the dock is held, without moving the track. */
+  const previewSeek = (fraction: number): void => {
+    scrubFraction = fraction;
+    fill.style.width = `${fraction * 100}%`;
+    timeNow.textContent = formatDuration(fraction * player.snapshot().durationMs);
   };
 
   dock.addEventListener("pointerdown", (event) => {
@@ -63,16 +74,16 @@ export function mountDock(): void {
     scrubbing = true;
     dock.classList.add("is-scrubbing");
     dock.setPointerCapture(event.pointerId);
-    seekTo(event.clientX);
+    previewSeek(fractionAt(event.clientX));
   });
 
   dock.addEventListener("pointermove", (event) => {
     if (scrubbing) {
-      seekTo(event.clientX);
+      previewSeek(fractionAt(event.clientX));
     }
   });
 
-  const stopScrub = (event: PointerEvent): void => {
+  const stopScrub = (event: PointerEvent, commit: boolean): void => {
     if (!scrubbing) {
       return;
     }
@@ -81,10 +92,15 @@ export function mountDock(): void {
     if (dock.hasPointerCapture(event.pointerId)) {
       dock.releasePointerCapture(event.pointerId);
     }
+    // The song only moves once the pointer is let go.
+    if (commit) {
+      player.seekFraction(scrubFraction);
+    }
+    paintProgress(player.snapshot().positionMs, player.snapshot().durationMs);
   };
 
-  dock.addEventListener("pointerup", stopScrub);
-  dock.addEventListener("pointercancel", stopScrub);
+  dock.addEventListener("pointerup", (event) => stopScrub(event, true));
+  dock.addEventListener("pointercancel", (event) => stopScrub(event, false));
 
   play.addEventListener("click", () => player.toggle());
   previous.addEventListener("click", () => player.previous());
@@ -103,8 +119,11 @@ export function mountDock(): void {
   });
   volumeBars.replaceChildren(...bars);
 
+  volume.min = String(MIN_VOLUME);
+  volume.max = String(MAX_VOLUME);
+
   const paintVolume = (level: number): void => {
-    volumeBars.style.setProperty("--level", `${(level / 100) * barCount}`);
+    volumeBars.style.setProperty("--level", `${(level / MAX_VOLUME) * barCount}`);
   };
 
   let steppingTimer: number | null = null;
@@ -124,7 +143,37 @@ export function mountDock(): void {
   };
   markVolumeStep = markStepping;
 
-  volume.addEventListener("input", () => setVolume(Number(volume.value)));
+  let draggingVolume = false;
+
+  const commitVolume = (): void => {
+    draggingVolume = false;
+    setVolume(Number(volume.value));
+  };
+
+  volume.addEventListener("pointerdown", () => {
+    draggingVolume = true;
+  });
+
+  volume.addEventListener("input", () => {
+    draggingVolume = true;
+    paintVolume(Number(volume.value));
+  });
+
+  volume.addEventListener("change", commitVolume);
+
+  volume.addEventListener("pointerup", () => {
+    if (draggingVolume) {
+      commitVolume();
+    }
+  });
+
+  volume.addEventListener("pointercancel", () => {
+    draggingVolume = false;
+  });
+
+  volume.addEventListener("blur", () => {
+    draggingVolume = false;
+  });
 
   // The slider's own arrows step by one, so the shortcut takes them over.
   volume.addEventListener("keydown", (event) => {
@@ -137,12 +186,13 @@ export function mountDock(): void {
   like.addEventListener("click", () => {
     const track = currentTrack();
     if (track) {
+      bounce(like);
       void toggleLikeTrack(track.id);
     }
   });
 
   const paintProgress = (positionMs: number, durationMs: number): void => {
-    if (document.documentElement.classList.contains("is-theming")) {
+    if (document.documentElement.classList.contains("is-theming") || scrubbing) {
       return;
     }
     const fraction = durationMs > 0 ? Math.min(positionMs / durationMs, 1) : 0;
@@ -186,9 +236,11 @@ export function mountDock(): void {
 
     queueToggle.classList.toggle("is-on", getState().queueOpen);
 
-    volume.value = String(snapshot.volume);
     volume.disabled = idle;
-    paintVolume(snapshot.volume);
+    if (!draggingVolume) {
+      volume.value = String(snapshot.volume);
+      paintVolume(snapshot.volume);
+    }
 
     timeTotal.textContent = formatDuration(snapshot.durationMs);
     position.textContent = track ? `${snapshot.cursor + 1} / ${snapshot.order.length}` : "";

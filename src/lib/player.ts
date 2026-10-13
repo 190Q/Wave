@@ -1,6 +1,6 @@
 import type { Playback, RepeatMode } from "../types";
-
-const TICK_MS = 250;
+import type { AudioEngine } from "./audio";
+import { FADE_MS, smoothstep } from "./fade";
 
 export interface PlayerSnapshot {
   sourceId: string | null;
@@ -19,11 +19,25 @@ export interface PlayerSnapshot {
   muted: boolean;
 }
 
+/** What the player needs to know about a track to play it. */
+export interface PlayerSource {
+  path: string;
+  durationMs: number;
+}
+
 type ChangeListener = (snapshot: PlayerSnapshot) => void;
 type ProgressListener = (positionMs: number, durationMs: number) => void;
 
+export const MIN_VOLUME = 0;
+export const MAX_VOLUME = 100;
+export const MAX_GAIN = 0.2;
+
+/** How close to the end counts as the end, for restarting a finished track. */
+const END_SLACK_MS = 200;
+
 export class Player {
-  private readonly durationOf: (trackId: string) => number;
+  private readonly engine: AudioEngine;
+  private readonly sourceOf: (trackId: string) => PlayerSource | undefined;
 
   /** The collection as it was handed to us, before shuffling. */
   private sourceOrder: string[] = [];
@@ -36,19 +50,30 @@ export class Player {
 
   private travel = 0;
 
-  private positionMs = 0;
+  /** The track the element is holding, so it is only loaded once. */
+  private loadedId: string | null = null;
+
   private playing = false;
   private shuffle = false;
   private repeat: RepeatMode = "off";
+
+  /** What the user asked for, `0` to `100`. */
   private volume = 70;
   private muted = false;
-  private timer: number | null = null;
+  /** What the element is actually at, `0` to `1`, while the transport fades. */
+  private level = 0;
+
+  private fade: { from: number; to: number; startedAt: number; durationMs: number } | null = null;
+  private fadeFrame: number | null = null;
+  private clockFrame: number | null = null;
 
   private readonly changeListeners = new Set<ChangeListener>();
   private readonly progressListeners = new Set<ProgressListener>();
 
-  constructor(durationOf: (trackId: string) => number) {
-    this.durationOf = durationOf;
+  constructor(engine: AudioEngine, sourceOf: (trackId: string) => PlayerSource | undefined) {
+    this.engine = engine;
+    this.sourceOf = sourceOf;
+    this.applyLevel();
   }
 
   onChange(listener: ChangeListener): () => void {
@@ -70,8 +95,16 @@ export class Player {
   }
 
   get currentDurationMs(): number {
+    const measured = this.engine.durationMs;
+    if (measured > 0) {
+      return measured;
+    }
     const id = this.currentId;
-    return id ? this.durationOf(id) : 0;
+    return id ? (this.sourceOf(id)?.durationMs ?? 0) : 0;
+  }
+
+  get positionMs(): number {
+    return this.currentId ? this.engine.positionMs : 0;
   }
 
   get hasQueue(): boolean {
@@ -92,7 +125,7 @@ export class Player {
       playing: this.playing,
       shuffle: this.shuffle,
       repeat: this.repeat,
-      volume: this.volume,
+      volume: Math.round(this.volume),
       muted: this.muted,
     };
   }
@@ -105,11 +138,8 @@ export class Player {
 
     const keep = startTrackId && trackIds.includes(startTrackId) ? startTrackId : (trackIds[0] ?? null);
     this.rebuildOrder(keep);
-    this.positionMs = 0;
 
-    if (this.playing && keep) {
-      this.startTimer();
-    }
+    this.loadCurrent(this.playing);
     this.emitChange();
     this.emitProgress();
   }
@@ -125,12 +155,15 @@ export class Player {
     this.sourceOrder = [...playback.sourceOrder];
     this.order = [...order];
     this.cursor = Math.min(Math.max(playback.cursor, 0), order.length - 1);
-    this.positionMs = Math.max(playback.positionMs, 0);
     this.shuffle = playback.shuffle;
     this.repeat = playback.repeat === "all" ? "all" : "off";
     this.muted = playback.muted;
     this.playing = false;
-    this.stopTimer();
+    this.level = 0;
+    this.applyLevel();
+    this.stopFade();
+    this.stopClock();
+    this.loadCurrent(false, Math.max(playback.positionMs, 0));
     this.emitChange();
     this.emitProgress();
   }
@@ -151,23 +184,37 @@ export class Player {
       return;
     }
     this.cursor = index;
-    this.positionMs = 0;
+    this.loadCurrent(this.playing, 0);
     this.emitChange();
     this.emitProgress();
   }
 
   play(): void {
-    if (!this.hasQueue) {
+    if (!this.hasQueue || this.playing) {
       return;
     }
     this.playing = true;
-    this.startTimer();
+
+    if (this.loadedId !== this.currentId) {
+      this.loadCurrent(true);
+    } else {
+      if (this.atEnd()) {
+        this.engine.seek(0);
+      }
+      void this.engine.play();
+      this.startClock();
+      this.startFade(this.targetLevel());
+    }
+
     this.emitChange();
   }
 
   pause(): void {
+    if (!this.playing) {
+      return;
+    }
     this.playing = false;
-    this.stopTimer();
+    this.startFade(0);
     this.emitChange();
   }
 
@@ -212,7 +259,7 @@ export class Player {
   seek(positionMs: number): void {
     const duration = this.currentDurationMs;
     const limit = duration > 0 ? duration : positionMs;
-    this.positionMs = Math.min(Math.max(positionMs, 0), limit);
+    this.engine.seek(Math.min(Math.max(positionMs, 0), limit));
     this.emitProgress();
   }
 
@@ -240,15 +287,22 @@ export class Player {
   }
 
   setVolume(volume: number): void {
-    this.volume = Math.min(Math.max(Math.round(volume), 0), 100);
+    this.volume = Math.min(Math.max(volume, MIN_VOLUME), MAX_VOLUME);
     if (this.volume > 0) {
       this.muted = false;
+    }
+    if (this.fade !== null) {
+      this.startFade(this.targetLevel());
+    } else {
+      this.level = this.targetLevel();
+      this.applyLevel();
     }
     this.emitChange();
   }
 
   toggleMute(): void {
     this.muted = !this.muted;
+    this.startFade(this.targetLevel());
     this.emitChange();
   }
 
@@ -283,17 +337,43 @@ export class Player {
 
     if (this.order.length === 0) {
       this.cursor = 0;
-      this.positionMs = 0;
       this.playing = false;
-      this.stopTimer();
+      this.stopClock();
+      this.loadCurrent(false);
     } else if (index < this.cursor) {
       this.cursor -= 1;
     } else if (wasCurrent) {
       this.cursor = Math.min(this.cursor, this.order.length - 1);
-      this.positionMs = 0;
+      this.loadCurrent(this.playing);
     }
     this.emitChange();
     this.emitProgress();
+  }
+
+  /** The track ran out: move on, or stop at the end of the queue. */
+  handleEnded(): void {
+    if (this.cursor + 1 < this.order.length || this.repeat === "all") {
+      this.next();
+    } else {
+      this.finish();
+    }
+  }
+
+  /** Metadata arrived, so the duration and the seeked position are real now. */
+  handleLoaded(): void {
+    this.emitChange();
+    this.emitProgress();
+  }
+
+  /** The current track could not be played. */
+  handleError(): void {
+    this.stopFade();
+    this.playing = false;
+    this.level = 0;
+    this.applyLevel();
+    this.stopClock();
+    this.loadedId = null;
+    this.emitChange();
   }
 
   private rebuildOrder(keepId: string | null): void {
@@ -309,55 +389,147 @@ export class Player {
     this.cursor = found >= 0 ? found : 0;
   }
 
+  private loadCurrent(autoplay: boolean, positionMs = 0): void {
+    const id = this.currentId;
+    const source = id ? this.sourceOf(id) : undefined;
+
+    this.stopFade();
+    this.level = 0;
+
+    if (!id || !source) {
+      this.loadedId = null;
+      this.playing = false;
+      this.stopClock();
+      this.engine.unload();
+      return;
+    }
+
+    this.loadedId = id;
+    this.engine.load(source.path, { autoplay, positionMs });
+
+    if (autoplay) {
+      this.startClock();
+      this.startFade(this.targetLevel());
+    } else {
+      this.stopClock();
+    }
+  }
+
+  /** Starts the current track from its head, keeping the playing state. */
   private startCurrent(): void {
-    this.positionMs = 0;
     this.playing = true;
-    this.startTimer();
+    this.loadCurrent(true);
     this.emitChange();
     this.emitProgress();
   }
 
   private finish(): void {
-    this.positionMs = this.currentDurationMs;
+    this.stopFade();
     this.playing = false;
-    this.stopTimer();
+    this.level = 0;
+    this.applyLevel();
+    this.engine.pause();
+    this.stopClock();
     this.emitChange();
     this.emitProgress();
   }
 
-  private startTimer(): void {
-    if (this.timer !== null) {
-      return;
-    }
-    this.timer = window.setInterval(this.tick, TICK_MS);
+  private atEnd(): boolean {
+    const duration = this.currentDurationMs;
+    return duration > 0 && this.engine.positionMs >= duration - END_SLACK_MS;
   }
 
-  private stopTimer(): void {
-    if (this.timer === null) {
-      return;
+  /** The level the element settles at: silent while paused or muted. */
+  private targetLevel(): number {
+    if (this.muted || !this.playing) {
+      return 0;
     }
-    window.clearInterval(this.timer);
-    this.timer = null;
+    return (this.volume / MAX_VOLUME) * MAX_GAIN;
   }
 
+  private applyLevel(): void {
+    this.engine.setVolume(this.level);
+  }
+
+  /** Moves the level to its target over a moment, rather than in one step. */
+  private startFade(to: number): void {
+    const from = this.level;
+    if (from === to) {
+      this.stopFade();
+      this.settleFade();
+      return;
+    }
+
+    this.fade = {
+      from,
+      to,
+      startedAt: performance.now(),
+      durationMs: FADE_MS,
+    };
+    if (this.fadeFrame === null) {
+      this.fadeFrame = requestAnimationFrame(this.stepFade);
+    }
+  }
+
+  private readonly stepFade = (now: number): void => {
+    this.fadeFrame = null;
+    const fade = this.fade;
+    if (!fade) {
+      return;
+    }
+
+    const progress = Math.min((now - fade.startedAt) / fade.durationMs, 1);
+    this.level = fade.from + (fade.to - fade.from) * smoothstep(progress);
+    this.applyLevel();
+
+    if (progress < 1) {
+      this.fadeFrame = requestAnimationFrame(this.stepFade);
+      return;
+    }
+
+    this.fade = null;
+    this.settleFade();
+  };
+
+  /** Lets go of a fade without stopping the element. */
+  private stopFade(): void {
+    this.fade = null;
+    if (this.fadeFrame !== null) {
+      window.cancelAnimationFrame(this.fadeFrame);
+      this.fadeFrame = null;
+    }
+  }
+
+  /** A pause is only complete once the fade has taken the sound away. */
+  private settleFade(): void {
+    if (!this.playing && this.engine.isPlaying) {
+      this.engine.pause();
+      this.stopClock();
+      this.emitProgress();
+    }
+  }
+
+  private startClock(): void {
+    if (this.clockFrame === null) {
+      this.clockFrame = requestAnimationFrame(this.tick);
+    }
+  }
+
+  private stopClock(): void {
+    if (this.clockFrame !== null) {
+      window.cancelAnimationFrame(this.clockFrame);
+      this.clockFrame = null;
+    }
+  }
+
+  /** Reads the media clock every frame, so the UI follows the sound. */
   private readonly tick = (): void => {
+    this.clockFrame = null;
     if (!this.playing) {
       return;
     }
-
-    const duration = this.currentDurationMs;
-    this.positionMs += TICK_MS;
-
-    if (duration > 0 && this.positionMs >= duration) {
-      if (this.cursor + 1 < this.order.length || this.repeat === "all") {
-        this.next();
-      } else {
-        this.finish();
-      }
-      return;
-    }
-
     this.emitProgress();
+    this.clockFrame = requestAnimationFrame(this.tick);
   };
 
   private emitChange(): void {
@@ -381,4 +553,9 @@ function shuffleInPlace(items: string[]): void {
     const swap = Math.floor(Math.random() * (index + 1));
     [items[index], items[swap]] = [items[swap], items[index]];
   }
+}
+
+/** Quick off the mark, gentle into the finish, which suits a volume step. */
+export function easeOutCubic(t: number): number {
+  return 1 - (1 - t) ** 3;
 }

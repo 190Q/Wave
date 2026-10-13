@@ -15,9 +15,10 @@ const STATE_FILE: &str = "state.json";
 
 /// How many `Ctrl+Shift+1..9` action slots the UI offers.
 pub const SLOT_COUNT: usize = 9;
-/// The smallest frame the window accepts, matching `tauri.conf.json`.
-const MINI_WIDTH: f64 = 485.0;
-const MINI_HEIGHT: f64 = 240.0;
+const MIN_WIDTH: u32 = 485;
+const MIN_HEIGHT: u32 = 240;
+const MINI_WIDTH: f64 = MIN_WIDTH as f64;
+const MINI_HEIGHT: f64 = MIN_HEIGHT as f64;
 const MINI_CORNER_COUNT: u8 = 4;
 const DEFAULT_MINI_CORNER: u8 = 4;
 const APPLY_QUIET_MS: u64 = 400;
@@ -183,7 +184,8 @@ pub struct Store {
 
 impl Store {
     pub fn load<R: Runtime>(app: &AppHandle<R>) -> Self {
-        let state = read_state(app).unwrap_or_default();
+        let mut state = read_state(app).unwrap_or_default();
+        sanitise_geometries(&mut state);
         Self {
             inner: Mutex::new(state),
         }
@@ -312,15 +314,22 @@ pub fn place_mini_player(
 }
 
 
-fn read_window_geometry<R: Runtime>(
-    window: &WebviewWindow<R>,
-    previous: Option<&WindowGeometry>,
-) -> Result<WindowGeometry, String> {
-    if window.is_maximized().unwrap_or(false) {
-        let mut geometry = previous.cloned().unwrap_or_default();
-        geometry.maximized = true;
-        return Ok(geometry);
+fn clamp_geometry(geometry: &mut WindowGeometry) {
+    geometry.width = geometry.width.max(MIN_WIDTH);
+    geometry.height = geometry.height.max(MIN_HEIGHT);
+}
+
+fn sanitise_geometries(state: &mut PersistedState) {
+    if let Some(window) = state.window.as_mut() {
+        clamp_geometry(window);
     }
+    for slot in state.window_slots.iter_mut().flatten() {
+        clamp_geometry(slot);
+    }
+}
+
+fn read_window_geometry<R: Runtime>(window: &WebviewWindow<R>) -> Result<WindowGeometry, String> {
+    let maximized = window.is_maximized().unwrap_or(false);
 
     let scale = window.scale_factor().unwrap_or(1.0);
     let size = window
@@ -334,14 +343,16 @@ fn read_window_geometry<R: Runtime>(
         .flatten()
         .and_then(|m| m.name().map(|n| n.to_string()));
 
-    Ok(WindowGeometry {
+    let mut geometry = WindowGeometry {
         width: size.width,
         height: size.height,
         x: position.x,
         y: position.y,
         monitor,
-        maximized: false,
-    })
+        maximized,
+    };
+    clamp_geometry(&mut geometry);
+    Ok(geometry)
 }
 
 fn apply_geometry<R: Runtime>(
@@ -371,6 +382,8 @@ fn apply_geometry<R: Runtime>(
 
 /// Resizes the window to the saved outer size, which is kept in logical units.
 fn resize_to<R: Runtime>(window: &WebviewWindow<R>, geometry: &WindowGeometry) {
+    let mut geometry = geometry.clone();
+    clamp_geometry(&mut geometry);
     resize_outer(
         window,
         tauri::LogicalSize::new(f64::from(geometry.width), f64::from(geometry.height)),
@@ -429,7 +442,7 @@ pub fn apply_window_settings<R: Runtime>(app: &AppHandle<R>, store: &Store, was_
     if mini {
         if !was_mini && current.settings.remember_window {
             // Remember the frame, so leaving mini mode puts it back.
-            if let Ok(geometry) = read_window_geometry(&window, current.window.as_ref()) {
+            if let Ok(geometry) = read_window_geometry(&window) {
                 store.update(|state| state.window = Some(geometry));
             }
         }
@@ -561,7 +574,7 @@ pub fn save_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<(
         return Ok(());
     };
 
-    let geometry = read_window_geometry(&window, store.snapshot().window.as_ref())?;
+    let geometry = read_window_geometry(&window)?;
     let next = store.update(|state| state.window = Some(geometry));
     save(&app, &next)
 }
@@ -588,8 +601,7 @@ pub fn save_window_slot(
         return Ok(store.snapshot());
     };
 
-    let previous = store.snapshot().window_slots.get(slot).cloned().flatten();
-    let geometry = read_window_geometry(&window, previous.as_ref())?;
+    let geometry = read_window_geometry(&window)?;
 
     let next = store.update(|state| {
         while state.window_slots.len() < SLOT_COUNT {

@@ -14,6 +14,8 @@ import {
   type AppState,
 } from "../lib/state";
 import type { ReduceMotionMode, SearchAlgorithm, Settings, WindowGeometry } from "../types";
+import { createPanel } from "./drop";
+import { fillIcons } from "./icons";
 import { placePicker } from "./picker";
 
 const DIALOG_MS = 220;
@@ -41,8 +43,10 @@ export function mountSettings(): void {
   const closeButton = element("settings-close");
   const saveButton = element<HTMLButtonElement>("settings-save");
   const body = element("settings-body");
+  const dropToggle = element("settings-toggle");
+  const dropList = element("settings-drop-list");
 
-  if (!dialog || !trigger || !closeButton || !saveButton || !body) {
+  if (!dialog || !trigger || !closeButton || !saveButton || !body || !dropToggle || !dropList) {
     return;
   }
 
@@ -101,6 +105,20 @@ export function mountSettings(): void {
       dialog.close();
     }, DIALOG_MS);
   };
+
+  /** The panel when it fits, and the compact list when it does not. */
+  const panel = createPanel({
+    dialog,
+    body,
+    toggle: dropToggle,
+    face: trigger,
+    show: openDialog,
+    hide: closeDialog,
+    render: () => {
+      dropList.innerHTML = dropRowsHtml(getState().root);
+      fillIcons(dropList);
+    },
+  });
 
   const placeSlotPicker = (): void => {
     if (openSlot === null) {
@@ -253,8 +271,18 @@ export function mountSettings(): void {
     }
   };
 
-  openSettingsPanel = openDialog;
-  trigger.addEventListener("click", openDialog);
+  /** The compact list runs the same commands as the panel, one row each. */
+  dropList.addEventListener("click", (event) => {
+    const command = (event.target as HTMLElement).closest<HTMLElement>("[data-command]")?.dataset
+      .command;
+    if (!command) {
+      return;
+    }
+    panel.dismiss();
+    void runCommand(command);
+  });
+
+  openSettingsPanel = panel.toggle;
   closeButton.addEventListener("click", closeDialog);
 
   saveButton.addEventListener("click", () => {
@@ -537,6 +565,20 @@ function snapNote(assigned: string, frame: WindowGeometry | null): string {
         : `Snaps back to ${frame.width}x${frame.height}`;
 
   return `<p class="settings-hint">${what}</p>`;
+}
+
+/** The compact list: the settings that act at once, rather than waiting for Save. */
+function dropRowsHtml(root: string | null): string {
+  return `
+    <button
+      class="drop-item"
+      type="button"
+      data-command="open-folder"
+      aria-label="Open in Explorer"
+      title="Open in Explorer"${root ? "" : " disabled"}
+    >
+      <span class="btn-icon" data-icon="folder"></span>
+    </button>`;
 }
 
 function section(title: string, inner: string): string {

@@ -41,7 +41,7 @@
 .crate-text {
   min-width: 0;
   overflow: hidden;
-  transition: opacity 0.2s ease;
+  transition: opacity 0.2s ease 0.14s;
 }
 
 /* The row cannot fit the names, so only the covers remain. */
@@ -53,6 +53,7 @@
 
 .crates.is-compact .crate-text {
   opacity: 0;
+  transition: opacity 0.12s ease;
 }
 
 /* Used while re-measuring, so a fresh render never animates. */
@@ -103,7 +104,8 @@
 }
 
 #settings-open:hover .btn-icon,
-#settings-open.is-open .btn-icon {
+#settings-open.is-open .btn-icon,
+#settings-toggle.is-open > .settings-button .btn-icon {
   transform: rotate(90deg);
 }
 

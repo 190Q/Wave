@@ -12,7 +12,6 @@ import type { SearchAlgorithm, Track } from "../types";
 import { collectionCoverHtml } from "./artwork";
 import { hydrateCovers } from "./covers";
 import { highlightHtml } from "./highlight";
-import { openImport } from "./import-dialog";
 
 const RESULT_LIMIT = 40;
 
@@ -28,7 +27,6 @@ export function focusSearch(): void {
 
 export function mountTopbar(): void {
   const libraryButton = element("library-open");
-  const importButton = element("import-open");
   const searchButton = element<HTMLButtonElement>("search-open");
   const searchModal = element("search-modal");
   const searchPanel = element("search-panel");
@@ -40,7 +38,6 @@ export function mountTopbar(): void {
 
   if (
     !libraryButton ||
-    !importButton ||
     !searchButton ||
     !searchModal ||
     !searchPanel ||
@@ -54,7 +51,6 @@ export function mountTopbar(): void {
   }
 
   libraryButton.addEventListener("click", () => toggleLibrary());
-  importButton.addEventListener("click", () => openImport(importButton));
 
   let resultsOpen = false;
 
@@ -264,20 +260,38 @@ export function mountTopbar(): void {
     }
   });
 
-  let cratesNatural = 0;
-
-  const decideCrates = (): void => {
-    recents.classList.toggle("is-compact", cratesNatural > recents.clientWidth + 1);
-  };
+  let cratesNatural: number | null = null;
+  let cratesFitAt = Number.POSITIVE_INFINITY;
 
   const measureCrates = (): void => {
     const compact = recents.classList.contains("is-compact");
     recents.classList.add("no-anim");
     recents.classList.remove("is-compact");
-    cratesNatural = recents.scrollWidth;
+    const natural = recents.scrollWidth;
     recents.classList.toggle("is-compact", compact);
     void recents.offsetWidth;
     recents.classList.remove("no-anim");
+
+    if (natural > recents.clientWidth + 1) {
+      cratesNatural = natural;
+    } else {
+      cratesNatural = null;
+      cratesFitAt = recents.clientWidth;
+    }
+  };
+
+  const decideCrates = (): void => {
+    if (cratesNatural === null && recents.clientWidth >= cratesFitAt) {
+      recents.classList.remove("is-compact");
+      return;
+    }
+
+    if (cratesNatural === null) {
+      measureCrates();
+    }
+
+    const natural = cratesNatural;
+    recents.classList.toggle("is-compact", natural !== null && natural > recents.clientWidth + 1);
   };
 
   const fitCrates = (): void => {
@@ -286,7 +300,7 @@ export function mountTopbar(): void {
   };
 
   if (typeof ResizeObserver !== "undefined") {
-    new ResizeObserver(fitCrates).observe(recents);
+    new ResizeObserver(decideCrates).observe(recents);
   }
   // Text metrics settle once the display font has loaded.
   void document.fonts?.ready.then(fitCrates);

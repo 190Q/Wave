@@ -1,3 +1,4 @@
+import type { IconName } from "../assets/icons/index";
 import { escapeHtml } from "../lib/format";
 import { scoreItems, type FieldsOf } from "../lib/search";
 import {
@@ -22,6 +23,7 @@ import type {
   SpotifyStatus,
 } from "../types";
 import { confirmDialog } from "./confirm";
+import { createPanel } from "./drop";
 import { highlightHtml } from "./highlight";
 import { fillIcons } from "./icons";
 import { placePicker, windowFrame } from "./picker";
@@ -44,8 +46,10 @@ export function mountImportDialog(): void {
   const fallback = element("import-open");
   const closeButton = element("import-close");
   const body = element("import-body");
+  const dropToggle = element("import-toggle");
+  const dropList = element("import-drop-list");
 
-  if (!dialog || !fallback || !closeButton || !body) {
+  if (!dialog || !fallback || !closeButton || !body || !dropToggle || !dropList) {
     return;
   }
 
@@ -248,7 +252,21 @@ export function mountImportDialog(): void {
     }, DIALOG_MS);
   };
 
-  openPanel = open;
+  /** The panel when it fits, and the compact list when it does not. */
+  const panel = createPanel({
+    dialog,
+    body,
+    toggle: dropToggle,
+    face: fallback,
+    show: open,
+    hide: close,
+    render: () => {
+      dropList.innerHTML = dropRowsHtml(getState());
+      fillIcons(dropList);
+    },
+  });
+
+  openPanel = panel.toggle;
   closeButton.addEventListener("click", close);
 
   body.addEventListener("click", (event) => {
@@ -320,6 +338,17 @@ export function mountImportDialog(): void {
         return;
     }
   };
+
+  /** The compact list runs the same actions as the panel, one row each. */
+  dropList.addEventListener("click", (event) => {
+    const action = (event.target as HTMLElement).closest<HTMLElement>("[data-import]")?.dataset
+      .import;
+    if (!action) {
+      return;
+    }
+    panel.dismiss();
+    runImportAction(action);
+  });
 
   /**
    * Reads the link before anything is fetched, so the songs the library already
@@ -639,6 +668,31 @@ const FETCH_SECTIONS: FetchSection[] = [
     action: "covers",
   },
 ];
+
+/** The compact list: the same actions as glyphs, for a window with no room. */
+function dropRowsHtml(state: AppState): string {
+  const empty = state.collections.length === 0;
+
+  return [
+    dropRow("songs", "folder", "Import songs only"),
+    dropRow("lyrics", "lyrics", "Fetch lyrics", empty),
+    dropRow("covers", "covers", "Fetch covers", empty),
+  ].join("");
+}
+
+/** One glyph-only action; the label is what a tooltip and a reader announce. */
+function dropRow(action: string, icon: IconName, label: string, disabled = false): string {
+  return `
+    <button
+      class="drop-item"
+      type="button"
+      data-import="${action}"
+      aria-label="${escapeHtml(label)}"
+      title="${escapeHtml(label)}"${disabled ? " disabled" : ""}
+    >
+      <span class="btn-icon" data-icon="${icon}"></span>
+    </button>`;
+}
 
 function fetchSection(
   spec: FetchSection,

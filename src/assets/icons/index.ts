@@ -2,11 +2,14 @@ import add from "./add.svg?raw";
 import appIcon from "./app-icon.svg?raw";
 import close from "./close.svg?raw";
 import closeWindow from "./close-window.svg?raw";
+import covers from "./covers.svg?raw";
+import folder from "./folder.svg?raw";
 import grip from "./grip.svg?raw";
 import importIcon from "./import.svg?raw";
 import library from "./library.svg?raw";
 import like from "./like.svg?raw";
 import likeFilled from "./like-filled.svg?raw";
+import lyrics from "./lyrics.svg?raw";
 import maximise from "./maximise.svg?raw";
 import minimise from "./minimise.svg?raw";
 import next from "./next.svg?raw";
@@ -26,11 +29,14 @@ export const icons = {
   "app-icon": appIcon,
   close,
   "close-window": closeWindow,
+  covers,
+  folder,
   grip,
   import: importIcon,
   library,
   like,
   "like-filled": likeFilled,
+  lyrics,
   maximise,
   minimise,
   next,

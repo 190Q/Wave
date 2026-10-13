@@ -39,3 +39,11 @@
 .confirm-dialog.is-closed::backdrop {
   opacity: 0;
 }
+
+.is-measuring {
+  display: block !important;
+  position: absolute;
+  top: -10000rem;
+  left: -10000rem;
+  visibility: hidden;
+}

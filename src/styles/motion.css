@@ -1,11 +1,11 @@
 @media (prefers-reduced-motion: reduce) {
-  .theme-drop,
+  .drop,
   #theme-toggle .btn-icon {
     transition-duration: 0s;
   }
 }
 
-:root.is-reduced-motion .theme-drop,
+:root.is-reduced-motion .drop,
 :root.is-reduced-motion #theme-toggle .btn-icon {
   transition-duration: 0s;
 }

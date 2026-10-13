@@ -1,21 +1,3 @@
-/* Off-screen measurement box for dialogFits(); never shown to anyone. */
-.theme-dialog.is-measuring {
-  display: block;
-  position: absolute;
-  top: -10000rem;
-  left: -10000rem;
-  visibility: hidden;
-}
-
-/* The toggle and its list are one shape: the drop paints the pill and grows
-   downwards, so opening it looks like the button getting taller. */
-.theme-toggle {
-  position: relative;
-  z-index: 1;
-  isolation: isolate;
-  display: inline-flex;
-}
-
 #theme-toggle .btn-icon {
   transition: transform 0.4s var(--ease);
 }
@@ -24,54 +6,7 @@
   transform: rotate(180deg);
 }
 
-/* The drop paints the whole shape, so the face is only its top row. */
-#theme-toggle-face {
-  background: none;
-}
 
-/* Hovering the face lifts its cap by one shade, exactly like a pill hover. */
-#theme-toggle-face:hover {
-  background: var(--raise);
-}
-
-.theme-drop {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: -1;
-  display: grid;
-  grid-template-rows: 0fr;
-  padding: var(--theme-toggle-h, 2rem) var(--theme-drop-pad, 0.85rem) 0;
-  overflow: hidden;
-  border-radius: var(--theme-toggle-radius, 1rem);
-  background-image: linear-gradient(var(--raise), var(--raise)), var(--stage-background);
-  background-size: 100vw 100vh;
-  background-position: 0 calc(-1 * var(--theme-drop-top, 0px));
-  background-repeat: no-repeat;
-  transition: grid-template-rows 0.4s var(--ease);
-}
-
-.theme-toggle.is-open .theme-drop {
-  grid-template-rows: 1fr;
-}
-
-.theme-drop-inner {
-  min-height: 0;
-  overflow: hidden;
-}
-
-.theme-drop-list {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.15rem;
-  padding-bottom: 0.4rem;
-  max-height: var(--theme-drop-max, 20rem);
-  overflow-y: auto;
-}
-
-/* The drop is only as wide as the button, so the names never fit. */
 .theme-drop .swatch-name {
   display: none;
 }

@@ -1,0 +1,67 @@
+.drop-toggle {
+  position: relative;
+  z-index: 1;
+  isolation: isolate;
+  display: inline-flex;
+}
+
+.drop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: -1;
+  display: grid;
+  grid-template-rows: 0fr;
+  padding: var(--drop-h, 2rem) var(--drop-pad, 0.85rem) 0;
+  overflow: hidden;
+  border-radius: var(--drop-radius, 1rem);
+  background-image: linear-gradient(var(--raise), var(--raise)), var(--stage-background);
+  background-size: 100vw 100vh;
+  background-position: calc(-1 * var(--drop-left, 0px)) calc(-1 * var(--drop-top, 0px));
+  background-repeat: no-repeat;
+  transition: grid-template-rows 0.4s var(--ease);
+}
+
+.drop-toggle.is-open .drop {
+  grid-template-rows: 1fr;
+}
+
+/* The drop paints the pill, so the face only lifts on hover. */
+.drop-toggle .pill {
+  background: none;
+}
+
+.drop-toggle .pill:hover:not(:disabled) {
+  background: var(--raise);
+}
+
+.drop-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.drop-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  padding-bottom: 0.4rem;
+  max-height: var(--drop-max, 20rem);
+  overflow-y: auto;
+}
+
+/* A row for a drop that offers actions rather than swatches. */
+.drop-item {
+  display: grid;
+  place-items: center;
+  padding: 0.3rem 0;
+  background: none;
+  border: 0;
+  color: var(--muted);
+  transition: color 0.15s;
+}
+
+.drop-item:hover:not(:disabled) {
+  color: var(--text);
+}

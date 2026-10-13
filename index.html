@@ -79,12 +79,27 @@
           <span class="btn-icon" data-icon="search"></span>
         </button>
 
-        <button class="pill" id="import-open" type="button" aria-label="Import">
-          <span class="btn-icon" data-icon="import"></span>
-          <span class="pill-label">Import</span>
-        </button>
+        <div class="drop-toggle" id="import-toggle">
+          <button
+            class="pill"
+            id="import-open"
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+            aria-label="Import"
+          >
+            <span class="btn-icon" data-icon="import"></span>
+            <span class="pill-label">Import</span>
+          </button>
 
-        <div class="theme-toggle" id="theme-toggle">
+          <div class="drop" id="import-drop">
+            <div class="drop-inner">
+              <div class="drop-list" id="import-drop-list"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="drop-toggle" id="theme-toggle">
           <button
             class="pill"
             id="theme-toggle-face"
@@ -97,16 +112,31 @@
             <span class="pill-label">Theme</span>
           </button>
 
-          <div class="theme-drop" id="theme-drop">
-            <div class="theme-drop-inner">
-              <div class="theme-drop-list" id="theme-drop-list"></div>
+          <div class="drop theme-drop" id="theme-drop">
+            <div class="drop-inner">
+              <div class="drop-list" id="theme-drop-list"></div>
             </div>
           </div>
         </div>
 
-        <button class="pill icon-only settings-button" id="settings-open" type="button" aria-label="Settings">
-          <span class="btn-icon" data-icon="settings"></span>
-        </button>
+        <div class="drop-toggle" id="settings-toggle">
+          <button
+            class="pill icon-only settings-button"
+            id="settings-open"
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+            aria-label="Settings"
+          >
+            <span class="btn-icon" data-icon="settings"></span>
+          </button>
+
+          <div class="drop" id="settings-drop">
+            <div class="drop-inner">
+              <div class="drop-list" id="settings-drop-list"></div>
+            </div>
+          </div>
+        </div>
       </header>
 
       <div class="search-modal" id="search-modal" hidden>

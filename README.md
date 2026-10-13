@@ -49,6 +49,7 @@ See [Requirements](#requirements) for the per-OS toolchain and
 - [Development](#development)
 - [Platform notes](#platform-notes)
 - [Troubleshooting](#troubleshooting)
+- [License](#license)
 
 ## Features
 
@@ -561,6 +562,6 @@ both platforms and need no per-OS code.
 
 ## License
 
-No license file is included in this repository, so all rights are reserved by
-default. Add a `LICENSE` file before you redistribute or build on this code
-publicly.
+Wave is released under the [MIT License](LICENSE).
+
+Copyright (c) 2026 190Q.

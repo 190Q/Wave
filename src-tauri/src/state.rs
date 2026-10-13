@@ -2,14 +2,28 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalSize, Runtime, State, WebviewWindow};
 
 use crate::library::TrackPaths;
 use crate::playlists;
 
 const STATE_FILE: &str = "state.json";
+
+/// How many `Ctrl+Shift+1..9` action slots the UI offers.
+pub const SLOT_COUNT: usize = 9;
+/// The smallest frame the window accepts, matching `tauri.conf.json`.
+const MINI_WIDTH: f64 = 485.0;
+const MINI_HEIGHT: f64 = 240.0;
+const MINI_CORNER_COUNT: u8 = 4;
+const DEFAULT_MINI_CORNER: u8 = 4;
+const APPLY_QUIET_MS: u64 = 400;
+pub const SETTINGS_EVENT: &str = "settings-changed";
+static APPLYING_SINCE: Mutex<Option<Instant>> = Mutex::new(None);
+
+static MINI_INNER: Mutex<Option<PhysicalSize<u32>>> = Mutex::new(None);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -17,6 +31,14 @@ pub struct Settings {
     pub theme: String,
     pub volume: u8,
     pub recent_colours: Vec<String>,
+    pub resume_on_launch: bool,
+    pub reduce_motion: String,
+    pub remember_window: bool,
+    pub always_on_top: bool,
+    pub mini_player: bool,
+    pub mini_corner: u8,
+    pub search_algorithm: String,
+    pub shortcut_slots: Vec<String>,
 }
 
 impl Default for Settings {
@@ -25,6 +47,14 @@ impl Default for Settings {
             theme: "adaptive".to_string(),
             volume: 70,
             recent_colours: Vec::new(),
+            resume_on_launch: true,
+            reduce_motion: "system".to_string(),
+            remember_window: true,
+            always_on_top: false,
+            mini_player: false,
+            mini_corner: DEFAULT_MINI_CORNER,
+            search_algorithm: "substring".to_string(),
+            shortcut_slots: Vec::new(),
         }
     }
 }
@@ -104,6 +134,15 @@ pub struct WindowGeometry {
     pub maximized: bool,
 }
 
+/// How much of a saved frame a slot snap puts back: all of it, or one half.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SnapPart {
+    Frame,
+    Size,
+    Position,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PersistedState {
@@ -113,6 +152,8 @@ pub struct PersistedState {
     pub artwork_colours: HashMap<String, String>,
     pub session: Session,
     pub window: Option<WindowGeometry>,
+    /// One saved frame per `Ctrl+Shift+1..9` slot, for the snap action.
+    pub window_slots: Vec<Option<WindowGeometry>>,
 }
 
 /// In-memory copy of [`PersistedState`], guarded for the command handlers.
@@ -206,62 +247,50 @@ pub fn set_settings(
     store: State<'_, Store>,
     settings: Settings,
 ) -> Result<PersistedState, String> {
+    let before = store.snapshot().settings;
     let next = store.update(|state| state.settings = settings);
-    commit(&app, next)
+    let committed = commit(&app, next)?;
+
+    if before.mini_player != committed.settings.mini_player
+        || before.mini_corner != committed.settings.mini_corner
+    {
+        apply_window_settings(&app, &store, before.mini_player);
+    } else if before.always_on_top != committed.settings.always_on_top {
+        // Only the stacking changed, so the window is left where it stands.
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window
+                .set_always_on_top(committed.settings.mini_player || committed.settings.always_on_top);
+        }
+    }
+    Ok(committed)
 }
 
-/// Applies the remembered geometry to the main window, before it is shown.
-pub fn restore_window_geometry<R: Runtime>(app: &AppHandle<R>, store: &Store) {
-    let Some(geometry) = store.snapshot().window else {
-        return;
-    };
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
-
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let wanted = tauri::PhysicalSize::new(
-        (f64::from(geometry.width) * scale).round() as u32,
-        (f64::from(geometry.height) * scale).round() as u32,
-    );
-
-    let frame = match (window.outer_size(), window.inner_size()) {
-        (Ok(outer), Ok(inner)) => tauri::PhysicalSize::new(
-            outer.width.saturating_sub(inner.width),
-            outer.height.saturating_sub(inner.height),
-        ),
-        _ => tauri::PhysicalSize::new(0, 0),
-    };
-
-    let _ = window.set_size(tauri::PhysicalSize::new(
-        wanted.width.saturating_sub(frame.width),
-        wanted.height.saturating_sub(frame.height),
-    ));
-
-    // Only restore the position while the monitor it lived on is still around.
-    let monitor_present = match &geometry.monitor {
-        Some(name) => app
-            .available_monitors()
-            .map(|monitors| monitors.iter().any(|m| m.name().map(|n| n == name).unwrap_or(false)))
-            .unwrap_or(false),
-        None => true,
-    };
-    if monitor_present {
-        let _ = window.set_position(tauri::PhysicalPosition::new(geometry.x, geometry.y));
-    }
-
-    if geometry.maximized {
-        let _ = window.maximize();
-    }
-}
-
+/// Puts the mini player in a corner, for the `m + 1..4` shortcuts.
 #[tauri::command]
-pub fn save_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<(), String> {
-    let Some(window) = app.get_webview_window("main") else {
-        return Ok(());
-    };
+pub fn place_mini_player(
+    app: AppHandle,
+    store: State<'_, Store>,
+    corner: u8,
+) -> Result<PersistedState, String> {
+    let corner = corner.clamp(1, MINI_CORNER_COUNT);
+    let next = store.update(|state| state.settings.mini_corner = corner);
+    let committed = commit(&app, next)?;
 
-    let maximized = window.is_maximized().unwrap_or(false);
+    apply_window_settings(&app, &store, committed.settings.mini_player);
+    Ok(committed)
+}
+
+
+fn read_window_geometry<R: Runtime>(
+    window: &WebviewWindow<R>,
+    previous: Option<&WindowGeometry>,
+) -> Result<WindowGeometry, String> {
+    if window.is_maximized().unwrap_or(false) {
+        let mut geometry = previous.cloned().unwrap_or_default();
+        geometry.maximized = true;
+        return Ok(geometry);
+    }
+
     let scale = window.scale_factor().unwrap_or(1.0);
     let size = window
         .outer_size()
@@ -274,23 +303,235 @@ pub fn save_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<(
         .flatten()
         .and_then(|m| m.name().map(|n| n.to_string()));
 
-    let next = store.update(|state| {
-        if maximized {
-            // Keep the windowed geometry, so unmaximising stays sensible.
-            let mut geometry = state.window.clone().unwrap_or_default();
-            geometry.maximized = true;
-            state.window = Some(geometry);
-        } else {
-            state.window = Some(WindowGeometry {
-                width: size.width,
-                height: size.height,
-                x: position.x,
-                y: position.y,
-                monitor,
-                maximized: false,
-            });
+    Ok(WindowGeometry {
+        width: size.width,
+        height: size.height,
+        x: position.x,
+        y: position.y,
+        monitor,
+        maximized: false,
+    })
+}
+
+fn apply_geometry<R: Runtime>(
+    app: &AppHandle<R>,
+    window: &WebviewWindow<R>,
+    geometry: &WindowGeometry,
+    part: SnapPart,
+) {
+    note_programmatic_change();
+
+    if window.is_maximized().unwrap_or(false) && !(part == SnapPart::Frame && geometry.maximized) {
+        let _ = window.unmaximize();
+    }
+
+    if matches!(part, SnapPart::Frame | SnapPart::Size) {
+        resize_to(window, geometry);
+    }
+
+    if matches!(part, SnapPart::Frame | SnapPart::Position) {
+        move_to(app, window, geometry);
+    }
+
+    if part == SnapPart::Frame && geometry.maximized {
+        let _ = window.maximize();
+    }
+}
+
+/// Resizes the window to the saved outer size, which is kept in logical units.
+fn resize_to<R: Runtime>(window: &WebviewWindow<R>, geometry: &WindowGeometry) {
+    resize_outer(
+        window,
+        tauri::LogicalSize::new(f64::from(geometry.width), f64::from(geometry.height)),
+    );
+}
+
+fn resize_outer<R: Runtime>(
+    window: &WebviewWindow<R>,
+    wanted: tauri::LogicalSize<f64>,
+) -> PhysicalSize<u32> {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let rect = tauri::PhysicalSize::new(
+        (wanted.width * scale).round() as u32,
+        (wanted.height * scale).round() as u32,
+    );
+
+    let border = match (window.outer_size(), window.inner_size()) {
+        (Ok(outer), Ok(inner)) => tauri::PhysicalSize::new(
+            outer.width.saturating_sub(inner.width),
+            outer.height.saturating_sub(inner.height),
+        ),
+        _ => tauri::PhysicalSize::new(0, 0),
+    };
+
+    let client = tauri::PhysicalSize::new(
+        rect.width.saturating_sub(border.width),
+        rect.height.saturating_sub(border.height),
+    );
+    let _ = window.set_size(client);
+    client
+}
+
+/// Puts the window back where it sat, while the monitor it lived on is around.
+fn move_to<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>, geometry: &WindowGeometry) {
+    let monitor_present = match &geometry.monitor {
+        Some(name) => app
+            .available_monitors()
+            .map(|monitors| monitors.iter().any(|m| m.name().map(|n| n == name).unwrap_or(false)))
+            .unwrap_or(false),
+        None => true,
+    };
+    if monitor_present {
+        let _ = window.set_position(tauri::PhysicalPosition::new(geometry.x, geometry.y));
+    }
+}
+
+pub fn apply_window_settings<R: Runtime>(app: &AppHandle<R>, store: &Store, was_mini: bool) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    let current = store.snapshot();
+    let mini = current.settings.mini_player;
+    let _ = window.set_always_on_top(mini || current.settings.always_on_top);
+
+    if mini {
+        if !was_mini && current.settings.remember_window {
+            // Remember the frame, so leaving mini mode puts it back.
+            if let Ok(geometry) = read_window_geometry(&window, current.window.as_ref()) {
+                store.update(|state| state.window = Some(geometry));
+            }
         }
+        let monitor = window.current_monitor().ok().flatten();
+        note_programmatic_change();
+        let _ = window.unmaximize();
+        let inner = resize_outer(&window, tauri::LogicalSize::new(MINI_WIDTH, MINI_HEIGHT));
+        remember_mini_size(inner);
+        if let Some(monitor) = monitor {
+            place_in_corner(&window, &monitor, current.settings.mini_corner);
+        }
+        return;
+    }
+
+    if was_mini {
+        if let Some(geometry) = current.window {
+            apply_geometry(app, &window, &geometry, SnapPart::Frame);
+        }
+    }
+}
+
+fn place_in_corner<R: Runtime>(window: &WebviewWindow<R>, monitor: &Monitor, corner: u8) {
+    let area = monitor.work_area();
+    let size = window.outer_size().unwrap_or_default();
+
+    let left = area.position.x;
+    let top = area.position.y;
+    let right = area.position.x + area.size.width as i32 - size.width as i32;
+    let bottom = area.position.y + area.size.height as i32 - size.height as i32;
+
+    let (x, y) = match corner {
+        1 => (left, top),
+        2 => (right, top),
+        3 => (left, bottom),
+        _ => (right, bottom),
+    };
+
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
+/// Watches the main window, so a resize the user drags it to ends mini mode.
+pub fn watch_window<R: Runtime>(app: &AppHandle<R>) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    let handle = app.clone();
+    window.on_window_event(move |event| match event {
+        tauri::WindowEvent::Resized(size) => note_resized(&handle, *size),
+        tauri::WindowEvent::ScaleFactorChanged { .. } => note_programmatic_change(),
+        _ => {}
     });
+}
+
+fn note_programmatic_change() {
+    let mut since = APPLYING_SINCE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *since = Some(Instant::now());
+}
+
+/// True while the app is still settling a move it made itself.
+fn applying() -> bool {
+    let since = APPLYING_SINCE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    since
+        .map(|at| at.elapsed() < Duration::from_millis(APPLY_QUIET_MS))
+        .unwrap_or(false)
+}
+
+fn note_resized<R: Runtime>(app: &AppHandle<R>, size: PhysicalSize<u32>) {
+    if applying() || is_mini_size(size) {
+        return;
+    }
+
+    let Some(store) = app.try_state::<Store>() else {
+        return;
+    };
+    if !store.snapshot().settings.mini_player {
+        return;
+    }
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    let next = store.update(|state| state.settings.mini_player = false);
+    if save(app, &next).is_ok() {
+        let _ = app.emit(SETTINGS_EVENT, next.settings.clone());
+    }
+    let _ = window.set_always_on_top(next.settings.always_on_top);
+}
+
+fn remember_mini_size(size: PhysicalSize<u32>) {
+    let mut recorded = MINI_INNER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *recorded = Some(size);
+}
+
+fn is_mini_size(size: PhysicalSize<u32>) -> bool {
+    let recorded = MINI_INNER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(recorded) = *recorded else {
+        return false;
+    };
+    size.width.abs_diff(recorded.width) < 3 && size.height.abs_diff(recorded.height) < 3
+}
+
+/// Applies the remembered geometry to the main window, before it is shown.
+pub fn restore_window_geometry<R: Runtime>(app: &AppHandle<R>, store: &Store) {
+    let state = store.snapshot();
+    if !state.settings.remember_window {
+        return;
+    }
+    let Some(geometry) = state.window else {
+        return;
+    };
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    apply_geometry(app, &window, &geometry, SnapPart::Frame);
+}
+
+#[tauri::command]
+pub fn save_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<(), String> {
+    let current = store.snapshot();
+    if !current.settings.remember_window {
+        return Ok(());
+    }
+    if current.settings.mini_player {
+        return Ok(());
+    }
+
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+
+    let geometry = read_window_geometry(&window, store.snapshot().window.as_ref())?;
+    let next = store.update(|state| state.window = Some(geometry));
     save(&app, &next)
 }
 
@@ -299,6 +540,52 @@ pub fn save_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<(
 pub fn reset_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<(), String> {
     let next = store.update(|state| state.window = None);
     save(&app, &next)
+}
+
+/// Remembers the window's current frame against a `Ctrl+Shift+1..9` slot.
+#[tauri::command]
+pub fn save_window_slot(
+    app: AppHandle,
+    store: State<'_, Store>,
+    slot: usize,
+) -> Result<PersistedState, String> {
+    if slot >= SLOT_COUNT {
+        return Err(format!("slot {slot} is out of range"));
+    }
+
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(store.snapshot());
+    };
+
+    let previous = store.snapshot().window_slots.get(slot).cloned().flatten();
+    let geometry = read_window_geometry(&window, previous.as_ref())?;
+
+    let next = store.update(|state| {
+        while state.window_slots.len() < SLOT_COUNT {
+            state.window_slots.push(None);
+        }
+        state.window_slots[slot] = Some(geometry);
+    });
+    commit(&app, next)
+}
+
+/// Snaps the window back to the frame saved against a slot.
+#[tauri::command]
+pub fn apply_window_slot(
+    app: AppHandle,
+    store: State<'_, Store>,
+    slot: usize,
+    part: SnapPart,
+) -> Result<(), String> {
+    let state = store.snapshot();
+    let Some(Some(geometry)) = state.window_slots.get(slot) else {
+        return Err("no window frame is saved for that slot".to_string());
+    };
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+    apply_geometry(&app, &window, geometry, part);
+    Ok(())
 }
 
 #[tauri::command]

@@ -9,9 +9,12 @@ import {
   stepTrack,
   subscribe,
   trackById,
+  type ArtworkTier,
 } from "../lib/state";
+import { reduceMotionActive } from "../lib/motion";
 import { stepLater } from "../lib/steps";
 import { coverStyle } from "./artwork";
+import { coverWipe, type CoverSwap } from "./wipe";
 
 const VISIBLE_RANGE = 5;
 const SPACING_REM = 6.5;
@@ -52,6 +55,7 @@ export function mountQueue(): void {
   const cards = new Map<number, HTMLElement>();
   const leaving = new Map<number, HTMLElement>();
   const entering = new Set<HTMLElement>();
+  const popping = new Set<HTMLElement>();
 
   const live = document.createElement("div");
   live.className = "carousel-live";
@@ -61,18 +65,19 @@ export function mountQueue(): void {
 
   carousel.append(live, wash);
 
-  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-
   let washFrame: number | null = null;
   let washStart = 0;
   let washCentre = Number.NaN;
   let renderedOrder = "";
   let renderedIds = new Set<string>();
+  let renderedSourceId: string | null = null;
   let renderedLooping: boolean | null = null;
   let windowCenter = Number.NaN;
+  let popTimer: number | null = null;
 
   let centerSlot = 0;
   let lastCursor = 0;
+  let lastTravel = 0;
 
   const remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
   let dragging = false;
@@ -98,6 +103,9 @@ export function mountQueue(): void {
     }
     return step;
   };
+
+  const slotStep = (cursorDelta: number, travelDelta: number, total: number): number =>
+    total > 1 && travelDelta !== 0 ? travelDelta : loopDelta(cursorDelta, total);
 
   const resist = (value: number, total: number, looping: boolean): number => {
     if (looping || total <= 1) {
@@ -168,12 +176,14 @@ export function mountQueue(): void {
       ensureColour(track);
     }
 
+    const tier: ArtworkTier = visible ? "queue" : "idle";
     const card = document.createElement("article");
     card.className = "card";
     card.dataset.slot = String(slot);
     card.dataset.index = String(index);
+    card.dataset.artwork = artworkUrlFor(track, tier) ?? "";
     card.innerHTML = `
-      <div class="card-body" style="${coverStyle(track, visible ? "queue" : "idle")}">
+      <div class="card-body" style="${coverStyle(track, tier)}">
         <div class="card-text">
           <p class="card-title">${escapeHtml(track.title)}</p>
           <p class="card-artist">${escapeHtml(track.artist ?? "Unknown artist")}</p>
@@ -214,7 +224,29 @@ export function mountQueue(): void {
     wash.replaceChildren();
   };
 
-  const washAway = (): void => {
+  /** Settles the cards that were waiting to pop in. */
+  const flushPopping = (): void => {
+    if (popTimer !== null) {
+      window.clearTimeout(popTimer);
+      popTimer = null;
+    }
+    if (popping.size === 0) {
+      return;
+    }
+
+    const arrived = [...popping];
+    popping.clear();
+    void carousel.offsetWidth;
+
+    requestAnimationFrame(() => {
+      for (const card of arrived) {
+        card.classList.remove("is-entering");
+      }
+    });
+  };
+
+  const washAway = (drop?: Set<HTMLElement>): void => {
+    flushPopping();
     endWash();
 
     for (const card of cards.values()) {
@@ -222,7 +254,15 @@ export function mountQueue(): void {
     }
     cards.clear();
 
-    if (reducedMotion.matches) {
+    // Cards the new collection cannot fill fall away instead of being swept.
+    if (drop && drop.size > 0) {
+      void wash.offsetWidth;
+      for (const card of drop) {
+        card.classList.add("is-leaving");
+      }
+    }
+
+    if (reduceMotionActive()) {
       wash.replaceChildren();
       return;
     }
@@ -261,12 +301,31 @@ export function mountQueue(): void {
     washFrame = requestAnimationFrame(sweep);
   };
 
+  const swapCollection = (oldCentre: number, oldCount: number, newCount: number): number => {
+    const extra = oldCount - newCount;
+
+    if (extra > 0) {
+      const byDistance = [...cards.entries()].sort(
+        (a, b) => Math.abs(b[0] - oldCentre) - Math.abs(a[0] - oldCentre),
+      );
+      washAway(new Set(byDistance.slice(0, extra).map(([, card]) => card)));
+    } else {
+      washAway();
+    }
+
+    const grown = Math.max(0, newCount - oldCount);
+    if (grown > 0) {
+      popTimer = window.setTimeout(flushPopping, WASH_MS);
+    }
+    return grown;
+  };
+
   const syncWindow = (
     order: string[],
     total: number,
     looping: boolean,
     centre: number,
-    animate: boolean,
+    enter: "all" | number | null,
   ): void => {
     const wanted = requiredSlots(centre, total, looping);
     const wantedSet = new Set(wanted);
@@ -277,6 +336,8 @@ export function mountQueue(): void {
         dismiss(slot, card);
       }
     }
+
+    const created: [number, HTMLElement][] = [];
 
     for (const slot of wanted) {
       if (cards.has(slot)) {
@@ -294,11 +355,22 @@ export function mountQueue(): void {
       const card = createCard(order, slot, total, looping, visible);
       if (card) {
         cards.set(slot, card);
-        if (animate) {
-          card.classList.add("is-entering");
-          entering.add(card);
-        }
+        created.push([slot, card]);
         live.appendChild(card);
+      }
+    }
+
+    if (enter === "all") {
+      for (const [, card] of created) {
+        card.classList.add("is-entering");
+        entering.add(card);
+      }
+    } else if (typeof enter === "number" && enter > 0) {
+      // The cards the strip grew by are the ones furthest from the centre.
+      created.sort((a, b) => Math.abs(b[0] - centre) - Math.abs(a[0] - centre));
+      for (const [, card] of created.slice(0, enter)) {
+        card.classList.add("is-entering");
+        popping.add(card);
       }
     }
   };
@@ -325,7 +397,13 @@ export function mountQueue(): void {
         `rotate(${offset * ARC_ANGLE_DEG}deg) ` +
         `scale(${1 - Math.min(distance, VISIBLE_RANGE) * 0.04})`;
 
-      const normal = bouncing ? SPRING_TRANSITION : rapid ? "transform 0.16s linear" : "";
+      const normal = reduceMotionActive()
+        ? "none"
+        : bouncing
+          ? SPRING_TRANSITION
+          : rapid
+            ? "transform 0.16s linear"
+            : "";
       card.style.transition = !animate || jumped ? "none" : normal;
       card.style.transform = transform;
       if (jumped && animate) {
@@ -358,6 +436,8 @@ export function mountQueue(): void {
   };
 
   const syncArtwork = (order: string[], total: number, looping: boolean): void => {
+    const swaps: CoverSwap[] = [];
+
     for (const [slot, card] of cards) {
       const track = trackById(order[indexAt(slot, total, looping)]);
       if (!track) {
@@ -365,16 +445,30 @@ export function mountQueue(): void {
       }
 
       const visible = Math.abs(Number(card.dataset.offset ?? 0)) <= VISIBLE_RANGE;
-      const signature = artworkUrlFor(track, visible ? "queue" : "idle") ?? "";
+      const tier: ArtworkTier = visible ? "queue" : "idle";
+      const signature = artworkUrlFor(track, tier) ?? "";
       if (card.dataset.artwork === signature) {
         continue;
       }
 
+      // A card still showing its colour hands over to the cover under the sweep.
+      const revealing = visible && !card.dataset.artwork && signature !== "";
       card.dataset.artwork = signature;
-      card
-        .querySelector<HTMLElement>(".card-body")
-        ?.setAttribute("style", coverStyle(track, visible ? "queue" : "idle"));
+
+      const body = card.querySelector<HTMLElement>(".card-body");
+      if (!body) {
+        continue;
+      }
+
+      const style = coverStyle(track, tier);
+      if (revealing) {
+        swaps.push({ body, style });
+      } else {
+        body.setAttribute("style", style);
+      }
     }
+
+    coverWipe(swaps);
   };
 
   const settle = (): void => {
@@ -514,21 +608,35 @@ export function mountQueue(): void {
 
     const fresh = renderedOrder !== signature;
     let washed = false;
+    let grown = 0;
 
     if (fresh) {
-      if (isReshuffle(snapshot.order)) {
-        washAway();
-        washed = true;
-      } else {
-        clearCards();
-      }
+      const oldCentre = centerSlot;
+      const oldCount = cards.size;
+      const reshuffle = isReshuffle(snapshot.order);
+      const collectionChanged = snapshot.sourceId !== renderedSourceId;
+      const shown = queueShown(isCramped());
+
       renderedIds = new Set(snapshot.order);
       windowCenter = Number.NaN;
       centerSlot = snapshot.cursor;
       lastCursor = snapshot.cursor;
+      lastTravel = snapshot.travel;
       renderedOrder = signature;
       renderedLooping = looping;
+      renderedSourceId = snapshot.sourceId;
       prefetchArtwork(snapshot.order);
+
+      if (reshuffle) {
+        washAway();
+        washed = true;
+      } else if (collectionChanged && shown && !reduceMotionActive() && oldCount > 0) {
+        const newCount = requiredSlots(snapshot.cursor, total, looping).length;
+        grown = swapCollection(oldCentre, oldCount, newCount);
+        washed = true;
+      } else {
+        clearCards();
+      }
     } else {
       if (looping !== renderedLooping) {
         recentre(snapshot.cursor);
@@ -538,12 +646,13 @@ export function mountQueue(): void {
 
       if (looping) {
         // Follow the cursor around the loop, so a short queue keeps scrolling.
-        centerSlot += loopDelta(snapshot.cursor - lastCursor, total);
+        centerSlot += slotStep(snapshot.cursor - lastCursor, snapshot.travel - lastTravel, total);
         lastCursor = snapshot.cursor;
       } else {
         centerSlot = snapshot.cursor;
         lastCursor = snapshot.cursor;
       }
+      lastTravel = snapshot.travel;
     }
 
     const rawCenter = centerSlot - dragRem / SPACING_REM;
@@ -558,7 +667,13 @@ export function mountQueue(): void {
 
     if (!(Math.abs(materialCenter - windowCenter) <= REBUILD_MARGIN)) {
       windowCenter = materialCenter;
-      syncWindow(snapshot.order, total, looping, materialCenter, !fresh);
+      syncWindow(
+        snapshot.order,
+        total,
+        looping,
+        materialCenter,
+        fresh ? (grown > 0 ? grown : null) : "all",
+      );
     }
 
     carousel.classList.toggle("is-empty", total === 0);

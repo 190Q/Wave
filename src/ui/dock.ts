@@ -1,16 +1,26 @@
 import { createIcon } from "../assets/icons/index";
 import { formatDuration } from "../lib/format";
+import { reduceMotionActive } from "../lib/motion";
 import {
-  addTracksToPlaylist,
   currentTrack,
   getState,
   player,
   setVolume,
+  stepVolume,
   subscribe,
   toggleLikeTrack,
   toggleQueue,
 } from "../lib/state";
-import { openMenu } from "./menu";
+
+
+const VOLUME_FILL_MS = 200;
+
+let markVolumeStep: (() => void) | null = null;
+    
+export function stepVolumeFromKey(direction: number): void {
+  markVolumeStep?.();
+  stepVolume(direction);
+}
 
 export function mountDock(): void {
   const dock = element("dock");
@@ -88,41 +98,47 @@ export function mountDock(): void {
     const bar = document.createElement("span");
     bar.className = "volume-bar";
     bar.style.height = `${((7 + index) / 16) * 100}%`;
+    bar.style.setProperty("--index", `${index}`);
     return bar;
   });
   volumeBars.replaceChildren(...bars);
 
   const paintVolume = (level: number): void => {
-    const reached = (level / 100) * barCount;
-    bars.forEach((bar, index) => {
-      const fill = Math.min(Math.max(reached - index, 0), 1);
-      bar.style.setProperty("--fill", `${fill}`);
-    });
+    volumeBars.style.setProperty("--level", `${(level / 100) * barCount}`);
   };
 
+  let steppingTimer: number | null = null;
+  const markStepping = (): void => {
+    if (reduceMotionActive()) {
+      return;
+    }
+    volumeBars.classList.add("is-stepping");
+    if (steppingTimer !== null) {
+      window.clearTimeout(steppingTimer);
+    }
+    // A little longer than the stylesheet's fill, so it is never cut short.
+    steppingTimer = window.setTimeout(() => {
+      steppingTimer = null;
+      volumeBars.classList.remove("is-stepping");
+    }, VOLUME_FILL_MS);
+  };
+  markVolumeStep = markStepping;
+
   volume.addEventListener("input", () => setVolume(Number(volume.value)));
+
+  // The slider's own arrows step by one, so the shortcut takes them over.
+  volume.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      event.preventDefault();
+      stepVolumeFromKey(event.key === "ArrowUp" ? 1 : -1);
+    }
+  });
 
   like.addEventListener("click", () => {
     const track = currentTrack();
     if (track) {
       void toggleLikeTrack(track.id);
     }
-  });
-
-  like.addEventListener("contextmenu", (event) => {
-    const track = currentTrack();
-    if (!track) {
-      return;
-    }
-    event.preventDefault();
-    openMenu(like, [
-      { label: "Play next", action: () => player.insertAfterCurrent(track.id) },
-      { label: "Add to queue", action: () => player.appendToQueue(track.id) },
-      ...getState().playlists.map((playlist) => ({
-        label: `Add to ${playlist.name}`,
-        action: () => void addTracksToPlaylist(playlist.id, [track.id]),
-      })),
-    ]);
   });
 
   const paintProgress = (positionMs: number, durationMs: number): void => {

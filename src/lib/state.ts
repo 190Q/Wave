@@ -1,3 +1,5 @@
+import { listen } from "@tauri-apps/api/event";
+
 import type {
   Collection,
   CollectionFilter,
@@ -8,8 +10,9 @@ import type {
   Session,
   Settings,
   Track,
+  WindowGeometry,
 } from "../types";
-import { buildCollections, findCollection, sortAlbumTracks } from "./collections";
+import { COLLECTION_FILTERS, buildCollections, findCollection, sortAlbumTracks } from "./collections";
 import { FALLBACK_COLOUR, colourFromId, isUsableAccent } from "./colour";
 import * as ipc from "./ipc";
 import { plural } from "./format";
@@ -22,6 +25,12 @@ export const ADAPTIVE_THEME = "adaptive";
 /** How many custom accents are remembered. */
 export const RECENT_THEME_LIMIT = 3;
 
+/** Sent by the backend when it changes a setting without the UI asking. */
+const SETTINGS_EVENT = "settings-changed";
+
+/** Where `m` on its own puts the mini player. */
+const MINI_CORNER = 4;
+
 export interface AppState {
   ready: boolean;
   scanning: boolean;
@@ -33,6 +42,8 @@ export interface AppState {
   scanErrors: string[];
   likes: Set<string>;
   playlists: Playlist[];
+  /** One saved window frame per shortcut slot, `null` while unset. */
+  windowSlots: (WindowGeometry | null)[];
   /** Track id -> `#rrggbb`, mirrored from the persisted cache. */
   colours: Map<string, string>;
   settings: Settings;
@@ -60,8 +71,21 @@ const state: AppState = {
   scanErrors: [],
   likes: new Set(),
   playlists: [],
+  windowSlots: [],
   colours: new Map(),
-  settings: { theme: ADAPTIVE_THEME, volume: 70, recentColours: [] },
+  settings: {
+    theme: ADAPTIVE_THEME,
+    volume: 70,
+    recentColours: [],
+    resumeOnLaunch: true,
+    reduceMotion: "system",
+    rememberWindow: true,
+    alwaysOnTop: false,
+    miniPlayer: false,
+    miniCorner: 4,
+    searchAlgorithm: "substring",
+    shortcutSlots: [],
+  },
   filter: "all",
   query: "",
   sort: "name",
@@ -450,13 +474,16 @@ function scheduleEmit(): void {
 }
 
 export async function init(): Promise<void> {
+  watchSettings();
   try {
     const persisted = await ipc.loadState();
     applyPersisted(persisted);
     applySession(persisted.session);
     player.setVolume(state.settings.volume);
     await rescan();
-    restorePlayback(persisted.session?.playback);
+    if (state.settings.resumeOnLaunch) {
+      restorePlayback(persisted.session?.playback);
+    }
     wirePersistence();
     state.ready = true;
   } catch (error) {
@@ -613,6 +640,20 @@ export async function createPlaylist(name: string): Promise<void> {
   }
 }
 
+export async function createPlaylistWithTrack(name: string, trackId: string): Promise<void> {
+  try {
+    const before = new Set(state.playlists.map((playlist) => playlist.id));
+    applyPersisted(await ipc.createPlaylist(name));
+    const created = state.playlists.find((playlist) => !before.has(playlist.id));
+    if (created) {
+      applyPersisted(await ipc.addToPlaylist(created.id, [trackId]));
+    }
+    emit();
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
 export async function renamePlaylist(id: string, name: string): Promise<void> {
   try {
     applyPersisted(await ipc.renamePlaylist(id, name));
@@ -676,6 +717,71 @@ export async function setTheme(theme: string): Promise<void> {
   }
 }
 
+/** Remembers the window as it stands now against a shortcut slot. */
+export async function captureWindowSlot(slot: number): Promise<void> {
+  try {
+    applyPersisted(await ipc.saveWindowSlot(slot));
+    emit();
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
+/** Flips the always-on-top setting, for the shortcut slots. */
+export async function toggleAlwaysOnTop(): Promise<void> {
+  await updateSettings({ alwaysOnTop: !state.settings.alwaysOnTop });
+}
+
+export async function toggleMiniPlayer(corner?: number): Promise<void> {
+  const { miniPlayer } = state.settings;
+
+
+  if (miniPlayer && corner !== undefined) {
+    try {
+      applyPersisted(await ipc.placeMiniPlayer(corner));
+      emit();
+    } catch (error) {
+      setNotice(describe(error));
+    }
+    return;
+  }
+
+  if (miniPlayer) {
+    await updateSettings({ miniPlayer: false });
+    return;
+  }
+
+  await updateSettings({ miniPlayer: true, miniCorner: corner ?? MINI_CORNER });
+}
+
+function watchSettings(): void {
+  void listen<Settings>(SETTINGS_EVENT, (event) => {
+    state.settings = event.payload;
+    emit();
+  }).catch(() => {
+    // Not running inside Tauri, for example `npm run dev` in a browser.
+  });
+}
+
+/** Steps through Adaptive and the remembered colours. */
+export function cycleAccent(): void {
+  const { theme, recentColours } = state.settings;
+  const choices = [ADAPTIVE_THEME, ...recentColours];
+  const next = choices[choices.indexOf(theme) + 1] ?? ADAPTIVE_THEME;
+  void setTheme(next);
+}
+
+export async function updateSettings(patch: Partial<Settings>): Promise<boolean> {
+  try {
+    applyPersisted(await ipc.saveSettings({ ...state.settings, ...patch }));
+    emit();
+    return true;
+  } catch (error) {
+    setNotice(describe(error));
+    return false;
+  }
+}
+
 export function setVolume(volume: number): void {
   player.setVolume(volume);
   void ipc
@@ -687,6 +793,14 @@ export function setVolume(volume: number): void {
     .catch(() => {
       // Volume is cosmetic; a failed write is not worth interrupting playback.
     });
+}
+
+/** How far one volume step moves. The player clamps the result. */
+const VOLUME_STEP = 10;
+
+/** One volume step, shared by the arrow keys and the slider. */
+export function stepVolume(direction: number): void {
+  setVolume(player.snapshot().volume + direction * VOLUME_STEP);
 }
 
 /**
@@ -723,6 +837,7 @@ function applyPersisted(next: PersistedState): void {
   state.settings = next.settings ?? state.settings;
   state.playlists = next.playlists ?? [];
   state.likes = new Set(next.likes ?? []);
+  state.windowSlots = next.windowSlots ?? [];
   state.colours = new Map(
     Object.entries(next.artworkColours ?? {}).filter(([, hex]) => isUsableAccent(hex)),
   );
@@ -750,9 +865,13 @@ function applySession(session: Session | undefined): void {
     return;
   }
   state.recents = session.recents ?? [];
-  state.filter = session.filter ?? "all";
+  state.filter = knownFilter(session.filter);
   state.sort = session.sort ?? "name";
   state.queueOpen = session.queueOpen ?? false;
+}
+
+function knownFilter(value: string | undefined): CollectionFilter {
+  return COLLECTION_FILTERS.find((filter) => filter === value) ?? "all";
 }
 
 function restorePlayback(playback: Playback | undefined): void {

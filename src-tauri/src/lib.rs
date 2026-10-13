@@ -13,6 +13,30 @@ fn show_main_window(app: tauri::AppHandle) {
     reveal_main_window(&app);
 }
 
+#[cfg(windows)]
+fn disable_browser_shortcuts(app: &tauri::AppHandle) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+    use windows::core::Interface;
+
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    let _ = window.with_webview(|webview| {
+        let Ok(core) = (unsafe { webview.controller().CoreWebView2() }) else {
+            return;
+        };
+        let Ok(settings) = (unsafe { core.Settings() }) else {
+            return;
+        };
+        let Ok(settings3) = settings.cast::<ICoreWebView2Settings3>() else {
+            return;
+        };
+
+        let _ = unsafe { settings3.SetAreBrowserAcceleratorKeysEnabled(false) };
+    });
+}
+
 fn reveal_main_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -23,6 +47,7 @@ fn reveal_main_window(app: &tauri::AppHandle) {
 
     let store = app.state::<state::Store>();
     state::restore_window_geometry(app, &store);
+    state::apply_window_settings(app, &store, store.snapshot().settings.mini_player);
     let _ = window.show();
 }
 
@@ -36,6 +61,10 @@ pub fn run() {
             app.manage(store);
             // Filled in by every scan; playlist files store paths, not ids.
             app.manage(library::TrackPaths::default());
+            state::watch_window(app.handle());
+
+            #[cfg(windows)]
+            disable_browser_shortcuts(app.handle());
 
             let handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -51,6 +80,9 @@ pub fn run() {
             state::set_session,
             state::save_window_geometry,
             state::reset_window_geometry,
+            state::save_window_slot,
+            state::apply_window_slot,
+            state::place_mini_player,
             state::toggle_like,
             library::scan_library,
             import::import_folder,

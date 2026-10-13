@@ -35,6 +35,11 @@ export function mountHero(): void {
 
   const narrowLayout = window.matchMedia("(max-width: 48rem)");
 
+  const carouselReserve = (): number => {
+    const space = document.querySelector(".carousel-space");
+    return space ? space.getBoundingClientRect().height : 0;
+  };
+
   const fitCover = (): void => {
     const rootPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
     const styles = getComputedStyle(hero);
@@ -44,10 +49,9 @@ export function mountHero(): void {
     const size = Math.max(0, Math.min(byHeight, byWidth, COVER_MAX_REM * rootPx));
     hero.style.setProperty("--cover-height", `${size}px`);
 
-    const tooShort = byHeight < COVER_MIN_REM * rootPx;
+    const tooShort = byHeight + carouselReserve() < COVER_MIN_REM * rootPx;
     hero.classList.toggle("is-cover-hidden", narrowLayout.matches || size < COVER_MIN_REM * rootPx);
 
-    // With no room for even a small cover, the library is out of reach.
     document.documentElement.classList.toggle("is-short", tooShort);
     if (tooShort && getState().libraryOpen) {
       toggleLibrary(false);

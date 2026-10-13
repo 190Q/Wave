@@ -1,0 +1,309 @@
+.dock {
+  position: relative;
+  width: min(56rem, 94%);
+  margin: 0 auto 1rem;
+  border-radius: 1.25rem;
+  background: rgb(0 0 0 / 0.4);
+  border: 0.0625rem solid rgb(255 255 255 / 0.1);
+  backdrop-filter: blur(1rem);
+  overflow: hidden;
+  padding: 1rem 1.25rem 0.7rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.dock-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  background: var(--accent-soft);
+  border-right: 0.125rem solid var(--accent);
+  transition: width 0.2s linear;
+}
+
+.dock.is-scrubbing .dock-fill {
+  transition: none;
+}
+
+.dock-inner {
+  position: relative;
+}
+
+.seek-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.35rem;
+  padding-bottom: 0.35rem;
+}
+
+.time {
+  flex: 1 1 0;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 2.5rem;
+}
+
+.time:last-child {
+  text-align: right;
+}
+
+.dock-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.dock-side {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.dock-end {
+  justify-content: flex-end;
+}
+
+.dock-position {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.buttons {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Transport icons sit muted until hovered, and take the theme when toggled. */
+.icon {
+  width: var(--control);
+  height: var(--control);
+  display: grid;
+  place-items: center;
+  background: none;
+  border: 0;
+  border-radius: 50%;
+  color: var(--muted);
+  transition: color 0.18s;
+}
+
+.icon:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.icon svg {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+.icon-pill svg {
+  color: var(--muted);
+  transition: color 0.18s;
+}
+
+.icon-pill:hover:not(:disabled) svg {
+  color: var(--text);
+}
+
+.icon-pill.is-on svg {
+  color: var(--accent);
+}
+
+.icon-pill.is-on:hover:not(:disabled) svg {
+  color: var(--accent-dim);
+}
+
+.icon-main {
+  width: var(--control);
+  height: var(--control);
+  color: var(--accent-ink);
+  background: var(--accent);
+}
+
+.icon-main:hover:not(:disabled) {
+  color: var(--accent-ink);
+  background: var(--accent);
+  filter: brightness(1.12);
+}
+
+.buttons .icon,
+.buttons .icon-pill,
+.dock-end .icon-pill {
+  width: var(--control-large);
+  height: var(--control-large);
+}
+
+.buttons .icon svg,
+.buttons .icon-pill svg,
+.dock-end .icon-pill svg {
+  width: var(--control-glyph);
+  height: var(--control-glyph);
+}
+
+/* Play and pause share one icon slot, so the swap can cross-fade between them. */
+.icon-swap {
+  display: inline-grid;
+  place-items: center;
+}
+
+.icon-swap > svg {
+  grid-area: 1 / 1;
+  transition: opacity 0.2s ease, transform 0.3s var(--ease);
+}
+
+.icon-swap > svg:last-child,
+.is-playing .icon-swap > svg:first-child {
+  opacity: 0;
+  transform: scale(0.5);
+}
+
+.is-playing .icon-swap > svg:last-child {
+  opacity: 1;
+  transform: none;
+}
+
+@property --fade-left {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --fade-right {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+.dock-title {
+  flex: 0 1 auto;
+  width: max-content;
+  max-width: min(var(--dock-title-max, 24rem), calc(100% - 6rem));
+  overflow: hidden;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  line-height: 1rem;
+  max-height: 0;
+  opacity: 0;
+  --fade-left: 0px;
+  --fade-right: 0px;
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--fade-left),
+    #000 calc(100% - var(--fade-right)),
+    transparent 100%
+  );
+  transition:
+    max-height 0.35s var(--ease),
+    opacity 0.3s ease,
+    --fade-left 0.35s var(--ease),
+    --fade-right 0.35s var(--ease);
+}
+
+.dock-title.is-shown {
+  max-height: 1.2rem;
+  opacity: 1;
+}
+
+.dock-title.is-fade-left {
+  --fade-left: 1.5rem;
+}
+
+.dock-title.is-fade-right {
+  --fade-right: 1.5rem;
+}
+
+.dock-title-text {
+  display: block;
+  width: max-content;
+  white-space: nowrap;
+  color: var(--text);
+  transition: transform 0.5s var(--ease);
+}
+
+.volume {
+  --volume-width: 4.875rem;
+  position: relative;
+  flex: none;
+  width: var(--volume-width);
+  height: 1rem;
+}
+
+.volume-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.125rem;
+  height: 100%;
+  pointer-events: none;
+}
+
+.volume-bar {
+  position: relative;
+  flex: none;
+  width: 0.375rem;
+  overflow: hidden;
+  border-radius: 0.125rem;
+  background: var(--raise-strong);
+}
+
+@property --level {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+.volume-bar::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: calc(clamp(0, var(--level, 0) - var(--index, 0), 1) * 100%);
+  background: var(--accent);
+}
+
+.volume-bars.is-stepping {
+  transition: --level 180ms var(--ease);
+}
+.volume .volume-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  appearance: none;
+}
+
+.volume .volume-input::-webkit-slider-thumb {
+  appearance: none;
+  width: 0.0625rem;
+  height: 1rem;
+}
+
+.volume-input:disabled ~ .volume-bars {
+  opacity: 0.4;
+}
+
+.is-tabbing .volume:focus-within {
+  outline: 0.125rem solid var(--accent);
+  outline-offset: 0.1875rem;
+  border-radius: 0.25rem;
+}
+
+@media (max-width: 48rem) {
+  .dock-side {
+    display: none;
+  }
+
+  .dock-row {
+    justify-content: center;
+  }
+}

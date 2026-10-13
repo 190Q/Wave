@@ -1,0 +1,582 @@
+import { openPath } from "@tauri-apps/plugin-opener";
+
+import { escapeHtml, plural } from "../lib/format";
+import { resetWindowGeometry } from "../lib/ipc";
+import { KEYBIND_GROUPS, SLOT_ACTIONS, SLOT_COUNT, slotLabel } from "../lib/keybinds";
+import { SEARCH_ALGORITHMS } from "../lib/search";
+import {
+  captureWindowSlot,
+  getState,
+  rescan,
+  setNotice,
+  subscribe,
+  updateSettings,
+  type AppState,
+} from "../lib/state";
+import type { ReduceMotionMode, SearchAlgorithm, Settings, WindowGeometry } from "../types";
+
+const DIALOG_MS = 220;
+
+/** The settings that are plain on/off switches. */
+type ToggleKey = "resumeOnLaunch" | "rememberWindow";
+
+const MOTION_OPTIONS: { value: ReduceMotionMode; label: string }[] = [
+  { value: "system", label: "System" },
+  { value: "on", label: "Reduce" },
+  { value: "off", label: "Full" },
+];
+
+/** Set while the settings panel is mounted, so a shortcut can open it. */
+let openSettingsPanel: (() => void) | null = null;
+
+/** Opens the settings dialog, the same as pressing its button. */
+export function openSettings(): void {
+  openSettingsPanel?.();
+}
+
+export function mountSettings(): void {
+  const dialog = element<HTMLDialogElement>("settings-dialog");
+  const trigger = element("settings-open");
+  const closeButton = element("settings-close");
+  const saveButton = element<HTMLButtonElement>("settings-save");
+  const body = element("settings-body");
+
+  if (!dialog || !trigger || !closeButton || !saveButton || !body) {
+    return;
+  }
+
+  /** What the panel is editing. Committed only on Save, discarded otherwise. */
+  let draft: Settings = { ...getState().settings };
+
+  /** Which slot's inline action list is expanded, if any. */
+  let openSlot: number | null = null;
+
+  let closeTimer: number | null = null;
+
+  /** Anchors the scale animation on the settings button, so it pops from there. */
+  const setOrigin = (): void => {
+    const dialogRect = dialog.getBoundingClientRect();
+    const buttonRect = trigger.getBoundingClientRect();
+    const x = buttonRect.left + buttonRect.width / 2 - dialogRect.left;
+    const y = buttonRect.top + buttonRect.height / 2 - dialogRect.top;
+    dialog.style.transformOrigin = `${x}px ${y}px`;
+  };
+
+  const openDialog = (): void => {
+    // Already up: reopening would discard the draft and replay the pop.
+    if (dialog.open && !dialog.classList.contains("is-closed")) {
+      return;
+    }
+    if (closeTimer !== null) {
+      window.clearTimeout(closeTimer);
+      closeTimer = null;
+    }
+    // Every open starts from what is actually stored.
+    draft = { ...getState().settings };
+    openSlot = null;
+    render();
+    // Start collapsed, then let the stylesheet play it in.
+    dialog.classList.add("is-closed");
+    trigger.classList.add("is-open");
+    if (!dialog.open) {
+      dialog.showModal();
+    }
+    setOrigin();
+    void dialog.offsetWidth;
+    dialog.classList.remove("is-closed");
+    placeThumb(false);
+  };
+
+  const closeDialog = (): void => {
+    if (!dialog.open || dialog.classList.contains("is-closed")) {
+      return;
+    }
+    openSlot = null;
+    setOrigin();
+    dialog.classList.add("is-closed");
+    trigger.classList.remove("is-open");
+    closeTimer = window.setTimeout(() => {
+      closeTimer = null;
+      dialog.close();
+    }, DIALOG_MS);
+  };
+
+  const placePicker = (): void => {
+    if (openSlot === null) {
+      return;
+    }
+    const anchor = body.querySelector<HTMLElement>(`[data-slot-open="${openSlot}"]`);
+    const picker = body.querySelector<HTMLElement>(".slot-picker");
+    if (!anchor || !picker) {
+      return;
+    }
+
+    const frame = dialog.getBoundingClientRect();
+    const rect = anchor.getBoundingClientRect();
+    const width = anchor.offsetWidth;
+    const height = picker.offsetHeight;
+    const margin = 8;
+
+    const below = rect.bottom + 6;
+    const wanted = below + height > frame.bottom - margin ? rect.top - height - 6 : below;
+    const top = Math.max(
+      frame.top + margin,
+      Math.min(wanted, frame.bottom - height - margin),
+    );
+    const left = Math.min(
+      Math.max(rect.left, frame.left + margin),
+      frame.right - width - margin,
+    );
+
+    picker.style.width = `${width}px`;
+    picker.style.left = `${left}px`;
+    picker.style.top = `${top}px`;
+  };
+
+  const render = (): void => {
+    const state = getState();
+    body.innerHTML = [
+      playbackHtml(draft),
+      appearanceHtml(draft),
+      windowHtml(draft),
+      libraryHtml(state),
+      searchHtml(draft),
+      shortcutsHtml(draft, state.windowSlots, openSlot),
+    ].join("");
+    placePicker();
+    placeThumb(false);
+    paintSave();
+  };
+
+  /** Only what the draft actually changes, so nothing else is written back. */
+  const pendingPatch = (): Partial<Settings> =>
+    changedSettings(getState().settings, draft);
+
+  /** There is only something to save while the draft differs from storage. */
+  const paintSave = (): void => {
+    saveButton.hidden = Object.keys(pendingPatch()).length === 0;
+  };
+
+  /** Slides the highlight under the chosen segment, rather than jumping. */
+  const placeThumb = (animate: boolean): void => {
+    const group = body.querySelector<HTMLElement>(".segmented");
+    const thumb = group?.querySelector<HTMLElement>(".segmented-thumb");
+    const chosen = group?.querySelector<HTMLElement>(".segment.is-on");
+    if (!group || !thumb || !chosen) {
+      return;
+    }
+
+
+    thumb.classList.toggle("no-anim", !animate);
+    thumb.style.width = `${chosen.offsetWidth}px`;
+    thumb.style.transform = `translateX(${chosen.offsetLeft}px)`;
+
+    if (!animate) {
+      void thumb.offsetWidth;
+      thumb.classList.remove("no-anim");
+    }
+  };
+
+  body.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+
+    const toggle = target.closest<HTMLElement>("[data-toggle]");
+    if (toggle?.dataset.toggle) {
+      const key = toggle.dataset.toggle as ToggleKey;
+      const next = { ...draft };
+      next[key] = !next[key];
+      draft = next;
+      paintToggle(toggle, next[key]);
+      paintSave();
+      return;
+    }
+
+    const motion = target.closest<HTMLElement>("[data-motion]");
+    if (motion?.dataset.motion) {
+      draft = { ...draft, reduceMotion: motion.dataset.motion as ReduceMotionMode };
+      paintChoice(motion, ".segmented", "[data-motion]");
+      placeThumb(true);
+      paintSave();
+      return;
+    }
+
+    const algorithm = target.closest<HTMLElement>("[data-algorithm]");
+    if (algorithm?.dataset.algorithm) {
+      draft = { ...draft, searchAlgorithm: algorithm.dataset.algorithm as SearchAlgorithm };
+      paintChoice(algorithm, ".choices", "[data-algorithm]");
+      paintSave();
+      return;
+    }
+
+    const slotTrigger = target.closest<HTMLElement>("[data-slot-open]");
+    if (slotTrigger?.dataset.slotOpen) {
+      const index = Number(slotTrigger.dataset.slotOpen);
+      openSlot = openSlot === index ? null : index;
+      render();
+      return;
+    }
+
+    const slotOption = target.closest<HTMLElement>("[data-slot-set]");
+    if (slotOption?.dataset.slotSet) {
+      const index = Number(slotOption.dataset.slotSet);
+      const action = slotOption.dataset.action ?? "";
+      const slots = [...draft.shortcutSlots];
+      while (slots.length < SLOT_COUNT) {
+        slots.push("");
+      }
+      slots[index] = action;
+      draft = { ...draft, shortcutSlots: slots.slice(0, SLOT_COUNT) };
+      openSlot = null;
+      if (action.startsWith("snap-window")) {
+        void captureWindowSlot(index);
+      }
+      render();
+      return;
+    }
+
+    const command = target.closest<HTMLElement>("[data-command]");
+    if (command?.dataset.command) {
+      void runCommand(command.dataset.command);
+    }
+  });
+
+  /** The commands act at once; only the values wait for Save. */
+  const runCommand = async (command: string): Promise<void> => {
+    switch (command) {
+      case "open-folder": {
+        const { root } = getState();
+        if (!root) {
+          return;
+        }
+        try {
+          await openPath(root);
+        } catch {
+          setNotice("Could not open the library folder.");
+        }
+        return;
+      }
+      case "rescan":
+        await rescan();
+        return;
+      case "reset-window":
+        try {
+          await resetWindowGeometry();
+          setNotice("Saved window position forgotten.");
+        } catch {
+          setNotice("Could not forget the saved window.");
+        }
+        return;
+      default:
+        return;
+    }
+  };
+
+  openSettingsPanel = openDialog;
+  trigger.addEventListener("click", openDialog);
+  closeButton.addEventListener("click", closeDialog);
+
+  saveButton.addEventListener("click", () => {
+    const patch = pendingPatch();
+    if (Object.keys(patch).length === 0) {
+      return;
+    }
+    void updateSettings(patch).then((saved) => {
+      if (!saved) {
+        return;
+      }
+      setNotice("Settings saved.");
+      draft = { ...getState().settings };
+      render();
+    });
+  });
+
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) {
+      closeDialog();
+    }
+  });
+
+  // Escape closes natively; intercept it so the same animation plays.
+  dialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    if (openSlot !== null) {
+      openSlot = null;
+      render();
+      return;
+    }
+    closeDialog();
+  });
+
+  // A scan, a notice or a shortcut can land while the panel is open, so keep it
+  // in step. An edited draft is left alone until it has been saved.
+  subscribe(() => {
+    if (!dialog.open || dialog.classList.contains("is-closed")) {
+      return;
+    }
+    if (Object.keys(pendingPatch()).length === 0) {
+      draft = { ...getState().settings };
+    }
+    render();
+  });
+
+  const dismissPicker = (): void => {
+    if (openSlot !== null) {
+      openSlot = null;
+      render();
+    }
+  };
+  body.addEventListener("scroll", dismissPicker);
+  window.addEventListener("resize", dismissPicker);
+  window.addEventListener("resize", () => placeThumb(false));
+}
+
+function paintToggle(button: HTMLElement, on: boolean): void {
+  button.classList.toggle("is-on", on);
+  button.setAttribute("aria-checked", String(on));
+}
+
+/** Moves the highlight within one group of mutually exclusive buttons. */
+function paintChoice(button: HTMLElement, container: string, selector: string): void {
+  const group = button.closest(container);
+  if (!group) {
+    return;
+  }
+  for (const sibling of group.querySelectorAll<HTMLElement>(selector)) {
+    sibling.classList.toggle("is-on", sibling === button);
+  }
+}
+
+/** The values in `to` that differ from `from`, compared field by field. */
+function changedSettings(from: Settings, to: Settings): Partial<Settings> {
+  const patch: Partial<Settings> = {};
+  for (const key of Object.keys(to) as (keyof Settings)[]) {
+    if (!sameValue(from[key], to[key])) {
+      patch[key] = to[key] as never;
+    }
+  }
+  return patch;
+}
+
+function sameValue(left: unknown, right: unknown): boolean {
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((item, index) => item === right[index]);
+  }
+  return left === right;
+}
+
+function playbackHtml(settings: Settings): string {
+  return section(
+    "Playback",
+    toggleRow(
+      "resumeOnLaunch",
+      "Resume on launch",
+      "Restore the queue, cursor and position.",
+      settings.resumeOnLaunch,
+    ),
+  );
+}
+
+function appearanceHtml(settings: Settings): string {
+  const segments = MOTION_OPTIONS.map(
+    (option) => `
+      <button class="segment${settings.reduceMotion === option.value ? " is-on" : ""}" type="button" data-motion="${option.value}">${escapeHtml(option.label)}</button>`,
+  ).join("");
+
+  return section(
+    "Appearance",
+    `<div class="settings-row">
+      <div class="settings-text">
+        <span class="settings-label">Reduce motion</span>
+        <span class="settings-hint">Overrides the system setting. The theme sweep and the queue wash are the two effects people notice most.</span>
+      </div>
+      <div class="segmented">
+        <span class="segmented-thumb" aria-hidden="true"></span>
+        ${segments}
+      </div>
+    </div>`,
+  );
+}
+
+function windowHtml(settings: Settings): string {
+  return section(
+    "Window",
+    `${toggleRow(
+      "rememberWindow",
+      "Remember size and position",
+      "Save where the window sat and restore it next launch.",
+      settings.rememberWindow,
+    )}
+    <div class="settings-row">
+      <div class="settings-text">
+        <span class="settings-label">Saved window</span>
+        <span class="settings-hint">Forget the remembered size and position, so the defaults apply again.</span>
+      </div>
+      <button class="pill" type="button" data-command="reset-window">Reset</button>
+    </div>`,
+  );
+}
+
+function libraryHtml(state: AppState): string {
+  const notes: string[] = [];
+  if (state.scanning) {
+    notes.push("Scanning...");
+  } else {
+    notes.push(`${plural(state.tracks.length, "track")} in the library`);
+    if (state.skipped > 0) {
+      notes.push(`${state.skipped} non-audio file${state.skipped === 1 ? "" : "s"} skipped`);
+    }
+  }
+
+  const errors = state.scanErrors.length
+    ? `<ul class="settings-errors">${state.scanErrors
+        .map((error) => `<li>${escapeHtml(error)}</li>`)
+        .join("")}</ul>`
+    : "";
+
+  return section(
+    "Library",
+    `<div class="settings-row is-stacked">
+      <span class="settings-label">Library folder</span>
+      ${
+        state.root
+          ? `<p class="folder-path" title="${escapeHtml(state.root)}">${escapeHtml(state.root)}</p>`
+          : `<p class="settings-hint">No library folder yet.</p>`
+      }
+      <div class="settings-actions">
+        <button class="pill" type="button" data-command="open-folder"${state.root ? "" : " disabled"}>Open in Explorer</button>
+        <button class="pill" type="button" data-command="rescan"${state.scanning ? " disabled" : ""}>Rescan library</button>
+      </div>
+      <p class="settings-hint">${escapeHtml(notes.join(". "))}</p>
+      ${errors}
+    </div>`,
+  );
+}
+
+function searchHtml(settings: Settings): string {
+  const choices = SEARCH_ALGORITHMS.map(
+    (algorithm) => `
+      <button class="choice${settings.searchAlgorithm === algorithm.id ? " is-on" : ""}" type="button" data-algorithm="${algorithm.id}">
+        <span class="choice-mark" aria-hidden="true"></span>
+        <span class="choice-text">
+          <span class="settings-label">${escapeHtml(algorithm.label)}</span>
+          <span class="settings-hint">${escapeHtml(algorithm.description)}</span>
+        </span>
+      </button>`,
+  ).join("");
+
+  return section(
+    "Search",
+    `<p class="settings-hint">Used by every search field, including the library filter.</p><div class="choices">${choices}</div>`,
+  );
+}
+
+function shortcutsHtml(
+  settings: Settings,
+  windowSlots: (WindowGeometry | null)[],
+  openSlot: number | null,
+): string {
+  const slots = Array.from({ length: SLOT_COUNT }, (_, index) => {
+    const assigned = settings.shortcutSlots[index] ?? "";
+    const current = SLOT_ACTIONS.find((action) => action.id === assigned);
+    const expanded = openSlot === index;
+    const name = escapeHtml(slotLabel(index + 1));
+    const note = snapNote(assigned, windowSlots[index] ?? null);
+
+    const picker = expanded
+      ? `<div class="slot-picker">
+          ${[{ id: "", label: "Unassigned" }, ...SLOT_ACTIONS]
+            .map(
+              (action) => `
+            <button class="slot-option${action.id === assigned ? " is-on" : ""}" type="button" data-slot-set="${index}" data-action="${escapeHtml(action.id)}"${action.id === assigned ? ' aria-current="true"' : ""}>${escapeHtml(action.label)}</button>`,
+            )
+            .join("")}
+        </div>`
+      : "";
+
+    return `
+      <div class="slot-row">
+        <div class="slot-head">
+          <span class="slot-key">${name}</span>
+          <button class="slot-trigger${expanded ? " is-open" : ""}" type="button" data-slot-open="${index}" aria-expanded="${expanded}" aria-label="${name} action">
+            <span class="slot-trigger-label">${escapeHtml(current?.label ?? "Unassigned")}</span>
+            <span class="sort-chevron" aria-hidden="true"></span>
+          </button>
+        </div>
+        ${note}
+        ${picker}
+      </div>`;
+  }).join("");
+
+  const reference = KEYBIND_GROUPS.map(
+    (group) => `
+      <div class="keybind-group">
+        <h4 class="keybind-title">${escapeHtml(group.title)}</h4>
+        ${group.note ? `<p class="settings-hint">${escapeHtml(group.note)}</p>` : ""}
+        ${group.binds
+          .map(
+            (bind) => `
+              <div class="keybind-row">
+                <span class="keybind-keys">${escapeHtml(bind.keys)}</span>
+                <span class="keybind-action">${escapeHtml(bind.action)}</span>
+              </div>`,
+          )
+          .join("")}
+      </div>`,
+  ).join("");
+
+  return section(
+    "Shortcuts",
+    `<div class="settings-row is-stacked">
+      <span class="settings-label">Action slots</span>
+      <p class="settings-hint">Bound to Ctrl+Shift+1 through Ctrl+Shift+9. A snap slot remembers the window as it stands when you pick it.</p>
+      ${slots}
+    </div>
+    <div class="settings-row is-stacked">
+      <span class="settings-label">Keybinds</span>
+      ${reference}
+    </div>`,
+  );
+}
+
+/** Where a snap slot will put the window, so the choice is not a guess. */
+function snapNote(assigned: string, frame: WindowGeometry | null): string {
+  if (!assigned.startsWith("snap-window")) {
+    return "";
+  }
+  if (!frame) {
+    return `<p class="settings-hint">No frame saved yet</p>`;
+  }
+
+  const what =
+    assigned === "snap-window-size"
+      ? `Resizes back to ${frame.width}x${frame.height}`
+      : assigned === "snap-window-position"
+        ? `Moves back to ${frame.x},${frame.y}`
+        : `Snaps back to ${frame.width}x${frame.height}`;
+
+  return `<p class="settings-hint">${what}</p>`;
+}
+
+function section(title: string, inner: string): string {
+  return `<section class="settings-section">
+    <h3 class="settings-title">${escapeHtml(title)}</h3>
+    ${inner}
+  </section>`;
+}
+
+function toggleRow(key: ToggleKey, label: string, hint: string, on: boolean): string {
+  return `
+    <div class="settings-row">
+      <div class="settings-text">
+        <span class="settings-label">${escapeHtml(label)}</span>
+        <span class="settings-hint">${escapeHtml(hint)}</span>
+      </div>
+      <button class="switch${on ? " is-on" : ""}" type="button" role="switch" aria-checked="${on}" data-toggle="${key}" aria-label="${escapeHtml(label)}">
+        <span class="switch-knob"></span>
+      </button>
+    </div>`;
+}
+
+function element<T extends HTMLElement = HTMLElement>(id: string): T | null {
+  return document.getElementById(id) as T | null;
+}

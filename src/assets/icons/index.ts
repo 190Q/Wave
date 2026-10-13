@@ -1,6 +1,8 @@
+import add from "./add.svg?raw";
 import appIcon from "./app-icon.svg?raw";
 import close from "./close.svg?raw";
 import closeWindow from "./close-window.svg?raw";
+import grip from "./grip.svg?raw";
 import importIcon from "./import.svg?raw";
 import library from "./library.svg?raw";
 import like from "./like.svg?raw";
@@ -15,13 +17,16 @@ import queue from "./queue.svg?raw";
 import repeat from "./repeat.svg?raw";
 import restore from "./restore.svg?raw";
 import search from "./search.svg?raw";
+import settings from "./settings.svg?raw";
 import shuffle from "./shuffle.svg?raw";
 import theme from "./theme.svg?raw";
 
 export const icons = {
+  add,
   "app-icon": appIcon,
   close,
   "close-window": closeWindow,
+  grip,
   import: importIcon,
   library,
   like,
@@ -36,6 +41,7 @@ export const icons = {
   repeat,
   restore,
   search,
+  settings,
   shuffle,
   theme,
 } as const;

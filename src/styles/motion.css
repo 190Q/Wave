@@ -1,0 +1,81 @@
+@media (prefers-reduced-motion: reduce) {
+  .theme-drop,
+  #theme-toggle .btn-icon {
+    transition-duration: 0s;
+  }
+}
+
+:root.is-reduced-motion .theme-drop,
+:root.is-reduced-motion #theme-toggle .btn-icon {
+  transition-duration: 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .card-body,
+  .sheet,
+  .carousel,
+  .lyrics-track,
+  .crate,
+  .crate-text,
+  .pill,
+  .pill-label,
+  .hero,
+  .search-wrap,
+  .now-cover,
+  .now-part,
+  .dock-title,
+  .dock-title-text,
+  .icon-swap > svg,
+  #settings-open .btn-icon,
+  .theme-dialog {
+    transition: none;
+  }
+
+  .search-modal,
+  .search-modal-panel,
+  .results {
+    transition: none;
+  }
+
+  .settings-dialog,
+  .settings-dialog *,
+  .confirm-dialog,
+  .confirm-dialog * {
+    transition: none;
+  }
+}
+
+:root.is-reduced-motion .card,
+:root.is-reduced-motion .card-body,
+:root.is-reduced-motion .sheet,
+:root.is-reduced-motion .carousel,
+:root.is-reduced-motion .lyrics-track,
+:root.is-reduced-motion .crate,
+:root.is-reduced-motion .crate-text,
+:root.is-reduced-motion .pill,
+:root.is-reduced-motion .pill-label,
+:root.is-reduced-motion .hero,
+:root.is-reduced-motion .search-wrap,
+:root.is-reduced-motion .now-cover,
+:root.is-reduced-motion .now-part,
+:root.is-reduced-motion .dock-title,
+:root.is-reduced-motion .dock-title-text,
+:root.is-reduced-motion .icon-swap > svg,
+:root.is-reduced-motion #settings-open .btn-icon,
+:root.is-reduced-motion .theme-dialog {
+  transition: none;
+}
+
+:root.is-reduced-motion .search-modal,
+:root.is-reduced-motion .search-modal-panel,
+:root.is-reduced-motion .results {
+  transition: none;
+}
+
+:root.is-reduced-motion .settings-dialog,
+:root.is-reduced-motion .settings-dialog *,
+:root.is-reduced-motion .confirm-dialog,
+:root.is-reduced-motion .confirm-dialog * {
+  transition: none;
+}

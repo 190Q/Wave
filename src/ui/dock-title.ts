@@ -1,3 +1,4 @@
+import { reduceMotionActive, subscribeMotion } from "../lib/motion";
 import { currentTrack, player, subscribe } from "../lib/state";
 
 const WIDTH_SHARE = 1.5;
@@ -16,8 +17,6 @@ export function mountDockTitle(): void {
   if (!viewport || !strip || !buttons || !hero) {
     return;
   }
-
-  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
 
   let timer: number | null = null;
   let settleTimer: number | null = null;
@@ -92,7 +91,7 @@ export function mountDockTitle(): void {
   const update = (): void => {
     const span = overflow();
 
-    if (reduced.matches || span <= OVERFLOW_SLACK_PX) {
+    if (reduceMotionActive() || span <= OVERFLOW_SLACK_PX) {
       if (runningSpan !== null) {
         stop();
       }
@@ -179,8 +178,8 @@ export function mountDockTitle(): void {
     observer.observe(viewport);
     observer.observe(strip);
   }
-  reduced.addEventListener("change", fit);
   subscribe(fit);
+  subscribeMotion(fit);
   player.onChange(fit);
   void document.fonts?.ready.then(fit);
   fit();

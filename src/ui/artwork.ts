@@ -1,7 +1,7 @@
 import { cardGradient } from "../lib/colour";
 import { escapeHtml } from "../lib/format";
 import { artworkUrlFor, colourFor, type ArtworkTier } from "../lib/state";
-import type { Track } from "../types";
+import type { Collection, Track } from "../types";
 
 export function coverStyle(track: Track, tier: ArtworkTier = "background"): string {
   const colour = colourFor(track);
@@ -19,6 +19,15 @@ export function plainCoverStyle(track: Track, tier: ArtworkTier = "background"):
     return `background-color: ${colour}; background-image: ${cardGradient(colour)};`;
   }
   return `background-color: ${colour}; background-image: ${cssUrl(url)};`;
+}
+
+export function collectionCoverHtml(
+  collection: Collection,
+  tracksById: Map<string, Track>,
+  tier: ArtworkTier = "background",
+): string {
+  const ids = collection.kind === "album" ? collection.trackIds.slice(0, 1) : collection.trackIds;
+  return mosaicHtml(ids, tracksById, tier);
 }
 
 export function mosaicHtml(

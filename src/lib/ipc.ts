@@ -1,7 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
-import type { ImportOutcome, PersistedState, ScanSummary, Session, Settings } from "../types";
+import type {
+  ImportOutcome,
+  PersistedState,
+  ScanSummary,
+  Session,
+  Settings,
+  SnapPart,
+} from "../types";
 
 
 export function loadState(): Promise<PersistedState> {
@@ -25,6 +32,21 @@ export function saveWindowGeometry(): Promise<void> {
 /** Forgets the remembered window geometry, so the defaults apply again. */
 export function resetWindowGeometry(): Promise<void> {
   return invoke("reset_window_geometry");
+}
+
+/** Remembers the window's current frame against a `Ctrl+Shift+1..9` slot. */
+export function saveWindowSlot(slot: number): Promise<PersistedState> {
+  return invoke("save_window_slot", { slot });
+}
+
+/** Snaps the window back to the frame saved against a slot, or to one half of it. */
+export function applyWindowSlot(slot: number, part: SnapPart): Promise<void> {
+  return invoke("apply_window_slot", { slot, part });
+}
+
+/** Moves the mini player into a corner, without changing the mini player setting. */
+export function placeMiniPlayer(corner: number): Promise<PersistedState> {
+  return invoke("place_mini_player", { corner });
 }
 
 /** Reveals the main window once the shell is ready to be seen. */

@@ -1,0 +1,21 @@
+.confirm-dialog {
+  width: min(20rem, 92vw);
+}
+
+.confirm-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.confirm-message {
+  margin-top: 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+}

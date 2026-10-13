@@ -54,10 +54,44 @@ export function openMenu(anchor: HTMLElement, items: MenuItem[]): void {
       closeMenu();
     }
   };
+  const buttons = Array.from(menu.querySelectorAll<HTMLButtonElement>(".menu-item:not([disabled])"));
+
+  /** Which entry the arrow keys are on, `-1` while nothing is picked yet. */
+  let active = -1;
+
+  const highlight = (index: number): void => {
+    active = Math.max(0, Math.min(index, buttons.length - 1));
+    buttons.forEach((button, position) => {
+      button.classList.toggle("is-highlighted", position === active);
+    });
+  };
+
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key === "Escape") {
       event.stopPropagation();
       closeMenu();
+      return;
+    }
+
+    if (buttons.length === 0) {
+      return;
+    }
+
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      const down = event.key === "ArrowDown";
+      // The first press picks an end, so nothing has to be highlighted first.
+      const next = active === -1 ? (down ? 0 : buttons.length - 1) : active + (down ? 1 : -1);
+      // Kept from the window handler, which would step the volume instead.
+      event.preventDefault();
+      event.stopPropagation();
+      highlight(next);
+      return;
+    }
+
+    if (event.key === "Enter" && active >= 0) {
+      event.preventDefault();
+      event.stopPropagation();
+      buttons[active].click();
     }
   };
   const onMove = () => closeMenu();

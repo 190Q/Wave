@@ -1,0 +1,120 @@
+.hero {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: minmax(0, 1fr);
+  align-items: center;
+  gap: 2.5rem;
+  padding: 0 3rem;
+  transition: padding 0.4s var(--ease), gap 0.4s var(--ease);
+}
+
+.hero.has-lyrics {
+  grid-template-columns: auto 1fr minmax(18rem, 30rem);
+}
+
+.now-cover {
+  height: var(--cover-height, 24rem);
+  max-height: 100%;
+  aspect-ratio: 1;
+  border-radius: 1rem;
+  background-size: cover;
+  background-position: center;
+  border: 0.0625rem solid rgb(255 255 255 / 0.18);
+  box-shadow: 0 1.5rem 3rem rgb(0 0 0 / 0.55);
+  transition: height 0.4s var(--ease), opacity 0.3s ease;
+}
+
+/* Too short for even a small cover: fold it away and close the column gap. */
+.hero.is-cover-hidden .now-cover {
+  height: 0;
+  opacity: 0;
+}
+
+.hero.is-cover-hidden {
+  column-gap: 0;
+}
+
+.hero.is-empty .now-cover {
+  display: none;
+}
+
+.now {
+  min-width: 0;
+}
+
+.kicker,
+.now-meta {
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+.now-title {
+  margin: 0.4rem 0;
+  font-size: clamp(2.25rem, 5vw, 4.5rem);
+  font-weight: 700;
+  line-height: 1.02;
+  overflow-wrap: anywhere;
+}
+
+.now-artist {
+  font-size: 1.25rem;
+  color: var(--accent);
+}
+
+/* Hero text lines fold away as the hero runs out of room. */
+.now-part {
+  overflow: hidden;
+  transition: max-height 0.35s var(--ease), opacity 0.25s ease;
+}
+
+.lyrics {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  mask-image: linear-gradient(transparent, #000 25%, #000 75%, transparent);
+}
+
+.lyrics[hidden] {
+  display: none;
+}
+
+.lyrics-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transition: transform 0.5s var(--ease);
+}
+
+.lyric {
+  height: var(--lyric-line-height);
+  line-height: var(--lyric-line-height);
+  font-size: 1.5rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: rgb(255 255 255 / 0.3);
+  transition: color 0.4s;
+}
+
+.lyric.is-active {
+  color: #fff;
+}
+
+@media (max-width: 64rem) {
+  .hero {
+    padding: 0 1.5rem;
+    gap: 1.5rem;
+  }
+
+  .hero.has-lyrics {
+    grid-template-columns: auto 1fr;
+  }
+
+  .lyrics {
+    display: none;
+  }
+}

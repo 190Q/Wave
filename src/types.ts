@@ -36,7 +36,36 @@ export interface Settings {
   volume: number;
   /** The last few custom accents, most recent first. */
   recentColours: string[];
+  /** Restores the queue, cursor and position on the next launch. */
+  resumeOnLaunch: boolean;
+  /** Overrides the system animation preference. */
+  reduceMotion: ReduceMotionMode;
+  /** Remembers the window size and position between launches. */
+  rememberWindow: boolean;
+  /** Keeps the window above the others. Toggled by `t`. */
+  alwaysOnTop: boolean;
+  /** The smallest frame, in a corner of the screen, above the others. */
+  miniPlayer: boolean;
+  /** Which corner the mini player sits in: 1 to 4, clockwise from the top left. */
+  miniCorner: number;
+  /** Which matcher every search field uses. */
+  searchAlgorithm: SearchAlgorithm;
+  /** Nine `Ctrl+Shift+1..9` slots, an action id each. Saved, not yet wired. */
+  shortcutSlots: string[];
 }
+
+/** How the OS animation preference is treated. */
+export type ReduceMotionMode = "system" | "on" | "off";
+
+/** The matchers offered for the search fields. */
+export type SearchAlgorithm =
+  | "exact"
+  | "substring"
+  | "prefix"
+  | "fuzzy"
+  | "ngram"
+  | "indexed"
+  | "phonetic";
 
 /** The playback session, so a restart resumes where the user left off. */
 export interface Playback {
@@ -60,6 +89,9 @@ export interface Session {
   queueOpen: boolean;
 }
 
+/** Which part of a saved window frame a `Ctrl+Shift+<slot>` snap restores. */
+export type SnapPart = "frame" | "size" | "position";
+
 /** Where the window sat when it was last closed. */
 export interface WindowGeometry {
   width: number;
@@ -78,6 +110,7 @@ export interface PersistedState {
   artworkColours: Record<string, string>;
   session: Session;
   window: WindowGeometry | null;
+  windowSlots: (WindowGeometry | null)[];
 }
 
 export interface ScanSummary {
@@ -115,7 +148,7 @@ export interface LyricLine {
 }
 
 /** Which slice of the library the sheet is showing. */
-export type CollectionFilter = "all" | "liked" | "playlists" | "artists" | "albums";
+export type CollectionFilter = "all" | "playlists" | "artists" | "albums";
 
 export interface ThemeDefinition {
   id: string;

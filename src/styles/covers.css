@@ -1,0 +1,75 @@
+/* Mosaics: a 2x2 grid, one tile, or two side by side. */
+
+.mosaic {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  flex: none;
+  width: var(--thumb);
+  height: var(--thumb);
+  border-radius: 0.5rem;
+  overflow: hidden;
+  background: var(--raise);
+}
+
+.mosaic.single {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+
+.mosaic.pair {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr;
+}
+
+.mosaic-cell {
+  background-size: cover;
+  background-position: center;
+}
+
+.mosaic.composed {
+  background-size: cover;
+  background-position: center;
+}
+
+/* Hover-to-play affordance, used on list rows and the detail cover. */
+.entry-cover,
+.detail-cover {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+.cover-play {
+  position: absolute;
+  right: 0.35rem;
+  bottom: 0.35rem;
+  width: 1.9rem;
+  height: 1.9rem;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: var(--accent-ink);
+  background: var(--accent);
+  box-shadow: 0 0.25rem 0.75rem rgb(0 0 0 / 0.45);
+  opacity: 0;
+  transform: translateY(0.2rem);
+  transition: opacity 0.18s, transform 0.18s, background 0.18s;
+}
+
+.entry-cover:hover .cover-play,
+.detail-cover:hover .cover-play,
+.cover-play:focus-visible {
+  opacity: 1;
+  transform: none;
+}
+
+.cover-play:hover {
+  background: var(--accent-dark);
+}
+
+.cover-play .btn-icon svg {
+  width: 0.9rem;
+  height: 0.9rem;
+}

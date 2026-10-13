@@ -1,0 +1,260 @@
+.menu {
+  position: fixed;
+  z-index: 900;
+  min-width: 11rem;
+  max-height: 20rem;
+  overflow-y: auto;
+  padding: 0.35rem;
+  border-radius: 0.75rem;
+  background: var(--surface);
+  box-shadow: 0 0.75rem 2.5rem rgb(0 0 0 / 0.7);
+}
+
+.menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font-size: 0.8125rem;
+  background: none;
+  border: 0;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.6rem;
+}
+
+.menu-item:hover:not(:disabled) {
+  background: var(--raise);
+}
+
+.menu-item.is-highlighted {
+  background: var(--raise-strong);
+}
+
+.menu-item.is-danger {
+  color: var(--danger);
+}
+
+.menu-item.is-active {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.drag-chip {
+  position: fixed;
+  top: -1000rem;
+  left: -1000rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 15rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 0.5rem;
+  background: var(--surface);
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 0.55);
+  pointer-events: none;
+}
+
+.drag-chip-cover {
+  flex: none;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.35rem;
+  background-color: var(--raise);
+  background-position: center;
+  background-size: cover;
+}
+
+.drag-chip-text {
+  min-width: 0;
+}
+
+.drag-chip-title {
+  display: block;
+  overflow: hidden;
+  font-size: 0.85rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drag-chip-artist {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.add-to {
+  position: fixed;
+  z-index: 900;
+  width: 18rem;
+  display: flex;
+  flex-direction: column;
+  max-height: min(24rem, calc(100vh - 2rem));
+  border-radius: 1rem;
+  background: var(--surface);
+  box-shadow: 0 0.75rem 2.5rem rgb(0 0 0 / 0.7);
+  overflow: hidden;
+}
+
+.add-to-head {
+  flex: none;
+  padding: 0.85rem 0.9rem 0.55rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.add-to-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--muted);
+}
+
+.add-to-icon svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.add-to-search {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0.9rem;
+  padding: 0 0.65rem;
+  border-radius: 0.6rem;
+  background: rgb(0 0 0 / 0.35);
+  box-shadow: inset 0 0 0 0.0625rem transparent;
+}
+
+.add-to-search:focus-within {
+  box-shadow: inset 0 0 0 0.0625rem var(--accent);
+}
+
+.add-to-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.45rem 0;
+  font-size: 0.8125rem;
+  background: none;
+  border: 0;
+  outline: none;
+}
+
+.add-to-new {
+  flex: none;
+  margin: 0.5rem 0.9rem 0.45rem;
+}
+
+.add-to-new-button {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.4rem 0.45rem;
+  font-size: 0.8125rem;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 0.5rem;
+  transition: background 0.2s;
+}
+
+.add-to-new-button:hover {
+  background: var(--raise);
+}
+
+.add-to-new.is-naming {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.45rem;
+  border-radius: 0.5rem;
+  background: rgb(0 0 0 / 0.35);
+}
+
+.add-to-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.4rem 0.5rem 0.6rem;
+  border-top: 0.0625rem solid rgb(255 255 255 / 0.1);
+}
+
+.add-to-section {
+  padding: 0.5rem 0.4rem 0.25rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.add-to-section:first-child {
+  padding-top: 0.25rem;
+}
+
+.add-to-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.35rem 0.4rem;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 0.5rem;
+  transition: background 0.2s;
+}
+
+.add-to-row:hover {
+  background: var(--raise);
+}
+
+.add-to-cover {
+  display: inline-flex;
+  flex: none;
+}
+
+.add-to-cover .mosaic {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.35rem;
+}
+
+.add-to-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.add-to-title {
+  display: block;
+  overflow: hidden;
+  font-size: 0.85rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.add-to-sub {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+/* An empty ring until the track is in, then a filled dot in the theme colour. */
+.add-to-mark {
+  flex: none;
+  width: 1.1rem;
+  height: 1.1rem;
+  border: 0.0625rem solid rgb(255 255 255 / 0.28);
+  border-radius: 50%;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.add-to-mark.is-on {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.add-to-empty {
+  padding: 0.6rem 0.4rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}

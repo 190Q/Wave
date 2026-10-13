@@ -8,6 +8,7 @@ export interface PlayerSnapshot {
   sourceOrder: string[];
   order: string[];
   cursor: number;
+  travel: number;
   currentId: string | null;
   positionMs: number;
   durationMs: number;
@@ -32,6 +33,8 @@ export class Player {
   /** The order tracks are actually played in. */
   private order: string[] = [];
   private cursor = 0;
+
+  private travel = 0;
 
   private positionMs = 0;
   private playing = false;
@@ -82,6 +85,7 @@ export class Player {
       sourceOrder: [...this.sourceOrder],
       order: [...this.order],
       cursor: this.cursor,
+      travel: this.travel,
       currentId: this.currentId,
       positionMs: this.positionMs,
       durationMs: this.currentDurationMs,
@@ -182,9 +186,11 @@ export class Player {
     const target = this.cursor + 1;
     if (target < this.order.length) {
       this.cursor = target;
+      this.travel += 1;
       this.startCurrent();
     } else if (this.repeat === "all") {
       this.cursor = 0;
+      this.travel += 1;
       this.startCurrent();
     } else {
       this.finish();
@@ -197,9 +203,11 @@ export class Player {
     }
     if (this.cursor > 0) {
       this.cursor -= 1;
+      this.travel -= 1;
       this.startCurrent();
     } else if (this.repeat === "all") {
       this.cursor = this.order.length - 1;
+      this.travel -= 1;
       this.startCurrent();
     } else {
       this.seek(0);

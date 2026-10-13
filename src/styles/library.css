@@ -1,0 +1,176 @@
+.sheet {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 26rem;
+  max-width: 100%;
+  z-index: 400;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.25rem 1rem;
+  background: rgb(14 14 18 / 0.92);
+  backdrop-filter: blur(1.25rem);
+  border-right: 0.0625rem solid rgb(255 255 255 / 0.1);
+  /* Keeps a swiping panel from spilling over the stage. */
+  overflow: hidden;
+  transform: translateX(-100%);
+  visibility: hidden;
+  transition: transform 0.4s var(--ease), visibility 0s 0.4s;
+}
+
+.sheet.is-open {
+  transform: none;
+  visibility: visible;
+  transition: transform 0.4s var(--ease), visibility 0s;
+}
+
+.sheet.is-detail .chips,
+.sheet.is-detail .sheet-tools,
+.sheet.is-detail .sheet-search {
+  display: none;
+}
+
+.sheet-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sheet-head h2 {
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.sheet-head-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.sheet-search {
+  width: 100%;
+}
+
+.chips {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.sheet-tools {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.sheet-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding-right: 0.25rem;
+}
+
+.sheet-foot {
+  border-top: 0.0625rem solid rgb(255 255 255 / 0.1);
+  padding-top: 0.6rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+/* No room for even a small cover: the library is out of reach. */
+.is-short #library-open {
+  display: none;
+}
+
+.entry {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 0.6rem;
+  padding: 0.45rem;
+  cursor: pointer;
+}
+
+.entry:hover,
+.entry:focus-visible {
+  background: var(--raise);
+}
+
+.entry.is-active {
+  background: var(--raise-strong);
+}
+
+.entry-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.entry-text .crate-name,
+.entry-text .crate-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.row-more,
+.track-add {
+  flex: none;
+  width: 1.6rem;
+  height: 1.6rem;
+  display: grid;
+  place-items: center;
+  background: none;
+  border: 0;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.row-more {
+  line-height: 1;
+  letter-spacing: 0.05em;
+}
+
+.entry:hover .row-more,
+.track-row:hover .row-more,
+.track-row:hover .track-add,
+.row-more:focus-visible,
+.track-add:focus-visible {
+  opacity: 1;
+}
+
+.row-more:hover,
+.track-add:hover {
+  color: var(--text);
+}
+
+.entry-editor {
+  padding: 0.25rem 0.45rem 0.5rem;
+}
+
+.entry-editor .search {
+  width: 100%;
+}
+
+.empty {
+  padding: 1rem 0.5rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+/* A short sidebar cannot spare the footer; the list needs the room. */
+@media (max-height: 40rem) {
+  .sheet-foot {
+    display: none;
+  }
+}

@@ -1,3 +1,5 @@
+import { reduceMotionActive } from "../lib/motion";
+
 const WIPE_MS = 600;
 
 const WIPE_EASE = "cubic-bezier(0.16, 1, 0.3, 1)";
@@ -18,12 +20,8 @@ function wipeShape(progress: number): string {
   return `polygon(-100vh -10vh, ${leading} -10vh, ${trailing} 110vh, -100vh 110vh)`;
 }
 function canSweep(start: unknown): start is (update: () => void) => Sweep {
-  return (
-    typeof start === "function" &&
-    !window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
+  return typeof start === "function" && !reduceMotionActive();
 }
-
 
 export function themeWipe(update: () => void): Promise<void> {
   const api = document as unknown as SweepingDocument;
@@ -55,4 +53,75 @@ export function themeWipe(update: () => void): Promise<void> {
   return Promise.all([sweep, transition.finished.catch(() => undefined)]).then(
     () => undefined,
   );
+}
+
+export interface CoverSwap {
+  body: HTMLElement;
+  style: string;
+}
+
+const CARD_LEAN = 0.25;
+
+function cardShape(lead: number): string {
+  const edge = lead * 100;
+  const trail = (lead - CARD_LEAN) * 100;
+  return `polygon(-200% -20%, ${edge}% -20%, ${trail}% 120%, -200% 120%)`;
+}
+
+/** Paints the covers straight away, for when the sweep cannot run. */
+function settle(swaps: CoverSwap[]): void {
+  for (const swap of swaps) {
+    swap.body.setAttribute("style", swap.style);
+  }
+}
+
+export function coverWipe(swaps: CoverSwap[]): void {
+  if (swaps.length === 0) {
+    return;
+  }
+
+  if (reduceMotionActive()) {
+    settle(swaps);
+    return;
+  }
+
+  const boxes = swaps.map((swap) => swap.body.getBoundingClientRect());
+  // Untransformed, because the clip is drawn in the card's own coordinates.
+  const widths = swaps.map((swap) => swap.body.offsetWidth);
+  const left = Math.min(...boxes.map((box) => box.left));
+  const span = Math.max(...boxes.map((box) => box.right)) - left;
+  const cover = (1 + CARD_LEAN) * Math.max(...widths);
+  const speed = (span + cover) / WIPE_MS;
+
+  if (!(speed > 0)) {
+    settle(swaps);
+    return;
+  }
+
+  swaps.forEach((swap, index) => {
+    const overlay = document.createElement("div");
+    overlay.className = "card-wipe";
+    overlay.setAttribute("style", swap.style);
+    // Clipped shut before it lands, so a card waiting its turn shows its colour.
+    overlay.style.clipPath = cardShape(0);
+    swap.body.prepend(overlay);
+
+    const animation = overlay.animate(
+      { clipPath: [cardShape(0), cardShape(1 + CARD_LEAN)] },
+      {
+        // Cards further along the row join the same edge a beat later.
+        delay: (boxes[index].left - left) / speed,
+        duration: ((1 + CARD_LEAN) * widths[index]) / speed,
+        easing: "linear",
+        fill: "forwards",
+      },
+    );
+
+    void animation.finished
+      .then(() => {
+        swap.body.setAttribute("style", swap.style);
+        overlay.remove();
+      })
+      .catch(() => undefined);
+  });
 }

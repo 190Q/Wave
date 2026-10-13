@@ -1,0 +1,368 @@
+.settings-dialog {
+  width: min(34rem, 94vw);
+  padding: 0;
+  max-height: min(calc(100vh - 2rem), 34rem);
+}
+
+.settings-dialog,
+.settings-dialog * {
+  user-select: none;
+}
+
+.settings-dialog input,
+.settings-dialog textarea {
+  user-select: text;
+}
+
+.settings-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+  padding: 1.25rem 1.25rem 0.75rem;
+}
+
+.settings-head h2 {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.settings-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 1.25rem;
+}
+
+.settings-foot {
+  display: flex;
+  justify-content: flex-end;
+  flex: none;
+  gap: 0.5rem;
+  padding: 0.85rem 1.25rem 1.25rem;
+  border-top: 0.0625rem solid rgb(255 255 255 / 0.08);
+  min-height: 4.1rem;
+}
+
+.settings-section {
+  padding: 0.9rem 0;
+  border-top: 0.0625rem solid rgb(255 255 255 / 0.08);
+}
+
+.settings-section:first-child {
+  padding-top: 0.25rem;
+  border-top: 0;
+}
+
+.settings-title {
+  margin-bottom: 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.45rem 0;
+}
+
+.settings-row.is-stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.5rem;
+}
+
+.settings-text {
+  min-width: 0;
+}
+
+.settings-label {
+  display: block;
+  font-size: 0.85rem;
+}
+
+.settings-hint {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* Flags a control that is stored but not acted on yet. */
+.settings-hint.is-pending {
+  color: var(--accent);
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.switch {
+  flex: none;
+  width: 2.4rem;
+  height: 1.4rem;
+  padding: 0.15rem;
+  border: 0;
+  border-radius: 62rem;
+  background: var(--raise);
+  transition: background 0.2s;
+}
+
+.switch:hover {
+  background: var(--raise-strong);
+}
+
+.switch.is-on {
+  background: var(--accent);
+}
+
+.switch-knob {
+  display: block;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 50%;
+  background: var(--text);
+  transition: transform 0.2s var(--ease), background 0.2s;
+}
+
+.switch.is-on .switch-knob {
+  transform: translateX(1rem);
+  background: var(--accent-ink);
+}
+
+.segmented {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  padding: 0.15rem;
+  border-radius: 62rem;
+  background: var(--raise);
+}
+
+/* The selected pill slides between the options rather than jumping. */
+.segmented-thumb {
+  position: absolute;
+  top: 0.15rem;
+  bottom: 0.15rem;
+  left: 0;
+  width: 0;
+  border-radius: 62rem;
+  background: var(--accent);
+  transition: transform 0.25s var(--ease), width 0.25s var(--ease);
+}
+
+.segmented-thumb.no-anim {
+  transition: none;
+}
+
+.segment {
+  position: relative;
+  z-index: 1;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.75rem;
+  border: 0;
+  border-radius: 62rem;
+  background: none;
+  color: var(--muted);
+  transition: color 0.2s;
+}
+
+.segment:hover {
+  color: var(--text);
+}
+
+.segment.is-on {
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+
+/* Radio-style list, used where each option needs a line of explanation. */
+.choices {
+  display: flex;
+  flex-direction: column;
+}
+
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.5rem;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 0.6rem;
+  transition: background 0.2s;
+}
+
+.choice:hover {
+  background: var(--raise);
+}
+
+/* Switching modes cross-fades the mark and the label rather than jumping. */
+.choice .settings-label {
+  transition: color 0.2s;
+}
+
+.choice-mark {
+  flex: none;
+  width: 0.85rem;
+  height: 0.85rem;
+  margin-top: 0.2rem;
+  border: 0.0625rem solid rgb(255 255 255 / 0.3);
+  border-radius: 50%;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.choice.is-on .choice-mark {
+  border-color: var(--accent);
+  background: radial-gradient(circle, var(--accent) 0 0.25rem, transparent 0.25rem);
+}
+
+.choice.is-on .settings-label {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.slot-row {
+  padding: 0.2rem 0;
+}
+
+.slot-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.slot-key {
+  flex: none;
+  width: 5.6rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.slot-trigger {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.78rem;
+  text-align: left;
+  color: var(--text);
+  background: var(--raise);
+  border: 0.0625rem solid transparent;
+  border-radius: 62rem;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.slot-trigger:hover {
+  background: var(--raise-strong);
+}
+
+.slot-trigger.is-open {
+  border-color: var(--accent);
+}
+
+.slot-trigger-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.slot-trigger .sort-chevron {
+  flex: none;
+  transition: transform 0.2s var(--ease);
+}
+
+.slot-trigger.is-open .sort-chevron {
+  transform: translateY(0.1rem) rotate(-135deg);
+}
+
+.slot-picker {
+  position: fixed;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 0.35rem;
+  border: 0.0625rem solid rgb(255 255 255 / 0.12);
+  border-radius: 0.75rem;
+  background: var(--surface);
+  box-shadow: 0 0.75rem 2rem rgb(0 0 0 / 0.5);
+}
+
+.slot-option {
+  display: block;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.78rem;
+  text-align: left;
+  white-space: nowrap;
+  background: none;
+  border: 0;
+  border-radius: 0.5rem;
+}
+
+.slot-option:hover {
+  background: var(--raise);
+}
+
+.slot-option.is-on {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.keybind-group + .keybind-group {
+  margin-top: 0.75rem;
+}
+
+.keybind-title {
+  margin-bottom: 0.15rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.keybind-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.2rem 0;
+  font-size: 0.78rem;
+}
+
+.keybind-keys {
+  flex: none;
+  width: 8.5rem;
+  font-weight: 700;
+}
+
+.keybind-action {
+  min-width: 0;
+  color: var(--muted);
+}
+
+.settings-errors {
+  margin: 0;
+  padding-left: 1rem;
+  font-size: 0.75rem;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}

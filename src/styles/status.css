@@ -1,0 +1,19 @@
+.status {
+  position: absolute;
+  left: 50%;
+  top: 3.4rem;
+  transform: translateX(-50%);
+  z-index: 700;
+  padding: 0.5rem 1rem;
+  border-radius: 62rem;
+  font-size: 0.8rem;
+  color: var(--text);
+  background: rgb(0 0 0 / 0.75);
+  border: 0.0625rem solid rgb(255 255 255 / 0.12);
+  backdrop-filter: blur(0.75rem);
+  pointer-events: none;
+}
+
+.status[hidden] {
+  display: none;
+}

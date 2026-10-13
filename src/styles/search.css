@@ -1,0 +1,181 @@
+.search {
+  font-size: 0.85rem;
+  background: rgb(0 0 0 / 0.35);
+  border: 0.0625rem solid transparent;
+  border-radius: 62rem;
+  padding: 0.55rem 1rem;
+  outline: none;
+}
+
+.search:focus {
+  border-color: var(--accent);
+}
+
+.search-wrap {
+  position: relative;
+  isolation: isolate;
+  flex: none;
+  width: 16rem;
+  transition: width 0.3s var(--ease);
+}
+
+.search-wrap .search {
+  width: 100%;
+  padding: 0.4rem 1rem 0.4rem 2.3rem;
+  font-size: 0.8125rem;
+  background: none;
+  border: 0;
+  box-shadow: inset 0 0 0 0.0625rem transparent;
+}
+
+.search-wrap .search:focus {
+  box-shadow: inset 0 0 0 0.0625rem var(--accent);
+}
+
+.search-wrap .search-icon {
+  position: absolute;
+  left: 0.85rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.search-wrap .search-icon svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.search-wrap .results {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: -1;
+  display: grid;
+  grid-template-rows: 0fr;
+  padding: var(--search-h, 3.2rem) 0.6rem 0;
+  overflow: hidden;
+  border-radius: var(--search-radius, 1.6rem);
+  background: rgb(0 0 0 / 0.35);
+  transition: grid-template-rows 0.4s var(--ease);
+}
+
+.search-wrap.is-open .results {
+  grid-template-rows: 1fr;
+}
+
+.results-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.results-list {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0.5rem;
+  max-height: min(30rem, 60vh);
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.results-list::-webkit-scrollbar {
+  display: none;
+}
+
+.results-list.is-more {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 1.75rem), transparent);
+}
+
+.results-head {
+  padding: 0.5rem 0.6rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.result {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.6rem;
+}
+
+.result:hover {
+  background: var(--raise);
+}
+
+/* The row the arrow keys are on, while the search modal is open. */
+.result.is-active {
+  background: var(--raise-strong);
+}
+
+.hit {
+  padding: 0 0.1rem;
+  border-radius: 0.2rem;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.result-title {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.result-sub {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+/* Search modal: the topbar icon opens a larger copy of the search bar. */
+
+.search-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 800;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 4.5rem 1.5rem 1.5rem;
+  background: rgb(0 0 0 / 0.5);
+  backdrop-filter: blur(0.25rem);
+  transition: opacity 0.22s ease;
+}
+
+.search-modal-panel {
+  width: min(46rem, 100%);
+  transform-origin: center;
+  transition: transform 0.22s var(--ease), opacity 0.2s ease;
+}
+
+.search-modal.is-closed {
+  opacity: 0;
+}
+
+.search-modal.is-closed .search-modal-panel {
+  transform: scale(0.12);
+  opacity: 0;
+}
+
+.search-modal .search-wrap {
+  width: 100%;
+}
+
+.search-modal .search-wrap .search {
+  font-size: 1.05rem;
+  padding: 0.85rem 1.25rem 0.85rem 3.1rem;
+}
+
+.search-modal .search-wrap .search-icon {
+  left: 1.15rem;
+}
+
+.search-modal .search-wrap .search-icon svg {
+  width: 1.3rem;
+  height: 1.3rem;
+}

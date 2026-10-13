@@ -1,7 +1,7 @@
-import { filterCollections, isPinned } from "../lib/collections";
+import { COLLECTION_FILTERS, filterCollections, isPinned } from "../lib/collections";
 import { escapeHtml, formatDuration, formatTotalDuration, plural, songCount } from "../lib/format";
+import { reduceMotionActive } from "../lib/motion";
 import {
-  addTracksToPlaylist,
   collectionById,
   createPlaylist,
   deletePlaylist,
@@ -9,7 +9,6 @@ import {
   importFolder,
   playCollection,
   playFromCollection,
-  removeTracksFromPlaylist,
   renamePlaylist,
   reorderPlaylist,
   setFilter,
@@ -19,14 +18,20 @@ import {
   subscribe,
   toggleLibrary,
   toggleLikeTrack,
-  player,
   type AppState,
 } from "../lib/state";
 import type { Collection, CollectionFilter, CollectionKind, Track } from "../types";
-import { mosaicHtml } from "./artwork";
+import { closeAddToPlaylist, openAddToPlaylist } from "./add-to-playlist";
+import { collectionCoverHtml, plainCoverStyle } from "./artwork";
+import { confirmDialog } from "./confirm";
 import { hydrateCovers } from "./covers";
 import { fillIcons } from "./icons";
-import { openMenu, type MenuItem } from "./menu";
+import { highlightHtml } from "./highlight";
+import { openMenu } from "./menu";
+
+const SWIPE_TRAVEL = 1.75;
+const SWIPE_MS = 260;
+const SWIPE_EASE = "cubic-bezier(0.22, 0.8, 0.28, 1)";
 
 export function mountLibrary(): void {
   const sheet = element("sheet");
@@ -49,7 +54,68 @@ export function mountLibrary(): void {
   let creating = false;
   let renaming: string | null = null;
   let openCollectionId: string | null = null;
+  let view: string | null = null;
   let dragFrom: number | null = null;
+  let dropAt: { index: number; after: boolean } | null = null;
+  let dragChip: HTMLElement | null = null;
+  let activeId: string | null = null;
+  let listScroll = 0;
+  let listToTop = false;
+
+  const entryRows = (): HTMLElement[] =>
+    Array.from(list.querySelectorAll<HTMLElement>("[data-collection]"));
+
+  const activeIndex = (): number =>
+    entryRows().findIndex((row) => row.dataset.collection === activeId);
+
+  const activateEntry = (index: number, scroll: boolean): void => {
+    const rows = entryRows();
+    if (rows.length === 0) {
+      activeId = null;
+      return;
+    }
+
+    const at = Math.max(0, Math.min(index, rows.length - 1));
+    activeId = rows[at].dataset.collection ?? null;
+    rows.forEach((row, position) => {
+      const on = position === at;
+      row.classList.toggle("is-active", on);
+      if (on) {
+        row.setAttribute("aria-current", "true");
+      } else {
+        row.removeAttribute("aria-current");
+      }
+    });
+
+    if (scroll) {
+      rows[at].scrollIntoView({ block: "nearest" });
+    }
+  };
+
+  /** Moves the highlight by `step`, wrapping around the ends of the list. */
+  const stepEntry = (step: number): void => {
+    const rows = entryRows();
+    if (rows.length === 0) {
+      activeId = null;
+      return;
+    }
+
+    const at = activeIndex();
+    const from = at < 0 ? (step > 0 ? -1 : 0) : at;
+    activateEntry((from + step + rows.length) % rows.length, true);
+  };
+
+  const restoreEntry = (): void => {
+    const at = activeIndex();
+    activateEntry(at < 0 ? 0 : at, false);
+  };
+
+  const openEntry = (id: string): void => {
+    openCollectionId = id;
+    renaming = null;
+    creating = false;
+    render();
+  };
 
   element("sheet-close")?.addEventListener("click", () => toggleLibrary(false));
   back.addEventListener("click", () => {
@@ -63,7 +129,34 @@ export function mountLibrary(): void {
     render();
   });
 
-  filterInput.addEventListener("input", () => setQuery(filterInput.value));
+  filterInput.addEventListener("input", () => {
+    activeId = null;
+    listToTop = true;
+    setQuery(filterInput.value);
+  });
+
+  filterInput.addEventListener("keydown", (event) => {
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        stepEntry(1);
+        return;
+      case "ArrowUp":
+        event.preventDefault();
+        stepEntry(-1);
+        return;
+      case "Enter": {
+        event.preventDefault();
+        const id = entryRows()[activeIndex()]?.dataset.collection;
+        if (id) {
+          openEntry(id);
+        }
+        return;
+      }
+      default:
+        return;
+    }
+  });
 
   sortButton.addEventListener("click", () => {
     const current = getState().sort;
@@ -77,6 +170,7 @@ export function mountLibrary(): void {
     const chip = (event.target as HTMLElement).closest<HTMLElement>("[data-filter]");
     const filter = chip?.dataset.filter as CollectionFilter | undefined;
     if (filter) {
+      listToTop = true;
       setFilter(filter);
     }
   });
@@ -106,9 +200,15 @@ export function mountLibrary(): void {
       return;
     }
 
-    const trackMenuButton = target.closest<HTMLElement>("[data-track-menu]");
-    if (trackMenuButton?.dataset.trackMenu) {
-      openTrackMenu(trackMenuButton, trackMenuButton.dataset.trackMenu, openCollectionId);
+    const likeButton = target.closest<HTMLElement>("[data-like]");
+    if (likeButton?.dataset.like) {
+      void toggleLikeTrack(likeButton.dataset.like);
+      return;
+    }
+
+    const addButton = target.closest<HTMLElement>("[data-track-add]");
+    if (addButton?.dataset.trackAdd) {
+      openAddToPlaylist(addButton, addButton.dataset.trackAdd);
       return;
     }
 
@@ -120,10 +220,7 @@ export function mountLibrary(): void {
 
     const row = target.closest<HTMLElement>("[data-collection]");
     if (row?.dataset.collection) {
-      openCollectionId = row.dataset.collection;
-      renaming = null;
-      creating = false;
-      render();
+      openEntry(row.dataset.collection);
     }
   });
 
@@ -169,13 +266,32 @@ export function mountLibrary(): void {
     }
   });
 
+  /** Puts the drag back down, whichever way it ended. */
+  const endDrag = (): void => {
+    dragFrom = null;
+    dropAt = null;
+    clearDragState(list);
+    dragChip?.remove();
+    dragChip = null;
+  };
+
   list.addEventListener("dragstart", (event) => {
     const row = (event.target as HTMLElement).closest<HTMLElement>("[data-track-index]");
-    if (!row) {
+    if (!row || !openCollectionId) {
       return;
     }
-    dragFrom = Number(row.dataset.trackIndex);
+
+    const index = Number(row.dataset.trackIndex);
+    dragFrom = index;
     row.classList.add("is-dragging");
+
+    // Without a payload and a permitted effect some engines refuse the drag.
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", "");
+      dragChip = dragChipFor(getState().tracksById.get(row.dataset.track ?? ""));
+      event.dataTransfer.setDragImage(dragChip, 16, 24);
+    }
   });
 
   list.addEventListener("dragover", (event) => {
@@ -187,37 +303,49 @@ export function mountLibrary(): void {
       return;
     }
     event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "move";
+    }
+
+    // The half of the row the pointer is in picks the gap to land in.
+    const rect = row.getBoundingClientRect();
+    const index = Number(row.dataset.trackIndex);
+    const after = event.clientY > rect.top + rect.height / 2;
+    if (dropAt?.index === index && dropAt.after === after) {
+      return;
+    }
+
+    dropAt = { index, after };
     clearDropTargets(list);
-    row.classList.add("is-drop-target");
+    row.classList.add(after ? "is-drop-after" : "is-drop-before");
   });
 
   list.addEventListener("drop", (event) => {
-    const row = (event.target as HTMLElement).closest<HTMLElement>("[data-track-index]");
-    if (dragFrom === null || !row || !openCollectionId) {
+    if (dragFrom === null || !openCollectionId) {
       return;
     }
     event.preventDefault();
 
     const collection = collectionById(openCollectionId);
-    const to = Number(row.dataset.trackIndex);
     const from = dragFrom;
-    dragFrom = null;
-    clearDragState(list);
+    const gap = dropAt === null ? null : dropAt.index + (dropAt.after ? 1 : 0);
+    endDrag();
 
-    if (!collection || from === to) {
+    if (!collection || gap === null) {
       return;
     }
 
     const reordered = [...collection.trackIds];
     const [moved] = reordered.splice(from, 1);
-    reordered.splice(to, 0, moved);
+    reordered.splice(gap > from ? gap - 1 : gap, 0, moved);
+
+    if (reordered.every((id, at) => id === collection.trackIds[at])) {
+      return;
+    }
     void reorderPlaylist(collection.id, reordered);
   });
 
-  list.addEventListener("dragend", () => {
-    dragFrom = null;
-    clearDragState(list);
-  });
+  list.addEventListener("dragend", endDrag);
 
   folders.addEventListener("click", (event) => {
     const button = (event.target as HTMLElement).closest<HTMLElement>("#sheet-add-folder");
@@ -235,7 +363,10 @@ export function mountLibrary(): void {
       return;
     }
     const target = event.target as HTMLElement;
-    if (sheet.contains(target) || target.closest(".menu, .theme-menu, .results")) {
+    if (
+      sheet.contains(target) ||
+      target.closest(".menu, .results, .theme-dialog, .settings-dialog, .confirm-dialog, .add-to")
+    ) {
       return;
     }
     if (element("library-open")?.contains(target)) {
@@ -251,6 +382,18 @@ export function mountLibrary(): void {
       openCollectionId = null;
     }
 
+    // The sheet slides itself in, so the content only swipes once it is up.
+    const wasOpen = sheet.classList.contains("is-open");
+    const wasList = view !== null && viewCollection(view) === "";
+    const nextView = viewKey(state.filter, openCollectionId);
+    const swipe = wasOpen && view !== null ? swipeDirection(view, nextView) : 0;
+    view = state.libraryOpen ? nextView : null;
+
+    if (wasList) {
+      listScroll = listToTop ? 0 : list.scrollTop;
+    }
+    listToTop = false;
+
     sheet.classList.toggle("is-open", state.libraryOpen);
     sheet.classList.toggle("is-detail", openCollectionId !== null);
     back.hidden = openCollectionId === null;
@@ -263,28 +406,116 @@ export function mountLibrary(): void {
     }
     sortLabel.textContent = state.sort === "size" ? "Most songs" : "A to Z";
 
+    if (!state.libraryOpen || openCollectionId === null) {
+      closeAddToPlaylist();
+    }
+
     if (!state.libraryOpen) {
       return;
     }
 
     if (openCollectionId) {
-      const collection = collectionById(openCollectionId);
       count.textContent = "";
-      list.innerHTML = collection ? renderDetail(state, collection) : "";
       folders.innerHTML = "";
+      paintDetail(list, state, collectionById(openCollectionId));
     } else {
-      const collections = filterCollections(state.collections, state.filter, state.query, state.sort);
+      const collections = filterCollections(
+        state.collections,
+        state.filter,
+        state.query,
+        state.sort,
+        state.settings.searchAlgorithm,
+      );
       count.textContent = plural(collections.length, "collection");
+      delete list.dataset.detail;
       list.innerHTML = renderList(state, collections, creating, renaming);
       folders.innerHTML = renderLibrary(state);
+      fillIcons(list);
+      hydrateCovers(list);
+      restoreEntry();
+      list.scrollTop = listScroll;
     }
 
-    fillIcons(list);
-    hydrateCovers(list);
+    if (swipe !== 0) {
+      swipePanel(list, swipe);
+    }
   };
 
   subscribe(render);
   render();
+}
+
+function viewKey(filter: CollectionFilter, collectionId: string | null): string {
+  return `${filter}\u0000${collectionId ?? ""}`;
+}
+
+function viewCollection(key: string): string {
+  return key.split("\u0000")[1];
+}
+
+function swipeDirection(from: string, to: string): 1 | -1 | 0 {
+  const [fromFilter, fromId] = from.split("\u0000");
+  const [toFilter, toId] = to.split("\u0000");
+
+  if (fromId !== toId) {
+    return toId ? 1 : -1;
+  }
+
+  const before = COLLECTION_FILTERS.indexOf(fromFilter as CollectionFilter);
+  const after = COLLECTION_FILTERS.indexOf(toFilter as CollectionFilter);
+  return after === before ? 0 : after > before ? 1 : -1;
+}
+
+function swipePanel(root: HTMLElement, direction: 1 | -1): void {
+  if (reduceMotionActive()) {
+    return;
+  }
+
+  root.animate(
+    [
+      { transform: `translateX(${direction * SWIPE_TRAVEL}rem)`, opacity: 0 },
+      { transform: "none", opacity: 1 },
+    ],
+    { duration: SWIPE_MS, easing: SWIPE_EASE },
+  );
+}
+
+function paintDetail(list: HTMLElement, state: AppState, collection: Collection | undefined): void {
+  const signature = collection
+    ? `${collection.id}\u0000${collection.name}\u0000${collection.trackIds.join("|")}`
+    : "";
+
+  if (list.dataset.detail === signature) {
+    syncLikes(list, state);
+    return;
+  }
+
+  list.dataset.detail = signature;
+  list.innerHTML = collection ? renderDetail(state, collection) : "";
+  fillIcons(list);
+  hydrateCovers(list);
+}
+
+/** Flips the hearts in place, leaving the rows themselves alone. */
+function syncLikes(root: ParentNode, state: AppState): void {
+  for (const button of root.querySelectorAll<HTMLElement>("[data-like]")) {
+    const id = button.dataset.like;
+    if (!id) {
+      continue;
+    }
+
+    const liked = state.likes.has(id);
+    button.classList.toggle("is-on", liked);
+    button.setAttribute("aria-pressed", String(liked));
+    button.setAttribute("aria-label", liked ? "Remove from Liked Songs" : "Add to Liked Songs");
+
+    const wanted = liked ? "like-filled" : "like";
+    const holder = button.querySelector<HTMLElement>("[data-icon]");
+    if (holder && holder.dataset.icon !== wanted) {
+      holder.dataset.icon = wanted;
+      fillIcons(button);
+    }
+  }
 }
 
 function renderList(
@@ -313,13 +544,13 @@ function renderList(
     rows.push(`
       <div class="entry${isPinned(collection) ? " is-pinned" : ""}" data-collection="${escapeHtml(collection.id)}" role="button" tabindex="0">
         <span class="entry-cover">
-          ${mosaicHtml(collection.trackIds, state.tracksById)}
+          ${collectionCoverHtml(collection, state.tracksById)}
           <button class="cover-play" type="button" data-play="${escapeHtml(collection.id)}" aria-label="Play ${escapeHtml(collection.name)}">
             <span class="btn-icon" data-icon="play"></span>
           </button>
         </span>
         <span class="entry-text">
-          <span class="crate-name">${escapeHtml(collection.name)}</span>
+          <span class="crate-name">${highlightHtml(collection.name, state.query, state.settings.searchAlgorithm)}</span>
           <span class="crate-sub">${escapeHtml(collection.subtitle)}</span>
         </span>
         ${editable ? `<button class="row-more" type="button" data-menu="${escapeHtml(collection.id)}" aria-label="Playlist actions for ${escapeHtml(collection.name)}">...</button>` : ""}
@@ -345,24 +576,30 @@ function renderDetail(state: AppState, collection: Collection): string {
     .join(", ");
 
   const rows = tracks
-    .map(
-      (track, index) => `
+    .map((track, index) => {
+      const liked = state.likes.has(track.id);
+      return `
         <li class="track-row${reorderable ? " is-reorderable" : ""}"${reorderable ? ' draggable="true"' : ""} data-track-index="${index}" data-track="${escapeHtml(track.id)}">
-          ${reorderable ? `<span class="track-grip" aria-hidden="true">::</span>` : `<span class="track-grip"></span>`}
+          ${reorderable ? `<span class="track-grip" aria-hidden="true"><span class="btn-icon" data-icon="grip"></span></span>` : `<span class="track-grip"></span>`}
+          <button class="track-like${liked ? " is-on" : ""}" type="button" data-like="${escapeHtml(track.id)}" aria-pressed="${liked}" aria-label="${liked ? "Remove from Liked Songs" : "Add to Liked Songs"}">
+            <span class="btn-icon" data-icon="${liked ? "like-filled" : "like"}"></span>
+          </button>
           <span class="track-index">${index + 1}</span>
           <span class="track-title">${escapeHtml(track.title)}</span>
           <span class="track-artist">${escapeHtml(track.artist ?? "")}</span>
           <span class="track-time">${formatDuration(track.durationMs)}</span>
-          <button class="row-more" type="button" data-track-menu="${escapeHtml(track.id)}" aria-label="Actions for ${escapeHtml(track.title)}">...</button>
-        </li>`,
-    )
+          <button class="track-add" type="button" data-track-add="${escapeHtml(track.id)}" aria-label="Add ${escapeHtml(track.title)} to a playlist">
+            <span class="btn-icon" data-icon="add"></span>
+          </button>
+        </li>`;
+    })
     .join("");
 
   return `
     <div class="detail">
       <div class="detail-head">
         <span class="detail-cover">
-          ${mosaicHtml(collection.trackIds, state.tracksById)}
+          ${collectionCoverHtml(collection, state.tracksById)}
           <button class="cover-play" type="button" data-play="${escapeHtml(collection.id)}" aria-label="Play ${escapeHtml(collection.name)}">
             <span class="btn-icon" data-icon="play"></span>
           </button>
@@ -416,46 +653,44 @@ function renderLibrary(state: AppState): string {
 function openPlaylistMenu(anchor: HTMLElement, id: string, onRename: () => void): void {
   openMenu(anchor, [
     { label: "Rename", action: onRename },
-    { label: "Delete playlist", danger: true, action: () => void deletePlaylist(id) },
+    { label: "Delete playlist", danger: true, action: () => void removePlaylist(id) },
   ]);
 }
 
-function openTrackMenu(anchor: HTMLElement, trackId: string, collectionId: string | null): void {
-  const state = getState();
-  const liked = state.likes.has(trackId);
-  const inPlaylist = collectionId !== null && collectionById(collectionId)?.kind === "playlist";
-
-  const items: MenuItem[] = [
-    {
-      label: liked ? "Remove from Liked Songs" : "Add to Liked Songs",
-      action: () => void toggleLikeTrack(trackId),
-    },
-    { label: "Play next", action: () => player.insertAfterCurrent(trackId) },
-    { label: "Add to queue", action: () => player.appendToQueue(trackId) },
-  ];
-
-  for (const playlist of state.playlists) {
-    items.push({
-      label: `Add to ${playlist.name}`,
-      action: () => void addTracksToPlaylist(playlist.id, [trackId]),
-    });
-  }
-
-  if (inPlaylist && collectionId) {
-    items.push({
-      label: "Remove from this playlist",
+async function removePlaylist(id: string): Promise<void> {
+  const collection = collectionById(id);
+  if (collection && collection.trackIds.length > 0) {
+    const confirmed = await confirmDialog({
+      title: "Delete playlist",
+      message: `Are you sure you want to delete "${collection.name}"? The songs in it stay in your library.`,
+      confirmLabel: "Delete",
       danger: true,
-      action: () => void removeTracksFromPlaylist(collectionId, [trackId]),
     });
+    if (!confirmed) {
+      return;
+    }
   }
 
-  openMenu(anchor, items);
+  await deletePlaylist(id);
 }
 
 function clearDropTargets(root: HTMLElement): void {
-  for (const row of root.querySelectorAll<HTMLElement>(".is-drop-target")) {
-    row.classList.remove("is-drop-target");
+  for (const row of root.querySelectorAll<HTMLElement>(".is-drop-before, .is-drop-after")) {
+    row.classList.remove("is-drop-before", "is-drop-after");
   }
+}
+
+function dragChipFor(track: Track | undefined): HTMLElement {
+  const chip = document.createElement("div");
+  chip.className = "drag-chip";
+  chip.innerHTML = `
+    <span class="drag-chip-cover"${track ? ` style="${plainCoverStyle(track)}"` : ""}></span>
+    <span class="drag-chip-text">
+      <span class="drag-chip-title">${escapeHtml(track?.title ?? "")}</span>
+      <span class="drag-chip-artist">${escapeHtml(track?.artist ?? "")}</span>
+    </span>`;
+  document.body.appendChild(chip);
+  return chip;
 }
 
 function clearDragState(root: HTMLElement): void {

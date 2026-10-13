@@ -1,0 +1,9 @@
+.stage {
+  position: relative;
+  isolation: isolate;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--stage-background);
+}

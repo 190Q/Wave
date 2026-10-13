@@ -32,6 +32,7 @@ static MINI_INNER: Mutex<Option<PhysicalSize<u32>>> = Mutex::new(None);
 pub struct Settings {
     pub theme: String,
     pub volume: u8,
+    pub normalize_volume: bool,
     pub recent_colours: Vec<String>,
     pub resume_on_launch: bool,
     pub reduce_motion: String,
@@ -48,6 +49,7 @@ impl Default for Settings {
         Self {
             theme: "adaptive".to_string(),
             volume: 70,
+            normalize_volume: true,
             recent_colours: Vec::new(),
             resume_on_launch: true,
             reduce_motion: "system".to_string(),

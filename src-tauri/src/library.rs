@@ -8,6 +8,7 @@ use lofty::prelude::{Accessor, AudioFile, ItemKey, TaggedFileExt};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Runtime, State};
 
+use crate::loudness::LoudnessIndex;
 use crate::state::{save, PersistedState, Store};
 
 /// Extensions treated as music. `mp4`/`m4v` are deliberately absent.
@@ -52,6 +53,15 @@ impl TrackPaths {
             .collect()
     }
 
+    /// The same lookup, keeping each id, so a result can name the song it is for.
+    pub fn ids_to_pairs(&self, track_ids: &[String]) -> Vec<(String, String)> {
+        let guard = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        track_ids
+            .iter()
+            .filter_map(|id| guard.get(id).map(|relative| (id.clone(), relative.clone())))
+            .collect()
+    }
+
     /// Drops an id, for a song that is no longer in the library.
     pub fn forget(&self, track_id: &str) {
         self.0
@@ -93,6 +103,10 @@ pub struct Track {
     /// Copied sidecar lyrics if the index has one.
     pub lyrics_path: Option<String>,
     pub has_embedded_art: bool,
+    /// Integrated loudness in LUFS, `None` until the song has been measured.
+    pub lufs: Option<f32>,
+    /// True peak, linear. `None` until the song has been measured.
+    pub peak: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -221,6 +235,7 @@ pub fn scan<R: Runtime>(app: &AppHandle<R>, paths: &TrackPaths) -> ScanSummary {
     };
 
     let index = read_index(&root);
+    let loudness = crate::loudness::read_index(&root);
     let cache = app.path().app_cache_dir().ok().map(|dir| dir.join("artwork"));
     if let Some(dir) = &cache {
         let _ = fs::create_dir_all(dir);
@@ -242,7 +257,7 @@ pub fn scan<R: Runtime>(app: &AppHandle<R>, paths: &TrackPaths) -> ScanSummary {
                     skipped += 1;
                     continue;
                 }
-                match read_track(&path, &root, &index, cache.as_deref()) {
+                match read_track(&path, &root, &index, &loudness, cache.as_deref()) {
                     Ok(track) => tracks.push(track),
                     Err(error) => errors.push(error),
                 }
@@ -272,6 +287,7 @@ fn read_track(
     path: &Path,
     root: &Path,
     index: &LibraryIndex,
+    loudness: &LoudnessIndex,
     artwork_cache: Option<&Path>,
 ) -> Result<Track, String> {
     let file_name = path
@@ -338,6 +354,8 @@ fn read_track(
         .get(&relative_path)
         .map(|relative| root.join(relative).to_string_lossy().into_owned());
 
+    let reading = loudness.songs.get(&relative_path);
+
     Ok(Track {
         id,
         path: path.to_string_lossy().into_owned(),
@@ -357,6 +375,8 @@ fn read_track(
         artwork_path,
         lyrics_path,
         has_embedded_art,
+        lufs: reading.map(|measurement| measurement.lufs),
+        peak: reading.map(|measurement| measurement.peak),
     })
 }
 
@@ -474,6 +494,12 @@ pub fn delete_track(
         let _ = fs::remove_file(root.join(lyrics));
     }
     write_index(&root, &index)?;
+
+    // The reading goes with the file it was taken from.
+    let mut loudness = crate::loudness::read_index(&root);
+    if loudness.songs.remove(&relative).is_some() {
+        let _ = crate::loudness::write_index(&root, &loudness);
+    }
 
     crate::playlists::remove_file_from_all(&app, &relative)?;
     paths.forget(&track_id);

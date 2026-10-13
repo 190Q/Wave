@@ -5,6 +5,7 @@ import type {
   CoversOutcome,
   ImportOutcome,
   ImportPlan,
+  LoudnessOutcome,
   LyricsOutcome,
   PersistedState,
   ScanSummary,
@@ -93,6 +94,11 @@ export function deleteTrack(trackId: string): Promise<PersistedState> {
 
 export function scanLibrary(): Promise<ScanSummary> {
   return invoke("scan_library");
+}
+
+/** Measures the loudness of the given songs, so playback can level them. */
+export function analyseLoudness(trackIds: string[]): Promise<LoudnessOutcome> {
+  return invoke("analyse_loudness", { trackIds });
 }
 
 export function importFolder(

@@ -21,6 +21,10 @@ export interface Track {
   lyricsPath: string | null;
   hasEmbeddedArt: boolean;
   relativePath: string;
+  /** Integrated loudness in LUFS, `null` until the song has been measured. */
+  lufs: number | null;
+  /** True peak, linear: `1` is full scale. */
+  peak: number | null;
 }
 
 export interface Playlist {
@@ -34,6 +38,8 @@ export interface Settings {
   /** `adaptive`, or a `#rrggbb` the user picked. */
   theme: string;
   volume: number;
+  /** Levels every song to the same loudness when it plays. */
+  normalizeVolume: boolean;
   /** The last few custom accents, most recent first. */
   recentColours: string[];
   /** Restores the queue, cursor and position on the next launch. */
@@ -224,6 +230,29 @@ export interface ImportOutcome {
   playlist: string | null;
   errors: string[];
   state: PersistedState;
+}
+
+/** One song's loudness, sent as soon as it is measured. */
+export interface LoudnessUpdate {
+  id: string;
+  lufs: number;
+  peak: number;
+  /** Songs handled so far, including this one. */
+  done: number;
+  /** How many songs needed a reading when the pass started. */
+  total: number;
+  /** Songs the library already had a reading for. */
+  skipped: number;
+  failures: string[];
+}
+
+/** How a loudness pass went. */
+export interface LoudnessOutcome {
+  /** Measured this time. */
+  measured: number;
+  /** Left alone, because the library already had a reading for them. */
+  skipped: number;
+  failures: string[];
 }
 
 export type RepeatMode = "off" | "all";

@@ -71,17 +71,19 @@ function mountStatus(): void {
   let timer: number | null = null;
 
   const render = (): void => {
-    const { notice, ready, scanning, tracks } = getState();
+    const { analysing, notice, ready, scanning, tracks } = getState();
 
     const message =
       notice ??
       (scanning
         ? "Scanning your library..."
-        : !ready
-          ? "Starting..."
-          : tracks.length === 0
-            ? "Import a folder to get started."
-            : null);
+        : analysing
+          ? `Analysing loudness, ${analysing.done} of ${analysing.total}...`
+          : !ready
+            ? "Starting..."
+            : tracks.length === 0
+              ? "Import a folder to get started."
+              : null);
 
     // Notices are transient; the standing hints are not.
     if (notice !== shown) {

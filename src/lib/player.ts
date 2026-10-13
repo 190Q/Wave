@@ -23,6 +23,8 @@ export interface PlayerSnapshot {
 export interface PlayerSource {
   path: string;
   durationMs: number;
+  /** The loudness gain, `1` for a song that has not been measured. */
+  gain: number;
 }
 
 type ChangeListener = (snapshot: PlayerSnapshot) => void;
@@ -30,7 +32,7 @@ type ProgressListener = (positionMs: number, durationMs: number) => void;
 
 export const MIN_VOLUME = 0;
 export const MAX_VOLUME = 100;
-export const MAX_GAIN = 0.2;
+export const MAX_GAIN = 0.5;
 
 /** How close to the end counts as the end, for restarting a finished track. */
 const END_SLACK_MS = 200;
@@ -291,13 +293,13 @@ export class Player {
     if (this.volume > 0) {
       this.muted = false;
     }
-    if (this.fade !== null) {
-      this.startFade(this.targetLevel());
-    } else {
-      this.level = this.targetLevel();
-      this.applyLevel();
-    }
+    this.retarget();
     this.emitChange();
+  }
+
+  /** Re-reads the current song's gain, for a reading that arrived mid-song. */
+  refreshGain(): void {
+    this.retarget();
   }
 
   toggleMute(): void {
@@ -444,7 +446,19 @@ export class Player {
     if (this.muted || !this.playing) {
       return 0;
     }
-    return (this.volume / MAX_VOLUME) * MAX_GAIN;
+    const id = this.currentId;
+    const gain = id ? (this.sourceOf(id)?.gain ?? 1) : 1;
+    return (this.volume / MAX_VOLUME) * MAX_GAIN * gain;
+  }
+
+  /** Moves the level to whatever the current song and settings call for. */
+  private retarget(): void {
+    if (this.fade !== null) {
+      this.startFade(this.targetLevel());
+      return;
+    }
+    this.level = this.targetLevel();
+    this.applyLevel();
   }
 
   private applyLevel(): void {

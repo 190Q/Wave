@@ -21,7 +21,7 @@ import { placePicker } from "./picker";
 const DIALOG_MS = 220;
 
 /** The settings that are plain on/off switches. */
-type ToggleKey = "resumeOnLaunch" | "rememberWindow";
+type ToggleKey = "resumeOnLaunch" | "rememberWindow" | "normalizeVolume";
 
 const MOTION_OPTIONS: { value: ReduceMotionMode; label: string }[] = [
   { value: "system", label: "System" },
@@ -377,12 +377,18 @@ function sameValue(left: unknown, right: unknown): boolean {
 function playbackHtml(settings: Settings): string {
   return section(
     "Playback",
-    toggleRow(
+    `${toggleRow(
       "resumeOnLaunch",
       "Resume on launch",
       "Restore the queue, cursor and position.",
       settings.resumeOnLaunch,
-    ),
+    )}
+    ${toggleRow(
+      "normalizeVolume",
+      "Normalize volume",
+      "Measure each song once and play it at a level gain, so a quiet track is not lost next to a loud one.",
+      settings.normalizeVolume,
+    )}`,
   );
 }
 
@@ -434,6 +440,15 @@ function libraryHtml(state: AppState): string {
     notes.push(`${plural(state.tracks.length, "track")} in the library`);
     if (state.skipped > 0) {
       notes.push(`${state.skipped} non-audio file${state.skipped === 1 ? "" : "s"} skipped`);
+    }
+  }
+
+  if (state.analysing) {
+    notes.push(`Measuring loudness, ${state.analysing.done} of ${state.analysing.total}`);
+  } else {
+    const measured = state.tracks.filter((track) => track.lufs !== null).length;
+    if (measured > 0 && measured < state.tracks.length) {
+      notes.push(`${measured} of ${state.tracks.length} measured for volume`);
     }
   }
 

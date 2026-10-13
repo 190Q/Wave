@@ -3,6 +3,7 @@ mod cover_fetch;
 mod download;
 mod import;
 mod library;
+mod loudness;
 mod lyrics;
 mod lyrics_fetch;
 mod playlists;
@@ -98,6 +99,7 @@ pub fn run() {
             state::toggle_like,
             library::scan_library,
             library::delete_track,
+            loudness::analyse_loudness,
             import::import_folder,
             playlists::create_playlist,
             playlists::rename_playlist,

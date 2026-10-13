@@ -9,6 +9,7 @@ import type {
   ImportProgress,
   ImportRecord,
   LyricLine,
+  LoudnessUpdate,
   LyricsOutcome,
   PersistedState,
   Playback,
@@ -24,6 +25,7 @@ import { COLLECTION_FILTERS, buildCollections, findCollection, sortAlbumTracks }
 import { FALLBACK_COLOUR, colourFromId, isUsableAccent } from "./colour";
 import * as ipc from "./ipc";
 import { plural } from "./format";
+import { gainFor } from "./loudness";
 import { parseLrc } from "./lrc";
 import { MAX_VOLUME, MIN_VOLUME, Player, easeOutCubic } from "./player";
 
@@ -47,6 +49,9 @@ const LYRICS_PROGRESS_EVENT = "lyrics-fetch";
 
 /** Follows one covers fetch, song by song. */
 const COVERS_PROGRESS_EVENT = "covers-fetch";
+
+/** Follows one loudness pass, song by song. */
+const LOUDNESS_EVENT = "loudness-scan";
 
 /** How long a burst of saves is left to settle before re-checking. */
 const CONFIG_SETTLE_MS = 400;
@@ -92,6 +97,8 @@ export interface AppState {
   lyricsProgress: ImportProgress | null;
   /** The covers fetch in flight, and its last result. */
   coversProgress: ImportProgress | null;
+  /** How far the loudness pass has got, `null` when nothing is being measured. */
+  analysing: { done: number; total: number } | null;
 }
 
 const state: AppState = {
@@ -111,6 +118,7 @@ const state: AppState = {
   settings: {
     theme: ADAPTIVE_THEME,
     volume: 70,
+    normalizeVolume: true,
     recentColours: [],
     resumeOnLaunch: true,
     reduceMotion: "system",
@@ -136,6 +144,7 @@ const state: AppState = {
   importing: null,
   lyricsProgress: null,
   coversProgress: null,
+  analysing: null,
 };
 
 const listeners = new Set<() => void>();
@@ -171,8 +180,15 @@ const engine = new AudioEngine({
 
 export const player = new Player(engine, (trackId) => {
   const track = state.tracksById.get(trackId);
-  return track ? { path: track.path, durationMs: track.durationMs } : undefined;
+  return track
+    ? { path: track.path, durationMs: track.durationMs, gain: trackGain(track) }
+    : undefined;
 });
+
+/** The gain a song plays at, or `1` while normalization is switched off. */
+function trackGain(track: Track): number {
+  return state.settings.normalizeVolume ? gainFor(track) : 1;
+}
 
 /** One queue step, shared by the arrow keys and the wheel. */
 export function stepTrack(direction: number): void {
@@ -522,6 +538,7 @@ function scheduleEmit(): void {
 export async function init(): Promise<void> {
   watchSettings();
   watchSpotify();
+  watchLoudness();
   try {
     const persisted = await ipc.loadState();
     applyPersisted(persisted);
@@ -562,6 +579,39 @@ export async function rescan(): Promise<void> {
 
   state.scanning = false;
   emit();
+
+  // Measuring runs behind the scan, so a long pass never holds up the library.
+  void analyseLoudness();
+}
+
+/** Set while a pass is running, so a second one cannot start on top of it. */
+let loudnessRunning = false;
+/** Set when a pass is asked for while one is already running. */
+let loudnessAgain = false;
+
+async function analyseLoudness(): Promise<void> {
+  if (state.tracks.length === 0) {
+    return;
+  }
+  if (loudnessRunning) {
+    // Whatever arrived since is picked up by the run that follows this one.
+    loudnessAgain = true;
+    return;
+  }
+  loudnessRunning = true;
+
+  try {
+    do {
+      loudnessAgain = false;
+      await ipc.analyseLoudness(state.tracks.map((track) => track.id));
+    } while (loudnessAgain);
+  } catch {
+    // A song with no reading simply plays at its own level.
+  } finally {
+    loudnessRunning = false;
+    state.analysing = null;
+    emit();
+  }
 }
 
 /** The one-line summary both import paths finish with. */
@@ -1115,6 +1165,27 @@ function watchSpotify(): void {
   });
 }
 
+/** Follows a loudness pass, so each reading lands as soon as it is measured. */
+function watchLoudness(): void {
+  void listen<LoudnessUpdate>(LOUDNESS_EVENT, (event) => {
+    const { id, lufs, peak, done, total } = event.payload;
+
+    const track = state.tracksById.get(id);
+    if (track) {
+      track.lufs = lufs;
+      track.peak = peak;
+    }
+    state.analysing = { done, total };
+
+    if (player.currentId === id) {
+      player.refreshGain();
+    }
+    emit();
+  }).catch(() => {
+    // Not running inside Tauri, for example `npm run dev` in a browser.
+  });
+}
+
 function watchSettings(): void {
   void listen<Settings>(SETTINGS_EVENT, (event) => {
     state.settings = event.payload;
@@ -1135,6 +1206,10 @@ export function cycleAccent(): void {
 export async function updateSettings(patch: Partial<Settings>): Promise<boolean> {
   try {
     applyPersisted(await ipc.saveSettings({ ...state.settings, ...patch }));
+    if (patch.normalizeVolume !== undefined) {
+      // The song playing right now should follow the switch, not the next one.
+      player.refreshGain();
+    }
     emit();
     return true;
   } catch (error) {

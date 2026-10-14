@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -314,6 +314,26 @@ pub(crate) fn hide_console(command: &mut std::process::Command) {
     }
 }
 
+static ACCEPTED: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+/// The credentials as the pair that is checked and remembered.
+fn credentials(env: &Env) -> (String, String) {
+    (
+        env.client_id.trim().to_string(),
+        env.client_secret.trim().to_string(),
+    )
+}
+
+fn already_accepted(pair: &(String, String)) -> bool {
+    let guard = ACCEPTED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.as_ref() == Some(pair)
+}
+
+fn remember_accepted(pair: (String, String)) {
+    let mut guard = ACCEPTED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = Some(pair);
+}
+
 /// Reads the config and asks Spotify whether the credentials work. Never opens
 /// a browser, so it is safe to run on every `.env` save.
 pub fn status<R: Runtime>(app: &AppHandle<R>) -> SpotifyStatus {
@@ -324,6 +344,7 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> SpotifyStatus {
     let yt_dlp = find_yt_dlp(env.yt_dlp.as_ref());
     let ffmpeg = tool_path(env.ffmpeg.as_ref(), "ffmpeg").is_some();
     let configured = env.complete();
+    let pair = credentials(&env);
 
     let mut accepted = false;
     let mut problem: Option<String> = None;
@@ -332,9 +353,14 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> SpotifyStatus {
         problem = Some(format!(
             "Add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET to {env_path}."
         ));
+    } else if already_accepted(&pair) {
+        accepted = true;
     } else {
         match probe(&env) {
-            Ok(()) => accepted = true,
+            Ok(()) => {
+                accepted = true;
+                remember_accepted(pair);
+            }
             Err(error) => problem = Some(error),
         }
     }
@@ -359,25 +385,15 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> SpotifyStatus {
     }
 }
 
-/// Proves the client ID and secret are a working pair, then proves the API
-/// answers, so "set up" means the credentials were actually used.
+/// Proves the client ID and secret are a working pair.
+///
+/// The token request is the whole check. Spotify answers `invalid_client` for a
+/// pair it will not take, and a catalogue call here would only spend the app's
+/// rate limit on something the import does not need. This used to search, which
+/// is the endpoint Spotify limits hardest, so a quota that was already spent
+/// came back as broken credentials.
 fn probe(env: &Env) -> Result<(), String> {
-    let token = client_credentials_token(env)?;
-    let response = client()
-        .get(format!("{API}/search"))
-        .query(&[("q", "wave"), ("type", "track"), ("limit", "1")])
-        .bearer_auth(token)
-        .send()
-        .map_err(|e| format!("could not reach Spotify: {e}"))?;
-
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "Spotify rejected the request ({})",
-            response.status().as_u16()
-        ))
-    }
+    client_credentials_token(env).map(|_| ())
 }
 
 fn client_credentials_token(env: &Env) -> Result<String, String> {
@@ -389,8 +405,13 @@ fn client_credentials_token(env: &Env) -> Result<String, String> {
         .map_err(|e| format!("could not reach Spotify: {e}"))?;
 
     let status = response.status();
+    let retry = retry_after(&response);
     let body = response.text().unwrap_or_default();
     if !status.is_success() {
+        // A limit on the token endpoint is still a limit, not bad credentials.
+        if status.as_u16() == 429 {
+            return Err(rate_limited(retry));
+        }
         return Err(format!(
             "Spotify refused the client ID and secret ({}): {}",
             status.as_u16(),
@@ -415,6 +436,40 @@ fn error_message(body: &str) -> String {
                 .and_then(|value| value["error_description"].as_str().map(str::to_string))
         })
         .unwrap_or_else(|| body.chars().take(200).collect())
+}
+
+/// The seconds Spotify asked us to wait, from the `Retry-After` on a 429.
+fn retry_after(response: &reqwest::blocking::Response) -> Option<u64> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse().ok())
+}
+
+/// A wait said the way a person would, from a count of seconds.
+fn wait_phrase(seconds: u64) -> String {
+    let (count, unit) = match seconds {
+        0..=1 => return "in a second".to_string(),
+        2..=59 => return format!("in {seconds} seconds"),
+        60..=3599 => (seconds.div_ceil(60), "minute"),
+        3600..=86_399 => (seconds.div_ceil(3600), "hour"),
+        _ => (seconds.div_ceil(86_400), "day"),
+    };
+    let plural = if count == 1 { "" } else { "s" };
+    format!("in {count} {unit}{plural}")
+}
+
+fn rate_limited(retry: Option<u64>) -> String {
+    let wait = match retry {
+        Some(seconds) => wait_phrase(seconds),
+        None => "in a few minutes".to_string(),
+    };
+    format!(
+        "Spotify is rate limiting this app (429), not refusing the credentials. \
+         Development-mode apps share one quota across every Client ID on the account, \
+         so waiting is the only fix. Try again {wait}."
+    )
 }
 
 /// A token for the Web API: the cached one, a refreshed one, or a fresh
@@ -661,16 +716,18 @@ fn get(token: &str, url: &str) -> Result<Value, String> {
         .map_err(|e| format!("could not reach Spotify: {e}"))?;
 
     let status = response.status();
+    let retry = retry_after(&response);
     let body = response.text().unwrap_or_default();
     if !status.is_success() {
-        return Err(refusal(status.as_u16(), &body));
+        return Err(refusal(status.as_u16(), retry, &body));
     }
 
     serde_json::from_str(&body).map_err(|e| format!("Spotify sent an odd reply: {e}"))
 }
 
-fn refusal(status: u16, body: &str) -> String {
+fn refusal(status: u16, retry: Option<u64>, body: &str) -> String {
     match status {
+        429 => rate_limited(retry),
         404 => "Spotify has nothing to show for that link (404). If the link is right, it is \
                 almost certainly one of Spotify's own playlists, which it does not let apps read. \
                 A playlist of your own will work."
@@ -696,15 +753,7 @@ pub fn playlist_tracks(token: &str, id: &str) -> Result<(String, Vec<TrackMeta>)
     let mut tracks = Vec::new();
 
     loop {
-        let page = match get(token, &url) {
-            Ok(page) => page,
-            // The listing was renamed from `/tracks` to `/items`; take either.
-            Err(error) if url.contains("/items") => {
-                url = url.replace("/items", "/tracks");
-                get(token, &url).map_err(|_| error)?
-            }
-            Err(error) => return Err(error),
-        };
+        let page = get(token, &url)?;
 
         for item in page["items"].as_array().into_iter().flatten() {
             if let Some(meta) = normalise_item(item) {
@@ -744,7 +793,7 @@ pub fn cover_url(token: &str, artist: &str, title: &str) -> Result<Option<String
         .map(str::to_string))
 }
 
-/// Genres live on the artist, not the track, so they are fetched in batches.
+/// Genres live on the artist, not the track.
 pub fn enrich_genres(token: &str, tracks: &mut [TrackMeta]) {
     let mut ids: Vec<String> = Vec::new();
     for track in tracks.iter() {
@@ -756,23 +805,17 @@ pub fn enrich_genres(token: &str, tracks: &mut [TrackMeta]) {
     }
 
     let mut genres: Vec<(String, Vec<String>)> = Vec::new();
-    for chunk in ids.chunks(50) {
-        let joined = chunk.join(",");
-        let Ok(value) = get(token, &format!("{API}/artists?ids={joined}")) else {
-            continue;
+    for id in &ids {
+        let Ok(artist) = get(token, &format!("{API}/artists/{id}")) else {
+            break;
         };
-        for artist in value["artists"].as_array().into_iter().flatten() {
-            let Some(id) = artist["id"].as_str() else {
-                continue;
-            };
-            let names = artist["genres"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|genre| genre.as_str().map(str::to_string))
-                .collect();
-            genres.push((id.to_string(), names));
-        }
+        let names = artist["genres"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|genre| genre.as_str().map(str::to_string))
+            .collect();
+        genres.push((id.clone(), names));
     }
 
     for track in tracks.iter_mut() {
@@ -970,12 +1013,46 @@ not a pair
 
     #[test]
     fn explains_the_refusals_that_read_like_broken_links() {
-        assert!(refusal(404, "").contains("Spotify's own playlists"));
-        assert!(refusal(401, "").contains("sign in"));
-        assert!(refusal(403, "").contains("someone else"));
+        assert!(refusal(404, None, "").contains("Spotify's own playlists"));
+        assert!(refusal(401, None, "").contains("sign in"));
+        assert!(refusal(403, None, "").contains("someone else"));
         // Anything else keeps Spotify's own words.
-        assert!(refusal(500, "boom").contains("500"));
-        assert!(refusal(500, "boom").contains("boom"));
+        assert!(refusal(500, None, "boom").contains("500"));
+        assert!(refusal(500, None, "boom").contains("boom"));
+    }
+
+    #[test]
+    fn a_rate_limit_is_not_reported_as_bad_credentials() {
+        let limited = refusal(429, Some(10_800), "");
+        assert!(limited.contains("rate limiting"));
+        assert!(limited.contains("in 3 hours"));
+        // The wording matters: it has to stop the user rewriting a correct .env.
+        assert!(limited.contains("not refusing the credentials"));
+        // A limit with no header still reads as a wait, not a rejection.
+        assert!(refusal(429, None, "").contains("in a few minutes"));
+    }
+
+    #[test]
+    fn says_a_wait_the_way_a_person_would() {
+        assert_eq!(wait_phrase(0), "in a second");
+        assert_eq!(wait_phrase(45), "in 45 seconds");
+        assert_eq!(wait_phrase(60), "in 1 minute");
+        assert_eq!(wait_phrase(119), "in 2 minutes");
+        assert_eq!(wait_phrase(3600), "in 1 hour");
+        assert_eq!(wait_phrase(48_000), "in 14 hours");
+        assert_eq!(wait_phrase(86_400), "in 1 day");
+    }
+
+    #[test]
+    fn only_remembers_a_pair_that_was_accepted() {
+        let pair = ("an-id".to_string(), "a-secret".to_string());
+        assert!(!already_accepted(&pair));
+
+        remember_accepted(pair.clone());
+        assert!(already_accepted(&pair));
+
+        // A different secret is a different pair, so it gets checked again.
+        assert!(!already_accepted(&("an-id".to_string(), "other".to_string())));
     }
 
     #[test]

@@ -312,7 +312,6 @@ export function mountImportDialog(): void {
     switch (action) {
       case "songs":
       case "playlist":
-        close();
         void importFolder(action === "playlist");
         return;
       case "spotify": {

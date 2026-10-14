@@ -111,7 +111,11 @@ pub fn delete<R: Runtime>(app: &AppHandle<R>, name: &str) -> Result<(), String> 
     Ok(())
 }
 
-pub fn remove_file_from_all<R: Runtime>(app: &AppHandle<R>, file: &str) -> Result<(), String> {
+pub fn remove_files_from_all<R: Runtime>(app: &AppHandle<R>, removed: &[String]) -> Result<(), String> {
+    if removed.is_empty() {
+        return Ok(());
+    }
+
     let Ok(root) = library_root(app) else {
         return Ok(());
     };
@@ -131,11 +135,11 @@ pub fn remove_file_from_all<R: Runtime>(app: &AppHandle<R>, file: &str) -> Resul
         let Ok(files) = serde_json::from_str::<Vec<String>>(&raw) else {
             continue;
         };
-        if !files.iter().any(|saved| saved == file) {
+        if !files.iter().any(|saved| removed.contains(saved)) {
             continue;
         }
 
-        let kept: Vec<&String> = files.iter().filter(|saved| *saved != file).collect();
+        let kept: Vec<&String> = files.iter().filter(|saved| !removed.contains(saved)).collect();
         let json = serde_json::to_string_pretty(&kept).map_err(|e| e.to_string())?;
         fs::write(&path, json).map_err(|e| format!("could not write {}: {e}", path.display()))?;
     }

@@ -34,18 +34,23 @@ export const KEYBIND_GROUPS: KeybindGroup[] = [
   {
     title: "Contextual",
     binds: [
-      { keys: "Escape", action: "Close the theme, settings or import dialog, close a menu, clear search, cancel a playlist create or rename" },
+      { keys: "Escape", action: "Close the theme, settings or import dialog, close a menu, clear search, clear a song selection, cancel a playlist create or rename" },
       { keys: "Enter", action: "Commit a playlist create or rename" },
       { keys: "Shift + click close", action: "Close and forget the saved window geometry" },
     ],
   },
   {
     title: "Pointer",
+    note: "Selecting songs works in every collection. Moving them only means something in a playlist you made.",
     binds: [
+      { keys: "Click a song", action: "Select it; click it again to play it" },
+      { keys: "Ctrl + click a song", action: "Add it to the selection, or take it out" },
+      { keys: "Shift + click a song", action: "Select the run of songs between it and the last one picked" },
+      { keys: "Right-click a song", action: "Like, add to a playlist, remove from the playlist or delete, for the whole selection" },
       { keys: "Wheel over the queue", action: "Previous or next track" },
       { keys: "Drag the dock", action: "Scrub the current track" },
       { keys: "Drag the queue", action: "Browse the queue" },
-      { keys: "Drag a track row", action: "Reorder a playlist" },
+      { keys: "Drag a track row", action: "Reorder a playlist, carrying the selection when one is picked" },
     ],
   },
 ];

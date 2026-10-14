@@ -5,15 +5,17 @@ import {
   collectionById,
   createPlaylist,
   deletePlaylist,
-  deleteTrack,
+  deleteTracks,
   getState,
   playCollection,
   playFromCollection,
+  removeTracksFromPlaylist,
   renamePlaylist,
   reorderPlaylist,
   setFilter,
   setQuery,
   setSort,
+  setTracksLiked,
   shuffleCollection,
   subscribe,
   toggleLibrary,
@@ -28,7 +30,7 @@ import { hydrateCovers } from "./covers";
 import { fillIcons } from "./icons";
 import { highlightHtml } from "./highlight";
 import { openImport } from "./import-dialog";
-import { openMenu, type MenuPoint } from "./menu";
+import { openMenu, type MenuItem, type MenuPoint } from "./menu";
 
 const SWIPE_TRAVEL = 1.75;
 const SWIPE_MS = 260;
@@ -56,15 +58,103 @@ export function mountLibrary(): void {
   let renaming: string | null = null;
   let openCollectionId: string | null = null;
   let view: string | null = null;
-  let dragFrom: number | null = null;
+  let dragIds: string[] | null = null;
   let dropAt: { index: number; after: boolean } | null = null;
   let dragChip: HTMLElement | null = null;
   let activeId: string | null = null;
   let listScroll = 0;
   let listToTop = false;
+  const selection = new Set<string>();
+  let selectAnchor: string | null = null;
 
   const entryRows = (): HTMLElement[] =>
     Array.from(list.querySelectorAll<HTMLElement>("[data-collection]"));
+
+  /** The songs the detail is showing, in the order they are drawn. */
+  const shownTrackIds = (): string[] =>
+    Array.from(list.querySelectorAll<HTMLElement>("[data-track]")).map(
+      (row) => row.dataset.track ?? "",
+    );
+
+  const trackRows = (ids: string[]): HTMLElement[] => {
+    const wanted = new Set(ids);
+    return Array.from(list.querySelectorAll<HTMLElement>("[data-track]")).filter((row) => {
+      const id = row.dataset.track;
+      return id !== undefined && wanted.has(id);
+    });
+  };
+
+  /** Repaints the selected rows in place, and forgets any that have gone. */
+  const syncSelection = (): void => {
+    const present = new Set<string>();
+    for (const row of list.querySelectorAll<HTMLElement>("[data-track]")) {
+      const id = row.dataset.track;
+      if (id === undefined) {
+        continue;
+      }
+      present.add(id);
+      row.classList.toggle("is-selected", selection.has(id));
+    }
+    for (const id of [...selection]) {
+      if (!present.has(id)) {
+        selection.delete(id);
+      }
+    }
+  };
+
+  /** The selected songs, in the order they appear in the list. */
+  const selectedTrackIds = (): string[] => shownTrackIds().filter((id) => selection.has(id));
+
+  /** Drops the selection without touching the rows, for a re-render. */
+  const resetSelection = (): void => {
+    selection.clear();
+    selectAnchor = null;
+  };
+
+  const clearSelection = (): void => {
+    if (selection.size === 0) {
+      return;
+    }
+    resetSelection();
+    syncSelection();
+  };
+
+  const toggleSelected = (trackId: string): void => {
+    if (selection.has(trackId)) {
+      selection.delete(trackId);
+    } else {
+      selection.add(trackId);
+    }
+    selectAnchor = trackId;
+    syncSelection();
+  };
+
+  /** Selects the run between the anchor and `trackId`, both ends included. */
+  const selectRange = (trackId: string): void => {
+    const ids = shownTrackIds();
+    const to = ids.indexOf(trackId);
+    if (to < 0) {
+      return;
+    }
+
+    const from = selectAnchor === null ? to : ids.indexOf(selectAnchor);
+    const start = from < 0 ? to : Math.min(from, to);
+    const end = from < 0 ? to : Math.max(from, to);
+
+    selection.clear();
+    for (const id of ids.slice(start, end + 1)) {
+      selection.add(id);
+    }
+    syncSelection();
+  };
+
+  /** Makes one row the whole selection, for a right-click outside it. */
+  const selectOnly = (trackId: string): void => {
+    resetSelection();
+    selection.add(trackId);
+    selectAnchor = trackId;
+    syncSelection();
+  };
 
   const activeIndex = (): number =>
     entryRows().findIndex((row) => row.dataset.collection === activeId);
@@ -115,12 +205,14 @@ export function mountLibrary(): void {
     openCollectionId = id;
     renaming = null;
     creating = false;
+    resetSelection();
     render();
   };
 
   element("sheet-close")?.addEventListener("click", () => toggleLibrary(false));
   back.addEventListener("click", () => {
     openCollectionId = null;
+    resetSelection();
     render();
   });
 
@@ -210,13 +302,32 @@ export function mountLibrary(): void {
 
     const addButton = target.closest<HTMLElement>("[data-track-add]");
     if (addButton?.dataset.trackAdd) {
-      openAddToPlaylist(addButton, addButton.dataset.trackAdd);
+      const id = addButton.dataset.trackAdd;
+      const wanted = selection.has(id) && selection.size > 1 ? selectedTrackIds() : [id];
+      openAddToPlaylist(addButton, wanted);
       return;
     }
 
     const trackRow = target.closest<HTMLElement>("[data-track]");
     if (trackRow?.dataset.track && openCollectionId) {
-      playFromCollection(openCollectionId, trackRow.dataset.track);
+      const trackId = trackRow.dataset.track;
+      if (event.shiftKey) {
+        event.preventDefault();
+        selectRange(trackId);
+        return;
+      }
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault();
+        toggleSelected(trackId);
+        return;
+      }
+
+      // A plain click picks the row out; clicking it again plays it.
+      if (selection.size === 1 && selection.has(trackId)) {
+        playFromCollection(openCollectionId, trackId);
+        return;
+      }
+      selectOnly(trackId);
       return;
     }
 
@@ -229,11 +340,17 @@ export function mountLibrary(): void {
   list.addEventListener("contextmenu", (event) => {
     const row = (event.target as HTMLElement).closest<HTMLElement>("[data-track]");
     const trackId = row?.dataset.track;
-    if (!row || !trackId) {
+    if (!row || !trackId || !openCollectionId) {
       return;
     }
     event.preventDefault();
-    openTrackMenu(row, trackId, { x: event.clientX, y: event.clientY });
+
+    // Right-clicking outside the selection acts on that row alone.
+    if (!selection.has(trackId)) {
+      selectOnly(trackId);
+    }
+
+    openTrackMenu(row, openCollectionId, selectedTrackIds(), { x: event.clientX, y: event.clientY });
   });
 
   list.addEventListener("keydown", (event) => {
@@ -280,7 +397,7 @@ export function mountLibrary(): void {
 
   /** Puts the drag back down, whichever way it ended. */
   const endDrag = (): void => {
-    dragFrom = null;
+    dragIds = null;
     dropAt = null;
     clearDragState(list);
     dragChip?.remove();
@@ -293,21 +410,29 @@ export function mountLibrary(): void {
       return;
     }
 
-    const index = Number(row.dataset.trackIndex);
-    dragFrom = index;
-    row.classList.add("is-dragging");
+    const trackId = row.dataset.track ?? "";
+    // Dragging a row that is part of a selection takes the whole selection.
+    const dragging = selection.has(trackId) ? selectedTrackIds() : [trackId];
+    if (dragging.length === 0) {
+      return;
+    }
+
+    dragIds = dragging;
+    for (const moving of trackRows(dragging)) {
+      moving.classList.add("is-dragging");
+    }
 
     // Without a payload and a permitted effect some engines refuse the drag.
     if (event.dataTransfer) {
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData("text/plain", "");
-      dragChip = dragChipFor(getState().tracksById.get(row.dataset.track ?? ""));
+      dragChip = dragChipFor(getState().tracksById.get(trackId), dragging.length);
       event.dataTransfer.setDragImage(dragChip, 16, 24);
     }
   });
 
   list.addEventListener("dragover", (event) => {
-    if (dragFrom === null) {
+    if (dragIds === null) {
       return;
     }
     const row = (event.target as HTMLElement).closest<HTMLElement>("[data-track-index]");
@@ -333,25 +458,23 @@ export function mountLibrary(): void {
   });
 
   list.addEventListener("drop", (event) => {
-    if (dragFrom === null || !openCollectionId) {
+    if (dragIds === null || !openCollectionId) {
       return;
     }
     event.preventDefault();
 
     const collection = collectionById(openCollectionId);
-    const from = dragFrom;
+    const moving = dragIds;
     const gap = dropAt === null ? null : dropAt.index + (dropAt.after ? 1 : 0);
+    const order = shownTrackIds();
     endDrag();
 
     if (!collection || gap === null) {
       return;
     }
 
-    const reordered = [...collection.trackIds];
-    const [moved] = reordered.splice(from, 1);
-    reordered.splice(gap > from ? gap - 1 : gap, 0, moved);
-
-    if (reordered.every((id, at) => id === collection.trackIds[at])) {
+    const reordered = moveWithin(order, moving, gap);
+    if (reordered.every((id, at) => id === order[at])) {
       return;
     }
     void reorderPlaylist(collection.id, reordered);
@@ -386,11 +509,23 @@ export function mountLibrary(): void {
     toggleLibrary(false);
   });
 
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || selection.size === 0) {
+      return;
+    }
+    // A menu or a dialog owns Escape while it is up.
+    if (document.querySelector(".menu, dialog[open]")) {
+      return;
+    }
+    clearSelection();
+  });
+
   const render = (): void => {
     const state = getState();
 
     if (openCollectionId && !collectionById(openCollectionId)) {
       openCollectionId = null;
+      resetSelection();
     }
 
     // The sheet slides itself in, so the content only swipes once it is up.
@@ -429,6 +564,7 @@ export function mountLibrary(): void {
       count.textContent = "";
       folders.innerHTML = "";
       paintDetail(list, state, collectionById(openCollectionId));
+      syncSelection();
     } else {
       const collections = filterCollections(
         state.collections,
@@ -661,26 +797,61 @@ function renderLibrary(state: AppState): string {
     ${errors ? `<ul class="folder-list">${errors}</ul>` : ""}`;
 }
 
-/** The right-click menu for a song, opened where the pointer is. */
-function openTrackMenu(row: HTMLElement, trackId: string, at: MenuPoint): void {
-  const liked = getState().likes.has(trackId);
-  const heart = row.querySelector<HTMLElement>("[data-like]");
+/** The right-click menu for a song or a selection, opened where the pointer is. */
+function openTrackMenu(
+  row: HTMLElement,
+  collectionId: string,
+  trackIds: string[],
+  at: MenuPoint,
+): void {
+  const state = getState();
+  const collection = collectionById(collectionId);
+  const many = trackIds.length > 1;
+  const count = `${trackIds.length} songs`;
+  const allLiked = trackIds.every((id) => state.likes.has(id));
 
-  openMenu(
-    row,
-    [
-      {
-        label: liked ? "Unlike" : "Like",
-        action: () => {
-          bounce(heart);
-          void toggleLikeTrack(trackId);
-        },
+  const items: MenuItem[] = [
+    {
+      label: `${allLiked ? "Unlike" : "Like"}${many ? ` ${count}` : ""}`,
+      action: () => {
+        bounceHearts(row, trackIds);
+        void setTracksLiked(trackIds, !allLiked);
       },
-      { label: "Add to playlist", action: () => openAddToPlaylist(addAnchor(row), trackId) },
-      { label: "Delete song", danger: true, action: () => void removeTrack(trackId) },
-    ],
-    at,
-  );
+    },
+    { label: "Add to playlist", action: () => openAddToPlaylist(addAnchor(row), trackIds) },
+  ];
+
+  // Only a playlist the user made can drop a song; a generated one cannot.
+  if (collection?.kind === "playlist") {
+    items.push({
+      label: many ? `Remove ${count} from this playlist` : "Remove from this playlist",
+      action: () => void removeFromPlaylist(collection.id, trackIds),
+    });
+  }
+
+  items.push({
+    label: many ? `Delete ${count} from the library` : "Delete song",
+    danger: true,
+    action: () => void removeTracks(trackIds),
+  });
+
+  openMenu(row, items, at);
+}
+
+/** Flips every heart in the selection, so the rows follow the menu. */
+function bounceHearts(row: HTMLElement, trackIds: string[]): void {
+  const list = row.closest(".tracks");
+  if (!list) {
+    return;
+  }
+
+  const wanted = new Set(trackIds);
+  for (const candidate of list.querySelectorAll<HTMLElement>("[data-track]")) {
+    const id = candidate.dataset.track;
+    if (id !== undefined && wanted.has(id)) {
+      bounce(candidate.querySelector<HTMLElement>("[data-like]"));
+    }
+  }
 }
 
 /** The panel hangs off the row's add button, the way the click path opens it. */
@@ -688,11 +859,41 @@ function addAnchor(row: HTMLElement): HTMLElement {
   return row.querySelector<HTMLElement>("[data-track-add]") ?? row;
 }
 
-async function removeTrack(trackId: string): Promise<void> {
-  const track = getState().tracksById.get(trackId);
+/** Takes songs out of the playlist on screen. A batch is asked about first. */
+async function removeFromPlaylist(collectionId: string, trackIds: string[]): Promise<void> {
+  const collection = collectionById(collectionId);
+  if (!collection) {
+    return;
+  }
+
+  if (trackIds.length > 1) {
+    const confirmed = await confirmDialog({
+      title: "Remove from playlist",
+      message: `Are you sure you want to remove ${trackIds.length} songs from "${collection.name}"? They stay in your library.`,
+      confirmLabel: "Remove",
+      danger: true,
+    });
+    if (!confirmed) {
+      return;
+    }
+  }
+
+  await removeTracksFromPlaylist(collectionId, trackIds);
+}
+
+async function removeTracks(trackIds: string[]): Promise<void> {
+  if (trackIds.length === 0) {
+    return;
+  }
+
+  const titles = trackIds.map((id) => getState().tracksById.get(id)?.title ?? "this song");
+  const many = trackIds.length > 1;
+
   const confirmed = await confirmDialog({
-    title: "Delete song",
-    message: `Are you sure you want to delete "${track?.title ?? "this song"}"? The file is removed from your library and from every playlist.`,
+    title: many ? `Delete ${trackIds.length} songs` : "Delete song",
+    message: many
+      ? `Are you sure you want to delete ${trackIds.length} songs? The files are removed from your library and from every playlist.`
+      : `Are you sure you want to delete "${titles[0]}"? The file is removed from your library and from every playlist.`,
     confirmLabel: "Delete",
     danger: true,
   });
@@ -700,7 +901,7 @@ async function removeTrack(trackId: string): Promise<void> {
     return;
   }
 
-  await deleteTrack(trackId);
+  await deleteTracks(trackIds);
 }
 
 function openPlaylistMenu(anchor: HTMLElement, id: string, onRename: () => void): void {
@@ -733,14 +934,25 @@ function clearDropTargets(root: HTMLElement): void {
   }
 }
 
-function dragChipFor(track: Track | undefined): HTMLElement {
+/** Lifts `moving` out of `order` and drops it back in at the gap before it. */
+function moveWithin(order: string[], moving: string[], gap: number): string[] {
+  const wanted = new Set(moving);
+  const block = order.filter((id) => wanted.has(id));
+  const rest = order.filter((id) => !wanted.has(id));
+  // The gap is counted in the old order, so the lifted rows above it are gone.
+  const lifted = order.slice(0, gap).filter((id) => wanted.has(id)).length;
+  const at = Math.max(0, Math.min(gap - lifted, rest.length));
+  return [...rest.slice(0, at), ...block, ...rest.slice(at)];
+}
+
+function dragChipFor(track: Track | undefined, count = 1): HTMLElement {
   const chip = document.createElement("div");
   chip.className = "drag-chip";
   chip.innerHTML = `
     <span class="drag-chip-cover"${track ? ` style="${plainCoverStyle(track)}"` : ""}></span>
     <span class="drag-chip-text">
-      <span class="drag-chip-title">${escapeHtml(track?.title ?? "")}</span>
-      <span class="drag-chip-artist">${escapeHtml(track?.artist ?? "")}</span>
+      <span class="drag-chip-title">${escapeHtml(count > 1 ? `${count} songs` : track?.title ?? "")}</span>
+      <span class="drag-chip-artist">${escapeHtml(count > 1 ? "" : track?.artist ?? "")}</span>
     </span>`;
   document.body.appendChild(chip);
   return chip;

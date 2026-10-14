@@ -99,7 +99,9 @@ newer (Ubuntu 22.04+, Debian 12+, Fedora 36+ and so on) and are x86_64 only.
   lost next to a loud one. `.wma` and `.opus` cannot be measured, and play at
   their own level. Turn it off in **Settings → Playback**.
 - **Playlists and likes.** Build playlists, reorder them by dragging, and keep a
-  Liked Songs collection.
+  Liked Songs collection. `Ctrl` and `Shift` click pick out several songs at
+  once, right-click them to like, add, remove or delete them together, and drag
+  the selection to move the whole block.
 - **Search.** Seven matching algorithms you can switch between, from strict exact
   match to phonetic and fuzzy matching.
 - **Lyrics.** Reads `.lrc` sidecars and scrolls them in time with the song. Can

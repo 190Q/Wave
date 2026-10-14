@@ -465,48 +465,65 @@ pub fn scan_library(
     summary
 }
 
-#[tauri::command]
-pub fn delete_track(
-    app: AppHandle,
-    store: State<'_, Store>,
-    paths: State<'_, TrackPaths>,
-    track_id: String,
-) -> Result<PersistedState, String> {
-    let relative = paths
-        .ids_to_files(std::slice::from_ref(&track_id))
-        .into_iter()
-        .next()
-        .ok_or_else(|| "that song is not in the library".to_string())?;
-
-    let root = library_root(&app)?;
-
-    let song = root.join(&relative);
+fn remove_song_files(root: &Path, relative: &str) -> Result<(), String> {
+    let song = root.join(relative);
     if song.exists() {
         fs::remove_file(&song).map_err(|e| format!("could not delete {}: {e}", song.display()))?;
     }
 
     // The copied cover and lyrics go with the song that used them.
-    let mut index = read_index(&root);
-    if let Some(artwork) = index.songs.remove(&relative) {
+    let mut index = read_index(root);
+    let mut touched = false;
+    if let Some(artwork) = index.songs.remove(relative) {
         let _ = fs::remove_file(root.join(artwork));
+        touched = true;
     }
-    if let Some(lyrics) = index.lyrics.remove(&relative) {
+    if let Some(lyrics) = index.lyrics.remove(relative) {
         let _ = fs::remove_file(root.join(lyrics));
+        touched = true;
     }
-    write_index(&root, &index)?;
+    if touched {
+        write_index(root, &index)?;
+    }
 
     // The reading goes with the file it was taken from.
-    let mut loudness = crate::loudness::read_index(&root);
-    if loudness.songs.remove(&relative).is_some() {
-        let _ = crate::loudness::write_index(&root, &loudness);
+    let mut loudness = crate::loudness::read_index(root);
+    if loudness.songs.remove(relative).is_some() {
+        let _ = crate::loudness::write_index(root, &loudness);
     }
 
-    crate::playlists::remove_file_from_all(&app, &relative)?;
-    paths.forget(&track_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_tracks(
+    app: AppHandle,
+    store: State<'_, Store>,
+    paths: State<'_, TrackPaths>,
+    track_ids: Vec<String>,
+) -> Result<PersistedState, String> {
+    let songs = paths.ids_to_pairs(&track_ids);
+    if songs.is_empty() {
+        return Err("none of those songs are in the library".to_string());
+    }
+
+    let root = library_root(&app)?;
+    let relatives: Vec<String> = songs.iter().map(|(_, relative)| relative.clone()).collect();
+
+    for relative in &relatives {
+        remove_song_files(&root, relative)?;
+    }
+
+    crate::playlists::remove_files_from_all(&app, &relatives)?;
+    for (track_id, _) in &songs {
+        paths.forget(track_id);
+    }
 
     let next = store.update(|state| {
-        state.likes.retain(|id| *id != track_id);
-        state.artwork_colours.remove(&track_id);
+        state.likes.retain(|id| !track_ids.contains(id));
+        for track_id in &track_ids {
+            state.artwork_colours.remove(track_id);
+        }
     });
     save(&app, &next)?;
 

@@ -2,7 +2,7 @@ import { escapeHtml, songCount } from "../lib/format";
 import { scoreItems } from "../lib/search";
 import {
   addTracksToPlaylist,
-  createPlaylistWithTrack,
+  createPlaylistWithTracks,
   getState,
   removeTracksFromPlaylist,
   subscribe,
@@ -35,19 +35,25 @@ function playlistsSignature(playlists: Playlist[]): string {
     .join("\u0001");
 }
 
-export function openAddToPlaylist(anchor: HTMLElement, trackId: string): void {
+export function openAddToPlaylist(anchor: HTMLElement, trackIds: string[]): void {
+  if (trackIds.length === 0) {
+    return;
+  }
+
   if (dismiss && source === anchor) {
     closeAddToPlaylist();
     return;
   }
   closeAddToPlaylist();
 
+  const head = trackIds.length > 1 ? `Add ${trackIds.length} songs to a playlist` : "Add to playlist";
+
   const panel = document.createElement("div");
   panel.className = "add-to";
   panel.setAttribute("role", "dialog");
   panel.setAttribute("aria-label", "Add to playlist");
   panel.innerHTML = `
-    <p class="add-to-head">Add to playlist</p>
+    <p class="add-to-head">${escapeHtml(head)}</p>
     <div class="add-to-search">
       <span class="add-to-icon" data-icon="search" aria-hidden="true"></span>
       <input class="add-to-input" type="text" placeholder="Find a playlist" aria-label="Find a playlist" autocomplete="off">
@@ -64,7 +70,7 @@ export function openAddToPlaylist(anchor: HTMLElement, trackId: string): void {
 
   const included = new Set(
     getState()
-      .playlists.filter((playlist) => playlist.trackIds.includes(trackId))
+      .playlists.filter((playlist) => trackIds.every((id) => playlist.trackIds.includes(id)))
       .map((playlist) => playlist.id),
   );
 
@@ -150,8 +156,8 @@ export function openAddToPlaylist(anchor: HTMLElement, trackId: string): void {
     }
     paintList();
     void (adding
-      ? addTracksToPlaylist(id, [trackId])
-      : removeTracksFromPlaylist(id, [trackId]));
+      ? addTracksToPlaylist(id, trackIds)
+      : removeTracksFromPlaylist(id, trackIds));
   };
 
   list.addEventListener("click", (event) => {
@@ -178,7 +184,7 @@ export function openAddToPlaylist(anchor: HTMLElement, trackId: string): void {
       return;
     }
     close();
-    void createPlaylistWithTrack(name, trackId);
+    void createPlaylistWithTracks(name, trackIds);
   });
 
   search.addEventListener("input", paintList);

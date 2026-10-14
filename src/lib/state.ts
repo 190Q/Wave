@@ -989,6 +989,20 @@ export async function toggleLikeTrack(trackId: string): Promise<void> {
   }
 }
 
+/** Likes or unlikes a whole selection, in one write rather than one per song. */
+export async function setTracksLiked(trackIds: string[], liked: boolean): Promise<void> {
+  if (trackIds.length === 0) {
+    return;
+  }
+
+  try {
+    applyPersisted(await ipc.setLikes(trackIds, liked));
+    emit();
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
 export async function createPlaylist(name: string): Promise<void> {
   try {
     applyPersisted(await ipc.createPlaylist(name));
@@ -998,13 +1012,13 @@ export async function createPlaylist(name: string): Promise<void> {
   }
 }
 
-export async function createPlaylistWithTrack(name: string, trackId: string): Promise<void> {
+export async function createPlaylistWithTracks(name: string, trackIds: string[]): Promise<void> {
   try {
     const before = new Set(state.playlists.map((playlist) => playlist.id));
     applyPersisted(await ipc.createPlaylist(name));
     const created = state.playlists.find((playlist) => !before.has(playlist.id));
-    if (created) {
-      applyPersisted(await ipc.addToPlaylist(created.id, [trackId]));
+    if (created && trackIds.length > 0) {
+      applyPersisted(await ipc.addToPlaylist(created.id, trackIds));
     }
     emit();
   } catch (error) {
@@ -1031,15 +1045,20 @@ export async function deletePlaylist(id: string): Promise<void> {
   }
 }
 
-/** Deletes a song from the library and takes it out of the queue with it. */
-export async function deleteTrack(trackId: string): Promise<void> {
-  const title = state.tracksById.get(trackId)?.title;
+export async function deleteTracks(trackIds: string[]): Promise<void> {
+  if (trackIds.length === 0) {
+    return;
+  }
+
+  const title = trackIds.length === 1 ? state.tracksById.get(trackIds[0])?.title : undefined;
 
   try {
-    applyPersisted(await ipc.deleteTrack(trackId));
-    player.removeFromQueue(trackId);
+    applyPersisted(await ipc.deleteTracks(trackIds));
+    for (const id of trackIds) {
+      player.removeFromQueue(id);
+    }
     await rescan();
-    setNotice(title ? `Deleted "${title}".` : "Song deleted.");
+    setNotice(title ? `Deleted "${title}".` : `${plural(trackIds.length, "song")} deleted.`);
   } catch (error) {
     setNotice(describe(error));
   }

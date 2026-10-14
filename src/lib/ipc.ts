@@ -87,9 +87,14 @@ export function toggleLike(trackId: string): Promise<PersistedState> {
   return invoke("toggle_like", { trackId });
 }
 
-/** Deletes a song from the library, with its copies and its playlist entries. */
-export function deleteTrack(trackId: string): Promise<PersistedState> {
-  return invoke("delete_track", { trackId });
+/** Likes or unlikes several songs in one write. */
+export function setLikes(trackIds: string[], liked: boolean): Promise<PersistedState> {
+  return invoke("set_likes", { trackIds, liked });
+}
+
+/** Deletes songs from the library, with their copies and their playlist entries. */
+export function deleteTracks(trackIds: string[]): Promise<PersistedState> {
+  return invoke("delete_tracks", { trackIds });
 }
 
 export function scanLibrary(): Promise<ScanSummary> {

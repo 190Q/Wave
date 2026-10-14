@@ -658,3 +658,24 @@ pub fn toggle_like(
     });
     commit(&app, next)
 }
+
+/// Likes or unlikes several songs at once, for a selection.
+#[tauri::command]
+pub fn set_likes(
+    app: AppHandle,
+    store: State<'_, Store>,
+    track_ids: Vec<String>,
+    liked: bool,
+) -> Result<PersistedState, String> {
+    let next = store.update(|state| {
+        for track_id in track_ids {
+            let saved = state.likes.iter().any(|id| *id == track_id);
+            if liked && !saved {
+                state.likes.push(track_id);
+            } else if !liked && saved {
+                state.likes.retain(|id| *id != track_id);
+            }
+        }
+    });
+    commit(&app, next)
+}

@@ -76,6 +76,15 @@
   background: var(--raise);
 }
 
+.track-row.is-selected,
+.track-row.is-selected:hover {
+  background: var(--accent-soft);
+}
+
+.track-row.is-selected .track-index {
+  color: var(--text);
+}
+
 .track-row.is-reorderable {
   cursor: grab;
 }

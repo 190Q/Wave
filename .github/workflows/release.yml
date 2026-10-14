@@ -1,0 +1,79 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and publish (e.g. v0.1.1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      # One platform failing must not stop the other from publishing.
+      fail-fast: false
+      matrix:
+        platform:
+          - windows-latest
+          - ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Linux system dependencies
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential \
+            curl wget file libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - run: node scripts/release.mjs status
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ inputs.tag || github.ref_name }}
+          releaseName: "Wave ${{ inputs.tag || github.ref_name }}"
+          releaseBody: |
+            Installers for Windows and Linux.
+
+            **Linux, one line:**
+
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/190Q/Wave/main/install.sh | sh
+            ```
+
+            **Windows, from PowerShell:**
+
+            ```powershell
+            irm https://raw.githubusercontent.com/190Q/Wave/main/install.ps1 | iex
+            ```
+
+            Linux builds target glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+,
+            Fedora 36+) and are x86_64 only.
+          releaseDraft: false
+          prerelease: false

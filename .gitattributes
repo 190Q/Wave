@@ -1,0 +1,3 @@
+# A shell script with CRLF endings does not run on Linux: the shebang and the
+# `case` lines pick up a trailing carriage return.
+*.sh text eol=lf

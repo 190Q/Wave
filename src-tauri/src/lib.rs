@@ -58,8 +58,20 @@ fn reveal_main_window(app: &tauri::AppHandle) {
     let _ = window.show();
 }
 
+#[cfg(target_os = "linux")]
+fn tune_webkit() {
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        // SAFETY: this runs before the builder starts any thread, so nothing
+        // else can be reading the environment at the same time.
+        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    tune_webkit();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())

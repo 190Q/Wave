@@ -1,4 +1,5 @@
 import { reduceMotionActive } from "../lib/motion";
+import { isWebKitGtk } from "../lib/platform";
 
 const WIPE_MS = 600;
 
@@ -20,6 +21,9 @@ function wipeShape(progress: number): string {
   return `polygon(-100vh -10vh, ${leading} -10vh, ${trailing} 110vh, -100vh 110vh)`;
 }
 function canSweep(start: unknown): start is (update: () => void) => Sweep {
+  if (isWebKitGtk) {
+    return false;
+  }
   return typeof start === "function" && !reduceMotionActive();
 }
 

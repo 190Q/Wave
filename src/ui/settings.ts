@@ -1,7 +1,9 @@
 import { openPath } from "@tauri-apps/plugin-opener";
 
-import { escapeHtml, plural } from "../lib/format";
-import { resetWindowGeometry } from "../lib/ipc";
+import { forgetCaptured } from "../lib/analytics";
+import { escapeHtml, formatTotalDuration, plural } from "../lib/format";
+import { analyticsStats, analyticsSwell, clearAnalytics, resetWindowGeometry } from "../lib/ipc";
+import { swellWindow } from "../lib/swell";
 import { KEYBIND_GROUPS, SLOT_ACTIONS, SLOT_COUNT, slotLabel } from "../lib/keybinds";
 import { SEARCH_ALGORITHMS } from "../lib/search";
 import {
@@ -14,7 +16,14 @@ import {
   updateSettings,
   type AppState,
 } from "../lib/state";
-import type { ReduceMotionMode, SearchAlgorithm, Settings, WindowGeometry } from "../types";
+import type {
+  AnalyticsStats,
+  ReduceMotionMode,
+  SearchAlgorithm,
+  Settings,
+  SwellSummary,
+  WindowGeometry,
+} from "../types";
 import { createPanel } from "./drop";
 import { fillIcons } from "./icons";
 import { placePicker } from "./picker";
@@ -22,7 +31,11 @@ import { placePicker } from "./picker";
 const DIALOG_MS = 220;
 
 /** The settings that are plain on/off switches. */
-type ToggleKey = "resumeOnLaunch" | "rememberWindow" | "normalizeVolume";
+type ToggleKey =
+  | "resumeOnLaunch"
+  | "rememberWindow"
+  | "normalizeVolume"
+  | "analyticsEnabled";
 
 const MOTION_OPTIONS: { value: ReduceMotionMode; label: string }[] = [
   { value: "system", label: "System" },
@@ -59,6 +72,10 @@ export function mountSettings(): void {
 
   let closeTimer: number | null = null;
 
+  /** What the Wave Swell section shows. Read afresh whenever the panel opens. */
+  let listeningStats: AnalyticsStats | null = null;
+  let listeningSwell: SwellSummary | null = null;
+
   /** Anchors the scale animation on the settings button, so it pops from there. */
   const setOrigin = (): void => {
     const dialogRect = dialog.getBoundingClientRect();
@@ -91,6 +108,7 @@ export function mountSettings(): void {
     void dialog.offsetWidth;
     dialog.classList.remove("is-closed");
     placeThumb(false);
+    void loadAnalytics();
   };
 
   const closeDialog = (): void => {
@@ -141,12 +159,32 @@ export function mountSettings(): void {
       appearanceHtml(draft),
       windowHtml(draft),
       libraryHtml(state),
+      analyticsHtml(draft, listeningStats, listeningSwell),
       searchHtml(draft),
       shortcutsHtml(draft, state.windowSlots, openSlot),
     ].join("");
     placeSlotPicker();
     placeThumb(false);
     paintSave();
+  };
+
+  /** Reads the record's size and this year's figures, for the section below. */
+  const loadAnalytics = async (): Promise<void> => {
+    const year = swellWindow("year");
+    try {
+      const [stats, swell] = await Promise.all([
+        analyticsStats(),
+        analyticsSwell(year.from, year.to, year.bucket),
+      ]);
+      listeningStats = stats;
+      listeningSwell = swell;
+    } catch {
+      listeningStats = null;
+      listeningSwell = null;
+    }
+    if (dialog.open && !dialog.classList.contains("is-closed")) {
+      render();
+    }
   };
 
   /** Only what the draft actually changes, so nothing else is written back. */
@@ -265,6 +303,16 @@ export function mountSettings(): void {
           setNotice("Saved window position forgotten.");
         } catch {
           setNotice("Could not forget the saved window.");
+        }
+        return;
+      case "clear-analytics":
+        try {
+          forgetCaptured();
+          await clearAnalytics();
+          await loadAnalytics();
+          setNotice("Listening record cleared.");
+        } catch {
+          setNotice("Could not clear the listening record.");
         }
         return;
       default:
@@ -481,6 +529,86 @@ function libraryHtml(state: AppState): string {
       ${errors}
     </div>`,
   );
+}
+
+function analyticsHtml(
+  settings: Settings,
+  stats: AnalyticsStats | null,
+  swell: SwellSummary | null,
+): string {
+  const notes: string[] = [];
+  if (!settings.analyticsEnabled) {
+    notes.push("Switched off, so nothing new is written");
+  } else if (!stats) {
+    notes.push("Could not be read");
+  } else if (stats.plays === 0) {
+    notes.push("Nothing played yet");
+  } else {
+    notes.push(plural(stats.plays, "listen"));
+    if (stats.firstPlayAt !== null) {
+      notes.push(`since ${new Date(stats.firstPlayAt).toLocaleDateString()}`);
+    }
+    notes.push(formatSize(stats.sizeBytes));
+  }
+
+  const figures =
+    swell && swell.plays > 0
+      ? `<p class="settings-hint">${escapeHtml(swellLine(swell))}</p>`
+      : "";
+
+  return section(
+    "Wave Swell",
+    `${toggleRow(
+      "analyticsEnabled",
+      "Keep a listening record",
+      "Saves what you play, and what you skip or like, to a database on this computer. It is never sent anywhere; it is what Wave Swell, and any future recommendations, are built from.",
+      settings.analyticsEnabled,
+    )}
+    <div class="settings-row is-stacked">
+      <span class="settings-label">Local database</span>
+      ${
+        stats && stats.path
+          ? `<p class="folder-path" title="${escapeHtml(stats.path)}">${escapeHtml(stats.path)}</p>`
+          : `<p class="settings-hint">The record could not be opened, so nothing is being kept.</p>`
+      }
+      <p class="settings-hint">${escapeHtml(notes.join(". "))}.</p>
+      ${figures}
+      <div class="settings-actions">
+        <button class="pill" type="button" data-command="clear-analytics"${
+          stats && stats.plays > 0 ? "" : " disabled"
+        }>Clear</button>
+      </div>
+    </div>`,
+  );
+}
+
+/** One line of the year so far, the same shape the pane opens on. */
+function swellLine(swell: SwellSummary): string {
+  const parts = [
+    `${formatTotalDuration(swell.msListened)} listened in ${new Date().getFullYear()}`,
+  ];
+  if (swell.plays > 0) {
+    parts.push(plural(swell.plays, "stream"));
+  }
+  const artist = swell.topArtists[0];
+  if (artist) {
+    parts.push(`top artist ${artist.artist}`);
+  }
+  if (swell.genresExplored > 0) {
+    parts.push(`${plural(swell.genresExplored, "genre")} explored`);
+  }
+  return `${parts.join(", ")}.`;
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  const kilobytes = bytes / 1024;
+  if (kilobytes < 1024) {
+    return `${Math.round(kilobytes)} KB`;
+  }
+  return `${(kilobytes / 1024).toFixed(1)} MB`;
 }
 
 function searchHtml(settings: Settings): string {

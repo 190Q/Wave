@@ -22,6 +22,7 @@ import restore from "./restore.svg?raw";
 import search from "./search.svg?raw";
 import settings from "./settings.svg?raw";
 import shuffle from "./shuffle.svg?raw";
+import swell from "./swell.svg?raw";
 import theme from "./theme.svg?raw";
 
 export const icons = {
@@ -49,6 +50,7 @@ export const icons = {
   search,
   settings,
   shuffle,
+  swell,
   theme,
 } as const;
 

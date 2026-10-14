@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import type {
+  AnalyticsEvent,
+  AnalyticsStats,
   CoversOutcome,
   GenresOutcome,
   ImportOutcome,
@@ -9,11 +11,17 @@ import type {
   LoudnessOutcome,
   LyricsOutcome,
   PersistedState,
+  PlayRecord,
+  RecommendationSeeds,
   ScanSummary,
   Session,
   Settings,
   SnapPart,
   SpotifyStatus,
+  SwellBucket,
+  SwellSummary,
+  TopSong,
+  TrackSnapshot,
 } from "../types";
 
 
@@ -179,4 +187,50 @@ export function artworkBytes(path: string): Promise<ArrayBuffer> {
 /** Composed cover for a collection, from up to four artwork paths. */
 export function coverBytes(paths: string[]): Promise<ArrayBuffer> {
   return invoke("cover_bytes", { paths });
+}
+
+export function rememberTracks(tracks: TrackSnapshot[]): Promise<void> {
+  return invoke("analytics_remember_tracks", { tracks });
+}
+
+/** Writes a listen, or updates the row the same listen already has. */
+export function recordPlay(play: PlayRecord): Promise<void> {
+  return invoke("analytics_record_play", { play });
+}
+
+/** Records signals that are not plays: likes, playlist edits and the like. */
+export function recordAnalyticsEvents(events: AnalyticsEvent[]): Promise<void> {
+  return invoke("analytics_record_events", { events });
+}
+
+export function analyticsSwell(
+  from: number,
+  to: number,
+  bucket: SwellBucket,
+): Promise<SwellSummary> {
+  return invoke("analytics_swell", { from, to, bucket });
+}
+
+/** The ranked songs in a window, each with its stream count. */
+export function analyticsTopSongs(
+  from: number,
+  to: number,
+  limit?: number,
+): Promise<TopSong[]> {
+  return invoke("analytics_top_songs", { from, to, limit });
+}
+
+/** The affinity data a recommender would start from. */
+export function analyticsRecommendationSeeds(limit?: number): Promise<RecommendationSeeds> {
+  return invoke("analytics_recommendation_seeds", { limit });
+}
+
+/** What the local listening record holds. */
+export function analyticsStats(): Promise<AnalyticsStats> {
+  return invoke("analytics_stats");
+}
+
+/** Drops every row of the listening record. */
+export function clearAnalytics(): Promise<void> {
+  return invoke("analytics_clear");
 }

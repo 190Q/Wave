@@ -114,6 +114,17 @@ newer (Ubuntu 22.04+, Debian 12+, Fedora 36+ and so on) and are x86_64 only.
   with nine `Ctrl+Shift+1..9` slots for saved window frames and actions.
 - **Spotify import.** Downloads a playlist or track via `yt-dlp` + `ffmpeg`,
   tags the files, and skips anything you already have.
+- **Wave Swell.** A pinned entry in the library that opens a reading of your
+  listening: minutes listened, split by music, audiobooks and podcasts; top
+  songs, artists, genres and albums; and how your top five artists moved across
+  the window. It covers **this month**, **this year** or **all time**, and opens
+  on the shortest of those that has enough in it, so it is there as soon as
+  there is something to say rather than once a year.
+
+  It reads from a local record of what you play — how much of each song was
+  actually heard, what you skipped, and what you liked — kept in a SQLite
+  database beside the library folder. It is on by default, it never leaves your
+  machine, and it can be switched off or cleared in **Settings → Wave Swell**.
 
 ## Requirements
 

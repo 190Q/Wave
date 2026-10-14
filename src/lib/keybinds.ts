@@ -77,6 +77,7 @@ export const SLOT_ACTIONS: SlotAction[] = [
   { id: "mute", label: "Mute" },
   { id: "toggle-queue", label: "Toggle queue" },
   { id: "focus-search", label: "Focus search" },
+  { id: "open-swell", label: "Open Wave Swell" },
   { id: "cycle-accent", label: "Cycle accent" },
 ];
 

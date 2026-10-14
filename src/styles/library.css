@@ -17,13 +17,18 @@
   overflow: hidden;
   transform: translateX(-100%);
   visibility: hidden;
-  transition: transform 0.4s var(--ease), visibility 0s 0.4s;
+  transition: transform 0.4s var(--ease), width 0.4s var(--ease), visibility 0s 0.4s;
 }
 
 .sheet.is-open {
   transform: none;
   visibility: visible;
-  transition: transform 0.4s var(--ease), visibility 0s;
+  transition: transform 0.4s var(--ease), width 0.4s var(--ease), visibility 0s;
+}
+
+/* Wave Swell needs more room than a list of collections does. */
+.sheet.is-recap {
+  width: 34rem;
 }
 
 .sheet.is-detail .chips,

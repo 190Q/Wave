@@ -1,3 +1,4 @@
+mod analytics;
 mod artwork;
 mod cover_fetch;
 mod download;
@@ -81,6 +82,15 @@ pub fn run() {
             app.manage(store);
             // Filled in by every scan; playlist files store paths, not ids.
             app.manage(library::TrackPaths::default());
+
+            let analytics = match analytics::Analytics::open(app.handle()) {
+                Ok(analytics) => analytics,
+                Err(error) => {
+                    eprintln!("the listening history will not be kept: {error}");
+                    analytics::Analytics::in_memory()
+                }
+            };
+            app.manage(analytics);
             if let Ok(root) = library::library_root(app.handle()) {
                 if let Err(error) = app.asset_protocol_scope().allow_directory(&root, true) {
                     eprintln!("could not allow the library on the asset protocol: {error}");
@@ -132,6 +142,14 @@ pub fn run() {
             lyrics_fetch::fetch_lyrics,
             cover_fetch::fetch_covers,
             genre_fetch::fetch_genres,
+            analytics::analytics_remember_tracks,
+            analytics::analytics_record_play,
+            analytics::analytics_record_events,
+            analytics::analytics_swell,
+            analytics::analytics_top_songs,
+            analytics::analytics_recommendation_seeds,
+            analytics::analytics_stats,
+            analytics::analytics_clear,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

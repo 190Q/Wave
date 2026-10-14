@@ -10,6 +10,7 @@ import {
   toggleQueue,
 } from "../lib/state";
 import type { SnapPart } from "../types";
+import { openSwell } from "./library";
 import { focusSearch } from "./topbar";
 
 type AppWindow = ReturnType<typeof getCurrentWindow>;
@@ -85,6 +86,9 @@ export async function runSlotAction(action: string, slot: number): Promise<void>
       return;
     case "focus-search":
       focusSearch();
+      return;
+    case "open-swell":
+      openSwell();
       return;
     case "cycle-accent":
       cycleAccent();

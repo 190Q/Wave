@@ -21,6 +21,7 @@ import type {
   Track,
   WindowGeometry,
 } from "../types";
+import { flushAnalytics, mountAnalytics, notePlaybackError, noteTrackEnded, recordEvent, rememberTracks } from "./analytics";
 import { AudioEngine } from "./audio";
 import { COLLECTION_FILTERS, buildCollections, findCollection, sortAlbumTracks } from "./collections";
 import { FALLBACK_COLOUR, colourFromId, isUsableAccent } from "./colour";
@@ -134,6 +135,7 @@ const state: AppState = {
     miniCorner: 4,
     searchAlgorithm: "substring",
     shortcutSlots: [],
+    analyticsEnabled: true,
   },
   filter: "all",
   query: "",
@@ -176,11 +178,15 @@ const artworkFailed = new Set<string>();
 let emitScheduled = false;
 
 const engine = new AudioEngine({
-  onEnded: () => player.handleEnded(),
+  onEnded: () => {
+    noteTrackEnded();
+    player.handleEnded();
+  },
   onLoaded: () => player.handleLoaded(),
   onError: () => {
     const title = currentTrack()?.title;
     setNotice(title ? `Could not play "${title}".` : "That song could not be played.");
+    notePlaybackError();
     player.handleError();
   },
 });
@@ -546,6 +552,12 @@ export async function init(): Promise<void> {
   watchSettings();
   watchSpotify();
   watchLoudness();
+  mountAnalytics({
+    player,
+    trackById,
+    collectionById,
+    enabled: () => state.settings.analyticsEnabled,
+  });
   try {
     const persisted = await ipc.loadState();
     applyPersisted(persisted);
@@ -579,6 +591,7 @@ export async function rescan(): Promise<void> {
     state.scanErrors = summary.errors;
     recomputeCollections();
     repairQueue();
+    rememberTracks(summary.tracks);
     applyPersisted(await ipc.loadState());
   } catch (error) {
     state.scanErrors = [describe(error)];
@@ -1092,6 +1105,7 @@ export function shuffleCollection(id: string): void {
 export async function toggleLikeTrack(trackId: string): Promise<void> {
   try {
     applyPersisted(await ipc.toggleLike(trackId));
+    recordEvent(state.likes.has(trackId) ? "like" : "unlike", { trackIds: [trackId] });
     emit();
   } catch (error) {
     setNotice(describe(error));
@@ -1106,6 +1120,7 @@ export async function setTracksLiked(trackIds: string[], liked: boolean): Promis
 
   try {
     applyPersisted(await ipc.setLikes(trackIds, liked));
+    recordEvent(liked ? "like" : "unlike", { trackIds });
     emit();
   } catch (error) {
     setNotice(describe(error));
@@ -1128,6 +1143,7 @@ export async function createPlaylistWithTracks(name: string, trackIds: string[])
     const created = state.playlists.find((playlist) => !before.has(playlist.id));
     if (created && trackIds.length > 0) {
       applyPersisted(await ipc.addToPlaylist(created.id, trackIds));
+      recordEvent("playlist_add", { trackIds, playlistId: created.id, value: created.name });
     }
     emit();
   } catch (error) {
@@ -1145,8 +1161,10 @@ export async function renamePlaylist(id: string, name: string): Promise<void> {
 }
 
 export async function deletePlaylist(id: string): Promise<void> {
+  const name = state.playlists.find((playlist) => playlist.id === id)?.name ?? null;
   try {
     applyPersisted(await ipc.deletePlaylist(id));
+    recordEvent("playlist_remove", { playlistId: id, value: name });
     state.recents = state.recents.filter((entry) => entry !== id);
     emit();
   } catch (error) {
@@ -1176,6 +1194,11 @@ export async function deleteTracks(trackIds: string[]): Promise<void> {
 export async function addTracksToPlaylist(id: string, trackIds: string[]): Promise<void> {
   try {
     applyPersisted(await ipc.addToPlaylist(id, trackIds));
+    recordEvent("playlist_add", {
+      trackIds,
+      playlistId: id,
+      value: state.playlists.find((playlist) => playlist.id === id)?.name ?? null,
+    });
     emit();
   } catch (error) {
     setNotice(describe(error));
@@ -1185,6 +1208,11 @@ export async function addTracksToPlaylist(id: string, trackIds: string[]): Promi
 export async function removeTracksFromPlaylist(id: string, trackIds: string[]): Promise<void> {
   try {
     applyPersisted(await ipc.removeFromPlaylist(id, trackIds));
+    recordEvent("playlist_remove", {
+      trackIds,
+      playlistId: id,
+      value: state.playlists.find((playlist) => playlist.id === id)?.name ?? null,
+    });
     emit();
   } catch (error) {
     setNotice(describe(error));
@@ -1576,6 +1604,8 @@ export async function flushSession(): Promise<void> {
   }
   await saveVolume();
   await persistSession();
+  // The listen still running is written down before the window goes.
+  await flushAnalytics();
 }
 
 function emit(): void {

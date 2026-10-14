@@ -9,6 +9,7 @@ import {
   getState,
   playCollection,
   playFromCollection,
+  playTrackInContext,
   removeTracksFromPlaylist,
   renamePlaylist,
   reorderPlaylist,
@@ -22,7 +23,23 @@ import {
   toggleLikeTrack,
   type AppState,
 } from "../lib/state";
-import type { Collection, CollectionFilter, CollectionKind, Track } from "../types";
+import {
+  SWELL_NAME,
+  SWELL_PERIODS,
+  bucketLabel,
+  loadSwell,
+  sprintMax,
+  sprintSeries,
+  swellAxis,
+  swellHasEnough,
+  swellHeading,
+  swellPeriodLabel,
+  swellProgress,
+  swellWindow,
+  type SwellLoad,
+  type SwellWindow,
+} from "../lib/swell";
+import type { Collection, CollectionFilter, CollectionKind, SwellPeriod, SwellSummary, Track } from "../types";
 import { closeAddToPlaylist, openAddToPlaylist } from "./add-to-playlist";
 import { collectionCoverHtml, plainCoverStyle } from "./artwork";
 import { confirmDialog } from "./confirm";
@@ -35,6 +52,23 @@ import { openMenu, type MenuItem, type MenuPoint } from "./menu";
 const SWIPE_TRAVEL = 1.75;
 const SWIPE_MS = 260;
 const SWIPE_EASE = "cubic-bezier(0.22, 0.8, 0.28, 1)";
+
+/** The pseudo-collection the Wave Swell pane is filed under. */
+const SWELL_ID = "swell";
+
+/** Set while the sheet is mounted, so a shortcut can open Wave Swell. */
+let openSwellPane: (() => void) | null = null;
+
+/** The three windows, read together; `null` until the first read lands. */
+let swellLoad: SwellLoad | null = null;
+let swellPeriod: SwellPeriod = "year";
+let swellReading = false;
+let swellError: string | null = null;
+
+/** Opens Wave Swell, opening the library if it is shut. */
+export function openSwell(): void {
+  openSwellPane?.();
+}
 
 export function mountLibrary(): void {
   const sheet = element("sheet");
@@ -201,12 +235,42 @@ export function mountLibrary(): void {
     activateEntry(at < 0 ? 0 : at, false);
   };
 
+  /** Reads all three windows at once, so the period switcher never waits. */
+  const readSwell = async (): Promise<void> => {
+    if (swellReading) {
+      return;
+    }
+    swellReading = true;
+    swellError = null;
+    render();
+
+    try {
+      const load = await loadSwell();
+      swellLoad = load;
+      swellPeriod = load.period;
+    } catch (error) {
+      swellLoad = null;
+      swellError = error instanceof Error ? error.message : String(error);
+    }
+
+    swellReading = false;
+    render();
+  };
+
+  openSwellPane = () => {
+    toggleLibrary(true);
+    openEntry(SWELL_ID);
+  };
+
   const openEntry = (id: string): void => {
     openCollectionId = id;
     renaming = null;
     creating = false;
     resetSelection();
     render();
+    if (id === SWELL_ID) {
+      void readSwell();
+    }
   };
 
   element("sheet-close")?.addEventListener("click", () => toggleLibrary(false));
@@ -270,6 +334,19 @@ export function mountLibrary(): void {
 
   list.addEventListener("click", (event) => {
     const target = event.target as HTMLElement;
+
+    const period = target.closest<HTMLElement>("[data-swell-period]");
+    if (period?.dataset.swellPeriod) {
+      swellPeriod = period.dataset.swellPeriod as SwellPeriod;
+      render();
+      return;
+    }
+
+    const swellTrack = target.closest<HTMLElement>("[data-swell-track]");
+    if (swellTrack?.dataset.swellTrack) {
+      playTrackInContext(swellTrack.dataset.swellTrack);
+      return;
+    }
 
     const menuButton = target.closest<HTMLElement>("[data-menu]");
     if (menuButton?.dataset.menu) {
@@ -523,7 +600,12 @@ export function mountLibrary(): void {
   const render = (): void => {
     const state = getState();
 
-    if (openCollectionId && !collectionById(openCollectionId)) {
+    // Wave Swell is not a collection, so it is not looked up like one.
+    if (
+      openCollectionId &&
+      openCollectionId !== SWELL_ID &&
+      !collectionById(openCollectionId)
+    ) {
       openCollectionId = null;
       resetSelection();
     }
@@ -542,6 +624,7 @@ export function mountLibrary(): void {
 
     sheet.classList.toggle("is-open", state.libraryOpen);
     sheet.classList.toggle("is-detail", openCollectionId !== null);
+    sheet.classList.toggle("is-recap", openCollectionId === SWELL_ID);
     back.hidden = openCollectionId === null;
     if (newPlaylist) {
       newPlaylist.hidden = openCollectionId !== null;
@@ -563,8 +646,12 @@ export function mountLibrary(): void {
     if (openCollectionId) {
       count.textContent = "";
       folders.innerHTML = "";
-      paintDetail(list, state, collectionById(openCollectionId));
-      syncSelection();
+      if (openCollectionId === SWELL_ID) {
+        paintSwell(list, state, swellLoad, swellPeriod, swellReading, swellError);
+      } else {
+        paintDetail(list, state, collectionById(openCollectionId));
+        syncSelection();
+      }
     } else {
       const collections = filterCollections(
         state.collections,
@@ -575,6 +662,7 @@ export function mountLibrary(): void {
       );
       count.textContent = plural(collections.length, "collection");
       delete list.dataset.detail;
+      delete list.dataset.swell;
       list.innerHTML = renderList(state, collections, creating, renaming);
       folders.innerHTML = renderLibrary(state);
       fillIcons(list);
@@ -637,6 +725,7 @@ function paintDetail(list: HTMLElement, state: AppState, collection: Collection 
     return;
   }
 
+  delete list.dataset.swell;
   list.dataset.detail = signature;
   list.innerHTML = collection ? renderDetail(state, collection) : "";
   fillIcons(list);
@@ -672,6 +761,11 @@ function renderList(
   renaming: string | null,
 ): string {
   const rows: string[] = [];
+
+  // Wave Swell sits with the other pinned entries, and only in the full list.
+  if (state.filter === "all" && state.query.trim() === "") {
+    rows.push(swellEntryHtml());
+  }
 
   if (creating) {
     rows.push(`<div class="entry-editor">
@@ -770,6 +864,260 @@ function renderDetail(state: AppState, collection: Collection): string {
       </div>
       ${tracks.length > 0 ? `<ol class="tracks">${rows}</ol>` : `<p class="empty">Nothing in here yet.</p>`}
     </div>`;
+}
+
+/** The pinned entry that opens the pane. */
+function swellEntryHtml(): string {
+  return `
+    <div class="entry entry-swell is-pinned" data-collection="${SWELL_ID}" role="button" tabindex="0">
+      <span class="entry-cover">
+        <span class="swell-mark"><span class="btn-icon" data-icon="swell"></span></span>
+      </span>
+      <span class="entry-text">
+        <span class="crate-name">${escapeHtml(SWELL_NAME)}</span>
+        <span class="crate-sub">Your listening, in numbers</span>
+      </span>
+    </div>`;
+}
+
+/** Repaints the pane, and only when something about it has changed. */
+function paintSwell(
+  list: HTMLElement,
+  state: AppState,
+  load: SwellLoad | null,
+  period: SwellPeriod,
+  reading: boolean,
+  error: string | null,
+): void {
+  const summary = load?.summaries[period] ?? null;
+  const signature = [
+    period,
+    summary ? String(summary.listens) : "none",
+    reading ? "reading" : "settled",
+    error ?? "",
+    String(state.settings.analyticsEnabled),
+  ].join("\u0000");
+
+  if (list.dataset.swell === signature) {
+    return;
+  }
+
+  delete list.dataset.detail;
+  list.dataset.swell = signature;
+  list.innerHTML = swellHtml(state, load, period, reading, error);
+  fillIcons(list);
+}
+
+function swellHtml(
+  state: AppState,
+  load: SwellLoad | null,
+  period: SwellPeriod,
+  reading: boolean,
+  error: string | null,
+): string {
+  const window = swellWindow(period);
+  const summary = load?.summaries[period] ?? null;
+
+  const head = `
+    <div class="detail-head">
+      <span class="detail-cover swell-cover"><span class="btn-icon" data-icon="swell"></span></span>
+      <div class="detail-meta">
+        <p class="detail-kind">${escapeHtml(SWELL_NAME)}</p>
+        <h3 class="detail-name">${escapeHtml(swellHeading(window))}</h3>
+        <p class="detail-sub">${escapeHtml(swellHeadline(summary))}</p>
+      </div>
+    </div>`;
+
+  const periods = `<div class="swell-periods">${SWELL_PERIODS.map(
+    (option) => `
+      <button class="pill${option === period ? " is-on" : ""}" type="button" data-swell-period="${option}" aria-pressed="${option === period}">${escapeHtml(swellPeriodLabel(option))}</button>`,
+  ).join("")}</div>`;
+
+  const opening = `<div class="detail swell">${head}${periods}`;
+  const closing = `</div>`;
+
+  if (!state.settings.analyticsEnabled) {
+    return `${opening}
+      <p class="empty">The listening record is switched off, so there is nothing to show. It can be turned back on in Settings.</p>${closing}`;
+  }
+
+  if (error) {
+    return `${opening}<p class="empty">${escapeHtml(error)}</p>${closing}`;
+  }
+
+  if (!summary) {
+    return `${opening}
+      <p class="empty">${reading ? "Reading your listening..." : "Nothing in this window yet."}</p>${closing}`;
+  }
+
+  if (!swellHasEnough(summary)) {
+    return `${opening}
+      <p class="empty">Not enough here yet — ${escapeHtml(swellProgress(summary))}. Keep listening, or try a longer window.</p>${closing}`;
+  }
+
+  return `${opening}${swellBody(summary, window)}${closing}`;
+}
+
+function swellBody(summary: SwellSummary, window: SwellWindow): string {
+  return [
+    `<div class="swell-grid">
+      <section class="swell-card">
+        <h4 class="swell-label">Minutes listened</h4>
+        <p class="swell-figure">${escapeHtml(formatTotalDuration(summary.msListened))}</p>
+        <p class="swell-note">${escapeHtml(mediaText(summary))}</p>
+      </section>
+      <section class="swell-card">
+        <h4 class="swell-label">Genres explored</h4>
+        <p class="swell-figure">${escapeHtml(formatCount(summary.genresExplored))}</p>
+        <p class="swell-note">${escapeHtml(genreText(summary))}</p>
+      </section>
+    </div>`,
+    rankBlock(
+      "Top songs",
+      summary.topSongs.slice(0, 5).map((song) => ({
+        name: song.title,
+        sub: song.artist,
+        count: song.plays,
+        trackId: song.trackId,
+      })),
+      "Nothing played in this window yet.",
+    ),
+    rankBlock(
+      "Top artists",
+      summary.topArtists.map((artist) => ({
+        name: artist.artist,
+        sub: null,
+        count: artist.plays,
+        trackId: null,
+      })),
+      "No artists to rank yet.",
+    ),
+    sprintBlock(summary, window),
+    rankBlock(
+      "Top albums",
+      summary.topAlbums.map((album) => ({
+        name: album.album,
+        sub: album.albumArtist,
+        count: album.plays,
+        trackId: null,
+      })),
+      "No albums to rank yet.",
+    ),
+    rankBlock(
+      "Top genres",
+      summary.topGenres.map((genre) => ({
+        name: genre.genre,
+        sub: null,
+        count: genre.plays,
+        trackId: null,
+      })),
+      "No genre tags to go on.",
+    ),
+  ].join("");
+}
+
+interface RankRow {
+  name: string;
+  sub: string | null;
+  count: number;
+  /** Set for a song that can be played from the row. */
+  trackId: string | null;
+}
+
+function rankBlock(title: string, rows: RankRow[], empty: string): string {
+  const heading = `<h4 class="swell-label">${escapeHtml(title)}</h4>`;
+
+  if (rows.length === 0) {
+    return `<section class="swell-block">${heading}<p class="empty">${escapeHtml(empty)}</p></section>`;
+  }
+
+  const items = rows
+    .map((row, index) => {
+      const playable = row.trackId !== null;
+      return `
+        <li class="swell-rank${playable ? " is-action" : ""}"${playable ? ` data-swell-track="${escapeHtml(row.trackId ?? "")}" role="button" tabindex="0"` : ""}>
+          <span class="swell-rank-index">${index + 1}</span>
+          <span class="swell-rank-text">
+            <span class="swell-rank-name" title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</span>
+            ${row.sub ? `<span class="swell-rank-sub">${escapeHtml(row.sub)}</span>` : ""}
+          </span>
+          <span class="swell-rank-count" title="${escapeHtml(plural(row.count, "stream"))}">${escapeHtml(formatCount(row.count))}</span>
+        </li>`;
+    })
+    .join("");
+
+  return `<section class="swell-block">${heading}<ol class="swell-ranks">${items}</ol></section>`;
+}
+
+/** How the top five moved across the window, one row of bars each. */
+function sprintBlock(summary: SwellSummary, window: SwellWindow): string {
+  if (summary.artistSprint.length === 0) {
+    return "";
+  }
+
+  const axis = swellAxis(window, summary);
+  if (axis.length === 0) {
+    return "";
+  }
+
+  const max = sprintMax(summary);
+  const rows = summary.artistSprint
+    .map((sprint) => {
+      const bars = sprintSeries(sprint, axis, max)
+        .map((bar) => {
+          // A bucket with nothing in it leaves a gap rather than a sliver.
+          const height = bar.count === 0 ? 0 : Math.max(bar.fraction, 0.12);
+          const label = `${bucketLabel(bar.key, window.bucket)}: ${plural(bar.count, "stream")}`;
+          return `<i class="swell-bar" style="--h: ${(height * 100).toFixed(1)}%" title="${escapeHtml(label)}"></i>`;
+        })
+        .join("");
+      return `
+        <li class="swell-sprint-row">
+          <span class="swell-sprint-name" title="${escapeHtml(sprint.artist)}">${escapeHtml(sprint.artist)}</span>
+          <span class="swell-sprint-bars">${bars}</span>
+        </li>`;
+    })
+    .join("");
+
+  return `<section class="swell-block">
+    <h4 class="swell-label">Top 5 sprint</h4>
+    <ul class="swell-sprint">${rows}</ul>
+  </section>`;
+}
+
+function swellHeadline(summary: SwellSummary | null): string {
+  if (!summary || summary.listens === 0) {
+    return "Nothing here yet";
+  }
+
+  const parts = [formatTotalDuration(summary.msListened)];
+  if (summary.plays > 0) {
+    parts.push(plural(summary.plays, "stream"));
+  }
+  if (summary.uniqueArtists > 0) {
+    parts.push(plural(summary.uniqueArtists, "artist"));
+  }
+  return parts.join(", ");
+}
+
+/** The minutes split, but only when more than one kind of thing was on. */
+function mediaText(summary: SwellSummary): string {
+  const used = summary.byMediaType.filter((total) => total.ms > 0);
+  if (used.length <= 1) {
+    return summary.listens > 0 ? plural(summary.listens, "listen") : "Nothing yet";
+  }
+  return used
+    .map((total) => `${formatTotalDuration(total.ms)} ${total.mediaType}`)
+    .join(", ");
+}
+
+function genreText(summary: SwellSummary): string {
+  const top = summary.topGenres.slice(0, 3).map((genre) => genre.genre);
+  return top.length > 0 ? `Mostly ${top.join(", ")}` : "No genre tags to go on";
+}
+
+function formatCount(value: number): string {
+  return value.toLocaleString();
 }
 
 function renderLibrary(state: AppState): string {

@@ -42,6 +42,7 @@ pub struct Settings {
     pub mini_corner: u8,
     pub search_algorithm: String,
     pub shortcut_slots: Vec<String>,
+    pub analytics_enabled: bool,
 }
 
 impl Default for Settings {
@@ -59,6 +60,7 @@ impl Default for Settings {
             mini_corner: DEFAULT_MINI_CORNER,
             search_algorithm: "substring".to_string(),
             shortcut_slots: Vec::new(),
+            analytics_enabled: true,
         }
     }
 }

@@ -1,0 +1,186 @@
+.entry-swell .swell-mark {
+  display: grid;
+  place-items: center;
+  width: var(--thumb);
+  height: var(--thumb);
+  border-radius: 0.5rem;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.swell-mark .btn-icon svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.swell {
+  gap: 0.85rem;
+}
+
+.swell-cover {
+  display: grid;
+  place-items: center;
+  width: 4.25rem;
+  height: 4.25rem;
+  border-radius: 0.75rem;
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0.75rem 1.5rem rgb(0 0 0 / 0.35);
+}
+
+.swell-cover .btn-icon svg {
+  width: 1.9rem;
+  height: 1.9rem;
+}
+
+.swell-periods {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+/* The two headline figures sit side by side, and stack when there is no room. */
+.swell-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: 0.5rem;
+}
+
+.swell-card {
+  padding: 0.7rem 0.8rem;
+  border-radius: 0.7rem;
+  background: var(--raise);
+}
+
+.swell-label {
+  font-size: 0.7rem;
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.swell-figure {
+  margin-top: 0.15rem;
+  font-size: 1.3rem;
+  font-weight: 700;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.swell-note {
+  margin-top: 0.15rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.swell-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.swell-ranks {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.swell-rank {
+  display: grid;
+  grid-template-columns: 1.1rem minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.3rem 0.35rem;
+  border-radius: 0.45rem;
+  font-size: 0.82rem;
+}
+
+.swell-rank.is-action {
+  cursor: pointer;
+}
+
+.swell-rank.is-action:hover,
+.swell-rank.is-action:focus-visible {
+  background: var(--raise);
+}
+
+.swell-rank-index {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+}
+
+.swell-rank-text {
+  min-width: 0;
+}
+
+.swell-rank-name,
+.swell-rank-sub {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.swell-rank-sub {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.swell-rank-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+}
+
+.swell-sprint {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.swell-sprint-row {
+  display: grid;
+  grid-template-columns: minmax(0, 6.5rem) minmax(0, 1fr);
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+}
+
+.swell-sprint-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+/* Bars share the row's width, so a month of days still fits a narrow sheet. */
+.swell-sprint-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.0625rem;
+  height: 1.5rem;
+  min-width: 0;
+}
+
+.swell-bar {
+  flex: 1 1 0;
+  min-width: 0.0625rem;
+  height: var(--h, 0%);
+  border-radius: 0.0625rem;
+  background: var(--accent);
+  opacity: 0.8;
+}
+
+@media (max-width: 30rem) {
+  .swell-sprint-row {
+    grid-template-columns: minmax(0, 4.5rem) minmax(0, 1fr);
+  }
+}

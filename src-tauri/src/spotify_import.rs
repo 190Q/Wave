@@ -8,6 +8,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::download;
+use crate::genre_fetch;
 use crate::import::{self, ImportOutcome};
 use crate::library::{self, TrackPaths, SONGS_DIR};
 use crate::playlists;
@@ -154,7 +155,8 @@ fn resolve(app: &AppHandle, url: &str, report: &mut Reporter) -> Result<Resolved
         return Err("that Spotify link has no tracks in it".to_string());
     }
 
-    spotify::enrich_genres(&token, &mut tracks);
+    report.phase("genres", "Looking up the genre of each track.");
+    genre_fetch::fill(Some(report), &mut tracks);
 
     Ok(Resolved {
         reference,

@@ -1,6 +1,7 @@
 mod artwork;
 mod cover_fetch;
 mod download;
+mod genre_fetch;
 mod import;
 mod library;
 mod loudness;
@@ -130,6 +131,7 @@ pub fn run() {
             spotify_import::spotify_plan,
             lyrics_fetch::fetch_lyrics,
             cover_fetch::fetch_covers,
+            genre_fetch::fetch_genres,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

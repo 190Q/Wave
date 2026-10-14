@@ -4,6 +4,7 @@ import { scoreItems, type FieldsOf } from "../lib/search";
 import {
   collectionById,
   fetchCovers,
+  fetchGenres,
   fetchLyrics,
   getState,
   importFolder,
@@ -107,6 +108,11 @@ export function mountImportDialog(): void {
     const covers = body.querySelector<HTMLElement>("#import-covers-state");
     if (covers) {
       covers.innerHTML = state.coversProgress ? progressHtml(state.coversProgress) : "";
+    }
+
+    const genres = body.querySelector<HTMLElement>("#import-genres-state");
+    if (genres) {
+      genres.innerHTML = state.genresProgress ? progressHtml(state.genresProgress) : "";
     }
   };
 
@@ -327,10 +333,11 @@ export function mountImportDialog(): void {
         void refreshSpotifyStatus();
         return;
       case "lyrics":
-      case "covers": {
+      case "covers":
+      case "genres": {
         const collection = chosenCollection(getState(), action, picked);
         if (collection) {
-          void (action === "lyrics" ? fetchLyrics(collection.id) : fetchCovers(collection.id));
+          void runFetch(action, collection.id);
         }
         return;
       }
@@ -667,7 +674,26 @@ const FETCH_SECTIONS: FetchSection[] = [
     target: "Collection to fetch covers for",
     action: "covers",
   },
+  {
+    key: "genres",
+    title: "Fetch genres",
+    hint: "Look up the genre of every song in a collection that has none, and write it into the file.",
+    target: "Collection to fetch genres for",
+    action: "genres",
+  },
 ];
+
+/** The fetch a section's button runs, by the section's key. */
+function runFetch(action: string, collectionId: string): Promise<void> {
+  switch (action) {
+    case "lyrics":
+      return fetchLyrics(collectionId);
+    case "covers":
+      return fetchCovers(collectionId);
+    default:
+      return fetchGenres(collectionId);
+  }
+}
 
 /** The compact list: the same actions as glyphs, for a window with no room. */
 function dropRowsHtml(state: AppState): string {
@@ -677,6 +703,7 @@ function dropRowsHtml(state: AppState): string {
     dropRow("songs", "folder", "Import songs only"),
     dropRow("lyrics", "lyrics", "Fetch lyrics", empty),
     dropRow("covers", "covers", "Fetch covers", empty),
+    dropRow("genres", "library", "Fetch genres", empty),
   ].join("");
 }
 

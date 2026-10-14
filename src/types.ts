@@ -160,6 +160,7 @@ export interface ImportProgress {
     | "importing"
     | "lyrics"
     | "covers"
+    | "genres"
     | "done"
     | "failed";
   /** Tracks handled so far, including the one underway. */
@@ -202,6 +203,21 @@ export interface CoversOutcome {
   missing: number;
   /** No artist to look them up by. */
   untagged: number;
+  errors: string[];
+}
+
+/** How a genre lookup went. */
+export interface GenresOutcome {
+  /** Looked up and written into the file. */
+  tagged: number;
+  /** Already carried a genre, so they were left alone. */
+  skipped: number;
+  /** iTunes had nothing for them. */
+  missing: number;
+  /** No artist tag to look them up by. */
+  untagged: number;
+  /** The pass gave up on a run of refusals; the rest wait for the next one. */
+  gaveUp: boolean;
   errors: string[];
 }
 

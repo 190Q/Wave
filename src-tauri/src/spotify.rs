@@ -117,7 +117,6 @@ pub struct TrackMeta {
     pub disc_number: Option<u32>,
     pub genres: Vec<String>,
     pub isrc: String,
-    pub artist_ids: Vec<String>,
     pub cover_url: Option<String>,
 }
 
@@ -793,48 +792,6 @@ pub fn cover_url(token: &str, artist: &str, title: &str) -> Result<Option<String
         .map(str::to_string))
 }
 
-/// Genres live on the artist, not the track.
-pub fn enrich_genres(token: &str, tracks: &mut [TrackMeta]) {
-    let mut ids: Vec<String> = Vec::new();
-    for track in tracks.iter() {
-        for id in &track.artist_ids {
-            if !ids.contains(id) {
-                ids.push(id.clone());
-            }
-        }
-    }
-
-    let mut genres: Vec<(String, Vec<String>)> = Vec::new();
-    for id in &ids {
-        let Ok(artist) = get(token, &format!("{API}/artists/{id}")) else {
-            break;
-        };
-        let names = artist["genres"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|genre| genre.as_str().map(str::to_string))
-            .collect();
-        genres.push((id.clone(), names));
-    }
-
-    for track in tracks.iter_mut() {
-        let mut seen: Vec<String> = Vec::new();
-        for id in &track.artist_ids {
-            for (artist, names) in &genres {
-                if artist == id {
-                    for name in names {
-                        if !seen.contains(name) {
-                            seen.push(name.clone());
-                        }
-                    }
-                }
-            }
-        }
-        track.genres = seen;
-    }
-}
-
 /// Reads a playlist item or a bare track, whichever shape the API used.
 fn normalise_item(item: &Value) -> Option<TrackMeta> {
     let track = item.get("track").or_else(|| item.get("item"))?;
@@ -875,12 +832,6 @@ fn normalise_item(item: &Value) -> Option<TrackMeta> {
             .as_str()
             .unwrap_or_default()
             .to_string(),
-        artist_ids: track["artists"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|artist| artist["id"].as_str().map(str::to_string))
-            .collect(),
         cover_url: album["images"]
             .as_array()
             .and_then(|images| images.first())

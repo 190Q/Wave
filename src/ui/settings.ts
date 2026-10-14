@@ -7,7 +7,8 @@ import { SEARCH_ALGORITHMS } from "../lib/search";
 import {
   captureWindowSlot,
   getState,
-  rescan,
+  jobRunning,
+  rescanLibrary,
   setNotice,
   subscribe,
   updateSettings,
@@ -256,7 +257,7 @@ export function mountSettings(): void {
         return;
       }
       case "rescan":
-        await rescan();
+        await rescanLibrary();
         return;
       case "reset-window":
         try {
@@ -450,6 +451,11 @@ function libraryHtml(state: AppState): string {
     if (measured > 0 && measured < state.tracks.length) {
       notes.push(`${measured} of ${state.tracks.length} measured for volume`);
     }
+  }
+
+  const genres = state.genresProgress;
+  if (genres && jobRunning(genres)) {
+    notes.push(`Looking up genres, ${genres.done} of ${genres.total}`);
   }
 
   const errors = state.scanErrors.length

@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 
 import type {
   CoversOutcome,
+  GenresOutcome,
   ImportOutcome,
   ImportPlan,
   LoudnessOutcome,
@@ -145,6 +146,11 @@ export function fetchLyrics(trackIds: string[]): Promise<LyricsOutcome> {
 /** Restores missing cover art for the given songs. */
 export function fetchCovers(trackIds: string[]): Promise<CoversOutcome> {
   return invoke("fetch_covers", { trackIds });
+}
+
+/** Looks the genre of the given songs up and writes it into their files. */
+export function fetchGenres(trackIds: string[]): Promise<GenresOutcome> {
+  return invoke("fetch_genres", { trackIds });
 }
 
 export function artworkColour(trackId: string, path: string): Promise<string> {

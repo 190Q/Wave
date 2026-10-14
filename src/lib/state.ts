@@ -4,6 +4,7 @@ import type {
   Collection,
   CollectionFilter,
   CoversOutcome,
+  GenresOutcome,
   ImportOutcome,
   ImportPlan,
   ImportProgress,
@@ -49,6 +50,9 @@ const LYRICS_PROGRESS_EVENT = "lyrics-fetch";
 
 /** Follows one covers fetch, song by song. */
 const COVERS_PROGRESS_EVENT = "covers-fetch";
+
+/** Follows one genre pass, song by song. */
+const GENRES_PROGRESS_EVENT = "genres-fetch";
 
 /** Follows one loudness pass, song by song. */
 const LOUDNESS_EVENT = "loudness-scan";
@@ -97,6 +101,8 @@ export interface AppState {
   lyricsProgress: ImportProgress | null;
   /** The covers fetch in flight, and its last result. */
   coversProgress: ImportProgress | null;
+  /** The genre pass in flight, and its last result. */
+  genresProgress: ImportProgress | null;
   /** How far the loudness pass has got, `null` when nothing is being measured. */
   analysing: { done: number; total: number } | null;
 }
@@ -144,6 +150,7 @@ const state: AppState = {
   importing: null,
   lyricsProgress: null,
   coversProgress: null,
+  genresProgress: null,
   analysing: null,
 };
 
@@ -584,6 +591,12 @@ export async function rescan(): Promise<void> {
   void analyseLoudness();
 }
 
+/** Rescans, then fills in the genre of any song that has none. */
+export async function rescanLibrary(): Promise<void> {
+  await rescan();
+  await backfillGenres();
+}
+
 /** Set while a pass is running, so a second one cannot start on top of it. */
 let loudnessRunning = false;
 /** Set when a pass is asked for while one is already running. */
@@ -674,7 +687,7 @@ export async function refreshSpotifyStatus(): Promise<void> {
 }
 
 /** A background job is only in the way while it is actually running. */
-function jobRunning(progress: ImportProgress | null): boolean {
+export function jobRunning(progress: ImportProgress | null): boolean {
   return progress !== null && progress.phase !== "done" && progress.phase !== "failed";
 }
 
@@ -742,6 +755,92 @@ export async function fetchCovers(collectionId: string): Promise<void> {
     state.coversProgress = failedProgress(message);
   }
   emit();
+}
+
+/** The one-line summary a finished genre pass leaves behind. */
+function genresSummary(outcome: GenresOutcome): string {
+  const parts = [`${outcome.tagged} tagged`];
+  if (outcome.skipped > 0) {
+    parts.push(`${outcome.skipped} already had genres`);
+  }
+  if (outcome.untagged > 0) {
+    parts.push(`${outcome.untagged} with no artist tag`);
+  }
+  if (outcome.missing > 0) {
+    parts.push(`${outcome.missing} not found`);
+  }
+  if (outcome.errors.length > 0) {
+    parts.push(`${outcome.errors.length} failed`);
+  }
+  if (outcome.gaveUp) {
+    parts.push("stopped early, the rest are left for next time");
+  }
+  return parts.join(", ");
+}
+
+/** Writes the genre of every song in a collection into its file. */
+export async function fetchGenres(collectionId: string): Promise<void> {
+  const collection = collectionById(collectionId);
+  if (!collection || collection.trackIds.length === 0 || jobRunning(state.genresProgress)) {
+    return;
+  }
+
+  state.genresProgress = {
+    phase: "genres",
+    done: 0,
+    total: collection.trackIds.length,
+    label: "",
+    message: "Starting...",
+    failures: [],
+    reused: 0,
+  };
+  emit();
+
+  try {
+    const outcome = await ipc.fetchGenres(collection.trackIds);
+    // The genres are written into the files, so the songs need re-reading.
+    await rescan();
+
+    const message = genresSummary(outcome);
+    setNotice(message);
+    state.genresProgress = {
+      phase: "done",
+      done: collection.trackIds.length,
+      total: collection.trackIds.length,
+      label: "",
+      message,
+      failures: outcome.errors,
+      reused: 0,
+    };
+  } catch (error) {
+    const message = describe(error);
+    setNotice(message);
+    state.genresProgress = failedProgress(message);
+  }
+  emit();
+}
+
+/** Set while the library-wide pass is running, so a second one cannot start. */
+let genresRunning = false;
+
+async function backfillGenres(): Promise<void> {
+  if (state.tracks.length === 0 || genresRunning) {
+    return;
+  }
+  genresRunning = true;
+
+  try {
+    const outcome = await ipc.fetchGenres(state.tracks.map((track) => track.id));
+    // The genres are written into the files, so the songs need re-reading.
+    await rescan();
+    setNotice(genresSummary(outcome));
+  } catch (error) {
+    setNotice(describe(error));
+  } finally {
+    genresRunning = false;
+    state.genresProgress = null;
+    emit();
+  }
 }
 
 /** The one-line summary a finished lyrics fetch leaves behind. */
@@ -1175,6 +1274,13 @@ function watchSpotify(): void {
 
   void listen<ImportProgress>(COVERS_PROGRESS_EVENT, (event) => {
     state.coversProgress = event.payload;
+    emit();
+  }).catch(() => {
+    // Same as above.
+  });
+
+  void listen<ImportProgress>(GENRES_PROGRESS_EVENT, (event) => {
+    state.genresProgress = event.payload;
     emit();
   }).catch(() => {
     // Same as above.

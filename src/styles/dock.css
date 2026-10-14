@@ -17,13 +17,28 @@
   left: 0;
   top: 0;
   bottom: 0;
-  width: 0;
+  width: 100%;
   background: var(--accent-soft);
-  border-right: 0.125rem solid var(--accent);
-  transition: width 0.08s linear;
+  transform-origin: 0 0;
+  transform: scaleX(var(--progress, 0));
+  transition: transform 0.08s linear;
+  pointer-events: none;
 }
 
-.dock.is-scrubbing .dock-fill {
+.dock-edge {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 100%;
+  border-left: 0.125rem solid var(--accent);
+  transform: translateX(calc(var(--progress, 0) * 100% - 0.125rem));
+  transition: transform 0.08s linear;
+  pointer-events: none;
+}
+
+.dock.is-scrubbing .dock-fill,
+.dock.is-scrubbing .dock-edge {
   transition: none;
 }
 

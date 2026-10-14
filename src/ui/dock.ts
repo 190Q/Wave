@@ -25,7 +25,6 @@ export function stepVolumeFromKey(direction: number): void {
 
 export function mountDock(): void {
   const dock = element("dock");
-  const fill = element("dock-fill");
   const timeNow = element("time-now");
   const timeTotal = element("time-total");
   const like = element<HTMLButtonElement>("like");
@@ -40,7 +39,7 @@ export function mountDock(): void {
   const position = element("dock-position");
 
   if (
-    !dock || !fill || !timeNow || !timeTotal || !like || !shuffle || !previous ||
+    !dock || !timeNow || !timeTotal || !like || !shuffle || !previous ||
     !play || !next || !repeat || !queueToggle || !volume || !volumeBars || !position
   ) {
     return;
@@ -51,6 +50,11 @@ export function mountDock(): void {
   // clicks.
   let scrubbing = false;
   let scrubFraction = 0;
+
+  /** How far along the bar is, `0` to `1`; the stylesheet draws the fill and its edge. */
+  const setProgress = (fraction: number): void => {
+    dock.style.setProperty("--progress", String(fraction));
+  };
 
   const fractionAt = (clientX: number): number => {
     const rect = dock.getBoundingClientRect();
@@ -63,7 +67,7 @@ export function mountDock(): void {
   /** Follows the pointer while the dock is held, without moving the track. */
   const previewSeek = (fraction: number): void => {
     scrubFraction = fraction;
-    fill.style.width = `${fraction * 100}%`;
+    setProgress(fraction);
     timeNow.textContent = formatDuration(fraction * player.snapshot().durationMs);
   };
 
@@ -196,7 +200,7 @@ export function mountDock(): void {
       return;
     }
     const fraction = durationMs > 0 ? Math.min(positionMs / durationMs, 1) : 0;
-    fill.style.width = `${fraction * 100}%`;
+    setProgress(fraction);
     timeNow.textContent = formatDuration(positionMs);
   };
 

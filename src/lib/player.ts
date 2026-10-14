@@ -37,6 +37,8 @@ export const MAX_GAIN = 1.2;
 /** How close to the end counts as the end, for restarting a finished track. */
 const END_SLACK_MS = 200;
 
+const CLOCK_LEAD_MS = 400;
+
 export class Player {
   private readonly engine: AudioEngine;
   private readonly sourceOf: (trackId: string) => PlayerSource | undefined;
@@ -54,6 +56,10 @@ export class Player {
 
   /** The track the element is holding, so it is only loaded once. */
   private loadedId: string | null = null;
+
+  /** The position the element last reported, and the moment it did. */
+  private reportedMs = 0;
+  private reportedAt = 0;
 
   private playing = false;
   private shuffle = false;
@@ -106,7 +112,10 @@ export class Player {
   }
 
   get positionMs(): number {
-    return this.currentId ? this.engine.positionMs : 0;
+    if (!this.currentId) {
+      return 0;
+    }
+    return this.followedPosition(performance.now());
   }
 
   get hasQueue(): boolean {
@@ -523,7 +532,24 @@ export class Player {
     }
   }
 
+  private followedPosition(now: number): number {
+    const reported = this.engine.positionMs;
+    if (reported !== this.reportedMs || !this.playing || !this.engine.isPlaying) {
+      this.reportedMs = reported;
+      this.reportedAt = now;
+      return reported;
+    }
+
+    const lead = Math.min(now - this.reportedAt, CLOCK_LEAD_MS);
+    const position = reported + Math.max(lead, 0);
+    const duration = this.currentDurationMs;
+    return duration > 0 ? Math.min(position, duration) : position;
+  }
+
   private startClock(): void {
+    // Playback starts here, so the reading picked up next is measured from now.
+    this.reportedMs = this.engine.positionMs;
+    this.reportedAt = performance.now();
     if (this.clockFrame === null) {
       this.clockFrame = requestAnimationFrame(this.tick);
     }

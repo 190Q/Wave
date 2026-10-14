@@ -132,6 +132,30 @@
   color: var(--muted);
 }
 
+/* A collection result carries a cover, so it lines up with a library row. */
+.result-collection {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.result-cover {
+  display: inline-flex;
+  flex: none;
+}
+
+.result-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.result-text .result-title,
+.result-text .result-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Search modal: the topbar icon opens a larger copy of the search bar. */
 
 .search-modal {

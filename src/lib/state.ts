@@ -967,6 +967,16 @@ export function playFromCollection(id: string, trackId: string): void {
   player.playTrack(trackId);
 }
 
+export function playTrackInContext(trackId: string): void {
+  const { sourceId } = player.snapshot();
+  const source = sourceId ? findCollection(state.collections, sourceId) : undefined;
+  if (source && source.trackIds.includes(trackId)) {
+    playFromCollection(source.id, trackId);
+    return;
+  }
+  playFromCollection("all", trackId);
+}
+
 /** Loads a collection into the queue and starts it from the top. */
 export function playCollection(id: string): void {
   openCollection(id);

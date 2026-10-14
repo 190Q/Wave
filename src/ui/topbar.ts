@@ -1,19 +1,24 @@
-import { escapeHtml } from "../lib/format";
+import { filterCollections } from "../lib/collections";
+import { escapeHtml, plural } from "../lib/format";
 import {
   getState,
   openCollection,
-  playFromCollection,
+  playCollection,
+  playTrackInContext,
   setSearch,
   subscribe,
   toggleLibrary,
+  type AppState,
 } from "../lib/state";
 import { searchTracks } from "../lib/search";
-import type { SearchAlgorithm, Track } from "../types";
-import { collectionCoverHtml } from "./artwork";
+import type { Collection, SearchAlgorithm, Track } from "../types";
+import { collectionCoverHtml, resultCoverHtml } from "./artwork";
 import { hydrateCovers } from "./covers";
 import { highlightHtml } from "./highlight";
 
 const RESULT_LIMIT = 40;
+
+const COLLECTION_LIMIT = 8;
 
 const SEARCH_MODAL_MS = 220;
 
@@ -104,10 +109,14 @@ export function mountTopbar(): void {
     activateResult((from + step + rows.length) % rows.length);
   };
 
-  const playResult = (trackId: string): void => {
+  const playTrackResult = (trackId: string): void => {
     closeSearch();
-    // Search covers the whole library.
-    playFromCollection("all", trackId);
+    playTrackInContext(trackId);
+  };
+
+  const playCollectionResult = (collectionId: string): void => {
+    closeSearch();
+    playCollection(collectionId);
   };
 
   /** The list hides its scrollbar, so a faded bottom edge flags more results. */
@@ -122,10 +131,11 @@ export function mountTopbar(): void {
     searchWrap.classList.toggle("is-open", open);
 
     // Only re-rendering when the matches change keeps any scroll position.
-    const html = resultsHtml(state.search, state.tracks, state.settings.searchAlgorithm);
+    const html = resultsHtml(state);
     if (html !== renderedResults) {
       renderedResults = html;
       resultsList.innerHTML = html;
+      hydrateCovers(resultsList);
       activateResult(0);
     }
     updateResultsOverflow();
@@ -206,9 +216,13 @@ export function mountTopbar(): void {
         return;
       case "Enter": {
         event.preventDefault();
-        const trackId = resultRows()[activeResult]?.dataset.track;
-        if (trackId) {
-          playResult(trackId);
+        const row = resultRows()[activeResult];
+        const collectionId = row?.dataset.collection;
+        const trackId = row?.dataset.track;
+        if (collectionId) {
+          playCollectionResult(collectionId);
+        } else if (trackId) {
+          playTrackResult(trackId);
         }
         return;
       }
@@ -232,9 +246,17 @@ export function mountTopbar(): void {
   });
 
   results.addEventListener("click", (event) => {
-    const row = (event.target as HTMLElement).closest<HTMLElement>("[data-track]");
-    if (row?.dataset.track) {
-      playResult(row.dataset.track);
+    const target = event.target as HTMLElement;
+
+    const collectionRow = target.closest<HTMLElement>("[data-collection]");
+    if (collectionRow?.dataset.collection) {
+      playCollectionResult(collectionRow.dataset.collection);
+      return;
+    }
+
+    const trackRow = target.closest<HTMLElement>("[data-track]");
+    if (trackRow?.dataset.track) {
+      playTrackResult(trackRow.dataset.track);
     }
   });
 
@@ -339,34 +361,70 @@ export function mountTopbar(): void {
   render();
 }
 
-function resultsHtml(query: string, tracks: Track[], algorithm: SearchAlgorithm): string {
+function resultsHtml(state: AppState): string {
+  const query = state.search;
   const needle = query.trim();
   if (!needle) {
     return "";
   }
 
-  const matches = searchTracks(tracks, query, algorithm);
-  const shown = matches.slice(0, RESULT_LIMIT);
+  const algorithm = state.settings.searchAlgorithm;
+  const collections = filterCollections(state.collections, "all", query, "name", algorithm);
+  const shownCollections = collections.slice(0, COLLECTION_LIMIT);
+  const matches = searchTracks(state.tracks, query, algorithm);
+  const shownTracks = matches.slice(0, RESULT_LIMIT);
 
-  return shown.length
-    ? `
-      <p class="results-head">${matches.length} match${matches.length === 1 ? "" : "es"}${
-        matches.length > shown.length ? `, showing ${shown.length}` : ""
-      }</p>
-      ${shown
-        .map(
-          (track) => `
-            <button class="result" type="button" data-track="${escapeHtml(track.id)}">
-              <span class="result-title">${highlightHtml(track.title, query, algorithm)}</span>
-              <span class="result-sub">${highlightHtml(
-                track.artist ?? "Unknown artist",
-                query,
-                algorithm,
-              )}${track.album ? ` - ${highlightHtml(track.album, query, algorithm)}` : ""}</span>
-            </button>`,
-        )
-        .join("")}`
-    : `<p class="results-head">Nothing matches "${escapeHtml(query.trim())}".</p>`;
+  const parts: string[] = [];
+
+  if (shownCollections.length > 0) {
+    parts.push(`<p class="results-head">${plural(shownCollections.length, "collection")}</p>`);
+    parts.push(
+      shownCollections
+        .map((collection) => collectionResultHtml(collection, state, query, algorithm))
+        .join(""),
+    );
+  }
+
+  if (shownTracks.length > 0) {
+    parts.push(
+      `<p class="results-head">${plural(matches.length, "song match", "song matches")}${
+        matches.length > shownTracks.length ? `, showing ${shownTracks.length}` : ""
+      }</p>`,
+    );
+    parts.push(shownTracks.map((track) => trackResultHtml(track, query, algorithm)).join(""));
+  }
+
+  return parts.length > 0
+    ? parts.join("")
+    : `<p class="results-head">Nothing matches "${escapeHtml(needle)}".</p>`;
+}
+
+function collectionResultHtml(
+  collection: Collection,
+  state: AppState,
+  query: string,
+  algorithm: SearchAlgorithm,
+): string {
+  return `
+    <button class="result result-collection" type="button" data-collection="${escapeHtml(collection.id)}">
+      <span class="result-cover">${resultCoverHtml(collection, state.tracksById)}</span>
+      <span class="result-text">
+        <span class="result-title">${highlightHtml(collection.name, query, algorithm)}</span>
+        <span class="result-sub">${escapeHtml(collection.subtitle)}</span>
+      </span>
+    </button>`;
+}
+
+function trackResultHtml(track: Track, query: string, algorithm: SearchAlgorithm): string {
+  return `
+    <button class="result" type="button" data-track="${escapeHtml(track.id)}">
+      <span class="result-title">${highlightHtml(track.title, query, algorithm)}</span>
+      <span class="result-sub">${highlightHtml(
+        track.artist ?? "Unknown artist",
+        query,
+        algorithm,
+      )}${track.album ? ` - ${highlightHtml(track.album, query, algorithm)}` : ""}</span>
+    </button>`;
 }
 
 function element<T extends HTMLElement = HTMLElement>(id: string): T | null {

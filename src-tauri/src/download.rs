@@ -13,9 +13,12 @@ use crate::tools::{find_yt_dlp, hide_console, tool_path, YtDlp};
 const AUDIO_STEM: &str = "audio";
 
 /// The external programs the download needs. Neither is a Rust library.
+#[derive(Debug, Clone)]
 pub struct Tools {
     pub yt_dlp: YtDlp,
     pub ffmpeg: Option<PathBuf>,
+    pub cookies: Option<PathBuf>,
+    pub browser: Option<String>,
 }
 
 impl Tools {
@@ -35,6 +38,18 @@ pub fn resolve_tools(env: &Env) -> Result<Tools, String> {
     Ok(Tools {
         yt_dlp,
         ffmpeg: tool_path(env.ffmpeg.as_ref(), "ffmpeg"),
+        // A cookies path that is not there is ignored, like the tool overrides.
+        cookies: env
+            .cookies
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|path| path.is_file()),
+        browser: env
+            .browser
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string),
     })
 }
 
@@ -47,6 +62,14 @@ fn yt_dlp_command(yt_dlp: &YtDlp) -> Command {
             command.arg("-m").arg("yt_dlp");
             command
         }
+    }
+}
+
+fn cookie_args(tools: &Tools) -> Vec<String> {
+    match (&tools.cookies, &tools.browser) {
+        (Some(path), _) => vec!["--cookies".to_string(), path.to_string_lossy().into_owned()],
+        (None, Some(browser)) => vec!["--cookies-from-browser".to_string(), browser.clone()],
+        (None, None) => Vec::new(),
     }
 }
 
@@ -69,6 +92,7 @@ pub fn download(
     let template = output_template(&target);
 
     let mut command = yt_dlp_command(&tools.yt_dlp);
+    command.args(cookie_args(tools));
     command
         .arg("-x")
         .arg("--audio-format")
@@ -106,7 +130,9 @@ pub fn download(
         Some(path) => path,
         None if target.is_file() => target.clone(),
         None => {
-            let reason = last_line(&output.stderr).unwrap_or_else(|| "no file was produced".to_string());
+            let reason = failure_reason(&output.stderr, &output.stdout)
+                .map(|line| friendly(&line, tools))
+                .unwrap_or_else(|| "no file was produced".to_string());
             return Err(reason);
         }
     };
@@ -177,6 +203,28 @@ fn last_line(bytes: &[u8]) -> Option<String> {
         .filter(|line| !line.is_empty())
         .next_back()
         .map(str::to_string)
+}
+
+fn failure_reason(stderr: &[u8], stdout: &[u8]) -> Option<String> {
+    last_line(stderr).or_else(|| {
+        String::from_utf8_lossy(stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("ERROR"))
+            .next_back()
+            .map(str::to_string)
+    })
+}
+
+fn friendly(reason: &str, tools: &Tools) -> String {
+    let walled = reason.contains("Sign in to confirm your age")
+        || reason.contains("cookies for the authentication");
+    if !walled || tools.cookies.is_some() || tools.browser.is_some() {
+        return reason.to_string();
+    }
+    "YouTube wants a sign-in for this one. Set YTDLP_COOKIES_FROM_BROWSER or YTDLP_COOKIES in the \
+     config .env, then download it again."
+        .to_string()
 }
 
 fn cover_bytes(local: Option<&Path>, url: Option<&str>) -> Option<Vec<u8>> {
@@ -290,6 +338,56 @@ mod tests {
     fn reports_the_last_line_of_a_failure() {
         let stderr = b"WARNING: something\nERROR: Video unavailable\n";
         assert_eq!(last_line(stderr).as_deref(), Some("ERROR: Video unavailable"));
+    }
+
+    fn tools(cookies: Option<&str>, browser: Option<&str>) -> Tools {
+        Tools {
+            yt_dlp: YtDlp::Exe(PathBuf::from("yt-dlp")),
+            ffmpeg: None,
+            cookies: cookies.map(PathBuf::from),
+            browser: browser.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn asks_for_the_cookies_a_signed_in_download_needs() {
+        assert!(cookie_args(&tools(None, None)).is_empty());
+        assert_eq!(
+            cookie_args(&tools(None, Some("firefox"))),
+            vec!["--cookies-from-browser", "firefox"]
+        );
+        // An exported file wins over the browser it may have come from.
+        assert_eq!(
+            cookie_args(&tools(Some("cookies.txt"), Some("firefox"))),
+            vec!["--cookies", "cookies.txt"]
+        );
+    }
+
+    #[test]
+    fn says_what_to_do_about_the_age_wall() {
+        let wall = "ERROR: [youtube] XhFzKhTFY3I: Sign in to confirm your age. Use --cookies-from-browser";
+        let advice = friendly(wall, &tools(None, None));
+        assert!(advice.contains("YTDLP_COOKIES_FROM_BROWSER"), "{advice}");
+
+        // Anything else is left as yt-dlp said it.
+        assert_eq!(friendly("ERROR: Video unavailable", &tools(None, None)), "ERROR: Video unavailable");
+
+        // With cookies set, the refusal is passed through so it can be read.
+        assert_eq!(friendly(wall, &tools(None, Some("firefox"))), wall);
+    }
+
+    #[test]
+    fn reads_a_failure_from_either_stream() {
+        assert_eq!(
+            failure_reason(b"ERROR: Video unavailable\n", b"").as_deref(),
+            Some("ERROR: Video unavailable")
+        );
+        assert_eq!(
+            failure_reason(b"", b"/tmp/a.mp3\nERROR: Sign in to confirm your age\n").as_deref(),
+            Some("ERROR: Sign in to confirm your age")
+        );
+        // A printed path is not a reason.
+        assert_eq!(failure_reason(b"", b"/tmp/a.mp3\n"), None);
     }
 
     #[test]

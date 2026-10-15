@@ -37,6 +37,8 @@ pub struct Env {
     pub client_secret: String,
     pub yt_dlp: Option<String>,
     pub ffmpeg: Option<String>,
+    pub cookies: Option<String>,
+    pub browser: Option<String>,
 }
 
 impl Env {
@@ -65,6 +67,13 @@ SPOTIFY_CLIENT_ID=
 SPOTIFY_CLIENT_SECRET=
 # YTDLP_PATH=
 # FFMPEG_PATH=
+#
+# A video that asks for a sign-in (age-restricted, or YouTube's bot check) only
+# downloads with cookies from an account that can watch it. Set one of these and
+# download the song again. Firefox works best on Windows; Chrome and Edge
+# encrypt their cookies, so export a cookies.txt for those.
+# YTDLP_COOKIES_FROM_BROWSER=firefox
+# YTDLP_COOKIES=
 ",
         crate::spotify::redirect_uri()
     )
@@ -158,6 +167,8 @@ fn parse_env(raw: &str) -> Env {
             "SPOTIFY_CLIENT_SECRET" => env.client_secret = value,
             "YTDLP_PATH" => env.yt_dlp = Some(value),
             "FFMPEG_PATH" => env.ffmpeg = Some(value),
+            "YTDLP_COOKIES" => env.cookies = Some(value),
+            "YTDLP_COOKIES_FROM_BROWSER" => env.browser = Some(value),
             _ => {}
         }
     }
@@ -240,6 +251,7 @@ mod tests {
 SPOTIFY_CLIENT_ID=abc
 SPOTIFY_CLIENT_SECRET='shh'
 YTDLP_PATH=\"C:\\tools\\yt-dlp.exe\"
+YTDLP_COOKIES_FROM_BROWSER=firefox
 not a pair
 ",
         );
@@ -247,7 +259,16 @@ not a pair
         assert_eq!(env.client_id, "abc");
         assert_eq!(env.client_secret, "shh");
         assert_eq!(env.yt_dlp.as_deref(), Some("C:\\tools\\yt-dlp.exe"));
+        assert_eq!(env.browser.as_deref(), Some("firefox"));
+        assert!(env.cookies.is_none());
         assert!(env.complete());
+    }
+
+    #[test]
+    fn the_template_says_how_to_get_cookies() {
+        let template = env_template();
+        assert!(template.contains("YTDLP_COOKIES_FROM_BROWSER="));
+        assert!(template.contains("YTDLP_COOKIES="));
     }
 
     #[test]

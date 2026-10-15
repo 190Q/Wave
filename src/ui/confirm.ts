@@ -7,14 +7,21 @@ export interface ConfirmOptions {
   /** Defaults to `Cancel`, for questions whose answer is not one. */
   cancelLabel?: string;
   danger?: boolean;
+  /** Keep dismissal distinct from choosing the secondary action. */
+  dismissibleChoice?: boolean;
 }
 
 /** Set while the dialog is mounted, so the question can be put to the user. */
-let ask: ((options: ConfirmOptions) => Promise<boolean>) | null = null;
+let ask: ((options: ConfirmOptions) => Promise<boolean | null>) | null = null;
 
 /** Asks the question and resolves with the answer. */
-export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
-  return ask?.(options) ?? Promise.resolve(false);
+export async function confirmDialog(options: ConfirmOptions): Promise<boolean> {
+  return (await ask?.(options)) === true;
+}
+
+/** Two explicit choices; Escape and the backdrop cancel without choosing either. */
+export function choiceDialog(options: ConfirmOptions): Promise<boolean | null> {
+  return ask?.({ ...options, dismissibleChoice: true }) ?? Promise.resolve(null);
 }
 
 export function mountConfirm(): void {
@@ -29,7 +36,8 @@ export function mountConfirm(): void {
   }
 
   /** Resolves the question on screen, `null` while there is none. */
-  let settle: ((answer: boolean) => void) | null = null;
+  let settle: ((answer: boolean | null) => void) | null = null;
+  let dismissibleChoice = false;
   let closeTimer: number | null = null;
 
   const openDialog = (): void => {
@@ -46,7 +54,7 @@ export function mountConfirm(): void {
     dialog.classList.remove("is-closed");
   };
 
-  const closeDialog = (answer: boolean): void => {
+  const closeDialog = (answer: boolean | null): void => {
     if (!dialog.open || dialog.classList.contains("is-closed")) {
       return;
     }
@@ -66,18 +74,19 @@ export function mountConfirm(): void {
   // Escape and a click on the backdrop both mean no.
   dialog.addEventListener("cancel", (event) => {
     event.preventDefault();
-    closeDialog(false);
+    closeDialog(dismissibleChoice ? null : false);
   });
   dialog.addEventListener("click", (event) => {
     if (event.target === dialog) {
-      closeDialog(false);
+      closeDialog(dismissibleChoice ? null : false);
     }
   });
 
   ask = (options) =>
     new Promise((resolve) => {
       // A question already on screen is turned down rather than left hanging.
-      settle?.(false);
+      settle?.(null);
+      dismissibleChoice = options.dismissibleChoice === true;
 
       title.textContent = options.title;
       message.textContent = options.message;

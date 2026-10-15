@@ -8,6 +8,7 @@ import { KEYBIND_GROUPS, SLOT_ACTIONS, SLOT_COUNT, slotLabel } from "../lib/keyb
 import { SEARCH_ALGORITHMS } from "../lib/search";
 import {
   captureWindowSlot,
+  exportCollection,
   getState,
   jobRunning,
   rescanLibrary,
@@ -25,6 +26,7 @@ import type {
   WindowGeometry,
 } from "../types";
 import { createPanel } from "./drop";
+import { mountCollectionPicker } from "./collection-picker";
 import { fillIcons } from "./icons";
 import { placePicker } from "./picker";
 
@@ -71,6 +73,12 @@ export function mountSettings(): void {
   let openSlot: number | null = null;
 
   let closeTimer: number | null = null;
+  let exportId = "all";
+  const selectedExport = () => getState().collections.find((collection) => collection.id === exportId)
+    ?? getState().collections[0];
+  const exportPicker = mountCollectionPicker(body, "[data-export-collection]", (collection) => {
+    exportId = collection.id;
+  }, selectedExport);
 
   /** What the Wave Swell section shows. Read afresh whenever the panel opens. */
   let listeningStats: AnalyticsStats | null = null;
@@ -112,6 +120,7 @@ export function mountSettings(): void {
   };
 
   const closeDialog = (): void => {
+    exportPicker.close();
     if (!dialog.open || dialog.classList.contains("is-closed")) {
       return;
     }
@@ -153,12 +162,13 @@ export function mountSettings(): void {
   };
 
   const render = (): void => {
+    exportPicker.close();
     const state = getState();
     body.innerHTML = [
       playbackHtml(draft),
       appearanceHtml(draft),
       windowHtml(draft),
-      libraryHtml(state),
+      libraryHtml(state, selectedExport()?.id ?? ""),
       analyticsHtml(draft, listeningStats, listeningSwell),
       searchHtml(draft),
       shortcutsHtml(draft, state.windowSlots, openSlot),
@@ -182,7 +192,7 @@ export function mountSettings(): void {
       listeningStats = null;
       listeningSwell = null;
     }
-    if (dialog.open && !dialog.classList.contains("is-closed")) {
+    if (dialog.open && !dialog.classList.contains("is-closed") && !exportPicker.isOpen) {
       render();
     }
   };
@@ -282,6 +292,11 @@ export function mountSettings(): void {
   /** The commands act at once; only the values wait for Save. */
   const runCommand = async (command: string): Promise<void> => {
     switch (command) {
+      case "export-playlist": {
+        const collection = selectedExport();
+        if (collection) await exportCollection(collection.id);
+        return;
+      }
       case "open-folder": {
         const { root } = getState();
         if (!root) {
@@ -358,6 +373,10 @@ export function mountSettings(): void {
   // Escape closes natively; intercept it so the same animation plays.
   dialog.addEventListener("cancel", (event) => {
     event.preventDefault();
+    if (exportPicker.isOpen) {
+      exportPicker.close();
+      return;
+    }
     if (openSlot !== null) {
       openSlot = null;
       render();
@@ -370,6 +389,10 @@ export function mountSettings(): void {
   // in step. An edited draft is left alone until it has been saved.
   subscribe(() => {
     if (!dialog.open || dialog.classList.contains("is-closed")) {
+      return;
+    }
+    // Background progress must not replace a field while it is being searched.
+    if (exportPicker.isOpen) {
       return;
     }
     if (Object.keys(pendingPatch()).length === 0) {
@@ -481,7 +504,8 @@ function windowHtml(settings: Settings): string {
   );
 }
 
-function libraryHtml(state: AppState): string {
+function libraryHtml(state: AppState, exportId: string): string {
+  const collection = state.collections.find((collection) => collection.id === exportId);
   const notes: string[] = [];
   if (state.scanning) {
     notes.push("Scanning...");
@@ -527,6 +551,17 @@ function libraryHtml(state: AppState): string {
       </div>
       <p class="settings-hint">${escapeHtml(notes.join(". "))}</p>
       ${errors}
+    </div>
+    <div class="settings-row is-stacked">
+      <span class="settings-label">Export playlist</span>
+      <p class="settings-hint">Save an ordered song list with available lyrics, covers, genres and tags as a .wavelist file. Import it in Wave to download the audio files. Audio files are not included.</p>
+      <div class="import-field">
+        <input class="import-combo" type="text" data-export-collection
+          value="${escapeHtml(collection?.name ?? "")}"
+          placeholder="Collection name" aria-label="Collection to export"
+          aria-expanded="false" autocomplete="off" spellcheck="false" />
+        <button class="pill" type="button" data-command="export-playlist"${collection?.trackIds.length ? "" : " disabled"}>Export</button>
+      </div>
     </div>`,
   );
 }

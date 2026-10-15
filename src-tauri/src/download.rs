@@ -54,6 +54,11 @@ fn yt_dlp_command(yt_dlp: &YtDlp) -> Command {
 /// already there, so a re-run picks up where the last one stopped.
 pub fn download(tools: &Tools, meta: &TrackMeta, out_dir: &Path) -> Result<bool, String> {
     let name = sanitize(&meta.title);
+    download_named(tools, meta, out_dir, &name)
+}
+
+/// A caller-supplied safe stem keeps different tracks with the same title apart.
+pub fn download_named(tools: &Tools, meta: &TrackMeta, out_dir: &Path, name: &str) -> Result<bool, String> {
     let target = out_dir.join(format!("{name}.mp3"));
 
     if target.is_file() {

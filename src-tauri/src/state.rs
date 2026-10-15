@@ -129,7 +129,7 @@ impl Default for Session {
 /// Where the window sat when it was last closed: its outer size in logical
 /// units, its position in physical pixels, the monitor it was on, and whether
 /// it was maximised.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct WindowGeometry {
     pub width: u32,
@@ -240,11 +240,16 @@ fn write_state<R: Runtime>(app: &AppHandle<R>, state: &PersistedState) -> Result
     let json = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
     let temp = path.with_extension("json.tmp");
     fs::write(&temp, json).map_err(|e| format!("could not write {}: {e}", temp.display()))?;
-    // `rename` does not overwrite on Windows, so clear the target first.
-    if path.exists() {
-        let _ = fs::remove_file(&path);
+    // `rename` replaces the target, so the swap is one step and a power cut
+    // cannot leave the file missing. Where it is refused, clear the target.
+    if fs::rename(&temp, &path).is_err() {
+        if path.exists() {
+            let _ = fs::remove_file(&path);
+        }
+        fs::rename(&temp, &path)
+            .map_err(|e| format!("could not replace {}: {e}", path.display()))?;
     }
-    fs::rename(&temp, &path).map_err(|e| format!("could not replace {}: {e}", path.display()))
+    Ok(())
 }
 
 fn commit<R: Runtime>(app: &AppHandle<R>, state: PersistedState) -> Result<PersistedState, String> {
@@ -579,6 +584,10 @@ pub fn save_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<(
     };
 
     let geometry = read_window_geometry(&window)?;
+    // Called on a timer, so a frame that has not moved is left alone.
+    if current.window.as_ref() == Some(&geometry) {
+        return Ok(());
+    }
     let next = store.update(|state| state.window = Some(geometry));
     save(&app, &next)
 }

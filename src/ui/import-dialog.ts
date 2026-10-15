@@ -8,6 +8,7 @@ import {
   fetchLyrics,
   getState,
   importFolder,
+  importWaveList,
   importSpotify,
   openSpotifyConfig,
   planSpotify,
@@ -23,7 +24,7 @@ import type {
   SearchAlgorithm,
   SpotifyStatus,
 } from "../types";
-import { confirmDialog } from "./confirm";
+import { choiceDialog, confirmDialog } from "./confirm";
 import { createPanel } from "./drop";
 import { highlightHtml } from "./highlight";
 import { fillIcons } from "./icons";
@@ -101,6 +102,10 @@ export function mountImportDialog(): void {
     }
 
     const lyrics = body.querySelector<HTMLElement>("#import-lyrics-state");
+    const transfer = body.querySelector<HTMLElement>("#import-transfer-state");
+    if (transfer) {
+      transfer.innerHTML = state.transferProgress ? progressHtml(state.transferProgress) : "";
+    }
     if (lyrics) {
       lyrics.innerHTML = state.lyricsProgress ? progressHtml(state.lyricsProgress) : "";
     }
@@ -232,9 +237,6 @@ export function mountImportDialog(): void {
     anchor = from ?? fallback;
     closeCombo(true);
     render();
-    if (!getState().importing) {
-      void refreshSpotifyStatus();
-    }
     // Start collapsed, then let the stylesheet play it in.
     dialog.classList.add("is-closed");
     if (!dialog.open) {
@@ -310,9 +312,16 @@ export function mountImportDialog(): void {
 
   const runImportAction = (action: string): void => {
     switch (action) {
-      case "songs":
-      case "playlist":
-        void importFolder(action === "playlist");
+      case "folder":
+        void importFolder(() => choiceDialog({
+          title: "Import this folder",
+          message: "Add only the songs to your library, or also create a playlist from this folder?",
+          confirmLabel: "As a playlist",
+          cancelLabel: "Songs only",
+        }));
+        return;
+      case "wavelist":
+        void importWaveList();
         return;
       case "spotify": {
         const field = body.querySelector<HTMLInputElement>("#import-spotify-url");
@@ -323,6 +332,9 @@ export function mountImportDialog(): void {
       }
       case "setup":
         setupOpen = !setupOpen;
+        if (setupOpen && !getState().importing) {
+          void refreshSpotifyStatus();
+        }
         paintSpotify();
         return;
       case "config":
@@ -485,12 +497,13 @@ function sectionsHtml(state: AppState, picked: Map<string, string>): string {
 
 function localSection(): string {
   return section(
-    "Local folder",
-    `<p class="import-hint">Bring in a folder from this computer.</p>
+    "Local import",
+    `<p class="import-hint">Bring in a music folder, or import a Wave playlist to download its songs without Spotify. Playlist downloads need yt-dlp and ffmpeg.</p>
     <div class="import-actions">
-      <button class="pill" type="button" data-import="songs">Import songs only</button>
-      <button class="pill" type="button" data-import="playlist">Import as a playlist</button>
-    </div>`,
+      <button class="pill" type="button" data-import="folder">Import folder</button>
+      <button class="pill" type="button" data-import="wavelist">Import Wave playlist</button>
+    </div>
+    <div id="import-transfer-state" aria-live="polite"></div>`,
   );
 }
 
@@ -639,7 +652,7 @@ function historyHtml(state: AppState): string {
     .map(
       (record) => `
       <li class="import-history-row">
-        <span class="import-history-source">${record.source === "spotify" ? "Spotify" : "Folder"}</span>
+        <span class="import-history-source">${record.source === "spotify" ? "Spotify" : record.source === "wavelist" ? "Wave" : "Folder"}</span>
         <span class="import-history-name">${escapeHtml(record.name)}</span>
         <span class="import-history-detail">${escapeHtml(record.detail)}</span>
       </li>`,
@@ -699,7 +712,8 @@ function dropRowsHtml(state: AppState): string {
   const empty = state.collections.length === 0;
 
   return [
-    dropRow("songs", "folder", "Import songs only"),
+    dropRow("folder", "folder", "Import folder"),
+    dropRow("wavelist", "import", "Import Wave playlist"),
     dropRow("lyrics", "lyrics", "Fetch lyrics", empty),
     dropRow("covers", "covers", "Fetch covers", empty),
     dropRow("genres", "library", "Fetch genres", empty),

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 
 import type {
   AnalyticsEvent,
@@ -144,6 +144,32 @@ export function spotifyPlan(url: string): Promise<ImportPlan> {
 /** Downloads a Spotify playlist or track into the library. */
 export function importSpotify(url: string, downloadDuplicates: boolean): Promise<ImportOutcome> {
   return invoke("spotify_import", { url, downloadDuplicates });
+}
+
+export async function pickWaveList(): Promise<string | null> {
+  const selected = await open({
+    multiple: false,
+    title: "Import a Wave playlist",
+    filters: [{ name: "Wave playlist", extensions: ["wavelist"] }],
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
+export function importWaveList(path: string): Promise<ImportOutcome> {
+  return invoke("import_wavelist", { path });
+}
+
+export async function exportWaveList(name: string, trackIds: string[]): Promise<number | null> {
+  const safeName = name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/[. ]+$/, "") || "Playlist";
+  const path = await save({
+    title: "Export a Wave playlist",
+    defaultPath: `${safeName}.wavelist`,
+    filters: [{ name: "Wave playlist", extensions: ["wavelist"] }],
+  });
+  if (!path) {
+    return null;
+  }
+  return invoke("export_wavelist", { path, name, trackIds });
 }
 
 /** Looks lyrics up for the given songs and files them with the library. */

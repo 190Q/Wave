@@ -13,6 +13,7 @@ mod progress;
 mod spotify;
 mod spotify_import;
 mod state;
+mod transfer;
 
 use tauri::Manager;
 
@@ -125,6 +126,8 @@ pub fn run() {
             library::delete_tracks,
             loudness::analyse_loudness,
             import::import_folder,
+            transfer::export_wavelist,
+            transfer::import_wavelist,
             playlists::create_playlist,
             playlists::rename_playlist,
             playlists::delete_playlist,

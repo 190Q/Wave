@@ -105,7 +105,8 @@ pub struct SpotifyRef {
 }
 
 /// One track's metadata, the Rust side of the old script's `_normalize_item`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct TrackMeta {
     pub title: String,
     pub artists: Vec<String>,

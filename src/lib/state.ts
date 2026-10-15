@@ -98,6 +98,7 @@ export interface AppState {
   spotifyChecking: boolean;
   /** The Spotify import in flight, `null` when nothing is running. */
   importing: ImportProgress | null;
+  transferProgress: ImportProgress | null;
   /** The lyrics fetch in flight, and its last result. */
   lyricsProgress: ImportProgress | null;
   /** The covers fetch in flight, and its last result. */
@@ -150,6 +151,7 @@ const state: AppState = {
   spotify: null,
   spotifyChecking: false,
   importing: null,
+  transferProgress: null,
   lyricsProgress: null,
   coversProgress: null,
   genresProgress: null,
@@ -658,10 +660,14 @@ function importSummary(outcome: ImportOutcome): string {
   return parts.join(", ");
 }
 
-export async function importFolder(createPlaylist: boolean): Promise<void> {
+export async function importFolder(choose: () => Promise<boolean | null>): Promise<void> {
   try {
     const folder = await ipc.pickFolder();
     if (!folder) {
+      return;
+    }
+    const createPlaylist = await choose();
+    if (createPlaylist === null) {
       return;
     }
 
@@ -672,6 +678,64 @@ export async function importFolder(createPlaylist: boolean): Promise<void> {
     setNotice(importSummary(outcome));
   } catch (error) {
     setNotice(describe(error));
+  }
+}
+
+let transferPending = false;
+
+export async function importWaveList(): Promise<void> {
+  if (transferPending || jobRunning(state.transferProgress)) {
+    return;
+  }
+  transferPending = true;
+  try {
+    const path = await ipc.pickWaveList();
+    if (!path) {
+      return;
+    }
+    state.transferProgress = {
+      phase: "resolving", done: 0, total: 0, label: "",
+      message: "Reading the Wave playlist...", failures: [], reused: 0,
+    };
+    emit();
+    const outcome = await ipc.importWaveList(path);
+    applyPersisted(outcome.state);
+    await rescan();
+    const message = importSummary(outcome);
+    setNotice(message);
+    state.transferProgress = {
+      phase: outcome.errors.length ? "failed" : "done",
+      done: state.transferProgress?.done ?? 0,
+      total: state.transferProgress?.total ?? 0,
+      label: "", message, failures: outcome.errors,
+      reused: state.transferProgress?.reused ?? 0,
+    };
+  } catch (error) {
+    state.transferProgress = failedProgress(describe(error));
+    setNotice(describe(error));
+  } finally {
+    transferPending = false;
+    emit();
+  }
+}
+
+let exporting = false;
+
+export async function exportCollection(collectionId: string): Promise<void> {
+  const collection = collectionById(collectionId);
+  if (!collection || !collection.trackIds.length || exporting) {
+    return;
+  }
+  exporting = true;
+  try {
+    const count = await ipc.exportWaveList(collection.name, collection.trackIds);
+    if (count !== null) {
+      setNotice(`Exported ${plural(count, "song")} with available covers, lyrics and metadata.`);
+    }
+  } catch (error) {
+    setNotice(describe(error));
+  } finally {
+    exporting = false;
   }
 }
 
@@ -1286,6 +1350,12 @@ let configTimer: number | null = null;
 
 /** Follows the Spotify import and the config file, for the dialog. */
 function watchSpotify(): void {
+  void listen<ImportProgress>("wavelist-import", (event) => {
+    state.transferProgress = event.payload;
+    emit();
+  }).catch(() => {
+    // A plain browser has no Tauri event bridge.
+  });
   void listen<ImportProgress>(SPOTIFY_PROGRESS_EVENT, (event) => {
     state.importing = event.payload;
     emit();
@@ -1538,16 +1608,25 @@ function restorePlayback(playback: Playback | undefined): void {
 
 /** How long changes are coalesced before the session is written. */
 const PERSIST_DELAY_MS = 350;
+
+const AUTOSAVE_MS = 15_000;
+
 let persistTimer: number | null = null;
+let autosaveTimer: number | null = null;
+let autosaving = false;
 let persistenceWired = false;
 
-/** Persists the session on every playback change. */
+/** The session as it was last written, so an unchanged one is not rewritten. */
+let savedSession: string | null = null;
+
+/** Persists the session on every playback change, and on a slow timer. */
 function wirePersistence(): void {
   if (persistenceWired) {
     return;
   }
   persistenceWired = true;
   player.onChange(schedulePersist);
+  autosaveTimer = window.setInterval(() => void autosave(), AUTOSAVE_MS);
 }
 
 /** Writes the session soon, coalescing a burst of changes into one write. */
@@ -1559,6 +1638,22 @@ function schedulePersist(): void {
     persistTimer = null;
     void persistSession();
   }, PERSIST_DELAY_MS);
+}
+
+async function autosave(): Promise<void> {
+  if (!state.ready || autosaving) {
+    return;
+  }
+  autosaving = true;
+  try {
+    await saveVolume();
+    await persistSession();
+    await ipc.saveWindowGeometry();
+  } catch {
+    // Best effort; the next tick tries again.
+  } finally {
+    autosaving = false;
+  }
 }
 
 function currentSession(): Session {
@@ -1586,8 +1681,14 @@ async function persistSession(): Promise<void> {
   if (!state.ready) {
     return;
   }
+  const session = currentSession();
+  const encoded = JSON.stringify(session);
+  if (encoded === savedSession) {
+    return;
+  }
   try {
-    await ipc.saveSession(currentSession());
+    await ipc.saveSession(session);
+    savedSession = encoded;
   } catch {
     // Persistence is best-effort; a failed write must not disturb playback.
   }
@@ -1601,6 +1702,10 @@ export async function flushSession(): Promise<void> {
   if (volumeTimer !== null) {
     window.clearTimeout(volumeTimer);
     volumeTimer = null;
+  }
+  if (autosaveTimer !== null) {
+    window.clearInterval(autosaveTimer);
+    autosaveTimer = null;
   }
   await saveVolume();
   await persistSession();

@@ -14,9 +14,12 @@ import type {
   LyricLine,
   LoudnessUpdate,
   LyricsOutcome,
+  PendingTrack,
   PersistedState,
   Playback,
   Playlist,
+  PlaylistMode,
+  RecommendStatus,
   Session,
   Settings,
   SpotifyStatus,
@@ -60,6 +63,9 @@ const GENRES_PROGRESS_EVENT = "genres-fetch";
 /** Follows one loudness pass, song by song. */
 const LOUDNESS_EVENT = "loudness-scan";
 
+/** Follows one playlist generation, phase by phase. */
+const GENERATE_PROGRESS_EVENT = "playlist-generate";
+
 /** How long a burst of saves is left to settle before re-checking. */
 const CONFIG_SETTLE_MS = 400;
 
@@ -79,6 +85,10 @@ export interface AppState {
   libraryInfo: LibraryInfo | null;
   likes: Set<string>;
   playlists: Playlist[];
+  /** Pending entries by id, so a row can be drawn before it is downloaded. */
+  pendingById: Map<string, PendingTrack>;
+  /** Whether generation is offered yet, `null` until the first read lands. */
+  recommend: RecommendStatus | null;
   /** The last few imports, newest first. */
   recentImports: ImportRecord[];
   /** One saved window frame per shortcut slot, `null` while unset. */
@@ -106,6 +116,12 @@ export interface AppState {
   /** The link import in flight, `null` when nothing is running. */
   importing: ImportProgress | null;
   transferProgress: ImportProgress | null;
+  /** The generation in flight, and its last result. */
+  generateProgress: ImportProgress | null;
+  /** The download in flight, and its last result. */
+  downloadProgress: ImportProgress | null;
+  /** The playlist the download in flight is for. */
+  downloadPlaylistId: string | null;
   /** The lyrics fetch in flight, and its last result. */
   lyricsProgress: ImportProgress | null;
   /** The covers fetch in flight, and its last result. */
@@ -128,6 +144,8 @@ const state: AppState = {
   libraryInfo: null,
   likes: new Set(),
   playlists: [],
+  pendingById: new Map(),
+  recommend: null,
   recentImports: [],
   windowSlots: [],
   colours: new Map(),
@@ -162,6 +180,9 @@ const state: AppState = {
   deezerChecking: false,
   importing: null,
   transferProgress: null,
+  generateProgress: null,
+  downloadProgress: null,
+  downloadPlaylistId: null,
   lyricsProgress: null,
   coversProgress: null,
   genresProgress: null,
@@ -586,6 +607,7 @@ export async function init(): Promise<void> {
     state.ready = true;
   }
   void refreshDeezerStatus();
+  void refreshRecommendStatus();
   emit();
 }
 
@@ -1356,6 +1378,109 @@ export async function reorderPlaylist(id: string, trackIds: string[]): Promise<v
   }
 }
 
+/** Reads whether the listening record holds enough to generate a playlist from. */
+export async function refreshRecommendStatus(): Promise<void> {
+  try {
+    state.recommend = await ipc.recommendStatus();
+    emit();
+  } catch {
+    // Left as it stands; the sheet only reads it to name the reason.
+  }
+}
+
+/** Fills a new playlist from the catalogue, by taste or by one genre. */
+export async function generatePlaylist(mode: PlaylistMode, genre: string | null): Promise<void> {
+  if (jobRunning(state.generateProgress)) {
+    return;
+  }
+
+  // The backend sends its own phases from here; this is the first paint.
+  state.generateProgress = {
+    phase: mode === "taste" ? "taste" : "catalogue",
+    done: 0,
+    total: 0,
+    label: "",
+    message: "Starting...",
+    failures: [],
+    reused: 0,
+  };
+  emit();
+
+  try {
+    const outcome = await ipc.generatePlaylist(mode, genre);
+    applyPersisted(outcome.state);
+    const playlist = state.playlists.find((entry) => entry.id === outcome.playlistId);
+    setNotice(
+      playlist
+        ? `Created "${playlist.name}" with ${plural(playlist.entries.length, "song")}.`
+        : "Playlist created.",
+    );
+    state.generateProgress = null;
+  } catch (error) {
+    const message = describe(error);
+    setNotice(message);
+    state.generateProgress = failedProgress(message);
+  }
+  emit();
+}
+
+/** Set while the source-import event is reporting a playlist download. */
+let downloading = false;
+
+/** The one-line summary a finished playlist download leaves behind. */
+function downloadSummary(outcome: ImportOutcome): string {
+  const parts = [`${plural(outcome.songs, "song")} downloaded`];
+  if (outcome.duplicates > 0) {
+    parts.push(`${plural(outcome.duplicates, "duplicate")} skipped`);
+  }
+  if (outcome.errors.length > 0) {
+    parts.push(`${outcome.errors.length} failed`);
+  }
+  return parts.join(", ");
+}
+
+/** Fetches a generated playlist's pending entries, an empty list meaning all of them. */
+export async function downloadPending(playlistId: string, entryIds: string[]): Promise<void> {
+  if (jobRunning(state.downloadProgress)) {
+    return;
+  }
+
+  state.downloadPlaylistId = playlistId;
+  state.downloadProgress = {
+    phase: "downloading",
+    done: 0,
+    total: entryIds.length,
+    label: "",
+    message: "Starting...",
+    failures: [],
+    reused: 0,
+  };
+  downloading = true;
+  emit();
+
+  try {
+    const outcome = await ipc.downloadPlaylist(playlistId, entryIds);
+    applyPersisted(outcome.state);
+    await rescan();
+    setNotice(downloadSummary(outcome));
+    // Only a failure stays on screen; a clean run needs no line left behind.
+    state.downloadProgress =
+      outcome.errors.length > 0
+        ? failedProgress(
+            `${plural(outcome.songs, "song")} downloaded, ${outcome.errors.length} failed.`,
+            outcome.errors,
+          )
+        : null;
+  } catch (error) {
+    const message = describe(error);
+    setNotice(message);
+    state.downloadProgress = failedProgress(message);
+  } finally {
+    downloading = false;
+    emit();
+  }
+}
+
 export async function setTheme(theme: string): Promise<void> {
   const recentColours =
     theme === ADAPTIVE_THEME
@@ -1422,9 +1547,20 @@ function watchSources(): void {
   });
   void listen<ImportProgress>(SOURCE_PROGRESS_EVENT, (event) => {
     state.importing = event.payload;
+    // A playlist download reports on this event too, so the sheet can follow it.
+    if (downloading) {
+      state.downloadProgress = event.payload;
+    }
     emit();
   }).catch(() => {
     // Not running inside Tauri, for example `npm run dev` in a browser.
+  });
+
+  void listen<ImportProgress>(GENERATE_PROGRESS_EVENT, (event) => {
+    state.generateProgress = event.payload;
+    emit();
+  }).catch(() => {
+    // Same as above.
   });
 
   void listen<ImportProgress>(LYRICS_PROGRESS_EVENT, (event) => {
@@ -1615,6 +1751,7 @@ export async function ensureLyrics(track: Track | undefined): Promise<void> {
 function applyPersisted(next: PersistedState): void {
   state.settings = next.settings ?? state.settings;
   state.playlists = next.playlists ?? [];
+  state.pendingById = indexPending(state.playlists);
   state.likes = new Set(next.likes ?? []);
   state.windowSlots = next.windowSlots ?? [];
   state.recentImports = next.recentImports ?? [];
@@ -1627,6 +1764,17 @@ function applyPersisted(next: PersistedState): void {
 
 function recomputeCollections(): void {
   state.collections = buildCollections(state.tracks, state.playlists, state.likes);
+}
+
+/** Every pending entry the playlists hold, keyed by id. */
+function indexPending(playlists: Playlist[]): Map<string, PendingTrack> {
+  const entries = new Map<string, PendingTrack>();
+  for (const playlist of playlists) {
+    for (const entry of playlist.pending ?? []) {
+      entries.set(entry.id, entry);
+    }
+  }
+  return entries;
 }
 
 function repairQueue(): void {

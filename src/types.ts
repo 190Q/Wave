@@ -26,11 +26,44 @@ export interface Track {
   peak: number | null;
 }
 
+export type PlaylistKind = "custom" | "generated";
+export type PlaylistMode = "taste" | "genre";
+
 export interface Playlist {
   id: string;
   name: string;
+  kind: PlaylistKind;
+  entries: string[];
   trackIds: string[];
+  pending: PendingTrack[];
   createdAt: number;
+}
+
+/** A song a generated playlist picked that has not been downloaded yet. */
+export interface PendingTrack {
+  id: string;
+  title: string;
+  artists: string[];
+  album: string;
+  albumArtist: string;
+  genres: string[];
+  isrc: string;
+  coverUrl: string | null;
+  releaseDate: string;
+  trackNumber: number | null;
+  discNumber: number | null;
+}
+
+export interface RecommendStatus {
+  enough: boolean;
+  plays: number;
+  artists: number;
+  note: string;
+}
+
+export interface GenerateOutcome {
+  playlistId: string;
+  state: PersistedState;
 }
 
 export interface Settings {
@@ -359,6 +392,9 @@ export interface ImportProgress {
     | "lyrics"
     | "covers"
     | "genres"
+    | "taste"
+    | "catalogue"
+    | "ranking"
     | "done"
     | "failed";
   /** Tracks handled so far, including the one underway. */
@@ -484,7 +520,14 @@ export interface LoudnessOutcome {
 
 export type RepeatMode = "off" | "all";
 
-export type CollectionKind = "all" | "liked" | "playlist" | "artist" | "album" | "genre";
+export type CollectionKind =
+  | "all"
+  | "liked"
+  | "playlist"
+  | "generated"
+  | "artist"
+  | "album"
+  | "genre";
 
 export interface Collection {
   id: string;
@@ -492,6 +535,7 @@ export interface Collection {
   name: string;
   subtitle: string;
   trackIds: string[];
+  entries: string[];
 }
 
 export interface LyricLine {

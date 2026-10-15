@@ -9,13 +9,16 @@ export const COLLECTION_FILTERS: CollectionFilter[] = ["all", "playlists", "arti
 
 export function buildCollections(tracks: Track[], playlists: Playlist[], likes: Set<string>): Collection[] {
   const collections: Collection[] = [];
+  const heldIds = new Set(tracks.map((track) => track.id));
 
+  const allIds = tracks.map((track) => track.id);
   collections.push({
     id: "all",
     kind: "all",
     name: "All songs",
     subtitle: songCount(tracks.length),
-    trackIds: tracks.map((track) => track.id),
+    trackIds: allIds,
+    entries: allIds,
   });
 
   const likedIds = tracks.filter((track) => likes.has(track.id)).map((track) => track.id);
@@ -25,53 +28,93 @@ export function buildCollections(tracks: Track[], playlists: Playlist[], likes: 
     name: "Liked Songs",
     subtitle: `Playlist, ${songCount(likedIds.length)}`,
     trackIds: likedIds,
+    entries: likedIds,
   });
 
   for (const playlist of playlists) {
-    const ids = playlist.trackIds.filter((id) => tracks.some((track) => track.id === id));
+    const ids = playlist.trackIds.filter((id) => heldIds.has(id));
+
+    if (playlist.kind === "generated") {
+      const entries = generatedEntries(playlist, heldIds);
+      collections.push({
+        id: playlist.id,
+        kind: "generated",
+        name: playlist.name,
+        subtitle: generatedSubtitle(entries, heldIds),
+        trackIds: ids,
+        entries,
+      });
+      continue;
+    }
+
     collections.push({
       id: playlist.id,
       kind: "playlist",
       name: playlist.name,
       subtitle: `Playlist, ${songCount(ids.length)}`,
       trackIds: ids,
+      entries: ids,
     });
   }
 
   // Untagged tracks are skipped entirely rather than filed under a guess.
   for (const [, group] of groupByArtist(tracks)) {
+    const ids = group.tracks.map((track) => track.id);
     collections.push({
       id: collectionId("artist", group.name),
       kind: "artist",
       name: group.name,
       subtitle: `Artist, ${songCount(group.tracks.length)}`,
-      trackIds: group.tracks.map((track) => track.id),
+      trackIds: ids,
+      entries: ids,
     });
   }
 
   const byAlbum = groupBy(tracks, (track) => track.album);
   for (const [album, grouped] of byAlbum) {
+    const ids = grouped.map((track) => track.id);
     collections.push({
       id: collectionId("album", album),
       kind: "album",
       name: album,
       subtitle: `Album, ${songCount(grouped.length)}`,
-      trackIds: grouped.map((track) => track.id),
+      trackIds: ids,
+      entries: ids,
     });
   }
 
   // A song with no genre tag is left out, the same way an untagged artist is.
   for (const [genre, grouped] of groupBy(tracks, (track) => track.genre)) {
+    const ids = grouped.map((track) => track.id);
     collections.push({
       id: collectionId("genre", genre),
       kind: "genre",
       name: genre,
       subtitle: `Genre, ${songCount(grouped.length)}`,
-      trackIds: grouped.map((track) => track.id),
+      trackIds: ids,
+      entries: ids,
     });
   }
 
   return collections;
+}
+
+/** A generated playlist's entries, keeping the ones the library or the pending list still holds. */
+function generatedEntries(playlist: Playlist, heldIds: Set<string>): string[] {
+  const pendingIds = new Set((playlist.pending ?? []).map((entry) => entry.id));
+  return (playlist.entries ?? playlist.trackIds).filter(
+    (id) => heldIds.has(id) || pendingIds.has(id),
+  );
+}
+
+/** `Generated, 50 songs, 47 to download`. */
+function generatedSubtitle(entries: string[], heldIds: Set<string>): string {
+  const parts = ["Generated", songCount(entries.length)];
+  const toDownload = entries.filter((id) => !heldIds.has(id)).length;
+  if (toDownload > 0) {
+    parts.push(`${toDownload} to download`);
+  }
+  return parts.join(", ");
 }
 
 /** Sorts an album the way the disc would have played. */
@@ -108,7 +151,7 @@ export function filterCollections(
         Number(isPinned(b.item)) - Number(isPinned(a.item)) ||
         b.score - a.score ||
         (sort === "size"
-          ? b.item.trackIds.length - a.item.trackIds.length
+          ? b.item.entries.length - a.item.entries.length
           : a.item.name.localeCompare(b.item.name)),
     )
     .map((entry) => entry.item);
@@ -127,7 +170,7 @@ function matchesFilter(collection: Collection, filter: CollectionFilter): boolea
     case "all":
       return true;
     case "playlists":
-      return collection.kind === "playlist";
+      return collection.kind === "playlist" || collection.kind === "generated";
     case "artists":
       return collection.kind === "artist";
     case "albums":

@@ -116,6 +116,12 @@ newer (Ubuntu 22.04+, Debian 12+, Fedora 36+ and so on) and are x86_64 only.
   playlist, album or track via `yt-dlp` + `ffmpeg`, tags the files, and skips
   anything you already have. Spotify needs a developer app of your own; Deezer
   needs nothing but the two download tools.
+- **Generated playlists.** Ask for a playlist and Wave fills it for you: 50 songs
+  picked from Deezer's public catalogue to match what you have been listening
+  to, or to match one genre. The picks stay undownloaded until you ask for them,
+  and land in their places in the playlist when they do. It reads the same local
+  listening record as Wave Swell, so it needs a record to work from, and it
+  needs `yt-dlp` and `ffmpeg` to download anything.
 - **Wave Swell.** A pinned entry in the library that opens a reading of your
   listening: minutes listened, split by music, audiobooks and podcasts; top
   songs, artists, genres and albums; and how your top five artists moved across

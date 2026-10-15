@@ -9,7 +9,9 @@ use crate::library::CONFIG_DIR;
 use crate::state::Playlist;
 
 pub const CATALOG_FILE: &str = "library.db";
+
 const SCHEMA_VERSION: i64 = 1;
+
 pub const LAYOUT_VERSION_KEY: &str = "layout_version";
 pub const LAYOUT_VERSION: &str = "2";
 
@@ -69,14 +71,12 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 "#;
 
-/// One row of `tracks`, as the database holds it. The wire type the UI sees is
-/// [`crate::library::Track`], which is built from this.
 #[derive(Debug, Clone, Default)]
 pub struct TrackRow {
     pub id: String,
     /// The audio file, relative to the library root.
     pub rel_path: String,
-    /// The name the file arrived under, kept only to describe it to the user.
+    /// The name the file arrived under. Never used to identify anything.
     pub original_name: String,
     pub bytes: u64,
     pub modified_ms: i64,
@@ -94,24 +94,19 @@ pub struct TrackRow {
     pub bitrate: Option<u32>,
     pub sample_rate: Option<u32>,
     pub has_embedded_art: bool,
-    /// The cover beside the audio, relative to the library root.
     pub cover_path: Option<String>,
-    /// The lyrics beside the audio, relative to the library root.
     pub lyrics_path: Option<String>,
     pub lufs: Option<f32>,
     pub peak: Option<f32>,
-    /// The size the loudness reading was taken from, so a changed file can be
-    /// measured again.
+    /// The size the loudness reading was taken from.
     pub loudness_bytes: Option<u64>,
-    /// True when the audio file is gone. The row is kept, so likes, playlists
-    /// and history survive a song being moved away or deleted outside Wave.
+    /// Set when the audio is not where the row expects it. The row stays, so
+    /// likes, playlists and history survive a file being moved away.
     pub missing: bool,
     pub added_at: i64,
     pub updated_at: i64,
 }
 
-/// The library's own records. One connection, behind a lock: every command that
-/// touches the library goes through here.
 pub struct Catalog {
     root: PathBuf,
     path: PathBuf,
@@ -119,7 +114,6 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// Opens the catalog for a library root, creating it on first use.
     pub fn open(root: &Path) -> Result<Self, String> {
         let dir = root.join(CONFIG_DIR);
         std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
@@ -140,6 +134,8 @@ impl Catalog {
         Ok(catalog)
     }
 
+    /// A throwaway catalog, so the app still runs when the real one cannot be
+    /// opened. Nothing written to it is kept.
     pub fn in_memory() -> Result<Self, String> {
         let connection =
             Connection::open_in_memory().map_err(|e| format!("could not open a catalog: {e}"))?;
@@ -181,12 +177,10 @@ impl Catalog {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// The library this catalog describes.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// The size of the database file, for the settings panel.
     pub fn file_size(&self) -> u64 {
         std::fs::metadata(&self.path).map(|meta| meta.len()).unwrap_or(0)
     }
@@ -212,7 +206,6 @@ impl Catalog {
             .map_err(|e| format!("could not record {key}: {e}"))
     }
 
-    /// Every song whose audio is where the catalog expects it.
     pub fn tracks(&self) -> Result<Vec<TrackRow>, String> {
         self.query_tracks(
             &format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE missing = 0"),
@@ -230,6 +223,7 @@ impl Catalog {
             .next())
     }
 
+    /// The row holding this audio, preferring one whose file is still there.
     pub fn find_by_hash(&self, hash: &str) -> Result<Option<TrackRow>, String> {
         Ok(self
             .query_tracks(
@@ -242,7 +236,9 @@ impl Catalog {
             .into_iter()
             .next())
     }
-    
+
+    /// Songs sharing these tags, which is what makes an import a near miss
+    /// rather than a duplicate.
     pub fn find_by_tags(&self, title: &str, artist: &str, album: &str) -> Result<Vec<TrackRow>, String> {
         self.query_tracks(
             &format!(
@@ -251,11 +247,7 @@ impl Catalog {
                    AND lower(trim(coalesce(artist, ''))) = ?2 \
                    AND lower(trim(coalesce(album, ''))) = ?3"
             ),
-            params![
-                fold(title),
-                fold(artist),
-                fold(album),
-            ],
+            params![fold(title), fold(artist), fold(album)],
         )
     }
 
@@ -294,6 +286,8 @@ impl Catalog {
             .map_err(|e| format!("could not finish a catalog write: {e}"))
     }
 
+    /// Every song is marked gone, then each one the scan found is written back,
+    /// in one transaction. A song the scan did not see keeps its row.
     pub fn sync_scan(&self, rows: &[TrackRow]) -> Result<(), String> {
         let mut connection = self.guard();
         let transaction = connection
@@ -343,7 +337,6 @@ impl Catalog {
             .map_err(|e| format!("could not save a loudness reading: {e}"))
     }
 
-    /// Removes songs outright: the rows, and their places in every playlist.
     pub fn delete_tracks(&self, ids: &[String]) -> Result<(), String> {
         if ids.is_empty() {
             return Ok(());
@@ -368,6 +361,7 @@ impl Catalog {
             .map_err(|e| format!("could not finish a catalog write: {e}"))
     }
 
+    /// Songs present, and rows waiting for their audio to come back.
     pub fn counts(&self) -> (usize, usize) {
         let connection = self.guard();
         let present: i64 = connection
@@ -379,8 +373,7 @@ impl Catalog {
         (present as usize, missing as usize)
     }
 
-    /// Every playlist, in name order, each holding only the songs the library
-    /// still has.
+    /// Every playlist, each holding only the songs the library still has.
     pub fn playlists(&self) -> Result<Vec<Playlist>, String> {
         let connection = self.guard();
 
@@ -397,7 +390,6 @@ impl Catalog {
             }
         }
 
-        // One query for every playlist's songs, rather than one per playlist.
         let mut contents: HashMap<String, Vec<String>> = HashMap::new();
         {
             let mut statement = connection
@@ -432,6 +424,8 @@ impl Catalog {
         Ok(playlists)
     }
 
+    /// Names are not identities any more, but two playlists nobody can tell
+    /// apart are still worth refusing.
     pub fn playlist_name_taken(&self, name: &str, except: Option<&str>) -> bool {
         self.guard()
             .query_row(
@@ -473,13 +467,15 @@ impl Catalog {
     }
 
     pub fn delete_playlist(&self, id: &str) -> Result<(), String> {
-        // The entries go with it: the table is declared with `ON DELETE CASCADE`.
+        // The entries go with it, through `ON DELETE CASCADE`.
         self.guard()
             .execute("DELETE FROM playlists WHERE id = ?1", params![id])
             .map(|_| ())
             .map_err(|e| format!("could not delete the playlist: {e}"))
     }
 
+    /// The songs a playlist holds, including any the library no longer has.
+    /// Only the editing commands use this; readers get the filtered list.
     pub fn playlist_entries(&self, id: &str) -> Result<Vec<String>, String> {
         let connection = self.guard();
         let mut statement = connection
@@ -496,7 +492,6 @@ impl Catalog {
         Ok(tracks)
     }
 
-    /// Replaces a playlist's contents with exactly these songs, in this order.
     pub fn set_playlist_entries(&self, id: &str, track_ids: &[String]) -> Result<(), String> {
         let mut connection = self.guard();
         let transaction = connection
@@ -528,7 +523,6 @@ impl Catalog {
             .map_err(|e| format!("could not finish a catalog write: {e}"))
     }
 
-    /// Adds songs to the end of a playlist, ignoring ones already in it.
     pub fn add_to_playlist(&self, id: &str, track_ids: &[String]) -> Result<(), String> {
         let mut entries = self.playlist_entries(id)?;
         for track_id in track_ids {
@@ -587,8 +581,7 @@ impl Catalog {
     }
 }
 
-/// Folds a tag down to what makes two songs the same song: case and stray
-/// spacing are not differences.
+/// Case and stray spacing are not differences between two songs.
 fn fold(value: &str) -> String {
     value
         .split_whitespace()
@@ -597,6 +590,8 @@ fn fold(value: &str) -> String {
         .to_lowercase()
 }
 
+/// One row written. The loudness columns are absent from both the insert and the
+/// update, so writing a row can never wipe a reading taken earlier.
 fn write_row(transaction: &rusqlite::Transaction<'_>, row: &TrackRow) -> Result<(), String> {
     transaction
         .execute(
@@ -706,7 +701,6 @@ mod tests {
         dir
     }
 
-    /// The one playlist the catalog holds under an id.
     fn one_playlist(catalog: &Catalog, id: &str) -> Playlist {
         catalog
             .playlists()
@@ -763,7 +757,6 @@ mod tests {
         assert!(!read.missing);
         assert_eq!(catalog.counts(), (1, 0));
 
-        // Reopening finds the same library, so nothing is rebuilt on launch.
         drop(catalog);
         let again = Catalog::open(&root).unwrap();
         assert_eq!(again.tracks().unwrap().len(), 1);
@@ -776,7 +769,6 @@ mod tests {
         catalog.upsert_track(&song("one", "One", "h")).unwrap();
         catalog.set_loudness("one", -9.5, 0.98, 1024).unwrap();
 
-        // The scan writes the row again, with no reading of its own.
         catalog.upsert_track(&song("one", "One", "h")).unwrap();
 
         let read = catalog.track("one").unwrap().unwrap();
@@ -809,12 +801,9 @@ mod tests {
         assert!(catalog.find_by_hash("hash-one").unwrap().is_some());
         assert!(catalog.find_by_hash("nothing").unwrap().is_none());
 
-        // Tags are matched folded, so case and stray spacing do not hide a song.
-        let found = catalog
-            .find_by_tags("  hey   jude ", "AN ARTIST", "")
-            .unwrap();
+        let found = catalog.find_by_tags("  hey   jude ", "AN ARTIST", "").unwrap();
         assert_eq!(found.len(), 1);
-        // A different artist is a different song, which is the whole point.
+        // A different artist is a different song.
         assert!(catalog
             .find_by_tags("Hey Jude", "Someone Else", "")
             .unwrap()
@@ -840,12 +829,10 @@ mod tests {
         assert_eq!(read.track_ids, vec!["three", "one", "two"]);
         assert_eq!(read.name, "A playlist");
 
-        // Adding is idempotent, and lands at the end.
         catalog.add_to_playlist(&id, &["two".into(), "one".into()]).unwrap();
         assert_eq!(one_playlist(&catalog, &id).track_ids, vec!["three", "one", "two"]);
 
-        // A song the library no longer has disappears from the list but keeps
-        // its place, so it comes back if the audio does.
+        // A song the library no longer has leaves the list but keeps its place.
         catalog.sync_scan(&[]).unwrap();
         catalog.upsert_track(&song("one", "one", "one")).unwrap();
         assert_eq!(one_playlist(&catalog, &id).track_ids, vec!["one"]);
@@ -882,7 +869,6 @@ mod tests {
         catalog.delete_playlist(&id).unwrap();
         assert!(catalog.playlists().unwrap().is_empty());
         assert!(catalog.playlist_entries(&id).unwrap().is_empty());
-        // The song itself is untouched.
         assert!(catalog.track("one").unwrap().is_some());
     }
 

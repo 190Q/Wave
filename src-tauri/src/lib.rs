@@ -108,8 +108,6 @@ pub fn run() {
         .setup(|app| {
             let store = state::Store::load(app.handle());
             app.manage(store);
-            // Every song, its cover, its lyrics and every playlist live here.
-            app.manage(open_catalog(app.handle()));
 
             let analytics = match analytics::Analytics::open(app.handle()) {
                 Ok(analytics) => analytics,
@@ -119,6 +117,9 @@ pub fn run() {
                 }
             };
             app.manage(analytics);
+
+            // Last, because the upgrade renumbers both of the above.
+            app.manage(open_catalog(app.handle()));
             if let Ok(root) = library::library_root(app.handle()) {
                 if let Err(error) = app.asset_protocol_scope().allow_directory(&root, true) {
                     eprintln!("could not allow the library on the asset protocol: {error}");

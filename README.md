@@ -88,7 +88,7 @@ newer (Ubuntu 22.04+, Debian 12+, Fedora 36+ and so on) and are x86_64 only.
 
 - **Local library.** Import a folder and Wave copies the audio into its own
   library, reads the tags with [`lofty`](https://github.com/Serial-ATA/lofty-rs),
-  and extracts embedded artwork.
+  and files each song in a directory of its own.
 - **Formats.** `mp3`, `flac`, `m4a`, `m4b`, `aac`, `ogg`, `opus`, `wav`, `aiff`,
   `aif`, `wma`. Artwork: `jpg`, `jpeg`, `png`, `webp`, `gif`, `bmp`. Lyrics:
   `lrc`.

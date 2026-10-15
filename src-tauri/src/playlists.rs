@@ -3,7 +3,6 @@ use tauri::{AppHandle, Manager, Runtime, State};
 use crate::catalog::Catalog;
 use crate::state::{PersistedState, Store};
 
-/// Re-reads every playlist into the cached state and returns the state.
 pub fn refresh<R: Runtime>(app: &AppHandle<R>, store: &Store) -> PersistedState {
     let playlists = app
         .try_state::<Catalog>()
@@ -13,7 +12,8 @@ pub fn refresh<R: Runtime>(app: &AppHandle<R>, store: &Store) -> PersistedState 
     store.update(|state| state.playlists = playlists)
 }
 
-
+/// Creates a playlist and fills it, for the imports that already know what
+/// belongs in it.
 pub fn write<R: Runtime>(
     app: &AppHandle<R>,
     name: &str,

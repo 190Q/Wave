@@ -16,10 +16,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::catalog::{Catalog, TrackRow};
 use crate::library;
 
-/// Follows one loudness pass, one song at a time.
 pub const PROGRESS_EVENT: &str = "loudness-scan";
 
-/// One song's reading, sent as soon as it is taken.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoudnessUpdate {
@@ -35,17 +33,20 @@ pub struct LoudnessUpdate {
     pub failures: Vec<String>,
 }
 
-/// How a loudness pass went.
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoudnessOutcome {
-    /// Measured this time.
     pub measured: usize,
-    /// Left alone, because the library already had a reading for them.
     pub skipped: usize,
     pub failures: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Measurement {
+    pub lufs: f32,
+    pub peak: f32,
+    pub bytes: u64,
+}
 
 pub fn measure(path: &Path) -> Result<Measurement, String> {
     let bytes = fs::metadata(path)
@@ -166,13 +167,7 @@ pub fn measure(path: &Path) -> Result<Measurement, String> {
     })
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Measurement {
-    pub lufs: f32,
-    pub peak: f32,
-    pub bytes: u64,
-}
-
+/// Songs whose file is not the one the library measured last time.
 fn pending<'a>(rows: &[&'a TrackRow]) -> Vec<&'a TrackRow> {
     rows.iter()
         .copied()
@@ -240,7 +235,8 @@ fn analyse(app: &AppHandle, track_ids: &[String]) -> LoudnessOutcome {
 
 #[tauri::command]
 pub async fn analyse_loudness(app: AppHandle, track_ids: Vec<String>) -> LoudnessOutcome {
-
+    // The catalog is reached through the handle inside the blocking closure: a
+    // state guard cannot cross an await.
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || analyse(&handle, &track_ids))
         .await

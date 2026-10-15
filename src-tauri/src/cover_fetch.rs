@@ -179,7 +179,6 @@ fn embedded(track: &Track) -> Option<Vec<u8>> {
     tag.pictures().first().map(|picture| picture.data().to_vec())
 }
 
-/// Files the cover inside the song's own directory and links it in the catalog.
 fn write_cover(root: &Path, catalog: &Catalog, track: &Track, bytes: &[u8]) -> Result<(), String> {
     // The extension follows the bytes, so the image is served as what it is.
     let (extension, mime) = if is_png(bytes) {

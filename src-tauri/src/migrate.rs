@@ -13,7 +13,6 @@ use crate::library::{
 };
 use crate::state::{Playlist, Store};
 
-/// The old library's own records, all of which the catalog replaces.
 const LEGACY_INDEX_FILE: &str = "index.json";
 const LEGACY_LOUDNESS_FILE: &str = "loudness.json";
 const LEGACY_PLAYLISTS_DIR: &str = "playlists";
@@ -22,7 +21,6 @@ const LEGACY_LYRICS_DIR: &str = "lyrics";
 
 const JOURNAL_FILE: &str = "migration.json";
 
-/// The old index: a song's path, and the copies filed for it.
 #[derive(Debug, Default, Deserialize)]
 struct LegacyIndex {
     #[serde(default)]
@@ -31,7 +29,6 @@ struct LegacyIndex {
     lyrics: HashMap<String, String>,
 }
 
-/// The old loudness readings, by song path.
 #[derive(Debug, Default, Deserialize)]
 struct LegacyLoudness {
     #[serde(default)]
@@ -44,32 +41,26 @@ struct Reading {
     peak: f32,
 }
 
-/// One song's move, recorded so the upgrade can be picked up again.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PlannedMove {
     /// The id the old library minted from the song's path.
     old_id: String,
-    /// The id the song has now.
     new_id: String,
-    /// Where the audio is, relative to the library root.
+    /// Library-relative, as is `to`.
     from: String,
-    /// Where it is going, relative to the library root.
     to: String,
-    /// The name the file arrived under.
     name: String,
-    /// True when another file already holds this audio, so there is nothing to
-    /// move and this song's history belongs on that one.
+    /// Another file already holds this audio, so there is nothing to move and
+    /// this song's history belongs on that one.
     duplicate: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Journal {
-    /// Where the old metadata was copied before anything was touched.
     backup: String,
     moves: Vec<PlannedMove>,
 }
 
-/// What the upgrade did.
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MigrationReport {
@@ -77,13 +68,12 @@ pub struct MigrationReport {
     pub covers: usize,
     pub lyrics: usize,
     pub playlists: usize,
-    /// Where the old records were put, in case anything has to be checked.
+    /// Where the old records were put.
     pub backup: String,
     pub failures: Vec<String>,
 }
 
-/// Upgrades a library built by an older version, once. Returns `None` when
-/// there is nothing to do.
+/// Returns `None` when there was nothing to upgrade.
 pub fn run(
     app: &AppHandle,
     catalog: &Catalog,
@@ -117,8 +107,6 @@ pub fn upgrade(
             let index_exists = root.join(CONFIG_DIR).join(LEGACY_INDEX_FILE).is_file();
 
             if loose.is_empty() && !index_exists {
-                // Nothing to upgrade: either a library that has never held a
-                // song, or one already in the new shape.
                 catalog.set_meta(LAYOUT_VERSION_KEY, LAYOUT_VERSION)?;
                 return Ok(None);
             }
@@ -134,8 +122,7 @@ pub fn upgrade(
 
     let report = apply(root, catalog, state_file, &journal, remap)?;
 
-    // The layout is recorded before the journal goes, so a crash in between
-    // leaves a journal that is simply ignored.
+    // Recorded before the journal goes, so a crash in between is harmless.
     catalog.set_meta(LAYOUT_VERSION_KEY, LAYOUT_VERSION)?;
     let _ = fs::remove_file(&journal_path);
 
@@ -162,17 +149,14 @@ fn apply(
     let index = read_legacy_index(root);
     let loudness = read_legacy_loudness(root);
 
-    // Where each song's history now belongs, old id to new id.
     let mut ids: HashMap<String, String> = HashMap::new();
     for planned in &journal.moves {
         ids.insert(planned.old_id.clone(), planned.new_id.clone());
     }
 
-    // The move comes first, so a song is described from where it actually is.
     for planned in &journal.moves {
         if planned.duplicate {
-            // The audio is already here under another name: this song's likes,
-            // playlists and history belong on the copy that was kept.
+            // The copy that was kept owns this song's history.
             let stray = root.join(&planned.from);
             if stray.is_file() {
                 let _ = move_file(&stray, &backup.join(&planned.name));
@@ -218,16 +202,12 @@ fn apply(
         report.playlists = playlists.len();
     }
 
-    // Everything that was filed by name is renumbered, so likes, artwork
-    // colours, the queue and the listening record survive the upgrade.
     remap(&ids, &playlist_ids)?;
 
     sweep(root, &backup)?;
     Ok(report)
 }
 
-/// Copies the records the catalog replaces into the backup folder, before
-/// anything is moved or deleted.
 fn back_up_records(root: &Path, backup: &Path, state: Option<&Path>) -> Result<(), String> {
     for name in [LEGACY_INDEX_FILE, LEGACY_LOUDNESS_FILE] {
         let from = root.join(CONFIG_DIR).join(name);
@@ -257,8 +237,7 @@ fn back_up_records(root: &Path, backup: &Path, state: Option<&Path>) -> Result<(
     Ok(())
 }
 
-/// Files sitting directly in the songs folder, which is where the old layout
-/// kept them.
+/// Files sitting directly in the songs folder, where the old layout kept them.
 fn loose_songs(root: &Path) -> Result<Vec<PathBuf>, String> {
     let dir = root.join(SONGS_DIR);
     let Ok(entries) = fs::read_dir(&dir) else {
@@ -278,7 +257,6 @@ fn loose_songs(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(found)
 }
 
-/// Works out where every loose song is going, before anything moves.
 fn plan(loose: &[PathBuf]) -> Result<Vec<PlannedMove>, String> {
     let mut taken: HashSet<String> = HashSet::new();
     let mut moves = Vec::new();
@@ -295,8 +273,7 @@ fn plan(loose: &[PathBuf]) -> Result<Vec<PlannedMove>, String> {
             continue;
         };
 
-        // The old id was a hash of the path the song lived at, which is exactly
-        // what has to be reproduced to find its likes and its playlists.
+        // Reproduced so the song's likes and playlists can still be found.
         let from = format!("{SONGS_DIR}/{name}");
         let old_id = identity::legacy_id(&from);
 
@@ -320,7 +297,6 @@ fn plan(loose: &[PathBuf]) -> Result<Vec<PlannedMove>, String> {
     Ok(moves)
 }
 
-/// Files the cover the old index linked, beside the song it belongs to.
 fn copy_cover(index: &LegacyIndex, root: &Path, planned: &PlannedMove) -> Result<bool, String> {
     let Some(recorded) = index.songs.get(&planned.from) else {
         return Ok(false);
@@ -338,8 +314,7 @@ fn copy_cover(index: &LegacyIndex, root: &Path, planned: &PlannedMove) -> Result
         .to_lowercase();
     let to = library::cover_path(root, &planned.new_id, &extension);
 
-    // Copied rather than moved: the old index could point two songs at one
-    // cover, and whatever is left behind goes to the backup.
+    // Copied, not moved: the index could point two songs at one cover.
     fs::copy(&from, &to).map_err(|e| format!("could not copy {}: {e}", from.display()))?;
     Ok(true)
 }
@@ -359,8 +334,8 @@ fn copy_lyrics(index: &LegacyIndex, root: &Path, planned: &PlannedMove) -> Resul
     Ok(true)
 }
 
-/// The old playlist files, with their paths turned into the ids the songs have
-/// now. Returns the playlists and the name-to-id map the queue is renumbered by.
+/// Also returns the old names mapped to the ids they have now, which is what a
+/// queue that was playing a playlist is renumbered by.
 fn legacy_playlists(
     root: &Path,
     ids: &HashMap<String, String>,
@@ -432,14 +407,12 @@ fn legacy_playlists(
     Ok((playlists, names))
 }
 
-/// The id a playlist from the old library gets. Derived from its name, so a
-/// migration that is run twice does not leave two copies of it behind.
+/// Derived from the name, so a re-run does not leave two copies behind.
 fn playlist_id(name: &str) -> String {
     identity::id_for_hash(&format!("wave:playlist:{}", name.to_lowercase()))
 }
 
-/// Puts whatever is left of the old layout into the backup, so nothing is lost
-/// even if the index did not mention it.
+/// Puts whatever is left of the old layout into the backup.
 fn sweep(root: &Path, backup: &Path) -> Result<(), String> {
     let orphans = backup.join("orphans");
 
@@ -502,7 +475,6 @@ fn write_journal(path: &Path, journal: &Journal) -> Result<(), String> {
     fs::write(path, json).map_err(|e| format!("could not write {}: {e}", path.display()))
 }
 
-/// Where the old records are kept, named by the moment the upgrade ran.
 fn backup_dir(root: &Path) -> Result<PathBuf, String> {
     let dir = root
         .join(CONFIG_DIR)
@@ -511,8 +483,8 @@ fn backup_dir(root: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// A rename where that works, and a copy where it does not, so a library on
-/// another volume is still upgradable.
+/// A rename where that works, a copy where it does not, so a library on another
+/// volume is still upgradable.
 fn move_file(from: &Path, to: &Path) -> Result<(), String> {
     if fs::rename(from, to).is_ok() {
         return Ok(());

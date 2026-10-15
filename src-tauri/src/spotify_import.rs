@@ -50,7 +50,7 @@ fn run_inner(
     let Resolved {
         reference,
         name,
-        tracks,
+        mut tracks,
         existing,
     } = resolve(app, url, report)?;
 
@@ -65,13 +65,19 @@ fn run_inner(
         tracks.len() - duplicates
     };
 
+    // Only the songs that are about to be downloaded are looked up, so a link
+    // that is mostly already in the library costs almost nothing.
+    let pending = to_look_up(&mut tracks, &existing, download_duplicates);
+    if !pending.is_empty() {
+        report.phase("genres", &genre_message(pending.len()));
+        genre_fetch::fill(Some(report), pending);
+    }
+
     let staging = staging_dir(app, &reference.id)?;
     report.phase("downloading", &download_message(todo, duplicates));
     report.count(tracks.len());
 
-    // What the playlist will point at, kept in the order Spotify gave. Every
-    // track is fetched into a directory of its own, so two songs with the same
-    // title cannot land on each other while they are on their way in.
+    // Kept in the order Spotify gave.
     let mut entries: Vec<Entry> = Vec::new();
 
     for (index, meta) in tracks.iter().enumerate() {
@@ -142,6 +148,26 @@ fn download_message(todo: usize, duplicates: usize) -> String {
     format!("Downloading {todo} tracks. {duplicates} already in your library.")
 }
 
+/// The songs a genre has to be looked up for: everything about to be
+/// downloaded, and nothing the library already holds.
+fn to_look_up<'a>(
+    tracks: &'a mut [TrackMeta],
+    existing: &HashMap<String, String>,
+    download_duplicates: bool,
+) -> Vec<&'a mut TrackMeta> {
+    tracks
+        .iter_mut()
+        .filter(|meta| download_duplicates || !existing.contains_key(&meta_key(meta)))
+        .collect()
+}
+
+fn genre_message(todo: usize) -> String {
+    if todo == 1 {
+        return "Looking up the genre of 1 track.".to_string();
+    }
+    format!("Looking up the genre of {todo} tracks.")
+}
+
 /// The link's tracks, plus what the library already holds.
 struct Resolved {
     reference: SpotifyRef,
@@ -162,7 +188,7 @@ fn resolve(app: &AppHandle, url: &str, report: &mut Reporter) -> Result<Resolved
     let token = spotify::access_token(app, &env)?;
 
     report.phase("resolving", "Reading the playlist from Spotify.");
-    let (name, mut tracks) = match reference.kind {
+    let (name, tracks) = match reference.kind {
         RefKind::Playlist => spotify::playlist_tracks(&token, &reference.id)?,
         RefKind::Track => {
             let track = spotify::single_track(&token, &reference.id)?;
@@ -174,9 +200,8 @@ fn resolve(app: &AppHandle, url: &str, report: &mut Reporter) -> Result<Resolved
         return Err("that Spotify link has no tracks in it".to_string());
     }
 
-    report.phase("genres", "Looking up the genre of each track.");
-    genre_fetch::fill(Some(report), &mut tracks);
-
+    // The genres are left to the import, which knows which of these it will
+    // actually download. Planning only needs to read the link.
     Ok(Resolved {
         reference,
         name,
@@ -358,6 +383,42 @@ mod tests {
             download_message(28, 12),
             "Downloading 28 tracks. 12 already in your library."
         );
+    }
+
+    #[test]
+    fn says_how_many_genres_it_will_look_up() {
+        assert_eq!(genre_message(1), "Looking up the genre of 1 track.");
+        assert_eq!(genre_message(12), "Looking up the genre of 12 tracks.");
+    }
+
+    #[test]
+    fn looks_a_genre_up_only_for_the_songs_the_library_is_missing() {
+        let mut tracks = vec![
+            TrackMeta {
+                title: "Hey Jude".to_string(),
+                artists: vec!["The Beatles".to_string()],
+                album: "Past Masters".to_string(),
+                ..TrackMeta::default()
+            },
+            TrackMeta {
+                title: "Let It Be".to_string(),
+                artists: vec!["The Beatles".to_string()],
+                album: "Let It Be".to_string(),
+                ..TrackMeta::default()
+            },
+        ];
+
+        let existing = HashMap::from([(
+            track_key("Hey Jude", "The Beatles", "Past Masters"),
+            "id".to_string(),
+        )]);
+
+        let pending = to_look_up(&mut tracks, &existing, false);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].title, "Let It Be");
+
+        // Asked for again, a song the library holds is looked up like any other.
+        assert_eq!(to_look_up(&mut tracks, &existing, true).len(), 2);
     }
 
     #[test]

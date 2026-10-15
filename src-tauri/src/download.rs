@@ -49,9 +49,8 @@ fn yt_dlp_command(yt_dlp: &YtDlp) -> Command {
     }
 }
 
-/// Downloads one track into `out_dir`, which the caller has given to this track
-/// alone, and tags it. `false` means the file was already there, so a re-run
-/// picks up where the last one stopped.
+/// `false` means the file was already there, so a re-run picks up where the last
+/// one stopped.
 pub fn download(tools: &Tools, meta: &TrackMeta, out_dir: &Path) -> Result<bool, String> {
     let target = out_dir.join(format!("{AUDIO_STEM}.mp3"));
 
@@ -107,8 +106,7 @@ pub fn download(tools: &Tools, meta: &TrackMeta, out_dir: &Path) -> Result<bool,
         }
     };
 
-    // yt-dlp can settle on a different name, so the file is put where the
-    // caller expects it.
+    // yt-dlp can settle on a different name.
     let path = if path == target {
         path
     } else {
@@ -134,9 +132,8 @@ fn search_query(meta: &TrackMeta) -> String {
     )
 }
 
-/// The `-o` template for a target path, with any `%` doubled. yt-dlp reads `%`
-/// as a template, so a path containing one — a folder the user chose, or a title
-/// — would otherwise swallow the `%(ext)s` that fills in the format.
+/// Any `%` is doubled: yt-dlp reads it as a template, so a path containing one
+/// would otherwise swallow the `%(ext)s` that fills in the format.
 fn output_template(target: &Path) -> String {
     let stem = escape(
         &target

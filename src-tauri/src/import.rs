@@ -17,6 +17,9 @@ use crate::playlists;
 use crate::state::{PersistedState, Store};
 
 const COPY_BUFFER: usize = 128 * 1024;
+
+/// Where a song sits while it is being hashed, so nothing lands in the library
+/// until it is known what it is.
 const STAGING_DIR: &str = "staging";
 
 #[derive(Debug, Serialize)]
@@ -25,27 +28,27 @@ pub struct ImportOutcome {
     pub songs: usize,
     pub images: usize,
     pub lyrics: usize,
-    /// Files in the folder that were not audio.
     pub skipped: usize,
-    /// Songs skipped because the library already holds this exact audio.
+    /// Skipped because the library already holds this exact audio.
     pub duplicates: usize,
+    /// Added even though something else shares their title, artist and album.
     pub similar: usize,
     pub playlist: Option<String>,
     pub errors: Vec<String>,
     pub state: PersistedState,
 }
 
+/// An import, plus which song each source file became. Only the callers that
+/// write their own playlist need the ids.
 pub struct Imported {
     pub outcome: ImportOutcome,
     pub by_source: HashMap<String, String>,
 }
 
-/// What happened to one file.
 enum Placed {
     /// The library already held this audio, so nothing was written.
     Duplicate,
     Added {
-        /// Something else in the library shares this song's tags.
         similar: bool,
         cover: bool,
         lyrics: bool,
@@ -187,7 +190,6 @@ pub fn import_into_library(
     Ok(Imported { outcome, by_source })
 }
 
-/// Brings one file into the library, and says which song it became.
 fn import_one(
     root: &Path,
     catalog: &Catalog,
@@ -202,10 +204,11 @@ fn import_one(
         .map(|value| value.to_lowercase())
         .ok_or_else(|| "that file has no extension".to_string())?;
 
-    // Copied and hashed in one pass: a song is read once however large it is.
     let staged = staging_path(root, &extension)?;
     let hash = copy_and_hash(source, &staged)?;
 
+    // The same audio is the same song. A row whose file is gone is adopted
+    // instead, so a song deleted outside Wave comes back to its likes.
     let known = catalog.find_by_hash(&hash)?;
     if let Some(row) = &known {
         if !row.missing {
@@ -226,6 +229,8 @@ fn import_one(
     }
     move_file(&staged, &target)?;
 
+    // Covers and lyrics are matched by name here and only here: this is a folder
+    // Wave has never seen, and its file names are all there is to go on.
     let stem = library::file_stem_lower(source);
     let cover = match artwork_index.resolve(&stem, file_name) {
         Some(image) => {
@@ -256,6 +261,8 @@ fn import_one(
     let row = library::describe(root, &id, &target, file_name)?;
     catalog.upsert_track(&row)?;
 
+    // Another recording of the same song is not a duplicate, but it is worth
+    // saying so rather than letting it look like one.
     let near = catalog
         .find_by_tags(
             &row.title,
@@ -303,6 +310,8 @@ fn copy_and_hash(from: &Path, to: &Path) -> Result<String, String> {
     Ok(hasher.finish())
 }
 
+/// A rename where that works, and a copy where it does not, so a library on
+/// another volume is still importable.
 fn move_file(from: &Path, to: &Path) -> Result<(), String> {
     if fs::rename(from, to).is_ok() {
         return Ok(());
@@ -312,13 +321,13 @@ fn move_file(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Where a file waits while it is being hashed.
 fn staging_path(root: &Path, extension: &str) -> Result<PathBuf, String> {
     let dir = root.join(CONFIG_DIR).join(STAGING_DIR);
     fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     Ok(dir.join(format!("{}.{extension}", identity::new_id())))
 }
 
+/// Drops whatever a previous import left behind.
 fn clear_staging(root: &Path) {
     let dir = root.join(CONFIG_DIR).join(STAGING_DIR);
     let Ok(entries) = fs::read_dir(&dir) else {
@@ -329,7 +338,6 @@ fn clear_staging(root: &Path) {
     }
 }
 
-/// Adds an import to the history the dialog shows.
 pub fn remember_import(app: &AppHandle, source: &str, name: &str, outcome: &ImportOutcome) {
     let mut parts = vec![format!(
         "{} song{}",
@@ -356,7 +364,6 @@ pub fn remember_import(app: &AppHandle, source: &str, name: &str, outcome: &Impo
     );
 }
 
-/// The `.lrc` sitting next to a song, matching how the scanner looks for lyrics.
 fn sidecar_beside(song: &Path) -> Option<PathBuf> {
     let candidate = song.with_extension("lrc");
     candidate.is_file().then_some(candidate)
@@ -397,7 +404,6 @@ mod tests {
             matched(&index, "15 step", "15 Step.mp3"),
             Some("15 Step.lrc".to_string())
         );
-        // An `artist - song` name still matches the song alone.
         assert_eq!(
             matched(
                 &index,
@@ -406,7 +412,6 @@ mod tests {
             ),
             Some("A Tout Le Monde - Remastered 2004.lrc".to_string())
         );
-        // Anything that is not a `.lrc` is left alone.
         assert_eq!(matched(&index, "notes", "notes.txt"), None);
         assert_eq!(matched(&index, "missing", "Missing.mp3"), None);
     }
@@ -450,7 +455,6 @@ mod tests {
         clear_staging(&root);
 
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
-        // A library that has never staged anything is not an error.
         clear_staging(&scratch("staging-fresh"));
     }
 

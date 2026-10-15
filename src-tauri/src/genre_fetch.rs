@@ -257,13 +257,17 @@ impl Breaker {
     }
 }
 
-pub fn fill(report: Option<&mut Reporter>, tracks: &mut [TrackMeta]) -> usize {
+/// Looks up a genre for every track it is handed, and says how many landed.
+pub fn fill<'a>(
+    report: Option<&mut Reporter>,
+    tracks: impl IntoIterator<Item = &'a mut TrackMeta>,
+) -> usize {
     let mut report = report;
     let mut breaker = Breaker::default();
     let mut pace = Pace::default();
     let mut filled = 0;
 
-    for (position, meta) in tracks.iter_mut().enumerate() {
+    for (position, meta) in tracks.into_iter().enumerate() {
         if !meta.genres.is_empty() {
             continue;
         }

@@ -12,31 +12,27 @@ use crate::catalog::{Catalog, TrackRow, LAYOUT_VERSION};
 use crate::identity;
 use crate::state::{save, PersistedState, Store};
 
-/// Extensions treated as music. `mp4`/`m4v` are deliberately absent.
+/// `mp4`/`m4v` are deliberately absent.
 pub const AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "flac", "m4a", "m4b", "aac", "ogg", "opus", "wav", "aiff", "aif", "wma",
 ];
 
-/// Extensions treated as artwork.
 pub const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp"];
-
-/// Extensions treated as lyrics.
 pub const LYRICS_EXTENSIONS: &[&str] = &["lrc"];
 
+/// Where an imported folder keeps its own covers and lyrics, if it does.
 pub const SOURCE_ARTWORK_DIR: &str = "images";
 pub const SOURCE_LYRICS_DIR: &str = "lyrics";
 
+/// Each song owns a directory named after its id, so nothing is identified by a
+/// file name and two songs may share one.
 pub const SONGS_DIR: &str = "songs";
 pub const CONFIG_DIR: &str = "config";
 
-/// The audio inside a track's directory. The extension follows the codec.
 pub const AUDIO_STEM: &str = "audio";
-/// The cover inside a track's directory. The extension follows the image.
 pub const COVER_STEM: &str = "cover";
-/// The lyrics inside a track's directory.
 pub const LYRICS_NAME: &str = "lyrics.lrc";
 
-/// The library root, with the directories the catalog needs in place.
 pub fn library_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     let root = app
         .path()
@@ -56,6 +52,8 @@ pub fn track_dir(root: &Path, id: &str) -> PathBuf {
     root.join(SONGS_DIR).join(id)
 }
 
+/// Where the audio goes for a song being written for the first time. An existing
+/// song's own `rel_path` is the authority, not this.
 pub fn audio_path(root: &Path, id: &str, extension: &str) -> PathBuf {
     track_dir(root, id).join(format!("{AUDIO_STEM}.{extension}"))
 }
@@ -68,6 +66,8 @@ pub fn lyrics_path(root: &Path, id: &str) -> PathBuf {
     track_dir(root, id).join(LYRICS_NAME)
 }
 
+/// A library-relative path, always with forward slashes, which is what the
+/// catalog stores.
 pub fn relative(root: &Path, path: &Path) -> Option<String> {
     let stripped = path.strip_prefix(root).ok()?;
     Some(stripped.to_string_lossy().replace('\\', "/"))
@@ -92,9 +92,7 @@ pub struct Track {
     pub codec: String,
     pub bitrate: Option<u32>,
     pub sample_rate: Option<u32>,
-    /// The cover beside the song, if it has one.
     pub artwork_path: Option<String>,
-    /// The lyrics beside the song, if it has any.
     pub lyrics_path: Option<String>,
     pub has_embedded_art: bool,
     /// Integrated loudness in LUFS, `None` until the song has been measured.
@@ -108,24 +106,19 @@ pub struct Track {
 pub struct ScanSummary {
     pub tracks: Vec<Track>,
     pub root: String,
-    /// Files in the songs folder that were deliberately not read.
     pub skipped: usize,
     pub errors: Vec<String>,
 }
 
-/// What the settings panel shows about how the library is kept.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryInfo {
-    /// On-disk storage format. 2 is the per-track catalog layout.
     pub format_version: u32,
-    /// Songs whose audio is where the catalog expects it.
     pub tracks: usize,
     /// Songs whose audio is gone, whose likes, playlists and history are kept.
     pub missing: usize,
     pub db_bytes: u64,
 }
-
 
 pub fn scan<R: Runtime>(app: &AppHandle<R>, catalog: &Catalog) -> ScanSummary {
     let root = match library_root(app) {
@@ -173,6 +166,7 @@ pub fn scan<R: Runtime>(app: &AppHandle<R>, catalog: &Catalog) -> ScanSummary {
         Err(error) => errors.push(format!("could not read {}: {error}", songs.display())),
     }
 
+    // One write for the whole scan. Anything the scan did not see keeps its row.
     if let Err(error) = catalog.sync_scan(&rows) {
         errors.push(error);
     }
@@ -188,6 +182,8 @@ pub fn scan<R: Runtime>(app: &AppHandle<R>, catalog: &Catalog) -> ScanSummary {
     }
 }
 
+/// Brings one song's directory in line with the catalog, or returns `None` when
+/// the directory holds no audio.
 fn reconcile(
     dir: &Path,
     root: &Path,
@@ -199,7 +195,6 @@ fn reconcile(
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    // A directory named after an id is a song the catalog already knows.
     let named_as_id = identity::is_id(&dir_name);
     let known = if named_as_id {
         catalog.track(&dir_name)?
@@ -207,6 +202,8 @@ fn reconcile(
         None
     };
 
+    // The file the catalog recorded, or the only audio file in the directory,
+    // which covers a file renamed by hand.
     let recorded = known
         .as_ref()
         .map(|row| root.join(&row.rel_path))
@@ -252,6 +249,8 @@ fn reconcile(
         .ok_or_else(|| format!("{} is outside the library", audio.display()))?;
     let stamp = identity::stamp_of(&audio)?;
 
+    // Nothing has changed since the catalog last looked, so the tags are taken
+    // as read instead of being read again.
     let unchanged = known.as_ref().is_some_and(|row| {
         row.rel_path == rel_path && row.bytes == stamp.bytes && row.modified_ms == stamp.modified_ms
     });
@@ -278,7 +277,6 @@ fn reconcile(
         });
 
     let mut row = read_row(&id, &audio, &dir, &rel_path, &original_name, stamp)?;
-    // A song that has been in the library all along keeps the day it arrived.
     row.added_at = known
         .as_ref()
         .map(|row| row.added_at)
@@ -286,6 +284,8 @@ fn reconcile(
     Ok(Some(row))
 }
 
+/// Describes a song that has just been written into the library, so the catalog
+/// records what is on disk: tags, hash, and whatever sits beside it.
 pub fn describe(
     root: &Path,
     id: &str,
@@ -302,7 +302,6 @@ pub fn describe(
     read_row(id, audio, dir, &rel_path, original_name, stamp)
 }
 
-/// Reads a song from its file: its tags, its hash, and whatever sits beside it.
 fn read_row(
     id: &str,
     audio: &Path,
@@ -351,12 +350,12 @@ fn read_row(
 
     let has_embedded_art = embedded.is_some();
 
-
     let title = title
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| fallback_title(original_name, audio));
 
-
+    // Art inside the file is written out beside it, so a cover lives with the
+    // song rather than in a cache that can be cleared.
     let cover = cover_in(dir).or_else(|| {
         embedded
             .as_ref()
@@ -385,6 +384,7 @@ fn read_row(
         has_embedded_art,
         cover_path: cover.as_deref().and_then(|path| relative_owned(path, dir)),
         lyrics_path: lyrics_in(dir).as_deref().and_then(|path| relative_owned(path, dir)),
+        // Left to the measuring pass.
         lufs: None,
         peak: None,
         loudness_bytes: None,
@@ -394,13 +394,14 @@ fn read_row(
     })
 }
 
-/// A library-relative path for a file known to sit inside a track's directory.
 fn relative_owned(path: &Path, dir: &Path) -> Option<String> {
     let name = path.file_name()?.to_string_lossy();
     let id = dir.file_name()?.to_string_lossy();
     Some(format!("{SONGS_DIR}/{id}/{name}"))
 }
 
+/// Best candidate first: the name the importer writes, so a stray extra file
+/// cannot take a song's place.
 fn audio_files(dir: &Path) -> Result<Vec<OsString>, String> {
     let entries = fs::read_dir(dir).map_err(|e| format!("could not read {}: {e}", dir.display()))?;
 
@@ -419,6 +420,9 @@ fn audio_files(dir: &Path) -> Result<Vec<OsString>, String> {
     Ok(found)
 }
 
+/// A path the catalog recorded and that is still there stands; otherwise
+/// whatever is beside the song now is taken, so a copy added or deleted by hand
+/// is noticed.
 fn kept(
     root: &Path,
     recorded: Option<String>,
@@ -434,7 +438,6 @@ fn kept(
     find(dir).as_deref().and_then(|path| relative_owned(path, dir))
 }
 
-/// The cover sitting beside a song, if one does.
 fn cover_in(dir: &Path) -> Option<PathBuf> {
     let entries = fs::read_dir(dir).ok()?;
     for entry in entries.flatten() {
@@ -454,7 +457,6 @@ fn lyrics_in(dir: &Path) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// Writes the art a file carries out beside it, so the song keeps its cover.
 fn write_cover(dir: &Path, data: &[u8], extension: &str) -> Option<PathBuf> {
     let target = dir.join(format!("{COVER_STEM}.{extension}"));
     if target.exists() {
@@ -499,7 +501,7 @@ fn clean(value: Option<String>) -> Option<String> {
     value.filter(|text| !text.trim().is_empty())
 }
 
-/// A song with no title tag still needs something to show in a list.
+/// A song with no title tag is shown under the name it arrived with.
 fn fallback_title(original_name: &str, audio: &Path) -> String {
     let from_original = Path::new(original_name)
         .file_stem()
@@ -530,7 +532,6 @@ pub fn file_stem_lower(path: &Path) -> String {
         .to_lowercase()
 }
 
-/// `artist - title`, or just the title when the file carries no artist.
 pub fn track_label(track: &Track) -> String {
     match track.artist.as_deref() {
         Some(artist) if !artist.trim().is_empty() => format!("{artist} - {}", track.title),
@@ -538,6 +539,8 @@ pub fn track_label(track: &Track) -> String {
     }
 }
 
+/// Locates a subfolder of an imported folder, matching the name
+/// case-insensitively.
 pub fn source_subdir(root: &Path, name: &str) -> Option<PathBuf> {
     let entries = fs::read_dir(root).ok()?;
     for entry in entries.flatten() {
@@ -549,11 +552,11 @@ pub fn source_subdir(root: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
+/// Matches the covers and lyrics in a folder Wave has never seen, where a file
+/// name is all there is to go on.
 #[derive(Default)]
 pub struct SidecarIndex {
-    /// Keyed by the song part of `artist - song.ext`.
     by_song: HashMap<String, PathBuf>,
-    /// Keyed by the whole lowercased file stem.
     by_stem: HashMap<String, PathBuf>,
 }
 
@@ -638,7 +641,6 @@ pub fn scan_library(
     summary
 }
 
-/// How the library is kept, for the settings panel.
 #[tauri::command]
 pub fn library_info(catalog: State<'_, Catalog>) -> LibraryInfo {
     let (tracks, missing) = catalog.counts();
@@ -665,7 +667,6 @@ pub fn delete_tracks(
             continue;
         };
 
-        // The song's whole directory goes: the audio, its cover and its lyrics.
         let dir = track_dir(&root, id);
         if dir.is_dir() {
             fs::remove_dir_all(&dir)

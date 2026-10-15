@@ -337,6 +337,13 @@ fn sanitise_geometries(state: &mut PersistedState) {
     }
 }
 
+fn read_frame<R: Runtime>(window: &WebviewWindow<R>) -> Option<WindowGeometry> {
+    if window.is_minimized().unwrap_or(false) {
+        return None;
+    }
+    read_window_geometry(window).ok()
+}
+
 fn read_window_geometry<R: Runtime>(window: &WebviewWindow<R>) -> Result<WindowGeometry, String> {
     let maximized = window.is_maximized().unwrap_or(false);
 
@@ -370,6 +377,11 @@ fn apply_geometry<R: Runtime>(
     geometry: &WindowGeometry,
     part: SnapPart,
 ) {
+    if matches!(part, SnapPart::Frame | SnapPart::Position) && !lands_on_screen(app, window, geometry)
+    {
+        return;
+    }
+
     note_programmatic_change();
 
     if window.is_maximized().unwrap_or(false) && !(part == SnapPart::Frame && geometry.maximized) {
@@ -425,6 +437,37 @@ fn resize_outer<R: Runtime>(
     client
 }
 
+fn lands_on_screen<R: Runtime>(
+    app: &AppHandle<R>,
+    window: &WebviewWindow<R>,
+    geometry: &WindowGeometry,
+) -> bool {
+    const VISIBLE: i32 = 120;
+
+    let Ok(monitors) = app.available_monitors() else {
+        return true;
+    };
+    if monitors.is_empty() {
+        // Nothing to measure against, so the frame is taken at its word.
+        return true;
+    }
+
+    // The size is kept in logical units, so it is scaled to match the monitors.
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let left = geometry.x;
+    let top = geometry.y;
+    let right = left + (f64::from(geometry.width) * scale).round() as i32;
+    let bottom = top + (f64::from(geometry.height) * scale).round() as i32;
+
+    monitors.iter().any(|monitor| {
+        let area = monitor.position();
+        let size = monitor.size();
+        let across = right.min(area.x + size.width as i32) - left.max(area.x);
+        let down = bottom.min(area.y + size.height as i32) - top.max(area.y);
+        across >= VISIBLE && down >= VISIBLE
+    })
+}
+
 /// Puts the window back where it sat, while the monitor it lived on is around.
 fn move_to<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>, geometry: &WindowGeometry) {
     let monitor_present = match &geometry.monitor {
@@ -451,7 +494,7 @@ pub fn apply_window_settings<R: Runtime>(app: &AppHandle<R>, store: &Store, was_
     if mini {
         if !was_mini && current.settings.remember_window {
             // Remember the frame, so leaving mini mode puts it back.
-            if let Ok(geometry) = read_window_geometry(&window) {
+            if let Some(geometry) = read_frame(&window) {
                 store.update(|state| state.window = Some(geometry));
             }
         }
@@ -583,7 +626,9 @@ pub fn save_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<(
         return Ok(());
     };
 
-    let geometry = read_window_geometry(&window)?;
+    let Some(geometry) = read_frame(&window) else {
+        return Ok(());
+    };
     // Called on a timer, so a frame that has not moved is left alone.
     if current.window.as_ref() == Some(&geometry) {
         return Ok(());

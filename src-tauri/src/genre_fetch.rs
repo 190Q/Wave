@@ -10,15 +10,29 @@ use tauri::{AppHandle, Manager};
 
 use crate::library::{self, track_label, Track, TrackPaths};
 use crate::progress::Reporter;
-use crate::spotify::{client, TrackMeta};
+use crate::spotify::{TrackMeta, client, wait_phrase};
 
 /// Follows one genre pass, song by song.
 pub const PROGRESS_EVENT: &str = "genres-fetch";
 
-/// A pause between lookups so the API is not hammered, matching the script.
-pub const DELAY_MS: u64 = 500;
+/// The first pause between lookups, so a handful of songs is over quickly.
+const DELAY_START_MS: u64 = 500;
 
-/// How many refusals in a row end a pass, leaving the rest for the next one.
+/// The slowest the pace is allowed to fall to. iTunes allows about twenty
+/// lookups a minute, so a pass that has been pushed back keeps under that.
+const DELAY_CEILING_MS: u64 = 3_500;
+
+/// The first wait after the service asks the pass to slow down.
+const BACKOFF_START_MS: u64 = 5_000;
+
+/// The longest one wait is allowed to grow to.
+const BACKOFF_CEILING_MS: u64 = 300_000;
+
+/// How many waits in a row one song is worth before the pass ends. Past this
+/// the service is not going to answer, and the rest are left for another run.
+const LIMIT_TOLERANCE: usize = 8;
+
+/// How many refusals in a row end a pass, leaving the rest for another run.
 const REFUSAL_LIMIT: usize = 3;
 
 const ITUNES: &str = "https://itunes.apple.com/search";
@@ -34,8 +48,12 @@ pub struct GenresOutcome {
     pub missing: usize,
     /// No artist tag to look them up by.
     pub untagged: usize,
-    /// The pass gave up on a run of refusals; the rest wait for the next one.
+    /// How many times the pass waited the service out instead of moving on.
+    pub paused: usize,
+    /// The pass stopped early rather than working through everything.
     pub gave_up: bool,
+    /// Songs the pass never reached, because it stopped early.
+    pub remaining: usize,
     pub errors: Vec<String>,
 }
 
@@ -53,8 +71,21 @@ struct Reply {
     results: Vec<Entry>,
 }
 
-pub fn look_up(artist: &str, title: &str) -> Result<Option<String>, String> {
-    let response = client()
+/// What one lookup came back with.
+#[derive(Debug, Clone, PartialEq)]
+enum Answer {
+    /// The genre of the first match.
+    Genre(String),
+    /// The service had nothing for it.
+    Nothing,
+    /// The service asked the pass to slow down, and said how long for.
+    RateLimited(Option<u64>),
+    /// Anything else went wrong, and it belongs to this song alone.
+    Refused(String),
+}
+
+fn look_up(artist: &str, title: &str) -> Answer {
+    let response = match client()
         .get(ITUNES)
         .query(&[
             ("term", format!("{artist} {title}")),
@@ -63,16 +94,118 @@ pub fn look_up(artist: &str, title: &str) -> Result<Option<String>, String> {
             ("limit", "1".to_string()),
         ])
         .send()
-        .map_err(|e| format!("iTunes could not be reached: {e}"))?;
+    {
+        Ok(response) => response,
+        Err(error) => return Answer::Refused(format!("iTunes could not be reached: {error}")),
+    };
 
-    if !response.status().is_success() {
-        return Err(format!(
-            "iTunes refused the search ({})",
-            response.status().as_u16()
-        ));
+    let status = response.status();
+    // The headers have to be read before the body takes the response over.
+    let retry = retry_after(&response);
+    if !status.is_success() {
+        return classify(status.as_u16(), retry);
     }
 
-    genre_in(&response.text().unwrap_or_default())
+    match genre_in(&response.text().unwrap_or_default()) {
+        Ok(Some(genre)) => Answer::Genre(genre),
+        Ok(None) => Answer::Nothing,
+        Err(error) => Answer::Refused(error),
+    }
+}
+
+/// A refusal that is only a matter of pace is a wait, not a failure.
+fn classify(status: u16, retry: Option<u64>) -> Answer {
+    match status {
+        429 => Answer::RateLimited(retry),
+        _ => Answer::Refused(format!("iTunes refused the search ({status})")),
+    }
+}
+
+/// The seconds the service asked the pass to wait, from the `Retry-After`.
+fn retry_after(response: &reqwest::blocking::Response) -> Option<u64> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse().ok())
+}
+
+fn wait_for(retry: Option<u64>, backoff_ms: u64) -> u64 {
+    let asked = retry
+        .map(|seconds| seconds.saturating_mul(1_000))
+        .unwrap_or(0);
+    asked.max(backoff_ms).min(BACKOFF_CEILING_MS)
+}
+
+struct Pace {
+    delay_ms: u64,
+    /// How many times the service has pushed back, over the whole pass.
+    waits: usize,
+}
+
+impl Default for Pace {
+    fn default() -> Self {
+        Self {
+            delay_ms: DELAY_START_MS,
+            waits: 0,
+        }
+    }
+}
+
+impl Pace {
+    /// The pause after a lookup that landed.
+    fn pause(&self) {
+        sleep(Duration::from_millis(self.delay_ms));
+    }
+
+    /// The service pushed back, so the pass keeps a slower pace from here.
+    fn slower(&mut self) {
+        self.delay_ms = (self.delay_ms * 2).min(DELAY_CEILING_MS);
+    }
+}
+
+/// Why a song's genre could not be settled.
+enum Stop {
+    /// The service kept pushing back, so the pass ends and the rest wait.
+    Throttled,
+    /// Something else went wrong, and it belongs to this song alone.
+    Refused(String),
+}
+
+fn look_up_patiently(
+    artist: &str,
+    title: &str,
+    pace: &mut Pace,
+    mut tell: impl FnMut(&str),
+) -> Result<Option<String>, Stop> {
+    let mut backoff = BACKOFF_START_MS;
+    // Counted per song: a pass that is refused now and then carries on.
+    let mut waited = 0;
+
+    loop {
+        match look_up(artist, title) {
+            Answer::Genre(genre) => return Ok(Some(genre)),
+            Answer::Nothing => return Ok(None),
+            Answer::Refused(error) => return Err(Stop::Refused(error)),
+            Answer::RateLimited(retry) => {
+                waited += 1;
+                if waited > LIMIT_TOLERANCE {
+                    return Err(Stop::Throttled);
+                }
+
+                let wait = wait_for(retry, backoff);
+                tell(&format!(
+                    "iTunes is limiting how often this can ask. Trying again {}. \
+                     The pass will carry on from here.",
+                    wait_phrase(wait.div_ceil(1_000)),
+                ));
+                pace.waits += 1;
+                pace.slower();
+                sleep(Duration::from_millis(wait));
+                backoff = (backoff * 2).min(BACKOFF_CEILING_MS);
+            }
+        }
+    }
 }
 
 /// The genre of the first match in a search reply, if it gave one.
@@ -126,6 +259,7 @@ impl Breaker {
 pub fn fill(report: Option<&mut Reporter>, tracks: &mut [TrackMeta]) -> usize {
     let mut report = report;
     let mut breaker = Breaker::default();
+    let mut pace = Pace::default();
     let mut filled = 0;
 
     for (position, meta) in tracks.iter_mut().enumerate() {
@@ -142,21 +276,28 @@ pub fn fill(report: Option<&mut Reporter>, tracks: &mut [TrackMeta]) -> usize {
             report.at(position + 1, &format!("{artist} - {}", meta.title));
         }
 
-        match look_up(&artist, &meta.title) {
+        let answer = look_up_patiently(&artist, &meta.title, &mut pace, |line| {
+            if let Some(report) = report.as_deref_mut() {
+                report.phase("genres", line);
+            }
+        });
+
+        match answer {
             Ok(Some(genre)) => {
                 meta.genres = vec![genre];
                 filled += 1;
                 breaker.ok();
             }
             Ok(None) => breaker.ok(),
-            Err(_) => {
+            Err(Stop::Throttled) => break,
+            Err(Stop::Refused(_)) => {
                 if breaker.refused() {
                     break;
                 }
             }
         }
 
-        sleep(Duration::from_millis(DELAY_MS));
+        pace.pause();
     }
 
     filled
@@ -203,6 +344,7 @@ fn run_inner(
 
     let mut outcome = GenresOutcome::default();
     let mut breaker = Breaker::default();
+    let mut pace = Pace::default();
 
     for (position, track) in wanted.iter().enumerate() {
         let label = track_label(track);
@@ -221,7 +363,11 @@ fn run_inner(
             continue;
         }
 
-        match look_up(&artist, &track.title) {
+        let answer = look_up_patiently(&artist, &track.title, &mut pace, |line| {
+            report.phase("genres", line);
+        });
+
+        match answer {
             Ok(Some(genre)) => match write_genre(&track.path, &genre) {
                 Ok(()) => {
                     outcome.tagged += 1;
@@ -237,7 +383,11 @@ fn run_inner(
                 outcome.missing += 1;
                 breaker.ok();
             }
-            Err(error) => {
+            Err(Stop::Throttled) => {
+                outcome.gave_up = true;
+                break;
+            }
+            Err(Stop::Refused(error)) => {
                 outcome.errors.push(format!("{label}: {error}"));
                 report.fail(format!("{label}: {error}"));
                 if breaker.refused() {
@@ -247,8 +397,16 @@ fn run_inner(
             }
         }
 
-        sleep(Duration::from_millis(DELAY_MS));
+        pace.pause();
     }
+
+    outcome.paused = pace.waits;
+    let handled = outcome.tagged
+        + outcome.skipped
+        + outcome.missing
+        + outcome.untagged
+        + outcome.errors.len();
+    outcome.remaining = wanted.len().saturating_sub(handled);
 
     Ok(outcome)
 }
@@ -264,11 +422,17 @@ fn summary(outcome: &GenresOutcome) -> String {
     if outcome.missing > 0 {
         parts.push(format!("{} not found", outcome.missing));
     }
+    if outcome.paused > 0 {
+        parts.push(format!("waited out the rate limit {} times", outcome.paused));
+    }
     if !outcome.errors.is_empty() {
         parts.push(format!("{} failed", outcome.errors.len()));
     }
     if outcome.gave_up {
-        parts.push("stopped early, the rest are left for next time".to_string());
+        parts.push(match outcome.remaining {
+            0 => "stopped early".to_string(),
+            left => format!("stopped early, {left} still without a genre"),
+        });
     }
     parts.join(", ")
 }
@@ -353,13 +517,50 @@ mod tests {
     }
 
     #[test]
+    fn a_rate_limit_is_a_wait_rather_than_a_failure() {
+        assert_eq!(classify(429, Some(30)), Answer::RateLimited(Some(30)));
+        // A limit with no `Retry-After` is still a wait.
+        assert_eq!(classify(429, None), Answer::RateLimited(None));
+        // Anything else is the song's own problem, and is reported as such.
+        let refused = classify(500, None);
+        assert!(matches!(refused, Answer::Refused(message) if message.contains("500")));
+    }
+
+    #[test]
+    fn the_wait_is_the_longer_of_what_was_asked_and_the_backoff() {
+        // A service that says nothing still gets the backoff.
+        assert_eq!(wait_for(None, BACKOFF_START_MS), BACKOFF_START_MS);
+        // A service that asks for longer than the backoff is taken at its word.
+        assert_eq!(wait_for(Some(30), BACKOFF_START_MS), 30_000);
+        // A backoff that has outgrown the answer is not cut short by it.
+        assert_eq!(wait_for(Some(2), 20_000), 20_000);
+        // Neither can hold the pass up for longer than the ceiling.
+        assert_eq!(wait_for(Some(3_600), BACKOFF_START_MS), BACKOFF_CEILING_MS);
+    }
+
+    #[test]
+    fn a_pass_slows_down_when_the_service_pushes_back() {
+        let mut pace = Pace::default();
+        assert_eq!(pace.delay_ms, DELAY_START_MS);
+
+        // The pace keeps giving way, and settles at one the service will take.
+        for _ in 0..20 {
+            pace.slower();
+        }
+        assert_eq!(pace.delay_ms, DELAY_CEILING_MS);
+        assert!(60_000 / pace.delay_ms <= 20, "the ceiling is under twenty a minute");
+    }
+
+    #[test]
     fn sums_up_what_happened() {
         let outcome = GenresOutcome {
             tagged: 5,
             skipped: 40,
             missing: 1,
             untagged: 0,
+            paused: 0,
             gave_up: false,
+            remaining: 0,
             errors: vec![],
         };
         assert_eq!(summary(&outcome), "5 tagged, 40 already had genres, 1 not found");
@@ -369,12 +570,15 @@ mod tests {
             skipped: 0,
             missing: 0,
             untagged: 1,
+            paused: 3,
             gave_up: true,
-            errors: vec!["x: iTunes refused the search (429)".to_string()],
+            remaining: 12,
+            errors: vec!["x: iTunes refused the search (500)".to_string()],
         };
         assert_eq!(
             summary(&stopped),
-            "2 tagged, 1 with no artist tag, 1 failed, stopped early, the rest are left for next time"
+            "2 tagged, 1 with no artist tag, waited out the rate limit 3 times, 1 failed, \
+             stopped early, 12 still without a genre"
         );
     }
 }

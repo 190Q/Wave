@@ -846,11 +846,18 @@ function genresSummary(outcome: GenresOutcome): string {
   if (outcome.missing > 0) {
     parts.push(`${outcome.missing} not found`);
   }
+  if (outcome.paused > 0) {
+    parts.push(`waited out the rate limit ${outcome.paused === 1 ? "once" : `${outcome.paused} times`}`);
+  }
   if (outcome.errors.length > 0) {
     parts.push(`${outcome.errors.length} failed`);
   }
   if (outcome.gaveUp) {
-    parts.push("stopped early, the rest are left for next time");
+    parts.push(
+      outcome.remaining > 0
+        ? `stopped early, ${plural(outcome.remaining, "song")} still without a genre, run it again to carry on`
+        : "stopped early",
+    );
   }
   return parts.join(", ");
 }
@@ -880,9 +887,11 @@ export async function fetchGenres(collectionId: string): Promise<void> {
 
     const message = genresSummary(outcome);
     setNotice(message);
+    // Only what the pass got through, so a pass that stopped early says so.
+    const handled = Math.max(collection.trackIds.length - outcome.remaining, 0);
     state.genresProgress = {
       phase: "done",
-      done: collection.trackIds.length,
+      done: handled,
       total: collection.trackIds.length,
       label: "",
       message,

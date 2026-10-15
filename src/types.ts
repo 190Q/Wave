@@ -403,8 +403,12 @@ export interface GenresOutcome {
   missing: number;
   /** No artist tag to look them up by. */
   untagged: number;
-  /** The pass gave up on a run of refusals; the rest wait for the next one. */
+  /** How many times the pass waited the rate limit out instead of moving on. */
+  paused: number;
+  /** The pass stopped early rather than working through everything. */
   gaveUp: boolean;
+  /** Songs the pass never reached, because it stopped early. */
+  remaining: number;
   errors: string[];
 }
 
@@ -460,7 +464,7 @@ export interface LoudnessOutcome {
 
 export type RepeatMode = "off" | "all";
 
-export type CollectionKind = "all" | "liked" | "playlist" | "artist" | "album";
+export type CollectionKind = "all" | "liked" | "playlist" | "artist" | "album" | "genre";
 
 export interface Collection {
   id: string;
@@ -476,7 +480,7 @@ export interface LyricLine {
 }
 
 /** Which slice of the library the sheet is showing. */
-export type CollectionFilter = "all" | "playlists" | "artists" | "albums";
+export type CollectionFilter = "all" | "playlists" | "artists" | "albums" | "genres";
 
 export interface ThemeDefinition {
   id: string;

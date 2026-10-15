@@ -1325,6 +1325,8 @@ function kindLabel(kind: CollectionKind): string {
       return "Artist";
     case "album":
       return "Album";
+    case "genre":
+      return "Genre";
   }
 }
 

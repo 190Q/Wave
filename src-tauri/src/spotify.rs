@@ -448,7 +448,7 @@ fn retry_after(response: &reqwest::blocking::Response) -> Option<u64> {
 }
 
 /// A wait said the way a person would, from a count of seconds.
-fn wait_phrase(seconds: u64) -> String {
+pub(crate) fn wait_phrase(seconds: u64) -> String {
     let (count, unit) = match seconds {
         0..=1 => return "in a second".to_string(),
         2..=59 => return format!("in {seconds} seconds"),

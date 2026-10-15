@@ -5,7 +5,7 @@ import { scoreItems, type FieldsOf } from "./search";
 const FEATURE_SPLIT = /\s+(?:feat\.?|ft\.?|featuring|with|vs\.?)\s+/i;
 const LIST_SPLIT = /\s*(?:&|;|,|\band\b)\s*/i;
 
-export const COLLECTION_FILTERS: CollectionFilter[] = ["all", "playlists", "artists", "albums"];
+export const COLLECTION_FILTERS: CollectionFilter[] = ["all", "playlists", "artists", "albums", "genres"];
 
 export function buildCollections(tracks: Track[], playlists: Playlist[], likes: Set<string>): Collection[] {
   const collections: Collection[] = [];
@@ -56,6 +56,17 @@ export function buildCollections(tracks: Track[], playlists: Playlist[], likes: 
       kind: "album",
       name: album,
       subtitle: `Album, ${songCount(grouped.length)}`,
+      trackIds: grouped.map((track) => track.id),
+    });
+  }
+
+  // A song with no genre tag is left out, the same way an untagged artist is.
+  for (const [genre, grouped] of groupBy(tracks, (track) => track.genre)) {
+    collections.push({
+      id: collectionId("genre", genre),
+      kind: "genre",
+      name: genre,
+      subtitle: `Genre, ${songCount(grouped.length)}`,
       trackIds: grouped.map((track) => track.id),
     });
   }
@@ -121,6 +132,8 @@ function matchesFilter(collection: Collection, filter: CollectionFilter): boolea
       return collection.kind === "artist";
     case "albums":
       return collection.kind === "album";
+    case "genres":
+      return collection.kind === "genre";
   }
 }
 

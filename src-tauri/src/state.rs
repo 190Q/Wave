@@ -7,10 +7,17 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalSize, Runtime, State, WebviewWindow};
 
+use crate::identity;
 use crate::playlists;
+use crate::source::TrackMeta;
 use crate::spotify::SpotifyStatus;
 
 const STATE_FILE: &str = "state.json";
+
+/// A playlist the user built by hand.
+pub const CUSTOM_KIND: &str = "custom";
+/// A playlist the generator filled, whose songs may still be waiting.
+pub const GENERATED_KIND: &str = "generated";
 
 /// How many `Ctrl+Shift+1..9` action slots the UI offers.
 pub const SLOT_COUNT: usize = 9;
@@ -65,12 +72,88 @@ impl Default for Settings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct Playlist {
     pub id: String,
     pub name: String,
     pub track_ids: Vec<String>,
     pub created_at: u64,
+    pub kind: String,
+    pub entries: Vec<String>,
+    pub pending: Vec<PendingTrack>,
+}
+
+impl Default for Playlist {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            track_ids: Vec::new(),
+            created_at: 0,
+            kind: CUSTOM_KIND.to_string(),
+            entries: Vec::new(),
+            pending: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PendingTrack {
+    pub id: String,
+    pub title: String,
+    pub artists: Vec<String>,
+    pub album: String,
+    pub album_artist: String,
+    pub genres: Vec<String>,
+    pub isrc: String,
+    pub cover_url: Option<String>,
+    pub release_date: String,
+    pub track_number: Option<u32>,
+    pub disc_number: Option<u32>,
+    /// Where it came from. Kept in the catalog rather than sent to the UI.
+    #[serde(skip)]
+    pub source: String,
+    #[serde(skip)]
+    pub source_id: String,
+}
+
+impl PendingTrack {
+    /// A waiting entry for a song a source offered but the library lacks.
+    pub fn from_meta(meta: &TrackMeta, source: &str, source_id: &str) -> Self {
+        Self {
+            id: identity::new_id(),
+            title: meta.title.clone(),
+            artists: meta.artists.clone(),
+            album: meta.album.clone(),
+            album_artist: meta.album_artist.clone(),
+            genres: meta.genres.clone(),
+            isrc: meta.isrc.clone(),
+            cover_url: meta.cover_url.clone(),
+            release_date: meta.release_date.clone(),
+            track_number: meta.track_number,
+            disc_number: meta.disc_number,
+            source: source.to_string(),
+            source_id: source_id.to_string(),
+        }
+    }
+
+    /// The metadata the downloader needs to fetch it.
+    pub fn meta(&self) -> TrackMeta {
+        TrackMeta {
+            title: self.title.clone(),
+            artists: self.artists.clone(),
+            album: self.album.clone(),
+            album_artist: self.album_artist.clone(),
+            release_date: self.release_date.clone(),
+            track_number: self.track_number,
+            disc_number: self.disc_number,
+            genres: self.genres.clone(),
+            isrc: self.isrc.clone(),
+            cover_url: self.cover_url.clone(),
+            ..TrackMeta::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -776,4 +859,48 @@ pub fn set_likes(
         }
     });
     commit(&app, next)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_playlist_saved_before_generated_playlists_still_loads() {
+        let raw = r#"{ "id": "p", "name": "Old", "trackIds": ["one"], "createdAt": 5 }"#;
+        let playlist: Playlist = serde_json::from_str(raw).unwrap();
+
+        assert_eq!(playlist.track_ids, vec!["one"]);
+        assert_eq!(playlist.kind, CUSTOM_KIND);
+        assert!(playlist.entries.is_empty());
+        assert!(playlist.pending.is_empty());
+    }
+
+    #[test]
+    fn a_pending_song_keeps_the_shape_the_ui_reads() {
+        let track = PendingTrack::from_meta(
+            &TrackMeta {
+                title: "Hey Jude".to_string(),
+                artists: vec!["The Beatles".to_string()],
+                album: "Past Masters".to_string(),
+                cover_url: Some("https://cdn/cover.jpg".to_string()),
+                track_number: Some(4),
+                ..TrackMeta::default()
+            },
+            "deezer",
+            "116348632",
+        );
+
+        let json = serde_json::to_string(&track).unwrap();
+        assert!(json.contains("\"coverUrl\""));
+        assert!(json.contains("\"trackNumber\":4"));
+        // Where it came from stays in the catalog.
+        assert!(!json.contains("sourceId"));
+        assert!(!json.contains("deezer"));
+
+        let meta = track.meta();
+        assert_eq!(meta.title, "Hey Jude");
+        assert_eq!(meta.artists, vec!["The Beatles"]);
+        assert_eq!(meta.track_number, Some(4));
+    }
 }

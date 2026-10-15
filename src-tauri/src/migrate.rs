@@ -398,8 +398,10 @@ fn legacy_playlists(
         playlists.push(Playlist {
             id,
             name,
+            entries: track_ids.clone(),
             track_ids,
             created_at,
+            ..Playlist::default()
         });
     }
 

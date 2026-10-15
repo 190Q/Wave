@@ -14,8 +14,10 @@ mod loudness;
 mod lyrics;
 mod lyrics_fetch;
 mod migrate;
+mod playlist_download;
 mod playlists;
 mod progress;
+mod recommend;
 mod source;
 mod spotify;
 mod spotify_import;
@@ -168,6 +170,9 @@ pub fn run() {
             playlists::add_to_playlist,
             playlists::remove_from_playlist,
             playlists::reorder_playlist,
+            recommend::recommend_status,
+            recommend::generate_playlist,
+            playlist_download::download_playlist,
             artwork::artwork_colour,
             artwork::artwork_bytes,
             artwork::cover_bytes,

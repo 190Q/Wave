@@ -199,12 +199,27 @@ fn library_index(app: &AppHandle) -> HashMap<String, String> {
     index
 }
 
-fn meta_key(meta: &TrackMeta) -> String {
+pub(crate) fn catalog_index(catalog: &Catalog) -> Result<HashMap<String, String>, String> {
+    let mut index = HashMap::new();
+
+    for row in catalog.tracks()? {
+        let key = track_key(
+            &row.title,
+            row.artist.as_deref().unwrap_or_default(),
+            row.album.as_deref().unwrap_or_default(),
+        );
+        index.entry(key).or_insert(row.id);
+    }
+
+    Ok(index)
+}
+
+pub(crate) fn meta_key(meta: &TrackMeta) -> String {
     track_key(&meta.title, &meta.artists.join(", "), &meta.album)
 }
 
 /// Folded so case and stray spacing do not stand in for a different song.
-fn track_key(title: &str, artist: &str, album: &str) -> String {
+pub(crate) fn track_key(title: &str, artist: &str, album: &str) -> String {
     format!("{}\u{1}{}\u{1}{}", fold(title), fold(artist), fold(album))
 }
 

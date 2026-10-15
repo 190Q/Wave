@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -6,11 +6,11 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::identity;
 use crate::library::CONFIG_DIR;
-use crate::state::Playlist;
+use crate::state::{PendingTrack, Playlist, GENERATED_KIND};
 
 pub const CATALOG_FILE: &str = "library.db";
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 pub const LAYOUT_VERSION_KEY: &str = "layout_version";
 pub const LAYOUT_VERSION: &str = "2";
@@ -55,6 +55,7 @@ CREATE INDEX IF NOT EXISTS tracks_content_hash ON tracks (content_hash);
 CREATE TABLE IF NOT EXISTS playlists (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
+  kind       TEXT NOT NULL DEFAULT 'custom',
   created_at INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL DEFAULT 0
 );
@@ -70,6 +71,30 @@ CREATE TABLE IF NOT EXISTS meta (
   value TEXT NOT NULL
 );
 "#;
+
+const PENDING_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS pending_tracks (
+  id           TEXT PRIMARY KEY,
+  playlist_id  TEXT NOT NULL REFERENCES playlists (id) ON DELETE CASCADE,
+  title        TEXT NOT NULL DEFAULT '',
+  artists      TEXT NOT NULL DEFAULT '',
+  album        TEXT NOT NULL DEFAULT '',
+  album_artist TEXT NOT NULL DEFAULT '',
+  genres       TEXT NOT NULL DEFAULT '',
+  isrc         TEXT NOT NULL DEFAULT '',
+  cover_url    TEXT,
+  release_date TEXT NOT NULL DEFAULT '',
+  track_number INTEGER,
+  disc_number  INTEGER,
+  source       TEXT NOT NULL DEFAULT '',
+  source_id    TEXT NOT NULL DEFAULT '',
+  added_at     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS pending_tracks_playlist ON pending_tracks (playlist_id);
+"#;
+
+const PENDING_COLUMNS: &str = "id, title, artists, album, album_artist, genres, isrc, cover_url, \
+     release_date, track_number, disc_number, source, source_id";
 
 #[derive(Debug, Clone, Default)]
 pub struct TrackRow {
@@ -160,11 +185,23 @@ impl Catalog {
 
         if found == 0 {
             connection
-                .execute_batch(SCHEMA)
+                .execute_batch(&format!("{SCHEMA}{PENDING_TABLE}"))
                 .map_err(|e| format!("could not create the catalog: {e}"))?;
+            return stamp(&connection);
+        }
+
+        if found < SCHEMA_VERSION {
+            if !has_column(&connection, "playlists", "kind") {
+                connection
+                    .execute_batch(
+                        "ALTER TABLE playlists ADD COLUMN kind TEXT NOT NULL DEFAULT 'custom'",
+                    )
+                    .map_err(|e| format!("could not add the playlist kind: {e}"))?;
+            }
             connection
-                .execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
-                .map_err(|e| format!("could not stamp the catalog version: {e}"))?;
+                .execute_batch(PENDING_TABLE)
+                .map_err(|e| format!("could not add the waiting songs: {e}"))?;
+            return stamp(&connection);
         }
 
         Ok(())
@@ -373,20 +410,21 @@ impl Catalog {
         (present as usize, missing as usize)
     }
 
-    /// Every playlist, each holding only the songs the library still has.
     pub fn playlists(&self) -> Result<Vec<Playlist>, String> {
         let connection = self.guard();
 
-        let mut entries: Vec<(String, String, i64)> = Vec::new();
+        let mut rows: Vec<(String, String, String, i64)> = Vec::new();
         {
             let mut statement = connection
-                .prepare("SELECT id, name, created_at FROM playlists")
+                .prepare("SELECT id, name, kind, created_at FROM playlists")
                 .map_err(|e| format!("could not read the playlists: {e}"))?;
-            let rows = statement
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            let found = statement
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
                 .map_err(|e| format!("could not read the playlists: {e}"))?;
-            for row in rows {
-                entries.push(row.map_err(|e| format!("could not read a playlist: {e}"))?);
+            for row in found {
+                rows.push(row.map_err(|e| format!("could not read a playlist: {e}"))?);
             }
         }
 
@@ -394,29 +432,64 @@ impl Catalog {
         {
             let mut statement = connection
                 .prepare(
-                    "SELECT pt.playlist_id, pt.track_id FROM playlist_tracks pt \
-                     JOIN tracks t ON t.id = pt.track_id \
-                     WHERE t.missing = 0 \
-                     ORDER BY pt.playlist_id, pt.position",
+                    "SELECT playlist_id, track_id FROM playlist_tracks \
+                     ORDER BY playlist_id, position",
                 )
                 .map_err(|e| format!("could not read the playlists: {e}"))?;
-            let rows = statement
-                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            let found = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
                 .map_err(|e| format!("could not read the playlists: {e}"))?;
-            for row in rows {
-                let (playlist_id, track_id) =
+            for row in found {
+                let (playlist_id, entry) =
                     row.map_err(|e| format!("could not read a playlist entry: {e}"))?;
-                contents.entry(playlist_id).or_default().push(track_id);
+                contents.entry(playlist_id).or_default().push(entry);
             }
         }
 
-        let mut playlists: Vec<Playlist> = entries
+        let present = present_ids(&connection)?;
+
+        let mut waiting: HashMap<String, PendingTrack> = HashMap::new();
+        {
+            let mut statement = connection
+                .prepare(&format!("SELECT {PENDING_COLUMNS} FROM pending_tracks"))
+                .map_err(|e| format!("could not read the waiting songs: {e}"))?;
+            let found = statement
+                .query_map([], read_pending)
+                .map_err(|e| format!("could not read the waiting songs: {e}"))?;
+            for row in found {
+                let track = row.map_err(|e| format!("could not read a waiting song: {e}"))?;
+                waiting.insert(track.id.clone(), track);
+            }
+        }
+
+        let mut playlists: Vec<Playlist> = rows
             .into_iter()
-            .map(|(id, name, created_at)| Playlist {
-                track_ids: contents.remove(&id).unwrap_or_default(),
-                id,
-                name,
-                created_at: created_at.max(0) as u64,
+            .map(|(id, name, kind, created_at)| {
+                let mut entries = Vec::new();
+                let mut track_ids = Vec::new();
+                let mut pending = Vec::new();
+
+                for entry in contents.remove(&id).unwrap_or_default() {
+                    if let Some(track) = waiting.get(&entry) {
+                        entries.push(entry);
+                        pending.push(track.clone());
+                    } else if present.contains(&entry) {
+                        entries.push(entry.clone());
+                        track_ids.push(entry);
+                    }
+                }
+
+                Playlist {
+                    id,
+                    name,
+                    track_ids,
+                    created_at: created_at.max(0) as u64,
+                    kind,
+                    entries,
+                    pending,
+                }
             })
             .collect();
 
@@ -498,17 +571,96 @@ impl Catalog {
             .transaction()
             .map_err(|e| format!("could not start a catalog write: {e}"))?;
 
-        transaction
-            .execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1", params![id])
-            .map_err(|e| format!("could not rewrite the playlist: {e}"))?;
+        write_entries(&transaction, id, track_ids)?;
 
-        for (position, track_id) in track_ids.iter().enumerate() {
+        transaction
+            .execute(
+                "UPDATE playlists SET updated_at = ?2 WHERE id = ?1",
+                params![id, identity::now_ms()],
+            )
+            .map_err(|e| format!("could not stamp the playlist: {e}"))?;
+
+        transaction
+            .commit()
+            .map_err(|e| format!("could not finish a catalog write: {e}"))
+    }
+
+    /// The songs a playlist is still waiting on.
+    pub fn pending_tracks(&self, playlist_id: &str) -> Result<Vec<PendingTrack>, String> {
+        let connection = self.guard();
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT {PENDING_COLUMNS} FROM pending_tracks WHERE playlist_id = ?1 \
+                 ORDER BY added_at, id"
+            ))
+            .map_err(|e| format!("could not read the waiting songs: {e}"))?;
+        let rows = statement
+            .query_map(params![playlist_id], read_pending)
+            .map_err(|e| format!("could not read the waiting songs: {e}"))?;
+
+        let mut found = Vec::new();
+        for row in rows {
+            found.push(row.map_err(|e| format!("could not read a waiting song: {e}"))?);
+        }
+        Ok(found)
+    }
+
+    /// Writes a generated playlist and its waiting songs in one go, so a
+    /// half-written playlist can never be read.
+    pub fn create_generated_playlist(
+        &self,
+        name: &str,
+        entries: &[String],
+        pending: &[PendingTrack],
+    ) -> Result<String, String> {
+        let id = identity::new_id();
+        let now = identity::now_ms();
+        let mut connection = self.guard();
+        let transaction = connection
+            .transaction()
+            .map_err(|e| format!("could not start a catalog write: {e}"))?;
+
+        transaction
+            .execute(
+                "INSERT INTO playlists (id, name, kind, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?4)",
+                params![id, name, GENERATED_KIND, now],
+            )
+            .map_err(|e| format!("could not create the playlist: {e}"))?;
+
+        write_entries(&transaction, &id, entries)?;
+        for track in pending {
+            write_pending(&transaction, &id, track)?;
+        }
+
+        transaction
+            .commit()
+            .map_err(|e| format!("could not finish a catalog write: {e}"))?;
+        Ok(id)
+    }
+
+    /// Rewrites a playlist's entries and drops the waiting songs they no longer
+    /// need, in one write.
+    pub fn resolve_pending(
+        &self,
+        id: &str,
+        entries: &[String],
+        resolved: &[String],
+    ) -> Result<(), String> {
+        let mut connection = self.guard();
+        let transaction = connection
+            .transaction()
+            .map_err(|e| format!("could not start a catalog write: {e}"))?;
+
+        write_entries(&transaction, id, entries)?;
+
+        for pending_id in resolved {
             transaction
                 .execute(
-                    "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?1, ?2, ?3)",
-                    params![id, track_id, position as i64],
+                    "DELETE FROM pending_tracks WHERE playlist_id = ?1 AND id = ?2",
+                    params![id, pending_id],
                 )
-                .map_err(|e| format!("could not write the playlist: {e}"))?;
+                .map_err(|e| format!("could not drop a waiting song: {e}"))?;
         }
 
         transaction
@@ -552,9 +704,15 @@ impl Catalog {
         for playlist in playlists {
             transaction
                 .execute(
-                    "INSERT INTO playlists (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?3) \
+                    "INSERT INTO playlists (id, name, kind, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?4) \
                      ON CONFLICT(id) DO UPDATE SET name = excluded.name",
-                    params![playlist.id, playlist.name, playlist.created_at as i64],
+                    params![
+                        playlist.id,
+                        playlist.name,
+                        playlist.kind,
+                        playlist.created_at as i64
+                    ],
                 )
                 .map_err(|e| format!("could not write a playlist: {e}"))?;
 
@@ -690,9 +848,125 @@ fn read_track(row: &Row<'_>) -> rusqlite::Result<TrackRow> {
     })
 }
 
+fn read_pending(row: &Row<'_>) -> rusqlite::Result<PendingTrack> {
+    Ok(PendingTrack {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        artists: read_list(row.get(2)?),
+        album: row.get(3)?,
+        album_artist: row.get(4)?,
+        genres: read_list(row.get(5)?),
+        isrc: row.get(6)?,
+        cover_url: row.get(7)?,
+        release_date: row.get(8)?,
+        track_number: row.get::<_, Option<i64>>(9)?.map(|value| value as u32),
+        disc_number: row.get::<_, Option<i64>>(10)?.map(|value| value as u32),
+        source: row.get(11)?,
+        source_id: row.get(12)?,
+    })
+}
+
+/// The lists are stored as JSON, so a genre holding a comma survives.
+fn read_list(text: String) -> Vec<String> {
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+fn write_list(values: &[String]) -> String {
+    serde_json::to_string(values).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// The entries of a playlist, rewritten in one go.
+fn write_entries(
+    transaction: &rusqlite::Transaction<'_>,
+    id: &str,
+    entries: &[String],
+) -> Result<(), String> {
+    transaction
+        .execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1", params![id])
+        .map_err(|e| format!("could not rewrite the playlist: {e}"))?;
+
+    for (position, entry) in entries.iter().enumerate() {
+        transaction
+            .execute(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?1, ?2, ?3)",
+                params![id, entry, position as i64],
+            )
+            .map_err(|e| format!("could not write the playlist: {e}"))?;
+    }
+
+    Ok(())
+}
+
+fn write_pending(
+    transaction: &rusqlite::Transaction<'_>,
+    playlist_id: &str,
+    track: &PendingTrack,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            "INSERT INTO pending_tracks (id, playlist_id, title, artists, album, album_artist, \
+             genres, isrc, cover_url, release_date, track_number, disc_number, source, source_id, \
+             added_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                track.id,
+                playlist_id,
+                track.title,
+                write_list(&track.artists),
+                track.album,
+                track.album_artist,
+                write_list(&track.genres),
+                track.isrc,
+                track.cover_url,
+                track.release_date,
+                track.track_number.map(i64::from),
+                track.disc_number.map(i64::from),
+                track.source,
+                track.source_id,
+                identity::now_ms(),
+            ],
+        )
+        .map(|_| ())
+        .map_err(|e| format!("could not write a waiting song: {e}"))
+}
+
+/// The library songs whose audio is still where the row expects it.
+fn present_ids(connection: &Connection) -> Result<HashSet<String>, String> {
+    let mut statement = connection
+        .prepare("SELECT id FROM tracks WHERE missing = 0")
+        .map_err(|e| format!("could not read the catalog: {e}"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("could not read the catalog: {e}"))?;
+
+    let mut found = HashSet::new();
+    for row in rows {
+        found.insert(row.map_err(|e| format!("could not read a catalog row: {e}"))?);
+    }
+    Ok(found)
+}
+
+fn stamp(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
+        .map_err(|e| format!("could not stamp the catalog version: {e}"))
+}
+
+/// Whether a table already has a column, which is what makes an upgrade safe to
+/// run twice.
+fn has_column(connection: &Connection, table: &str, column: &str) -> bool {
+    let Ok(mut statement) = connection.prepare(&format!("PRAGMA table_info({table})")) else {
+        return false;
+    };
+    statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map(|names| names.flatten().any(|name| name == column))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::CUSTOM_KIND;
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("wave-catalog-{name}"));
@@ -883,5 +1157,109 @@ mod tests {
             catalog.meta(LAYOUT_VERSION_KEY).as_deref(),
             Some(LAYOUT_VERSION)
         );
+    }
+
+    fn waiting(id: &str, title: &str) -> PendingTrack {
+        PendingTrack {
+            id: id.to_string(),
+            title: title.to_string(),
+            artists: vec!["An Artist".to_string()],
+            album: "An Album".to_string(),
+            genres: vec!["Trip-Hop".to_string()],
+            cover_url: Some("https://cdn/cover.jpg".to_string()),
+            track_number: Some(4),
+            source: "deezer".to_string(),
+            source_id: "116348632".to_string(),
+            ..PendingTrack::default()
+        }
+    }
+
+    #[test]
+    fn a_generated_playlist_keeps_its_waiting_songs_in_place() {
+        let root = scratch("pending");
+        let catalog = Catalog::open(&root).unwrap();
+        catalog.upsert_track(&song("one", "One", "h")).unwrap();
+
+        let id = catalog
+            .create_generated_playlist(
+                "Made for you",
+                &["one".to_string(), "waiting".to_string()],
+                &[waiting("waiting", "Two")],
+            )
+            .unwrap();
+
+        let read = one_playlist(&catalog, &id);
+        assert_eq!(read.kind, GENERATED_KIND);
+        assert_eq!(read.entries, vec!["one", "waiting"]);
+        // Only the downloaded song is a library song.
+        assert_eq!(read.track_ids, vec!["one"]);
+        assert_eq!(read.pending.len(), 1);
+        assert_eq!(read.pending[0].title, "Two");
+        assert_eq!(read.pending[0].genres, vec!["Trip-Hop"]);
+        assert_eq!(read.pending[0].track_number, Some(4));
+
+        // A download lands on the entry the waiting song held.
+        catalog.upsert_track(&song("two", "Two", "h2")).unwrap();
+        catalog
+            .resolve_pending(
+                &id,
+                &["one".to_string(), "two".to_string()],
+                &["waiting".to_string()],
+            )
+            .unwrap();
+
+        let read = one_playlist(&catalog, &id);
+        assert_eq!(read.entries, vec!["one", "two"]);
+        assert_eq!(read.track_ids, vec!["one", "two"]);
+        assert!(read.pending.is_empty());
+        assert!(catalog.pending_tracks(&id).unwrap().is_empty());
+
+        // A custom playlist still says so.
+        let plain = catalog.create_playlist("By hand").unwrap();
+        assert_eq!(one_playlist(&catalog, &plain).kind, CUSTOM_KIND);
+    }
+
+    #[test]
+    fn a_version_one_catalog_gains_the_waiting_table() {
+        let root = scratch("upgrade");
+        let dir = root.join(CONFIG_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(CATALOG_FILE);
+
+        // The catalog as it stood before generated playlists.
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(
+                "CREATE TABLE tracks (id TEXT PRIMARY KEY, missing INTEGER NOT NULL DEFAULT 0);\
+                 CREATE TABLE playlists (id TEXT PRIMARY KEY, name TEXT NOT NULL, \
+                   created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);\
+                 CREATE TABLE playlist_tracks (playlist_id TEXT NOT NULL, track_id TEXT NOT NULL, \
+                   position INTEGER NOT NULL, PRIMARY KEY (playlist_id, position));\
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+            old.execute(
+                "INSERT INTO playlists (id, name, created_at, updated_at) VALUES ('p', 'Old', 1, 1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let catalog = Catalog::open(&root).unwrap();
+        let lists = catalog.playlists().unwrap();
+        assert_eq!(lists.len(), 1);
+        assert_eq!(lists[0].name, "Old");
+        assert_eq!(lists[0].kind, CUSTOM_KIND);
+        assert!(lists[0].pending.is_empty());
+        drop(catalog);
+
+        // A stamp that did not land leaves the upgrade to run again.
+        {
+            let again = Connection::open(&path).unwrap();
+            again.execute_batch("PRAGMA user_version = 1;").unwrap();
+        }
+
+        let catalog = Catalog::open(&root).unwrap();
+        assert_eq!(catalog.playlists().unwrap().len(), 1);
     }
 }

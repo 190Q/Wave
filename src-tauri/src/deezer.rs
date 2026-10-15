@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Runtime};
 
-use crate::source::{client, env_path, read_env, retry_after, wait_phrase, TrackMeta};
+use crate::source::{client, encode, env_path, read_env, retry_after, wait_phrase, TrackMeta};
 use crate::tools;
 
 const API: &str = "https://api.deezer.com";
@@ -37,6 +37,20 @@ pub struct Entry {
     pub id: String,
     pub meta: TrackMeta,
     pub album_id: Option<String>,
+}
+
+/// A Deezer artist, as a search or a relation hands it back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Artist {
+    pub id: String,
+    pub name: String,
+}
+
+/// One of Deezer's own genres, which is a fixed list rather than free text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Genre {
+    pub id: String,
+    pub name: String,
 }
 
 /// How the album lookups went, so the dialog can say when they were refused.
@@ -192,16 +206,20 @@ fn rate_limited(code: u64, retry: Option<u64>) -> String {
 pub fn playlist(id: &str) -> Result<(String, Vec<Entry>), String> {
     let meta = get(&format!("playlist/{id}"))?;
     let name = meta["title"].as_str().unwrap_or("Playlist").to_string();
+    Ok((name, entries(&format!("playlist/{id}/tracks?limit={PAGE}"))?))
+}
 
-    let mut target = format!("playlist/{id}/tracks?limit={PAGE}");
-    let mut entries = Vec::new();
+/// Every track in a listing, following the paging links.
+fn entries(target: &str) -> Result<Vec<Entry>, String> {
+    let mut target = target.to_string();
+    let mut found = Vec::new();
 
     loop {
         let page = get(&target)?;
 
         for track in page["data"].as_array().into_iter().flatten() {
             if let Some(entry) = entry_of(track) {
-                entries.push(entry);
+                found.push(entry);
             }
         }
 
@@ -211,7 +229,91 @@ pub fn playlist(id: &str) -> Result<(String, Vec<Entry>), String> {
         }
     }
 
-    Ok((name, entries))
+    Ok(found)
+}
+
+/// The artist whose name answers best to a search, if Deezer has one.
+pub fn artist(name: &str) -> Result<Option<Artist>, String> {
+    let reply = get(&format!("search/artist?q={}&limit=1", encode(name)))?;
+    Ok(artist_in(&reply))
+}
+
+fn artist_in(reply: &Value) -> Option<Artist> {
+    let found = reply["data"].as_array()?.first()?;
+    let id = found["id"].as_u64()?;
+    let name = found["name"].as_str()?.trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    Some(Artist {
+        id: id.to_string(),
+        name,
+    })
+}
+
+/// An artist's most played tracks.
+pub fn top_tracks(artist_id: &str, limit: usize) -> Result<Vec<Entry>, String> {
+    entries(&format!("artist/{artist_id}/top?limit={limit}"))
+}
+
+/// The artists Deezer puts alongside this one.
+pub fn related_artists(artist_id: &str) -> Result<Vec<Artist>, String> {
+    let reply = get(&format!("artist/{artist_id}/related"))?;
+    Ok(artists_in(&reply))
+}
+
+fn artists_in(reply: &Value) -> Vec<Artist> {
+    reply["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|found| {
+            let id = found["id"].as_u64()?;
+            let name = found["name"].as_str()?.trim().to_string();
+            if name.is_empty() {
+                return None;
+            }
+            Some(Artist {
+                id: id.to_string(),
+                name,
+            })
+        })
+        .collect()
+}
+
+/// Deezer's fixed genre list, which a library's free text is matched against.
+pub fn genres() -> Result<Vec<Genre>, String> {
+    let reply = get("genre")?;
+    Ok(genre_list(&reply))
+}
+
+fn genre_list(reply: &Value) -> Vec<Genre> {
+    reply["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|found| {
+            let id = found["id"].as_u64()?;
+            let name = found["name"].as_str()?.trim().to_string();
+            if name.is_empty() {
+                return None;
+            }
+            Some(Genre {
+                id: id.to_string(),
+                name,
+            })
+        })
+        .collect()
+}
+
+/// The songs charting in one of Deezer's genres.
+pub fn genre_chart(genre_id: &str) -> Result<Vec<Entry>, String> {
+    entries(&format!("chart/{genre_id}/tracks"))
+}
+
+/// A plain track search, for a library genre Deezer keeps no chart for.
+pub fn search_tracks(query: &str, limit: usize) -> Result<Vec<Entry>, String> {
+    entries(&format!("search?q={}&limit={limit}", encode(query)))
 }
 
 pub fn album(id: &str) -> Result<(String, Vec<TrackMeta>), String> {
@@ -512,6 +614,77 @@ mod tests {
 
         // An album Deezer has not classified carries no genres block.
         assert!(genres_in(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn reads_the_first_artist_of_a_search() {
+        let reply = serde_json::json!({
+            "data": [
+                { "id": 1129431, "name": "The Beatles" },
+                { "id": 2, "name": "The Beatles Tribute" }
+            ]
+        });
+
+        let found = artist_in(&reply).unwrap();
+        assert_eq!(found.id, "1129431");
+        assert_eq!(found.name, "The Beatles");
+
+        // A search that answered with nothing is not an artist.
+        assert!(artist_in(&serde_json::json!({ "data": [] })).is_none());
+    }
+
+    #[test]
+    fn reads_the_related_artists() {
+        let reply = serde_json::json!({
+            "data": [
+                { "id": 1, "name": "  John Lennon " },
+                { "id": 2, "name": "" },
+                { "name": "No id" }
+            ]
+        });
+
+        let found = artists_in(&reply);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "John Lennon");
+        assert_eq!(found[0].id, "1");
+
+        assert!(artists_in(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn reads_the_genre_list() {
+        let reply = serde_json::json!({
+            "data": [
+                { "id": 132, "name": "Pop" },
+                { "id": 152, "name": "Rock" },
+                { "id": 0, "name": "  " }
+            ]
+        });
+
+        let found = genre_list(&reply);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0], Genre { id: "132".to_string(), name: "Pop".to_string() });
+        assert_eq!(found[1].name, "Rock");
+    }
+
+    #[test]
+    fn reads_a_chart_entry() {
+        let track = serde_json::json!({
+            "id": 3135556,
+            "title": "Harder, Better, Faster, Stronger",
+            "artist": { "name": "Daft Punk" },
+            "album": {
+                "id": 302127,
+                "title": "Discovery",
+                "cover_xl": "https://cdn-images.dzcdn.net/images/cover/x/1000x1000-000000-80-0-0.jpg"
+            }
+        });
+
+        let entry = entry_of(&track).unwrap();
+        assert_eq!(entry.id, "3135556");
+        assert_eq!(entry.album_id.as_deref(), Some("302127"));
+        assert_eq!(entry.meta.artists, vec!["Daft Punk"]);
+        assert_eq!(entry.meta.album, "Discovery");
     }
 
     #[test]

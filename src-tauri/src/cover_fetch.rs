@@ -10,7 +10,8 @@ use tauri::{AppHandle, Manager};
 use crate::catalog::Catalog;
 use crate::library::{self, library_root, track_label, Track};
 use crate::progress::Reporter;
-use crate::spotify::{self, client};
+use crate::source::{client, read_env};
+use crate::spotify;
 
 /// Follows one covers fetch, song by song.
 pub const PROGRESS_EVENT: &str = "covers-fetch";
@@ -75,7 +76,7 @@ fn run_inner(
     }
 
     let token = if spotify::signed_in(app) {
-        spotify::access_token(app, &spotify::read_env(app)).ok()
+        spotify::access_token(app, &read_env(app)).ok()
     } else {
         None
     };

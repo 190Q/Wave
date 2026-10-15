@@ -2,10 +2,13 @@ mod analytics;
 mod artwork;
 mod catalog;
 mod cover_fetch;
+mod deezer;
+mod deezer_import;
 mod download;
 mod genre_fetch;
 mod identity;
 mod import;
+mod import_source;
 mod library;
 mod loudness;
 mod lyrics;
@@ -13,9 +16,11 @@ mod lyrics_fetch;
 mod migrate;
 mod playlists;
 mod progress;
+mod source;
 mod spotify;
 mod spotify_import;
 mod state;
+mod tools;
 mod transfer;
 
 use tauri::Manager;
@@ -126,7 +131,7 @@ pub fn run() {
                 }
             }
             state::watch_window(app.handle());
-            spotify_import::watch_config(app.handle());
+            source::watch_config(app.handle());
 
             #[cfg(windows)]
             disable_browser_shortcuts(app.handle());
@@ -171,6 +176,9 @@ pub fn run() {
             spotify::open_spotify_config,
             spotify_import::spotify_import,
             spotify_import::spotify_plan,
+            deezer_import::deezer_import,
+            deezer_import::deezer_plan,
+            deezer_import::deezer_status,
             lyrics_fetch::fetch_lyrics,
             cover_fetch::fetch_covers,
             genre_fetch::fetch_genres,

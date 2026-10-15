@@ -12,7 +12,7 @@ use tauri::{AppHandle, Manager};
 use crate::catalog::Catalog;
 use crate::library::{self, library_root, lyrics_path, track_label, Track};
 use crate::progress::Reporter;
-use crate::spotify::{client, encode};
+use crate::source::{client, encode};
 
 const LRCLIB: &str = "https://lrclib.net/api";
 

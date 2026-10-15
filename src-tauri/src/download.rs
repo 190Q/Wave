@@ -7,7 +7,8 @@ use lofty::picture::{MimeType, Picture, PictureType};
 use lofty::prelude::{Accessor, TagExt};
 use lofty::tag::{ItemKey, Tag, TagType};
 
-use crate::spotify::{client, find_yt_dlp, hide_console, tool_path, Env, TrackMeta, YtDlp};
+use crate::source::{client, Env, TrackMeta};
+use crate::tools::{find_yt_dlp, hide_console, tool_path, YtDlp};
 
 const AUDIO_STEM: &str = "audio";
 

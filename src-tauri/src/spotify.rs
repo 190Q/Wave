@@ -2,16 +2,19 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_opener::OpenerExt;
 
-use crate::library::{library_root, CONFIG_DIR};
+use crate::source::{
+    client, config_dir, encode, ensure_env_file, env_path, now_ms, read_env, retry_after, wait_phrase,
+    Env, TrackMeta,
+};
 use crate::state::Store;
+use crate::tools;
 
 const AUTH_URL: &str = "https://accounts.spotify.com/authorize";
 const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
@@ -23,7 +26,6 @@ const API: &str = "https://api.spotify.com/v1";
 const REDIRECT_PORT: u16 = 45678;
 const SCOPES: &str = "playlist-read-private playlist-read-collaborative";
 
-const ENV_FILE: &str = ".env";
 const TOKEN_FILE: &str = "spotify-token.json";
 
 /// Requests run a minute early rather than risk an expiry mid-download.
@@ -32,45 +34,6 @@ const TOKEN_MARGIN_MS: u64 = 60_000;
 /// The exact string the Spotify app's Redirect URIs must contain.
 pub fn redirect_uri() -> String {
     format!("http://127.0.0.1:{REDIRECT_PORT}")
-}
-
-fn env_template() -> String {
-    format!(
-        "\
-# Spotify credentials for the Import dialog.
-#
-# 1. Create an app at https://developer.spotify.com/dashboard
-# 2. In that app, add this to Redirect URIs, exactly as written:
-#
-#      {}
-#
-#    Spotify refuses the sign-in if it does not match character for character.
-# 3. Paste the app's Client ID and Client Secret below.
-#
-# Downloading also needs yt-dlp and ffmpeg on your PATH. Point the two
-# overrides at an executable if it lives somewhere else.
-SPOTIFY_CLIENT_ID=
-SPOTIFY_CLIENT_SECRET=
-# YTDLP_PATH=
-# FFMPEG_PATH=
-",
-        redirect_uri()
-    )
-}
-
-/// The credentials and tool overrides read from the config `.env`.
-#[derive(Debug, Clone, Default)]
-pub struct Env {
-    pub client_id: String,
-    pub client_secret: String,
-    pub yt_dlp: Option<String>,
-    pub ffmpeg: Option<String>,
-}
-
-impl Env {
-    fn complete(&self) -> bool {
-        !self.client_id.trim().is_empty() && !self.client_secret.trim().is_empty()
-    }
 }
 
 /// What the import dialog shows about the credentials and the tools.
@@ -104,214 +67,12 @@ pub struct SpotifyRef {
     pub id: String,
 }
 
-/// One track's metadata, the Rust side of the old script's `_normalize_item`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct TrackMeta {
-    pub title: String,
-    pub artists: Vec<String>,
-    pub album: String,
-    pub album_artist: String,
-    pub release_date: String,
-    pub track_number: Option<u32>,
-    pub track_total: Option<u32>,
-    pub disc_number: Option<u32>,
-    pub genres: Vec<String>,
-    pub isrc: String,
-    pub cover_url: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 struct Tokens {
     access_token: String,
     refresh_token: String,
     expires_at_ms: u64,
-}
-
-pub fn config_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    Ok(library_root(app)?.join(CONFIG_DIR))
-}
-
-pub fn env_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    Ok(config_dir(app)?.join(ENV_FILE))
-}
-
-/// Writes a commented template when the file is absent, so there is something
-/// to fill in rather than a path the user has to guess at.
-pub fn ensure_env_file<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    let path = env_path(app)?;
-    if !path.exists() {
-        fs::write(&path, env_template())
-            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
-    }
-    Ok(path)
-}
-
-pub fn read_env<R: Runtime>(app: &AppHandle<R>) -> Env {
-    let Ok(path) = env_path(app) else {
-        return Env::default();
-    };
-    let Ok(raw) = fs::read_to_string(path) else {
-        return Env::default();
-    };
-    parse_env(&raw)
-}
-
-fn parse_env(raw: &str) -> Env {
-    let mut env = Env::default();
-    for line in raw.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let value = unquote(value.trim());
-        match key.trim() {
-            "SPOTIFY_CLIENT_ID" => env.client_id = value,
-            "SPOTIFY_CLIENT_SECRET" => env.client_secret = value,
-            "YTDLP_PATH" => env.yt_dlp = Some(value),
-            "FFMPEG_PATH" => env.ffmpeg = Some(value),
-            _ => {}
-        }
-    }
-    env
-}
-
-fn unquote(value: &str) -> String {
-    let trimmed = value.trim();
-    for quote in ['"', '\''] {
-        if trimmed.len() >= 2 && trimmed.starts_with(quote) && trimmed.ends_with(quote) {
-            return trimmed[1..trimmed.len() - 1].to_string();
-        }
-    }
-    trimmed.to_string()
-}
-
-pub(crate) fn client() -> &'static reqwest::blocking::Client {
-    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::blocking::Client::builder()
-            .user_agent("Wave/0.1")
-            .build()
-            .unwrap_or_else(|_| reqwest::blocking::Client::new())
-    })
-}
-
-pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-/// Looks for an executable on PATH, which is where an installer puts it.
-pub fn find_tool(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    let names: Vec<String> = if cfg!(windows) {
-        vec![format!("{name}.exe"), format!("{name}.cmd"), name.to_string()]
-    } else {
-        vec![name.to_string()]
-    };
-
-    for dir in std::env::split_paths(&path) {
-        for candidate in &names {
-            let full = dir.join(candidate);
-            if full.is_file() {
-                return Some(full);
-            }
-        }
-    }
-    None
-}
-
-pub(crate) fn tool_path(override_path: Option<&String>, name: &str) -> Option<PathBuf> {
-    if let Some(explicit) = override_path {
-        let trimmed = explicit.trim();
-        if !trimmed.is_empty() {
-            let path = PathBuf::from(trimmed);
-            return path.is_file().then_some(path);
-        }
-    }
-    find_tool(name)
-}
-
-/// How yt-dlp will be run.
-#[derive(Debug, Clone)]
-pub enum YtDlp {
-    /// A `yt-dlp` executable.
-    Exe(PathBuf),
-    /// The interpreter holding the `yt_dlp` module. pip does install a launcher,
-    /// but into a folder that is usually left off PATH.
-    Python(PathBuf),
-}
-
-impl YtDlp {
-    /// How it was found, for the status the dialog shows.
-    pub fn describe(&self) -> String {
-        match self {
-            YtDlp::Exe(path) => path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "yt-dlp".to_string()),
-            YtDlp::Python(python) => format!("{} -m yt_dlp", python.display()),
-        }
-    }
-}
-
-/// The executable if there is one, otherwise the Python module.
-pub fn find_yt_dlp(override_path: Option<&String>) -> Option<YtDlp> {
-    if let Some(explicit) = override_path {
-        let trimmed = explicit.trim();
-        if !trimmed.is_empty() {
-            let path = PathBuf::from(trimmed);
-            return path.is_file().then_some(YtDlp::Exe(path));
-        }
-    }
-
-    if let Some(path) = find_tool("yt-dlp") {
-        return Some(YtDlp::Exe(path));
-    }
-
-    python_with_module("yt_dlp").map(YtDlp::Python)
-}
-
-/// The first interpreter on PATH that can import `module`.
-fn python_with_module(module: &str) -> Option<PathBuf> {
-    for name in ["python", "python3", "py"] {
-        let Some(python) = find_tool(name) else {
-            continue;
-        };
-
-        let mut command = std::process::Command::new(&python);
-        command.arg("-c").arg(format!("import {module}"));
-        hide_console(&mut command);
-
-        if command
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
-        {
-            return Some(python);
-        }
-    }
-    None
-}
-
-/// Keeps a console window from flashing up for a probe or a download.
-pub(crate) fn hide_console(command: &mut std::process::Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = command;
-    }
 }
 
 static ACCEPTED: Mutex<Option<(String, String)>> = Mutex::new(None);
@@ -341,8 +102,7 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> SpotifyStatus {
     let env_path = env_path(app)
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let yt_dlp = find_yt_dlp(env.yt_dlp.as_ref());
-    let ffmpeg = tool_path(env.ffmpeg.as_ref(), "ffmpeg").is_some();
+    let tools = tools::status(&env);
     let configured = env.complete();
     let pair = credentials(&env);
 
@@ -366,11 +126,7 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> SpotifyStatus {
     }
 
     if problem.is_none() {
-        if yt_dlp.is_none() {
-            problem = Some("yt-dlp was not found. Install it, or set YTDLP_PATH.".to_string());
-        } else if !ffmpeg {
-            problem = Some("ffmpeg was not found. Install it, or set FFMPEG_PATH.".to_string());
-        }
+        problem = tools.problem();
     }
 
     SpotifyStatus {
@@ -378,9 +134,9 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> SpotifyStatus {
         redirect_uri: redirect_uri(),
         configured,
         accepted,
-        yt_dlp: yt_dlp.is_some(),
-        yt_dlp_source: yt_dlp.map(|found| found.describe()).unwrap_or_default(),
-        ffmpeg,
+        yt_dlp: tools.yt_dlp,
+        yt_dlp_source: tools.yt_dlp_source,
+        ffmpeg: tools.ffmpeg,
         message: problem.unwrap_or_else(|| "Spotify is set up.".to_string()),
     }
 }
@@ -436,28 +192,6 @@ fn error_message(body: &str) -> String {
                 .and_then(|value| value["error_description"].as_str().map(str::to_string))
         })
         .unwrap_or_else(|| body.chars().take(200).collect())
-}
-
-/// The seconds Spotify asked us to wait, from the `Retry-After` on a 429.
-fn retry_after(response: &reqwest::blocking::Response) -> Option<u64> {
-    response
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse().ok())
-}
-
-/// A wait said the way a person would, from a count of seconds.
-pub(crate) fn wait_phrase(seconds: u64) -> String {
-    let (count, unit) = match seconds {
-        0..=1 => return "in a second".to_string(),
-        2..=59 => return format!("in {seconds} seconds"),
-        60..=3599 => (seconds.div_ceil(60), "minute"),
-        3600..=86_399 => (seconds.div_ceil(3600), "hour"),
-        _ => (seconds.div_ceil(86_400), "day"),
-    };
-    let plural = if count == 1 { "" } else { "s" };
-    format!("in {count} {unit}{plural}")
 }
 
 fn rate_limited(retry: Option<u64>) -> String {
@@ -665,20 +399,6 @@ fn exchange(env: &Env, code: &str) -> Result<Tokens, String> {
         refresh_token: value["refresh_token"].as_str().unwrap_or_default().to_string(),
         expires_at_ms: now_ms() + value["expires_in"].as_u64().unwrap_or(3600) * 1000,
     })
-}
-
-/// Percent-encodes a value, leaving only the characters a URL can carry bare.
-pub(crate) fn encode(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char)
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
 }
 
 /// Splits a link, a URI or a bare id into what it points at.
@@ -909,24 +629,6 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_env_file() {
-        let env = parse_env(
-            "\
-# a comment
-SPOTIFY_CLIENT_ID=abc
-SPOTIFY_CLIENT_SECRET='shh'
-YTDLP_PATH=\"C:\\tools\\yt-dlp.exe\"
-not a pair
-",
-        );
-
-        assert_eq!(env.client_id, "abc");
-        assert_eq!(env.client_secret, "shh");
-        assert_eq!(env.yt_dlp.as_deref(), Some("C:\\tools\\yt-dlp.exe"));
-        assert!(env.complete());
-    }
-
-    #[test]
     fn the_blocking_client_is_safe_on_a_blocking_thread() {
         let built = tauri::async_runtime::spawn_blocking(|| {
             reqwest::blocking::Client::builder().build().is_ok()
@@ -954,17 +656,6 @@ not a pair
         assert!(limited.contains("not refusing the credentials"));
         // A limit with no header still reads as a wait, not a rejection.
         assert!(refusal(429, None, "").contains("in a few minutes"));
-    }
-
-    #[test]
-    fn says_a_wait_the_way_a_person_would() {
-        assert_eq!(wait_phrase(0), "in a second");
-        assert_eq!(wait_phrase(45), "in 45 seconds");
-        assert_eq!(wait_phrase(60), "in 1 minute");
-        assert_eq!(wait_phrase(119), "in 2 minutes");
-        assert_eq!(wait_phrase(3600), "in 1 hour");
-        assert_eq!(wait_phrase(48_000), "in 14 hours");
-        assert_eq!(wait_phrase(86_400), "in 1 day");
     }
 
     #[test]
@@ -1005,8 +696,6 @@ not a pair
     #[test]
     fn quotes_the_redirect_uri_the_way_spotify_wants_it() {
         assert_eq!(redirect_uri(), "http://127.0.0.1:45678");
-        // The template has to carry it, or the user has nothing to paste.
-        assert!(env_template().contains(&redirect_uri()));
     }
 
     #[test]

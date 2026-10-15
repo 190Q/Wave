@@ -312,7 +312,7 @@ export interface PersistedState {
 /** One entry in the import history. */
 export interface ImportRecord {
   /** Where it came from. */
-  source: "spotify" | "folder" | "wavelist";
+  source: "spotify" | "deezer" | "folder" | "wavelist";
   /** The playlist or folder it brought in. */
   name: string;
   /** A short summary, such as `12 songs`. */
@@ -337,7 +337,19 @@ export interface SpotifyStatus {
   message: string;
 }
 
-/** How far along a Spotify import is. */
+/** What the backend reports about Deezer, which needs no credentials. */
+export interface DeezerStatus {
+  /** Where the config `.env` has to live, for the tool overrides. */
+  envPath: string;
+  ytDlp: boolean;
+  /** How yt-dlp was found, empty when it was not. */
+  ytDlpSource: string;
+  ffmpeg: boolean;
+  /** What to tell the user, in one line. */
+  message: string;
+}
+
+/** How far along a link import is. */
 export interface ImportProgress {
   phase:
     | "authorising"

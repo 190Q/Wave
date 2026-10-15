@@ -11,7 +11,7 @@ use tauri::{AppHandle, Manager};
 use crate::catalog::Catalog;
 use crate::library::{self, track_label, Track};
 use crate::progress::Reporter;
-use crate::spotify::{TrackMeta, client, wait_phrase};
+use crate::source::{client, retry_after, wait_phrase, TrackMeta};
 
 /// Follows one genre pass, song by song.
 pub const PROGRESS_EVENT: &str = "genres-fetch";
@@ -120,15 +120,6 @@ fn classify(status: u16, retry: Option<u64>) -> Answer {
         429 => Answer::RateLimited(retry),
         _ => Answer::Refused(format!("iTunes refused the search ({status})")),
     }
-}
-
-/// The seconds the service asked the pass to wait, from the `Retry-After`.
-fn retry_after(response: &reqwest::blocking::Response) -> Option<u64> {
-    response
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse().ok())
 }
 
 fn wait_for(retry: Option<u64>, backoff_ms: u64) -> u64 {

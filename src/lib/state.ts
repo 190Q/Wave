@@ -4,6 +4,7 @@ import type {
   Collection,
   CollectionFilter,
   CoversOutcome,
+  DeezerStatus,
   GenresOutcome,
   ImportOutcome,
   ImportPlan,
@@ -41,11 +42,11 @@ export const RECENT_THEME_LIMIT = 3;
 /** Sent by the backend when it changes a setting without the UI asking. */
 const SETTINGS_EVENT = "settings-changed";
 
-/** Follows one Spotify import, track by track. */
-const SPOTIFY_PROGRESS_EVENT = "spotify-import";
+/** Follows one link import, track by track, whichever service it came from. */
+const SOURCE_PROGRESS_EVENT = "source-import";
 
-/** Sent when the config `.env` is saved, so the credentials can be re-checked. */
-const SPOTIFY_CONFIG_EVENT = "spotify-config-changed";
+/** Sent when the config `.env` is saved, so the setup can be re-checked. */
+const CONFIG_EVENT = "config-changed";
 
 /** Follows one lyrics fetch, song by song. */
 const LYRICS_PROGRESS_EVENT = "lyrics-fetch";
@@ -99,7 +100,10 @@ export interface AppState {
   /** What the import dialog shows about the Spotify credentials. */
   spotify: SpotifyStatus | null;
   spotifyChecking: boolean;
-  /** The Spotify import in flight, `null` when nothing is running. */
+  /** What it shows about Deezer, which needs the tools and nothing else. */
+  deezer: DeezerStatus | null;
+  deezerChecking: boolean;
+  /** The link import in flight, `null` when nothing is running. */
   importing: ImportProgress | null;
   transferProgress: ImportProgress | null;
   /** The lyrics fetch in flight, and its last result. */
@@ -154,6 +158,8 @@ const state: AppState = {
   notice: null,
   spotify: null,
   spotifyChecking: false,
+  deezer: null,
+  deezerChecking: false,
   importing: null,
   transferProgress: null,
   lyricsProgress: null,
@@ -556,7 +562,7 @@ function scheduleEmit(): void {
 
 export async function init(): Promise<void> {
   watchSettings();
-  watchSpotify();
+  watchSources();
   watchLoudness();
   mountAnalytics({
     player,
@@ -579,6 +585,7 @@ export async function init(): Promise<void> {
     state.notice = describe(error);
     state.ready = true;
   }
+  void refreshDeezerStatus();
   emit();
 }
 
@@ -780,6 +787,34 @@ export async function refreshSpotifyStatus(): Promise<void> {
 
   state.spotifyChecking = false;
   emit();
+}
+
+/** Re-reads the config and reports what Deezer needs: the download tools. */
+export async function refreshDeezerStatus(): Promise<void> {
+  state.deezerChecking = true;
+  emit();
+
+  try {
+    state.deezer = await ipc.deezerStatus();
+  } catch (error) {
+    state.deezer = {
+      envPath: "",
+      ytDlp: false,
+      ytDlpSource: "",
+      ffmpeg: false,
+      message: describe(error),
+    };
+  }
+
+  state.deezerChecking = false;
+  emit();
+}
+
+export type LinkService = "spotify" | "deezer";
+
+export function serviceOf(link: string): LinkService {
+  const value = link.trim().toLowerCase();
+  return value.includes("deezer.") || value.startsWith("deezer:") ? "deezer" : "spotify";
 }
 
 /** A background job is only in the way while it is actually running. */
@@ -1020,27 +1055,22 @@ export async function openSpotifyConfig(): Promise<void> {
   }
 }
 
-/** A Spotify import is only in the way while it is actually running. */
-function spotifyBusy(): boolean {
-  return state.importing !== null && state.importing.phase !== "failed";
+function finishedProgress(
+  phase: "done" | "failed",
+  message: string,
+  failures: string[] = [],
+): ImportProgress {
+  return { phase, done: 0, total: 0, label: "", message, failures, reused: 0 };
 }
 
 /** A failure that stays on screen, rather than a notice that times out. */
 function failedProgress(message: string, failures: string[] = []): ImportProgress {
-  return {
-    phase: "failed",
-    done: 0,
-    total: 0,
-    label: "",
-    message,
-    failures,
-    reused: 0,
-  };
+  return finishedProgress("failed", message, failures);
 }
 
-export async function planSpotify(url: string): Promise<ImportPlan | null> {
+export async function planLink(url: string): Promise<ImportPlan | null> {
   const link = url.trim();
-  if (!link || spotifyBusy()) {
+  if (!link || jobRunning(state.importing)) {
     return null;
   }
 
@@ -1057,7 +1087,7 @@ export async function planSpotify(url: string): Promise<ImportPlan | null> {
   emit();
 
   try {
-    const plan = await ipc.spotifyPlan(link);
+    const plan = serviceOf(link) === "deezer" ? await ipc.deezerPlan(link) : await ipc.spotifyPlan(link);
     state.importing = null;
     emit();
     return plan;
@@ -1070,16 +1100,16 @@ export async function planSpotify(url: string): Promise<ImportPlan | null> {
   }
 }
 
-/** Downloads a Spotify playlist or track and adds it to the library. */
-export async function importSpotify(url: string, downloadDuplicates: boolean): Promise<void> {
+/** Downloads a playlist, album or track from a Spotify or Deezer link. */
+export async function importLink(url: string, downloadDuplicates: boolean): Promise<void> {
   const link = url.trim();
-  if (!link || spotifyBusy()) {
+  if (!link || jobRunning(state.importing)) {
     return;
   }
 
   // The backend sends its own updates from here; this is the first paint.
   state.importing = {
-    phase: "authorising",
+    phase: "resolving",
     done: 0,
     total: 0,
     label: "",
@@ -1090,17 +1120,23 @@ export async function importSpotify(url: string, downloadDuplicates: boolean): P
   emit();
 
   try {
-    const outcome = await ipc.importSpotify(link, downloadDuplicates);
+    const outcome =
+      serviceOf(link) === "deezer"
+        ? await ipc.importDeezer(link, downloadDuplicates)
+        : await ipc.importSpotify(link, downloadDuplicates);
     applyPersisted(outcome.state);
     await rescan();
-    setNotice(importSummary(outcome));
+    const message = importSummary(outcome);
+    setNotice(message);
     state.importing =
       outcome.errors.length > 0
         ? failedProgress(
             `${plural(outcome.songs, "song")} imported, ${outcome.errors.length} failed.`,
             outcome.errors,
           )
-        : null;
+        : outcome.songs === 0
+          ? finishedProgress("done", message)
+          : null;
   } catch (error) {
     const message = describe(error);
     setNotice(message);
@@ -1376,15 +1412,15 @@ export async function toggleMiniPlayer(corner?: number): Promise<void> {
 
 let configTimer: number | null = null;
 
-/** Follows the Spotify import and the config file, for the dialog. */
-function watchSpotify(): void {
+/** Follows the link import and the config file, for the dialog. */
+function watchSources(): void {
   void listen<ImportProgress>("wavelist-import", (event) => {
     state.transferProgress = event.payload;
     emit();
   }).catch(() => {
     // A plain browser has no Tauri event bridge.
   });
-  void listen<ImportProgress>(SPOTIFY_PROGRESS_EVENT, (event) => {
+  void listen<ImportProgress>(SOURCE_PROGRESS_EVENT, (event) => {
     state.importing = event.payload;
     emit();
   }).catch(() => {
@@ -1412,7 +1448,7 @@ function watchSpotify(): void {
     // Same as above.
   });
 
-  void listen(SPOTIFY_CONFIG_EVENT, () => {
+  void listen(CONFIG_EVENT, () => {
     // One save can arrive as several events, so wait for the dust to settle.
     if (configTimer !== null) {
       window.clearTimeout(configTimer);
@@ -1420,6 +1456,7 @@ function watchSpotify(): void {
     configTimer = window.setTimeout(() => {
       configTimer = null;
       void refreshSpotifyStatus();
+      void refreshDeezerStatus();
     }, CONFIG_SETTLE_MS);
   }).catch(() => {
     // Same as above: the browser has no config watcher.

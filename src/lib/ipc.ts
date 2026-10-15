@@ -5,6 +5,7 @@ import type {
   AnalyticsEvent,
   AnalyticsStats,
   CoversOutcome,
+  DeezerStatus,
   GenresOutcome,
   ImportOutcome,
   ImportPlan,
@@ -150,6 +151,24 @@ export function spotifyPlan(url: string): Promise<ImportPlan> {
 /** Downloads a Spotify playlist or track into the library. */
 export function importSpotify(url: string, downloadDuplicates: boolean): Promise<ImportOutcome> {
   return invoke("spotify_import", { url, downloadDuplicates });
+}
+
+/** Reads the config and reports what Deezer needs: the download tools, nothing else. */
+export function deezerStatus(): Promise<DeezerStatus> {
+  return invoke("deezer_status");
+}
+
+/**
+ * Reads a Deezer link and reports which of its tracks the library already has,
+ * so the dialog can ask about them before anything is downloaded.
+ */
+export function deezerPlan(url: string): Promise<ImportPlan> {
+  return invoke("deezer_plan", { url });
+}
+
+/** Downloads a Deezer playlist, album or track into the library. */
+export function importDeezer(url: string, downloadDuplicates: boolean): Promise<ImportOutcome> {
+  return invoke("deezer_import", { url, downloadDuplicates });
 }
 
 export async function pickWaveList(): Promise<string | null> {

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -107,23 +107,13 @@ pub fn import_into_library(
     let mut songs = 0usize;
     let mut images = 0usize;
     let mut lyrics = 0usize;
-    let mut skipped = 0usize;
     let mut duplicates = 0usize;
     let mut similar = 0usize;
     let mut errors = Vec::new();
 
-    let entries =
-        fs::read_dir(source).map_err(|e| format!("could not read {}: {e}", source.display()))?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        if !has_extension(&path, AUDIO_EXTENSIONS) {
-            skipped += 1;
-            continue;
-        }
+    let Contents { audio, skipped } = contents(source)?;
 
+    for (key, path) in audio {
         let Some(file_name) = path.file_name().map(|name| name.to_string_lossy().into_owned())
         else {
             continue;
@@ -142,7 +132,7 @@ pub fn import_into_library(
             Ok((Placed::Duplicate, id)) => {
                 duplicates += 1;
                 playlist_tracks.push(id.clone());
-                by_source.insert(file_name, id);
+                by_source.insert(key, id);
             }
             Ok((
                 Placed::Added {
@@ -157,9 +147,9 @@ pub fn import_into_library(
                 lyrics += usize::from(words);
                 similar += usize::from(near);
                 playlist_tracks.push(id.clone());
-                by_source.insert(file_name, id);
+                by_source.insert(key, id);
             }
-            Err(error) => errors.push(format!("{file_name}: {error}")),
+            Err(error) => errors.push(format!("{key}: {error}")),
         }
     }
 
@@ -188,6 +178,58 @@ pub fn import_into_library(
     };
 
     Ok(Imported { outcome, by_source })
+}
+
+/// The audio a folder holds, and how many of its files were not audio.
+struct Contents {
+    audio: Vec<(String, PathBuf)>,
+    skipped: usize,
+}
+
+fn contents(folder: &Path) -> Result<Contents, String> {
+    let mut found = Contents {
+        audio: Vec::new(),
+        skipped: 0,
+    };
+    let mut seen = HashSet::new();
+    walk(folder, folder, &mut seen, &mut found)?;
+    Ok(found)
+}
+
+fn walk(
+    dir: &Path,
+    folder: &Path,
+    seen: &mut HashSet<PathBuf>,
+    found: &mut Contents,
+) -> Result<(), String> {
+    let real = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if !seen.insert(real) {
+        return Ok(());
+    }
+
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
+        .map_err(|e| format!("could not read {}: {e}", dir.display()))?
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    // Sorted, so the same folder always imports its songs in the same order.
+    entries.sort();
+
+    for path in entries {
+        if path.is_dir() {
+            walk(&path, folder, seen, found)?;
+            continue;
+        }
+        if !path.is_file() || !has_extension(&path, AUDIO_EXTENSIONS) {
+            found.skipped += 1;
+            continue;
+        }
+        if let Some(key) = library::relative(folder, &path) {
+            found.audio.push((key, path));
+        }
+    }
+
+    Ok(())
 }
 
 fn import_one(
@@ -339,6 +381,10 @@ fn clear_staging(root: &Path) {
 }
 
 pub fn remember_import(app: &AppHandle, source: &str, name: &str, outcome: &ImportOutcome) {
+    if outcome.songs == 0 && outcome.duplicates == 0 {
+        return;
+    }
+
     let mut parts = vec![format!(
         "{} song{}",
         outcome.songs,
@@ -456,6 +502,34 @@ mod tests {
 
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
         clear_staging(&scratch("staging-fresh"));
+    }
+
+    #[test]
+    fn names_a_song_by_where_it_sits_under_the_folder() {
+        let dir = scratch("nested");
+        for folder in ["0", "1"] {
+            fs::create_dir_all(dir.join(folder)).unwrap();
+            fs::write(dir.join(folder).join("audio.mp3"), b"a song").unwrap();
+        }
+        fs::write(dir.join("notes.txt"), b"x").unwrap();
+
+        let found = contents(&dir).unwrap();
+
+        let keys: Vec<&str> = found.audio.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(keys, vec!["0/audio.mp3", "1/audio.mp3"]);
+        assert_eq!(found.skipped, 1);
+    }
+
+    #[test]
+    fn finds_the_songs_in_album_subfolders() {
+        let dir = scratch("albums");
+        fs::create_dir_all(dir.join("Album")).unwrap();
+        fs::write(dir.join("Album").join("Song.mp3"), b"a song").unwrap();
+
+        let found = contents(&dir).unwrap();
+
+        assert_eq!(found.audio.len(), 1);
+        assert_eq!(found.audio[0].0, "Album/Song.mp3");
     }
 
     #[test]

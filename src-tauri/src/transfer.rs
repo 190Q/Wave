@@ -16,7 +16,7 @@ use crate::import::{self, ImportOutcome};
 use crate::library;
 use crate::playlists;
 use crate::progress::Reporter;
-use crate::spotify::{self, TrackMeta};
+use crate::source::{now_ms, read_env, TrackMeta};
 use crate::state::Store;
 
 const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024;
@@ -222,12 +222,12 @@ fn run(app: &AppHandle, path: &Path, report: &mut Reporter) -> Result<ImportOutc
         .iter()
         .any(|entry| !existing.contains_key(&key_of_meta(&entry.meta)));
     let tools = if wanted {
-        Some(download::resolve_tools(&spotify::read_env(app))?)
+        Some(download::resolve_tools(&read_env(app))?)
     } else {
         None
     };
 
-    let job = format!("{}-{}", spotify::now_ms(), NEXT_JOB.fetch_add(1, Ordering::Relaxed));
+    let job = format!("{}-{}", now_ms(), NEXT_JOB.fetch_add(1, Ordering::Relaxed));
     let staging = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("transfer").join(&job);
     fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
 
@@ -235,12 +235,15 @@ fn run(app: &AppHandle, path: &Path, report: &mut Reporter) -> Result<ImportOutc
         report.phase("downloading", "Downloading audio directly. Spotify is not needed.");
         report.count(list.tracks.len());
 
+        let mut reused = 0usize;
+
         for (position, entry) in list.tracks.iter().enumerate() {
             let label = entry.meta.title.clone();
             report.at(position + 1, &label);
 
             if existing.contains_key(&key_of_meta(&entry.meta)) {
                 report.reuse(&label);
+                reused += 1;
                 continue;
             }
             let mut meta = entry.meta.clone();
@@ -259,6 +262,7 @@ fn run(app: &AppHandle, path: &Path, report: &mut Reporter) -> Result<ImportOutc
         report.phase("importing", "Restoring the playlist, covers and lyrics.");
         let imported = import::import_into_library(app, &staging, false, None)?;
         let mut outcome = imported.outcome;
+        outcome.duplicates += reused;
 
         let mut playlist: Vec<String> = Vec::new();
         let mut assets: Vec<(&Entry, String)> = Vec::new();

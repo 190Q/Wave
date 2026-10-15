@@ -9,10 +9,13 @@ import {
   getState,
   importFolder,
   importWaveList,
-  importSpotify,
+  importLink,
+  jobRunning,
   openSpotifyConfig,
-  planSpotify,
+  planLink,
+  refreshDeezerStatus,
   refreshSpotifyStatus,
+  serviceOf,
   setNotice,
   subscribe,
   type AppState,
@@ -85,15 +88,21 @@ export function mountImportDialog(): void {
   const render = (): void => {
     body.innerHTML = sectionsHtml(getState(), picked);
     fillIcons(body);
-    paintSpotify();
+    paintLink();
   };
 
-  const paintSpotify = (): void => {
+  const linkValue = (): string =>
+    body.querySelector<HTMLInputElement>("#import-link-url")?.value ?? "";
+
+  const paintLink = (): void => {
     const state = getState();
 
-    const status = body.querySelector<HTMLElement>("#import-spotify-state");
+    const status = body.querySelector<HTMLElement>("#import-link-state");
     if (status) {
-      status.innerHTML = spotifyStateHtml(state, setupOpen);
+      status.innerHTML =
+        serviceOf(linkValue()) === "deezer"
+          ? deezerStateHtml(state)
+          : spotifyStateHtml(state, setupOpen);
     }
 
     const history = body.querySelector<HTMLElement>("#import-history");
@@ -323,10 +332,10 @@ export function mountImportDialog(): void {
       case "wavelist":
         void importWaveList();
         return;
-      case "spotify": {
-        const field = body.querySelector<HTMLInputElement>("#import-spotify-url");
+      case "link": {
+        const field = body.querySelector<HTMLInputElement>("#import-link-url");
         if (field) {
-          void startSpotifyImport(field.value);
+          void startLinkImport(field.value);
         }
         return;
       }
@@ -335,13 +344,17 @@ export function mountImportDialog(): void {
         if (setupOpen && !getState().importing) {
           void refreshSpotifyStatus();
         }
-        paintSpotify();
+        paintLink();
         return;
       case "config":
         void openSpotifyConfig();
         return;
       case "recheck":
-        void refreshSpotifyStatus();
+        if (serviceOf(linkValue()) === "deezer") {
+          void refreshDeezerStatus();
+        } else {
+          void refreshSpotifyStatus();
+        }
         return;
       case "lyrics":
       case "covers":
@@ -372,8 +385,8 @@ export function mountImportDialog(): void {
    * Reads the link before anything is fetched, so the songs the library already
    * has can be asked about rather than quietly downloaded a second time.
    */
-  const startSpotifyImport = async (url: string): Promise<void> => {
-    const plan = await planSpotify(url);
+  const startLinkImport = async (url: string): Promise<void> => {
+    const plan = await planLink(url);
     if (!plan) {
       return;
     }
@@ -388,7 +401,7 @@ export function mountImportDialog(): void {
       });
     }
 
-    await importSpotify(url, downloadDuplicates);
+    await importLink(url, downloadDuplicates);
   };
 
   body.addEventListener("focusin", (event) => {
@@ -426,10 +439,10 @@ export function mountImportDialog(): void {
     }
 
     // Enter in the link field is the same as pressing its button.
-    if (input.id === "import-spotify-url") {
+    if (input.id === "import-link-url") {
       if (event.key === "Enter") {
         event.preventDefault();
-        void startSpotifyImport(input.value);
+        void startLinkImport(input.value);
       }
       return;
     }
@@ -481,7 +494,7 @@ export function mountImportDialog(): void {
   // A status check, a progress update or a finished import all land here.
   subscribe(() => {
     if (dialog.open && !dialog.classList.contains("is-closed")) {
-      paintSpotify();
+      paintLink();
     }
   });
 }
@@ -489,7 +502,7 @@ export function mountImportDialog(): void {
 function sectionsHtml(state: AppState, picked: Map<string, string>): string {
   return [
     localSection(),
-    spotifySection(),
+    linkSection(),
     historySection(),
     ...FETCH_SECTIONS.map((spec) => fetchSection(spec, state, picked)),
   ].join("");
@@ -507,37 +520,37 @@ function localSection(): string {
   );
 }
 
-function spotifySection(): string {
+function linkSection(): string {
   return section(
-    "Spotify",
-    `<p class="import-hint">Paste a track or playlist link.</p>
+    "Import from a link",
+    `<p class="import-hint">Paste a Spotify or Deezer link: a track, a playlist, or a Deezer album. Spotify needs the credentials below; Deezer needs none.</p>
     <div class="import-field">
       <input
         class="import-input"
-        id="import-spotify-url"
+        id="import-link-url"
         type="text"
-        placeholder="https://open.spotify.com/..."
-        aria-label="Spotify link"
+        placeholder="https://open.spotify.com/... or https://www.deezer.com/..."
+        aria-label="Spotify or Deezer link"
         spellcheck="false"
         autocomplete="off"
       />
       <button
         class="pill icon-only"
         type="button"
-        data-import="spotify"
-        aria-label="Import from Spotify"
+        data-import="link"
+        aria-label="Import from the link"
       >
         <span class="btn-icon" data-icon="import"></span>
       </button>
     </div>
-    <div id="import-spotify-state"></div>`,
+    <div id="import-link-state"></div>`,
   );
 }
 
 /** The status line, the setup steps, and whatever the import is doing. */
 function spotifyStateHtml(state: AppState, setupOpen: boolean): string {
   const progress = state.importing;
-  const running = progress !== null && progress.phase !== "failed";
+  const running = jobRunning(progress);
 
   return `${running ? "" : statusHtml(state, setupOpen)}${progress ? progressHtml(progress) : ""}`;
 }
@@ -589,8 +602,41 @@ function setupHtml(status: SpotifyStatus | null): string {
     </div>`;
 }
 
+/** The status line for a Deezer link, which needs the tools and nothing else. */
+function deezerStateHtml(state: AppState): string {
+  const progress = state.importing;
+  const body = jobRunning(progress) ? "" : deezerStatusHtml(state);
+
+  return `${body}${progress ? progressHtml(progress) : ""}`;
+}
+
+function deezerStatusHtml(state: AppState): string {
+  const status = state.deezer;
+  const ready = status?.ytDlp === true && status.ffmpeg;
+
+  const message = status
+    ? status.message
+    : state.deezerChecking
+      ? "Checking the Deezer setup..."
+      : "Deezer has not been checked yet.";
+  const dot = status === null ? "" : ready ? " is-ok" : " is-warn";
+
+  return `
+    <div class="import-status">
+      <span class="import-dot${dot}" aria-hidden="true"></span>
+      <span class="import-status-text">${escapeHtml(message)}</span>
+      <button class="pill" type="button" data-import="recheck">Check again</button>
+    </div>
+    <div class="import-actions">
+      <button class="pill" type="button" data-import="config">Open the config folder</button>
+    </div>
+    <p class="import-hint">${escapeHtml(downloadHint(status))}</p>`;
+}
+
 /** Says which downloader was found, so its location is never a mystery. */
-function downloadHint(status: SpotifyStatus | null): string {
+function downloadHint(
+  status: { ytDlp: boolean; ytDlpSource: string; ffmpeg: boolean } | null,
+): string {
   const ytDlp = status?.ytDlp
     ? `yt-dlp found: ${status.ytDlpSource}`
     : "yt-dlp not found. Install it, or set YTDLP_PATH.";
@@ -652,12 +698,26 @@ function historyHtml(state: AppState): string {
     .map(
       (record) => `
       <li class="import-history-row">
-        <span class="import-history-source">${record.source === "spotify" ? "Spotify" : record.source === "wavelist" ? "Wave" : "Folder"}</span>
+        <span class="import-history-source">${escapeHtml(sourceLabel(record.source))}</span>
         <span class="import-history-name">${escapeHtml(record.name)}</span>
         <span class="import-history-detail">${escapeHtml(record.detail)}</span>
       </li>`,
     )
     .join("");
+}
+
+/** Which service an import history row came from. */
+function sourceLabel(source: string): string {
+  switch (source) {
+    case "spotify":
+      return "Spotify";
+    case "deezer":
+      return "Deezer";
+    case "wavelist":
+      return "Wave";
+    default:
+      return "Folder";
+  }
 }
 
 interface FetchSection {

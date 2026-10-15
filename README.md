@@ -9,8 +9,8 @@ It is a [Tauri](https://tauri.app) 2 app: a Rust backend for everything that
 touches the disk or the network, and a small TypeScript front end (no framework,
 just the DOM) for the interface.
 
-Wave also imports from Spotify: paste a playlist or track link and it downloads
-the audio, tags the files, and drops them into your library.
+Wave also imports from Spotify and Deezer: paste a playlist, album or track link
+and it downloads the audio, tags the files, and drops them into your library.
 
 ## Platform support
 
@@ -112,8 +112,10 @@ newer (Ubuntu 22.04+, Debian 12+, Fedora 36+ and so on) and are x86_64 only.
   screen corners.
 - **Window memory.** Remembers its size, position, and monitor between launches,
   with nine `Ctrl+Shift+1..9` slots for saved window frames and actions.
-- **Spotify import.** Downloads a playlist or track via `yt-dlp` + `ffmpeg`,
-  tags the files, and skips anything you already have.
+- **Spotify and Deezer import.** Paste a link from either and Wave downloads a
+  playlist, album or track via `yt-dlp` + `ffmpeg`, tags the files, and skips
+  anything you already have. Spotify needs a developer app of your own; Deezer
+  needs nothing but the two download tools.
 - **Wave Swell.** A pinned entry in the library that opens a reading of your
   listening: minutes listened, split by music, audiobooks and podcasts; top
   songs, artists, genres and albums; and how your top five artists moved across
@@ -185,6 +187,8 @@ The Spotify import additionally needs, but only if you use it:
 - A **Spotify developer app** (free) for its Client ID and Secret.
 - **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** on your `PATH`.
 - **[ffmpeg](https://ffmpeg.org/)** on your `PATH`.
+
+The Deezer import needs only the last two.
 
 Nothing else is required. The library, the scanner, and the loudness analysis
 work offline with no extra packages. Playback on Linux runs through WebKitGTK's
@@ -288,6 +292,20 @@ browser window to sign in; the token is cached afterwards.
 > playlists you belong to. Spotify's own editorial playlists will fail with a 404,
 > and the dialog explains this when it happens.
 
+## Deezer import
+
+Deezer needs no setup of its own. Paste a playlist, album or track link into the
+same field in the import dialog and Wave reads it from Deezer's public
+catalogue, then downloads the audio exactly as it does for Spotify. `yt-dlp`
+and `ffmpeg` are the only things it needs, as described above.
+
+Deezer's own editorial playlists work here, which is the opposite of Spotify,
+where the API refuses to hand them over. A playlist its owner marked **Private**
+is the one thing that will not open. The dialog says so when it happens, and
+switching the Private toggle off on Deezer makes that link work. Deezer's
+playlists are public by default, so a playlist of your own is normally readable
+as it stands.
+
 ## Troubleshooting
 
 - **The window never appears.** Wave keeps the window hidden until the theme and
@@ -298,6 +316,9 @@ browser window to sign in; the token is cached afterwards.
 - **Spotify says a playlist is missing (404).** It is almost certainly one of
   Spotify's own editorial playlists, which the API will not hand to apps. Use a
   playlist you own.
+- **Deezer says the playlist is Private.** The API reads public playlists only.
+  Open the playlist on Deezer, switch the **Private** toggle off, and paste the
+  link again.
 - **Spotify says yt-dlp or ffmpeg was not found.** Install them and make sure
   they are on `PATH`, or set `YTDLP_PATH` / `FFMPEG_PATH` in the config `.env`.
 - **A song will not play.** Wave never guesses tags — a file with no artist tag

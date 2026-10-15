@@ -75,22 +75,27 @@ fn run_inner(
 
     let staging = staging_dir(app, &reference.id)?;
     report.phase("downloading", &download_message(todo, duplicates));
-    report.count(tracks.len());
+    // The count is what is about to be downloaded, not the length of the
+    // playlist, so the readout and the message above agree.
+    report.count(todo);
 
     // Kept in the order Spotify gave.
     let mut entries: Vec<Entry> = Vec::new();
+    let mut downloading = 0usize;
 
     for (index, meta) in tracks.iter().enumerate() {
         let label = track_label(meta);
-        report.at(index + 1, &label);
 
         if !download_duplicates {
             if let Some(id) = existing.get(&meta_key(meta)) {
                 entries.push(Entry::Known(id.clone()));
-                report.reuse();
+                report.reuse(&label);
                 continue;
             }
         }
+
+        downloading += 1;
+        report.at(downloading, &label);
 
         match download::download(&tools, meta, &staging.join(index.to_string())) {
             Ok(_) => entries.push(Entry::Fetched(staged_key(index))),

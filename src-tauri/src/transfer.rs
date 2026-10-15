@@ -240,7 +240,7 @@ fn run(app: &AppHandle, path: &Path, report: &mut Reporter) -> Result<ImportOutc
             report.at(position + 1, &label);
 
             if existing.contains_key(&key_of_meta(&entry.meta)) {
-                report.reuse();
+                report.reuse(&label);
                 continue;
             }
             let mut meta = entry.meta.clone();

@@ -90,8 +90,10 @@ impl Reporter {
         self.send();
     }
 
-    /// An item the library already had, so nothing was done for it.
-    pub fn reuse(&mut self) {
+    /// An item the library already had, so nothing was done for it. The label
+    /// keeps the readout on the song being passed over.
+    pub fn reuse(&mut self, label: &str) {
+        self.label = label.to_string();
         self.reused += 1;
         self.send();
     }

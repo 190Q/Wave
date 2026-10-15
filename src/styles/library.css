@@ -173,6 +173,36 @@
   color: var(--muted);
 }
 
+/* A collection whose cover has nothing to draw from yet. */
+.mosaic-empty {
+  background: var(--accent-soft);
+}
+
+/* One job the sheet is following: a generation, or a playlist download. */
+.sheet-progress {
+  padding: 0.5rem 0.45rem 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.sheet-progress.is-failed {
+  color: var(--danger);
+}
+
+.sheet-progress-line {
+  overflow-wrap: anywhere;
+}
+
+.sheet-progress-failures {
+  list-style: none;
+  padding: 0.25rem 0 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  overflow-wrap: anywhere;
+}
+
 /* A short sidebar cannot spare the footer; the list needs the room. */
 @media (max-height: 40rem) {
   .sheet-foot {

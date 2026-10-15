@@ -165,6 +165,98 @@
   white-space: nowrap;
 }
 
+/* A song a generated playlist picked that has not been downloaded yet. */
+.pending-cover {
+  flex: none;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.35rem;
+  background-color: var(--raise);
+  background-position: center;
+  background-size: cover;
+}
+
+.pending-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.pending-text .track-title {
+  display: block;
+}
+
+.pending-sub {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+/* A hollow ring while the song is only a catalogue entry. */
+.pending-mark {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border: 0.0625rem solid rgb(255 255 255 / 0.28);
+  border-radius: 50%;
+}
+
+.track-download {
+  flex: none;
+  width: 1.6rem;
+  height: 1.6rem;
+  display: grid;
+  place-items: center;
+  background: none;
+  border: 0;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.track-row:hover .track-download,
+.track-download:focus-visible {
+  opacity: 1;
+}
+
+.track-download:hover {
+  color: var(--text);
+}
+
+/* A generated playlist nothing has been downloaded into yet. */
+.generated-cover {
+  display: grid;
+  place-items: center;
+  width: var(--thumb);
+  height: var(--thumb);
+  border-radius: 0.5rem;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.generated-cover .btn-icon svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.detail-cover .generated-cover {
+  width: 7rem;
+  height: 7rem;
+  border-radius: 0.75rem;
+  box-shadow: 0 0.75rem 1.5rem rgb(0 0 0 / 0.45);
+}
+
+.detail-cover .generated-cover .btn-icon svg {
+  width: 2rem;
+  height: 2rem;
+}
+
+.detail-progress:empty {
+  display: none;
+}
+
 .track-artist {
   flex: none;
   max-width: 9rem;

@@ -6,10 +6,13 @@ import {
   createPlaylist,
   deletePlaylist,
   deleteTracks,
+  downloadPending,
+  generatePlaylist,
   getState,
   playCollection,
   playFromCollection,
   playTrackInContext,
+  refreshRecommendStatus,
   removeTracksFromPlaylist,
   renamePlaylist,
   reorderPlaylist,
@@ -44,6 +47,8 @@ import type {
   Collection,
   CollectionFilter,
   CollectionKind,
+  ImportProgress,
+  PendingTrack,
   SwellBucket,
   SwellPeriod,
   SwellSummary,
@@ -147,6 +152,10 @@ export function mountLibrary(): void {
 
   /** The selected songs, in the order they appear in the list. */
   const selectedTrackIds = (): string[] => shownTrackIds().filter((id) => selection.has(id));
+
+  /** The selected songs the library does not hold yet. */
+  const selectedPendingIds = (): string[] =>
+    selectedTrackIds().filter((id) => getState().pendingById.has(id));
 
   /** Drops the selection without touching the rows, for a re-render. */
   const resetSelection = (): void => {
@@ -290,9 +299,11 @@ export function mountLibrary(): void {
   });
 
   newPlaylist?.addEventListener("click", () => {
-    creating = true;
-    renaming = null;
-    render();
+    openNewPlaylistMenu(newPlaylist, () => {
+      creating = true;
+      renaming = null;
+      render();
+    });
   });
 
   filterInput.addEventListener("input", () => {
@@ -379,6 +390,24 @@ export function mountLibrary(): void {
       return;
     }
 
+    const downloadButton = target.closest<HTMLElement>("[data-track-download]");
+    if (downloadButton?.dataset.trackDownload && openCollectionId) {
+      const id = downloadButton.dataset.trackDownload;
+      // Downloading a row that is part of a selection takes the whole selection.
+      const wanted = selection.has(id) && selection.size > 1 ? selectedPendingIds() : [id];
+      if (wanted.length > 0) {
+        void downloadPending(openCollectionId, wanted);
+      }
+      return;
+    }
+
+    const downloadAll = target.closest<HTMLElement>("[data-download]");
+    if (downloadAll?.dataset.download) {
+      // An empty list is every pending entry in the playlist.
+      void downloadPending(downloadAll.dataset.download, []);
+      return;
+    }
+
     const likeButton = target.closest<HTMLElement>("[data-like]");
     if (likeButton?.dataset.like) {
       bounce(likeButton);
@@ -410,7 +439,9 @@ export function mountLibrary(): void {
 
       // A plain click picks the row out; clicking it again plays it.
       if (selection.size === 1 && selection.has(trackId)) {
-        playFromCollection(openCollectionId, trackId);
+        if (getState().tracksById.has(trackId)) {
+          playFromCollection(openCollectionId, trackId);
+        }
         return;
       }
       selectOnly(trackId);
@@ -726,11 +757,12 @@ function swipePanel(root: HTMLElement, direction: 1 | -1): void {
 
 function paintDetail(list: HTMLElement, state: AppState, collection: Collection | undefined): void {
   const signature = collection
-    ? `${collection.id}\u0000${collection.name}\u0000${collection.trackIds.join("|")}`
+    ? `${collection.id}\u0000${collection.name}\u0000${collection.entries.join("|")}`
     : "";
 
   if (list.dataset.detail === signature) {
     syncLikes(list, state);
+    syncProgress(list, state, collection);
     return;
   }
 
@@ -739,6 +771,49 @@ function paintDetail(list: HTMLElement, state: AppState, collection: Collection 
   list.innerHTML = collection ? renderDetail(state, collection) : "";
   fillIcons(list);
   hydrateCovers(list);
+  syncProgress(list, state, collection);
+}
+
+/** Fills the line under a generated playlist's header, without repainting its rows. */
+function syncProgress(list: HTMLElement, state: AppState, collection: Collection | undefined): void {
+  const holder = list.querySelector<HTMLElement>("#detail-progress");
+  if (!holder) {
+    return;
+  }
+
+  const progress =
+    collection && state.downloadPlaylistId === collection.id ? state.downloadProgress : null;
+  const signature = progress
+    ? `${progress.phase}\u0000${progress.done}\u0000${progress.total}\u0000${progress.failures.length}`
+    : "";
+  if (holder.dataset.progress === signature) {
+    return;
+  }
+
+  holder.dataset.progress = signature;
+  holder.innerHTML = progress ? progressHtml(progress) : "";
+}
+
+/** One job's line, with the last few failures under it. */
+function progressHtml(progress: ImportProgress): string {
+  const counted = progress.total > 0 ? `${progress.done} of ${progress.total}` : "";
+  const line = [counted, progress.message].filter(Boolean).join(" - ");
+  const failures = progress.failures.slice(-4);
+  const rest = progress.failures.length - failures.length;
+  const failed = progress.phase === "failed";
+
+  return `
+    <div class="sheet-progress${failed ? " is-failed" : ""}" aria-live="polite">
+      <p class="sheet-progress-line">${escapeHtml(line)}</p>
+      ${
+        failures.length > 0
+          ? `<ul class="sheet-progress-failures">
+        ${failures.map((failure) => `<li>${escapeHtml(failure)}</li>`).join("")}
+        ${rest > 0 ? `<li>and ${rest} more</li>` : ""}
+      </ul>`
+          : ""
+      }
+    </div>`;
 }
 
 /** Flips the hearts in place, leaving the rows themselves alone. */
@@ -790,14 +865,12 @@ function renderList(
       continue;
     }
 
-    const editable = collection.kind === "playlist";
+    const editable = isEditable(collection);
     rows.push(`
       <div class="entry${isPinned(collection) ? " is-pinned" : ""}" data-collection="${escapeHtml(collection.id)}" role="button" tabindex="0">
         <span class="entry-cover">
-          ${collectionCoverHtml(collection, state.tracksById)}
-          <button class="cover-play" type="button" data-play="${escapeHtml(collection.id)}" aria-label="Play ${escapeHtml(collection.name)}">
-            <span class="btn-icon" data-icon="play"></span>
-          </button>
+          ${collectionCover(state, collection)}
+          ${coverPlayHtml(collection)}
         </span>
         <span class="entry-text">
           <span class="crate-name">${highlightHtml(collection.name, state.query, state.settings.searchAlgorithm)}</span>
@@ -815,64 +888,170 @@ function renderList(
 }
 
 function renderDetail(state: AppState, collection: Collection): string {
+  const generated = collection.kind === "generated";
+  const reorderable = collection.kind === "playlist";
   const tracks = collection.trackIds
     .map((id) => state.tracksById.get(id))
     .filter((track): track is Track => track !== undefined);
   const totalMs = tracks.reduce((sum, track) => sum + track.durationMs, 0);
-  const reorderable = collection.kind === "playlist";
+  const pendingCount = generated
+    ? collection.entries.filter((id) => state.pendingById.has(id)).length
+    : 0;
 
-  const summary = [songCount(tracks.length), totalMs > 0 ? formatTotalDuration(totalMs) : null]
+  const summary = [
+    songCount(collection.entries.length),
+    totalMs > 0 ? formatTotalDuration(totalMs) : null,
+    pendingCount > 0 ? `${pendingCount} to download` : null,
+  ]
     .filter((part): part is string => part !== null)
     .join(", ");
 
-  const rows = tracks
-    .map((track, index) => {
-      const liked = state.likes.has(track.id);
-      return `
-        <li class="track-row${reorderable ? " is-reorderable" : ""}"${reorderable ? ' draggable="true"' : ""} data-track-index="${index}" data-track="${escapeHtml(track.id)}">
-          ${reorderable ? `<span class="track-grip" aria-hidden="true"><span class="btn-icon" data-icon="grip"></span></span>` : `<span class="track-grip"></span>`}
-          <button class="track-like${liked ? " is-on" : ""}" type="button" data-like="${escapeHtml(track.id)}" aria-pressed="${liked}" aria-label="${liked ? "Remove from Liked Songs" : "Add to Liked Songs"}">
-            <span class="btn-icon" data-icon="${liked ? "like-filled" : "like"}"></span>
-          </button>
-          <span class="track-index">${index + 1}</span>
-          <span class="track-title">${escapeHtml(track.title)}</span>
-          <span class="track-artist">${escapeHtml(track.artist ?? "")}</span>
-          <span class="track-time">${formatDuration(track.durationMs)}</span>
-          <button class="track-add" type="button" data-track-add="${escapeHtml(track.id)}" aria-label="Add ${escapeHtml(track.title)} to a playlist">
-            <span class="btn-icon" data-icon="add"></span>
-          </button>
-        </li>`;
-    })
-    .join("");
+  const rows = generated
+    ? collection.entries
+        .map((id, index) => {
+          const track = state.tracksById.get(id);
+          if (track) {
+            return trackRowHtml(state, track, index, false);
+          }
+          const pending = state.pendingById.get(id);
+          return pending ? pendingRowHtml(pending, index) : "";
+        })
+        .join("")
+    : tracks.map((track, index) => trackRowHtml(state, track, index, reorderable)).join("");
 
   return `
     <div class="detail">
       <div class="detail-head">
         <span class="detail-cover">
-          ${collectionCoverHtml(collection, state.tracksById)}
-          <button class="cover-play" type="button" data-play="${escapeHtml(collection.id)}" aria-label="Play ${escapeHtml(collection.name)}">
-            <span class="btn-icon" data-icon="play"></span>
-          </button>
+          ${collectionCover(state, collection)}
+          ${coverPlayHtml(collection)}
         </span>
         <div class="detail-meta">
           <p class="detail-kind">${escapeHtml(kindLabel(collection.kind))}</p>
           <h3 class="detail-name">${escapeHtml(collection.name)}</h3>
           <p class="detail-sub">${escapeHtml(summary)}</p>
-          <div class="detail-actions">
-            <button class="pill pill-strong" type="button" data-play="${escapeHtml(collection.id)}">
+          <div class="detail-actions">${detailActions(collection, pendingCount)}</div>
+        </div>
+      </div>
+      ${generated ? `<div class="detail-progress" id="detail-progress"></div>` : ""}
+      ${collection.entries.length > 0 ? `<ol class="tracks">${rows}</ol>` : `<p class="empty">Nothing in here yet.</p>`}
+    </div>`;
+}
+
+/** One library song's row. */
+function trackRowHtml(state: AppState, track: Track, index: number, reorderable: boolean): string {
+  const liked = state.likes.has(track.id);
+  return `
+    <li class="track-row${reorderable ? " is-reorderable" : ""}"${reorderable ? ' draggable="true"' : ""} data-track-index="${index}" data-track="${escapeHtml(track.id)}">
+      ${reorderable ? `<span class="track-grip" aria-hidden="true"><span class="btn-icon" data-icon="grip"></span></span>` : `<span class="track-grip"></span>`}
+      <button class="track-like${liked ? " is-on" : ""}" type="button" data-like="${escapeHtml(track.id)}" aria-pressed="${liked}" aria-label="${liked ? "Remove from Liked Songs" : "Add to Liked Songs"}">
+        <span class="btn-icon" data-icon="${liked ? "like-filled" : "like"}"></span>
+      </button>
+      <span class="track-index">${index + 1}</span>
+      <span class="track-title">${escapeHtml(track.title)}</span>
+      <span class="track-artist">${escapeHtml(track.artist ?? "")}</span>
+      <span class="track-time">${formatDuration(track.durationMs)}</span>
+      <button class="track-add" type="button" data-track-add="${escapeHtml(track.id)}" aria-label="Add ${escapeHtml(track.title)} to a playlist">
+        <span class="btn-icon" data-icon="add"></span>
+      </button>
+    </li>`;
+}
+
+/** One row of a generated playlist that has not been downloaded yet. */
+function pendingRowHtml(pending: PendingTrack, index: number): string {
+  const title = pending.title ?? "";
+  const meta = [(pending.artists ?? []).join(", "), pending.album ?? ""]
+    .filter(Boolean)
+    .join(" - ");
+  const cover = pending.coverUrl ? ` style="${coverImageStyle(pending.coverUrl)}"` : "";
+
+  return `
+    <li class="track-row is-pending" data-track-index="${index}" data-track="${escapeHtml(pending.id)}">
+      <span class="track-grip"></span>
+      <span class="pending-cover"${cover}></span>
+      <span class="track-index">${index + 1}</span>
+      <span class="pending-text">
+        <span class="track-title">${escapeHtml(title)}</span>
+        <span class="pending-sub">${escapeHtml(meta)}</span>
+      </span>
+      <span class="pending-mark" title="Not downloaded" aria-hidden="true"></span>
+      <button class="track-download" type="button" data-track-download="${escapeHtml(pending.id)}" aria-label="Download ${escapeHtml(title)}">
+        <span class="btn-icon" data-icon="import"></span>
+      </button>
+    </li>`;
+}
+
+/** The detail header's buttons: Play and Shuffle, or Download while songs are pending. */
+function detailActions(collection: Collection, pendingCount: number): string {
+  const id = escapeHtml(collection.id);
+  const menu = isEditable(collection)
+    ? `<button class="pill icon-only" type="button" data-menu="${id}" aria-label="Playlist actions">...</button>`
+    : "";
+
+  if (collection.kind === "generated" && pendingCount > 0) {
+    return `
+            <button class="pill pill-strong" type="button" data-download="${id}">
+              <span class="btn-icon" data-icon="import"></span>
+              <span>Download ${plural(pendingCount, "song")}</span>
+            </button>
+            ${menu}`;
+  }
+
+  return `
+            <button class="pill pill-strong" type="button" data-play="${id}">
               <span class="btn-icon" data-icon="play"></span>
               <span>Play</span>
             </button>
-            <button class="pill" type="button" data-shuffle="${escapeHtml(collection.id)}">
+            <button class="pill" type="button" data-shuffle="${id}">
               <span class="btn-icon" data-icon="shuffle"></span>
               <span>Shuffle</span>
             </button>
-            ${reorderable ? `<button class="pill icon-only" type="button" data-menu="${escapeHtml(collection.id)}" aria-label="Playlist actions">...</button>` : ""}
-          </div>
-        </div>
-      </div>
-      ${tracks.length > 0 ? `<ol class="tracks">${rows}</ol>` : `<p class="empty">Nothing in here yet.</p>`}
-    </div>`;
+            ${menu}`;
+}
+
+function coverPlayHtml(collection: Collection): string {
+  if (collection.kind === "generated" && collection.trackIds.length === 0) {
+    return "";
+  }
+
+  return `<button class="cover-play" type="button" data-play="${escapeHtml(collection.id)}" aria-label="Play ${escapeHtml(collection.name)}">
+            <span class="btn-icon" data-icon="play"></span>
+          </button>`;
+}
+
+/** A collection's cover, from its library songs or from the first pick still to download. */
+function collectionCover(state: AppState, collection: Collection): string {
+  if (collection.kind !== "generated" || collection.trackIds.length > 0) {
+    return collectionCoverHtml(collection, state.tracksById);
+  }
+
+  const url = firstPendingCover(state, collection);
+  if (url) {
+    return `<span class="mosaic single"><span class="mosaic-cell" style="${coverImageStyle(url)}"></span></span>`;
+  }
+
+  return `<span class="generated-cover"><span class="btn-icon" data-icon="import"></span></span>`;
+}
+
+/** The cover of the first entry the catalogue still has to fetch. */
+function firstPendingCover(state: AppState, collection: Collection): string | null {
+  for (const id of collection.entries) {
+    const cover = state.pendingById.get(id)?.coverUrl;
+    if (cover) {
+      return cover;
+    }
+  }
+  return null;
+}
+
+/** A pending entry's cover comes straight from the catalogue, so no CSP is in the way. */
+function coverImageStyle(url: string): string {
+  return `background-image: url('${url.replace(/'/g, "%27")}')`;
+}
+
+/** A playlist the user can rename and delete; a generated one included. */
+function isEditable(collection: Collection): boolean {
+  return collection.kind === "playlist" || collection.kind === "generated";
 }
 
 /** The pinned entry that opens the pane. */
@@ -1167,7 +1346,8 @@ function renderLibrary(state: AppState): string {
     </div>
     ${state.root ? `<p class="folder-path" title="${escapeHtml(state.root)}">${escapeHtml(state.root)}</p>` : ""}
     <p class="folders-note">${escapeHtml(notes.join(". "))}</p>
-    ${errors ? `<ul class="folder-list">${errors}</ul>` : ""}`;
+    ${errors ? `<ul class="folder-list">${errors}</ul>` : ""}
+    ${state.generateProgress ? progressHtml(state.generateProgress) : ""}`;
 }
 
 /** The right-click menu for a song or a selection, opened where the pointer is. */
@@ -1183,32 +1363,91 @@ function openTrackMenu(
   const count = `${trackIds.length} songs`;
   const allLiked = trackIds.every((id) => state.likes.has(id));
 
-  const items: MenuItem[] = [
-    {
+  const everyHeld = trackIds.every((id) => state.tracksById.has(id));
+  const everyPending = trackIds.every((id) => state.pendingById.has(id));
+
+  const items: MenuItem[] = [];
+
+  if (everyHeld) {
+    items.push({
       label: `${allLiked ? "Unlike" : "Like"}${many ? ` ${count}` : ""}`,
       action: () => {
         bounceHearts(row, trackIds);
         void setTracksLiked(trackIds, !allLiked);
       },
-    },
-    { label: "Add to playlist", action: () => openAddToPlaylist(addAnchor(row), trackIds) },
-  ];
+    });
+    items.push({ label: "Add to playlist", action: () => openAddToPlaylist(addAnchor(row), trackIds) });
+  }
+
+  if (everyPending) {
+    items.push({
+      label: many ? `Download ${count}` : "Download",
+      action: () => void downloadPending(collectionId, trackIds),
+    });
+  }
 
   // Only a playlist the user made can drop a song; a generated one cannot.
-  if (collection?.kind === "playlist") {
+  if (collection?.kind === "playlist" && everyHeld) {
     items.push({
       label: many ? `Remove ${count} from this playlist` : "Remove from this playlist",
       action: () => void removeFromPlaylist(collection.id, trackIds),
     });
   }
 
-  items.push({
-    label: many ? `Delete ${count} from the library` : "Delete song",
-    danger: true,
-    action: () => void removeTracks(trackIds),
-  });
+  if (everyHeld) {
+    items.push({
+      label: many ? `Delete ${count} from the library` : "Delete song",
+      danger: true,
+      action: () => void removeTracks(trackIds),
+    });
+  }
 
   openMenu(row, items, at);
+}
+
+/** The menu the New playlist button opens. */
+function openNewPlaylistMenu(anchor: HTMLElement, onEmpty: () => void): void {
+  const state = getState();
+  const recommend = state.recommend;
+  const genres = libraryGenres(state);
+
+  // Read again, so the taste entry is as current as the record allows.
+  void refreshRecommendStatus();
+
+  // The reason it cannot be offered yet sits in the label, where the pointer is.
+  const taste = recommend
+    ? recommend.enough
+      ? { label: "Generate from my taste", disabled: false }
+      : { label: `Generate from my taste (${recommend.note})`, disabled: true }
+    : { label: "Generate from my taste (reading your listening)", disabled: true };
+
+  openMenu(anchor, [
+    { label: "Empty playlist", action: onEmpty },
+    {
+      ...taste,
+      action: () => void generatePlaylist("taste", null),
+    },
+    {
+      label: genres.length > 0 ? "Generate by genre" : "Generate by genre (no genre tags yet)",
+      disabled: genres.length === 0,
+      action: () => openGenreMenu(anchor, genres),
+    },
+  ]);
+}
+
+/** The genres the library holds, which are the ones a genre playlist can be built from. */
+function libraryGenres(state: AppState): string[] {
+  return state.collections
+    .filter((collection) => collection.kind === "genre")
+    .map((collection) => collection.name);
+}
+
+/** The genre list hangs off the same button the menu did. */
+function openGenreMenu(anchor: HTMLElement, genres: string[]): void {
+  openMenu(
+    anchor,
+    genres.map((genre) => ({ label: genre, action: () => void generatePlaylist("genre", genre) })),
+  );
 }
 
 /** Flips every heart in the selection, so the rows follow the menu. */
@@ -1286,7 +1525,7 @@ function openPlaylistMenu(anchor: HTMLElement, id: string, onRename: () => void)
 
 async function removePlaylist(id: string): Promise<void> {
   const collection = collectionById(id);
-  if (collection && collection.trackIds.length > 0) {
+  if (collection && collection.entries.length > 0) {
     const confirmed = await confirmDialog({
       title: "Delete playlist",
       message: `Are you sure you want to delete "${collection.name}"? The songs in it stay in your library.`,
@@ -1346,6 +1585,8 @@ function kindLabel(kind: CollectionKind): string {
       return "Playlist";
     case "playlist":
       return "Playlist";
+    case "generated":
+      return "Generated playlist";
     case "artist":
       return "Artist";
     case "album":

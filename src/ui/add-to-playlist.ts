@@ -28,6 +28,11 @@ function playlistFields(playlist: Playlist): readonly string[] {
   return [playlist.name];
 }
 
+/** Only the playlists a song can be put in; a generated one is filled by Wave. */
+function addablePlaylists(playlists: Playlist[]): Playlist[] {
+  return playlists.filter((playlist) => playlist.kind !== "generated");
+}
+
 /** Identifies the playlist data a set of rows was built from. */
 function playlistsSignature(playlists: Playlist[]): string {
   return playlists
@@ -69,8 +74,8 @@ export function openAddToPlaylist(anchor: HTMLElement, trackIds: string[]): void
   }
 
   const included = new Set(
-    getState()
-      .playlists.filter((playlist) => trackIds.every((id) => playlist.trackIds.includes(id)))
+    addablePlaylists(getState().playlists)
+      .filter((playlist) => trackIds.every((id) => playlist.trackIds.includes(id)))
       .map((playlist) => playlist.id),
   );
 
@@ -99,12 +104,13 @@ export function openAddToPlaylist(anchor: HTMLElement, trackIds: string[]): void
   const paintList = (): void => {
     const state = getState();
     const query = search.value.trim();
+    const playlists = addablePlaylists(state.playlists);
     const ranked = scoreItems(
-      state.playlists,
+      playlists,
       query,
       state.settings.searchAlgorithm,
       playlistFields,
-      state.playlists,
+      playlists,
     ).map((entry) => entry.item);
 
     // What the track is already in comes first, the rest follows.

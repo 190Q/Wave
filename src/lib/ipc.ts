@@ -6,6 +6,7 @@ import type {
   AnalyticsStats,
   CoversOutcome,
   DeezerStatus,
+  GenerateOutcome,
   GenresOutcome,
   ImportOutcome,
   ImportPlan,
@@ -14,7 +15,9 @@ import type {
   LyricsOutcome,
   PersistedState,
   PlayRecord,
+  PlaylistMode,
   RecommendationSeeds,
+  RecommendStatus,
   ScanSummary,
   Session,
   Settings,
@@ -80,6 +83,21 @@ export function renamePlaylist(id: string, name: string): Promise<PersistedState
 
 export function deletePlaylist(id: string): Promise<PersistedState> {
   return invoke("delete_playlist", { id });
+}
+
+/** Whether the listening record holds enough to generate a playlist from. */
+export function recommendStatus(): Promise<RecommendStatus> {
+  return invoke("recommend_status");
+}
+
+/** Fills a new playlist from the catalogue, by taste or by one genre. */
+export function generatePlaylist(mode: PlaylistMode, genre: string | null): Promise<GenerateOutcome> {
+  return invoke("generate_playlist", { mode, genre });
+}
+
+/** Downloads a generated playlist's pending entries. An empty list means all of them. */
+export function downloadPlaylist(playlistId: string, entryIds: string[]): Promise<ImportOutcome> {
+  return invoke("download_playlist", { playlistId, entryIds });
 }
 
 export function addToPlaylist(id: string, trackIds: string[]): Promise<PersistedState> {

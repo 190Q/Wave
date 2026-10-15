@@ -51,7 +51,8 @@
 }
 
 .now-title {
-  margin: 0.4rem 0;
+  margin: calc(0.4rem - 0.2em) 0;
+  padding: 0.2em 0;
   font-size: clamp(2.25rem, 5vw, 4.5rem);
   font-weight: 700;
   line-height: 1.02;

@@ -110,9 +110,9 @@ export function scoreItems<T>(
     .map((entry) => ({ item: entry.item, score: entry.score }));
 }
 
-/** The text a track is matched on: its tags plus the file name. */
+/** The text a track is matched on: its tags. */
 export function trackFields(track: Track): readonly (string | null)[] {
-  return [track.title, track.artist, track.album, track.genre, track.fileName];
+  return [track.title, track.artist, track.album, track.genre];
 }
 
 /** Ranked track matches, so the caller can cap the list without losing hits. */

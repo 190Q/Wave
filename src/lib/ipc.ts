@@ -8,6 +8,7 @@ import type {
   GenresOutcome,
   ImportOutcome,
   ImportPlan,
+  LibraryInfo,
   LoudnessOutcome,
   LyricsOutcome,
   PersistedState,
@@ -110,6 +111,11 @@ export function scanLibrary(): Promise<ScanSummary> {
   return invoke("scan_library");
 }
 
+/** What the library holds on disk, for the settings panel. */
+export function libraryInfo(): Promise<LibraryInfo> {
+  return invoke("library_info");
+}
+
 /** Measures the loudness of the given songs, so playback can level them. */
 export function analyseLoudness(trackIds: string[]): Promise<LoudnessOutcome> {
   return invoke("analyse_loudness", { trackIds });
@@ -191,8 +197,8 @@ export function artworkColour(trackId: string, path: string): Promise<string> {
   return invoke("artwork_colour", { trackId, path });
 }
 
-export function loadLyrics(path: string): Promise<string | null> {
-  return invoke("load_lyrics", { path });
+export function loadLyrics(trackId: string): Promise<string | null> {
+  return invoke("load_lyrics", { trackId });
 }
 
 /** Native folder picker. Returns `null` when the user cancels. */

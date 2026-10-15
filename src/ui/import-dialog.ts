@@ -315,7 +315,7 @@ export function mountImportDialog(): void {
       case "folder":
         void importFolder(() => choiceDialog({
           title: "Import this folder",
-          message: "Add only the songs to your library, or also create a playlist from this folder?",
+          message: "Add only the songs to your library, or also create a playlist from this folder? Songs that share a title but differ by artist or album stay separate tracks, and songs whose audio the library already has are skipped.",
           confirmLabel: "As a playlist",
           cancelLabel: "Songs only",
         }));
@@ -620,9 +620,9 @@ function progressHtml(progress: ImportProgress): string {
 function duplicateMessage(plan: ImportPlan): string {
   const what = `${plan.duplicates} of ${plan.total} ${
     plan.total === 1 ? "song is" : "songs are"
-  } already in your library`;
+  } already in your library, with the identical audio`;
   const which = plan.examples.length > 0 ? ` (${plan.examples.join(", ")})` : "";
-  return `${what}${which}. Download them again?`;
+  return `${what}${which}. Songs that only share a title are imported as their own tracks. Download them again?`;
 }
 
 function failuresHtml(failures: string[]): string {

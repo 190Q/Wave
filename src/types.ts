@@ -1,7 +1,6 @@
 export interface Track {
   id: string;
   path: string;
-  fileName: string;
   title: string;
   /** `null` when the file carries no tag. Never guessed. */
   artist: string | null;
@@ -429,11 +428,20 @@ export interface ScanSummary {
   errors: string[];
 }
 
+export interface LibraryInfo {
+  formatVersion: number;
+  tracks: number;
+  missing: number;
+  dbBytes: number;
+}
+
 export interface ImportOutcome {
   songs: number;
   images: number;
   lyrics: number;
   skipped: number;
+  duplicates: number;
+  similar: number;
   playlist: string | null;
   errors: string[];
   state: PersistedState;

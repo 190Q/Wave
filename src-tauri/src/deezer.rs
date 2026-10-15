@@ -306,14 +306,17 @@ fn genre_list(reply: &Value) -> Vec<Genre> {
         .collect()
 }
 
+/// How many songs a chart is asked for. Without this Deezer hands back ten.
+const CHART_PAGE: usize = 100;
+
 /// The songs charting in one of Deezer's genres.
 pub fn genre_chart(genre_id: &str) -> Result<Vec<Entry>, String> {
-    entries(&format!("chart/{genre_id}/tracks"))
+    entries(&format!("chart/{genre_id}/tracks?limit={CHART_PAGE}"))
 }
 
-/// A plain track search, for a library genre Deezer keeps no chart for.
-pub fn search_tracks(query: &str, limit: usize) -> Result<Vec<Entry>, String> {
-    entries(&format!("search?q={}&limit={limit}", encode(query)))
+/// The songs the world is playing right now.
+pub fn trending() -> Result<Vec<Entry>, String> {
+    entries(&format!("chart/0/tracks?limit={CHART_PAGE}"))
 }
 
 pub fn album(id: &str) -> Result<(String, Vec<TrackMeta>), String> {

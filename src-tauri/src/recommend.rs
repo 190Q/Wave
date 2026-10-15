@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::Path;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -7,8 +9,10 @@ use tauri::{AppHandle, Manager};
 
 use crate::analytics::{Affinity, Analytics, RecommendationSeeds, TrackAffinity};
 use crate::catalog::Catalog;
+use crate::cover_fetch;
 use crate::deezer;
 use crate::import_source;
+use crate::library;
 use crate::playlists;
 use crate::progress::Reporter;
 use crate::source::TrackMeta;
@@ -34,12 +38,20 @@ const SEEDS: usize = 50;
 const TOP_ARTISTS: usize = 5;
 const ARTIST_TRACKS: usize = 20;
 
+/// How many loved artists a run chooses its few from, which is where the
+/// variety between two runs of the same record comes from.
+const ARTIST_CHOICES: usize = 10;
+
 /// The artists beside the loved ones, which is where new music comes from.
 const RELATED_ARTISTS: usize = 3;
 const RELATED_TRACKS: usize = 10;
 
 /// How many of the record's genres are charted.
 const TOP_GENRES: usize = 3;
+
+/// What a song on the chart of the moment is worth. Below a loved artist, above
+/// nothing, so the playlist keeps its own taste but leans on today too.
+const TRENDING: f64 = 0.35;
 
 /// The pause between Deezer calls, so a run of them does not read as a flood.
 const PACE_MS: u64 = 150;
@@ -52,6 +64,11 @@ const BESIDE: f64 = 0.5;
 
 /// A genre says less about one song than the artist does.
 const GENRE_WEIGHT: f64 = 0.6;
+
+/// How far a song's score may wobble, so two runs of the same record are not
+/// the same list. Kept under the smallest signal the ranking uses, which is the
+/// liked bonus, so taste still decides and only near equals swap places.
+const JITTER: f64 = 0.2;
 
 /// A song the library already holds is still a song, but a new one is worth
 /// more.
@@ -93,6 +110,43 @@ impl Mode {
             "taste" => Ok(Mode::Taste),
             "genre" => Ok(Mode::Genre),
             other => Err(format!("{other} is not a way to build a playlist")),
+        }
+    }
+}
+
+/// A small xorshift, seeded from the OS through a fresh UUID. The ranking wants
+/// a little unpredictability, not secrecy.
+struct Rng(u64);
+
+impl Rng {
+    fn new() -> Self {
+        Self::seeded(uuid::Uuid::new_v4().as_u128() as u64)
+    }
+
+    fn seeded(seed: u64) -> Self {
+        Self(seed | 1)
+    }
+
+    fn next(&mut self) -> u64 {
+        let mut value = self.0;
+        value ^= value << 13;
+        value ^= value >> 7;
+        value ^= value << 17;
+        self.0 = value;
+        value
+    }
+
+    /// A value in `0.0..1.0`.
+    fn unit(&mut self) -> f64 {
+        (self.next() >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// Shuffles in place, so the same pool is not walked in the same order
+    /// twice.
+    fn shuffle<T>(&mut self, items: &mut [T]) {
+        for index in (1..items.len()).rev() {
+            let swap = (self.next() % (index as u64 + 1)) as usize;
+            items.swap(index, swap);
         }
     }
 }
@@ -185,9 +239,9 @@ impl Candidate {
         }
     }
 
-    fn score(&self, taste: &Taste) -> f64 {
+    fn score(&self, taste: &Taste, rng: &mut Rng) -> f64 {
         let affinity = taste.artist(&self.artist()) + GENRE_WEIGHT * taste.genre(&self.genres);
-        let mut score = self.weight * (1.0 + affinity);
+        let mut score = self.weight * (1.0 + affinity) + rng.unit() * JITTER;
         if taste.liked.contains(&self.key()) {
             score += LIKED_BONUS;
         }
@@ -198,14 +252,15 @@ impl Candidate {
     }
 }
 
-fn rank(taste: &Taste, candidates: Vec<Candidate>) -> Vec<Candidate> {
+fn rank(taste: &Taste, candidates: Vec<Candidate>, rng: &mut Rng) -> Vec<Candidate> {
     let mut scored: Vec<(f64, Candidate)> = dedupe(candidates)
         .into_iter()
         .filter(|candidate| !taste.skipped.contains(&candidate.key()))
-        .map(|candidate| (candidate.score(taste), candidate))
+        .map(|candidate| (candidate.score(taste, rng), candidate))
         .collect();
 
-    // Ties are broken by name, so the same record always picks the same songs.
+    // Two songs that wobbled to the same place are still separated the same way
+    // every run.
     scored.sort_by(|(left, a), (right, b)| {
         right
             .partial_cmp(left)
@@ -390,7 +445,22 @@ fn generate_inner(
     let genres = ask(report, "catalogue", "Reading Deezer's genres.", deezer::genres)
         .unwrap_or_default();
 
-    let pool = pool(mode, genre, &taste, &genres, &held, report);
+    let genre_artists = match genre {
+        Some(genre) => artists_in_genre(&catalog, genre),
+        None => Vec::new(),
+    };
+
+    let mut rng = Rng::new();
+    let pool = pool(
+        mode,
+        genre,
+        &taste,
+        &genres,
+        &genre_artists,
+        &held,
+        report,
+        &mut rng,
+    );
     if pool.is_empty() {
         return Err(match genre {
             Some(genre) => format!("Deezer has nothing for {genre}"),
@@ -399,7 +469,7 @@ fn generate_inner(
     }
 
     report.phase("ranking", "Choosing the songs.");
-    let chosen = rank(&taste, pool);
+    let chosen = rank(&taste, pool, &mut rng);
     if chosen.is_empty() {
         return Err("nothing in Deezer's catalogue matched your listening".to_string());
     }
@@ -419,6 +489,13 @@ fn generate_inner(
         }
     }
 
+    if !pending.is_empty() {
+        let root = library::library_root(app)?;
+        report.phase("covers", &cover_message(pending.len()));
+        report.count(pending.len());
+        fetch_covers(&root, &mut pending, report);
+    }
+
     let name = unique_name(&catalog, &playlist_name(mode, genre));
     let playlist_id = catalog.create_generated_playlist(&name, &entries, &pending)?;
 
@@ -435,7 +512,7 @@ fn generate_inner(
 
 fn playlist_name(mode: Mode, genre: Option<&str>) -> String {
     match (mode, genre) {
-        (Mode::Genre, Some(genre)) => format!("{genre} picks"),
+        (Mode::Genre, Some(genre)) => format!("{genre} Mix"),
         _ => "Made for you".to_string(),
     }
 }
@@ -462,22 +539,33 @@ fn pool(
     genre: Option<&str>,
     taste: &Taste,
     genres: &[deezer::Genre],
+    artists: &[String],
     held: &HashMap<String, String>,
     report: &mut Reporter,
+    rng: &mut Rng,
 ) -> Vec<Candidate> {
     let mut found = Vec::new();
 
     if let Some(genre) = genre {
-        found.extend(genre_pool(genre, genres, WANTED, held, report));
+        found.extend(genre_pool(genre, genres, artists, WANTED, held, report, rng));
     }
 
     if mode == Mode::Taste {
-        found.extend(artist_pool(taste, WANTED, held, report));
+        // What is charting today, so a playlist made now is not the one made
+        // last month.
+        found.extend(entries_pool(
+            ask(report, "catalogue", "Reading what is charting now.", deezer::trending)
+                .unwrap_or_default(),
+            TRENDING,
+            None,
+            held,
+        ));
+        found.extend(artist_pool(taste, WANTED, held, report, rng));
         for (name, _) in taste.genres.iter().take(TOP_GENRES) {
             found.extend(chart_pool(name, genres, BESIDE, held, report));
         }
     } else {
-        found.extend(artist_pool(taste, BESIDE, held, report));
+        found.extend(artist_pool(taste, BESIDE, held, report, rng));
     }
 
     found
@@ -489,53 +577,77 @@ fn artist_pool(
     weight: f64,
     held: &HashMap<String, String>,
     report: &mut Reporter,
+    rng: &mut Rng,
 ) -> Vec<Candidate> {
-    let wanted: Vec<&(String, f64)> = taste.artists.iter().take(TOP_ARTISTS).collect();
+    // Which of the loved artists a run draws on is the other half of what makes
+    // two runs differ.
+    let mut wanted: Vec<String> = taste
+        .artists
+        .iter()
+        .take(ARTIST_CHOICES)
+        .map(|(name, _)| name.clone())
+        .collect();
+    rng.shuffle(&mut wanted);
+    wanted.truncate(TOP_ARTISTS);
+
     report.count(wanted.len());
-
     let mut found = Vec::new();
-    for (position, (name, _)) in wanted.iter().enumerate() {
+    for (position, name) in wanted.iter().enumerate() {
         report.at(position + 1, name);
+        found.extend(artist_songs(name, weight, None, held, report, rng));
+    }
 
-        let Some(artist) = ask(report, "catalogue", &format!("Looking for {name}."), || {
-            deezer::artist(name)
+    found
+}
+
+/// One artist's top songs, and the top songs of the artists beside them.
+fn artist_songs(
+    name: &str,
+    weight: f64,
+    genre: Option<&str>,
+    held: &HashMap<String, String>,
+    report: &mut Reporter,
+    rng: &mut Rng,
+) -> Vec<Candidate> {
+    let Some(artist) = ask(report, "catalogue", &format!("Looking for {name}."), || {
+        deezer::artist(name)
+    })
+    .flatten() else {
+        return Vec::new();
+    };
+
+    let mut found = entries_pool(
+        ask(report, "catalogue", &format!("Reading the top songs of {name}."), || {
+            deezer::top_tracks(&artist.id, ARTIST_TRACKS)
         })
-        .flatten() else {
-            continue;
-        };
+        .unwrap_or_default(),
+        weight,
+        genre,
+        held,
+    );
 
+    let mut related = ask(
+        report,
+        "catalogue",
+        &format!("Looking for artists like {name}."),
+        || deezer::related_artists(&artist.id),
+    )
+    .unwrap_or_default();
+    rng.shuffle(&mut related);
+
+    for other in related.into_iter().take(RELATED_ARTISTS) {
         found.extend(entries_pool(
-            ask(report, "catalogue", &format!("Reading the top songs of {name}."), || {
-                deezer::top_tracks(&artist.id, ARTIST_TRACKS)
-            })
+            ask(
+                report,
+                "catalogue",
+                &format!("Reading the top songs of {}.", other.name),
+                || deezer::top_tracks(&other.id, RELATED_TRACKS),
+            )
             .unwrap_or_default(),
-            weight,
-            None,
+            weight * BESIDE,
+            genre,
             held,
         ));
-
-        let related = ask(
-            report,
-            "catalogue",
-            &format!("Looking for artists like {name}."),
-            || deezer::related_artists(&artist.id),
-        )
-        .unwrap_or_default();
-
-        for other in related.into_iter().take(RELATED_ARTISTS) {
-            found.extend(entries_pool(
-                ask(
-                    report,
-                    "catalogue",
-                    &format!("Reading the top songs of {}.", other.name),
-                    || deezer::top_tracks(&other.id, RELATED_TRACKS),
-                )
-                .unwrap_or_default(),
-                weight * BESIDE,
-                None,
-                held,
-            ));
-        }
     }
 
     found
@@ -565,16 +677,16 @@ fn chart_pool(
     )
 }
 
-/// The songs for the genre the user asked for. A genre Deezer has no chart for
-/// becomes a plain search, which the sheet is told about.
 fn genre_pool(
     genre: &str,
     genres: &[deezer::Genre],
+    artists: &[String],
     weight: f64,
     held: &HashMap<String, String>,
     report: &mut Reporter,
+    rng: &mut Rng,
 ) -> Vec<Candidate> {
-    match genre_id(genres, genre) {
+    let mut found = match genre_id(genres, genre) {
         Some(id) => entries_pool(
             ask(report, "catalogue", &format!("Reading the {genre} chart."), || {
                 deezer::genre_chart(&id)
@@ -586,22 +698,79 @@ fn genre_pool(
         ),
         None => {
             report.fail(format!(
-                "Deezer keeps no {genre} chart, so this is a loose match."
+                "Deezer keeps no {genre} chart, so this comes from the artists you have in it."
             ));
-            entries_pool(
-                ask(
-                    report,
-                    "catalogue",
-                    &format!("Searching Deezer for {genre}."),
-                    || deezer::search_tracks(genre, KEEP),
-                )
-                .unwrap_or_default(),
-                weight,
-                Some(genre),
-                held,
-            )
+            Vec::new()
         }
+    };
+
+    // The same few artists every time would make every run the same list.
+    let mut wanted = artists.to_vec();
+    rng.shuffle(&mut wanted);
+    wanted.truncate(TOP_ARTISTS);
+
+    report.count(wanted.len());
+    for (position, name) in wanted.iter().enumerate() {
+        report.at(position + 1, name);
+        found.extend(artist_songs(name, weight, Some(genre), held, report, rng));
     }
+
+    found.retain(|candidate| !is_filler(&candidate.title, genre));
+    found
+}
+
+/// Words that say nothing about the song, so a title left holding only these
+/// after the genre is a compilation filler rather than a pick.
+const FILLER_MARKERS: [&str; 9] = [
+    "mix", "mixes", "vol", "volume", "edit", "version", "remix", "compilation", "original",
+];
+
+fn is_filler(title: &str, genre: &str) -> bool {
+    let title = fold(title);
+    let genre = fold(genre);
+    if title == genre {
+        return true;
+    }
+
+    let Some(rest) = title.strip_prefix(&format!("{genre} ")) else {
+        return false;
+    };
+
+    let words: Vec<&str> = rest
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+
+    !words.is_empty()
+        && words
+            .iter()
+            .all(|word| word.chars().all(|c| c.is_ascii_digit()) || FILLER_MARKERS.contains(word))
+}
+
+/// The artists the library files under a genre, the ones it holds most of
+/// first.
+fn artists_in_genre(catalog: &Catalog, genre: &str) -> Vec<String> {
+    let wanted = fold(genre);
+    let mut counts: HashMap<String, (usize, String)> = HashMap::new();
+
+    for row in catalog.tracks().unwrap_or_default() {
+        if fold(row.genre.as_deref().unwrap_or_default()) != wanted {
+            continue;
+        }
+        let Some(artist) = row.artist.filter(|name| !name.trim().is_empty()) else {
+            continue;
+        };
+        let entry = counts.entry(fold(&artist)).or_insert((0, artist));
+        entry.0 += 1;
+    }
+
+    let mut found: Vec<(usize, String)> = counts.into_values().collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| fold(&a.1).cmp(&fold(&b.1))));
+    found
+        .into_iter()
+        .take(ARTIST_CHOICES)
+        .map(|(_, name)| name)
+        .collect()
 }
 
 /// The Deezer genre a library's free text answers to, if any does.
@@ -678,6 +847,35 @@ fn ask<T>(
     }
 }
 
+fn fetch_covers(root: &Path, pending: &mut [PendingTrack], report: &mut Reporter) {
+    let dir = root.join(library::CONFIG_DIR).join(library::PENDING_DIR);
+    if fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+
+    for (position, track) in pending.iter_mut().enumerate() {
+        let label = format!("{} - {}", track.artists.join(", "), track.title);
+        report.at(position + 1, &label);
+
+        let Some(bytes) = cover_fetch::look_up(&track.artists.join(", "), &track.title) else {
+            continue;
+        };
+        let extension = if cover_fetch::is_png(&bytes) { "png" } else { "jpg" };
+        let target = library::pending_cover_path(root, &track.id, extension);
+        if fs::write(&target, &bytes).is_err() {
+            continue;
+        }
+        track.cover_path = library::relative(root, &target);
+    }
+}
+
+fn cover_message(total: usize) -> String {
+    if total == 1 {
+        return "Looking for 1 cover.".to_string();
+    }
+    format!("Looking for {total} covers.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -689,6 +887,27 @@ mod tests {
             skipped: HashSet::new(),
             liked: HashSet::new(),
         }
+    }
+
+    /// A fixed seed, so a test that is not about the wobble gets the same
+    /// answer every run.
+    fn rng() -> Rng {
+        Rng::seeded(0x5eed)
+    }
+
+    /// A pool wide enough that the ranking has to leave some of it out.
+    fn many(count: usize) -> Vec<Candidate> {
+        (0..count)
+            .map(|n| {
+                song(
+                    &format!("s{n}"),
+                    &format!("Song {n}"),
+                    &format!("Artist {n}"),
+                    &format!("Album {n}"),
+                    WANTED,
+                )
+            })
+            .collect()
     }
 
     fn song(id: &str, title: &str, artist: &str, album: &str, weight: f64) -> Candidate {
@@ -712,6 +931,50 @@ mod tests {
         kept.iter().map(|candidate| candidate.id.clone()).collect()
     }
 
+    fn row(id: &str, artist: &str, genre: &str) -> crate::catalog::TrackRow {
+        crate::catalog::TrackRow {
+            id: id.to_string(),
+            rel_path: format!("songs/{id}/audio.mp3"),
+            title: format!("Song {id}"),
+            artist: Some(artist.to_string()),
+            genre: Some(genre.to_string()),
+            ..crate::catalog::TrackRow::default()
+        }
+    }
+
+    #[test]
+    fn drops_a_song_that_is_only_the_genre_name() {
+        assert!(is_filler("Breakbeat", "Breakbeat"));
+        assert!(is_filler("BREAKBEAT 2000", "Breakbeat"));
+        assert!(is_filler("Breakbeat (Original Mix)", "Breakbeat"));
+        assert!(is_filler("Breakbeat Vol. 2", "Breakbeat"));
+
+        // A song that merely opens with the genre is a song.
+        assert!(!is_filler("Rock the Casbah", "Rock"));
+        assert!(!is_filler("Breakbeat of My Heart", "Breakbeat"));
+    }
+
+    #[test]
+    fn the_artists_of_a_genre_come_from_the_library() {
+        let catalog = Catalog::in_memory().unwrap();
+        for (id, artist, genre) in [
+            ("a", "Aphex Twin", "Breakbeat"),
+            ("b", "Aphex Twin", "Breakbeat"),
+            ("c", "Somebody Else", "Breakbeat"),
+            ("d", "A Rock Band", "Rock"),
+        ] {
+            catalog.upsert_track(&row(id, artist, genre)).unwrap();
+        }
+
+        // The artist the library holds most of comes first, and the genre is
+        // matched whatever its case.
+        assert_eq!(
+            artists_in_genre(&catalog, "breakbeat"),
+            vec!["Aphex Twin".to_string(), "Somebody Else".to_string()]
+        );
+        assert!(artists_in_genre(&catalog, "Nothing").is_empty());
+    }
+
     #[test]
     fn caps_one_artist_at_three_songs() {
         let pool: Vec<Candidate> = (0..6)
@@ -726,7 +989,7 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(rank(&taste(), pool).len(), MAX_PER_ARTIST);
+        assert_eq!(rank(&taste(), pool, &mut rng()).len(), MAX_PER_ARTIST);
     }
 
     #[test]
@@ -743,7 +1006,7 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(rank(&taste(), pool).len(), MAX_PER_ALBUM);
+        assert_eq!(rank(&taste(), pool, &mut rng()).len(), MAX_PER_ALBUM);
     }
 
     #[test]
@@ -753,7 +1016,7 @@ mod tests {
             song("high", "Hey Jude", "The Beatles", "Past Masters", WANTED),
         ];
 
-        assert_eq!(ids(&rank(&taste(), pool)), vec!["high", "low"]);
+        assert_eq!(ids(&rank(&taste(), pool, &mut rng())), vec!["high", "low"]);
     }
 
     #[test]
@@ -766,7 +1029,7 @@ mod tests {
             song("two", "Let It Be", "The Beatles", "Let It Be", WANTED),
         ];
 
-        assert_eq!(ids(&rank(&taste, pool)), vec!["two"]);
+        assert_eq!(ids(&rank(&taste, pool, &mut rng())), vec!["two"]);
     }
 
     #[test]
@@ -785,24 +1048,12 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(rank(&taste(), pool).len(), MAX_HELD);
+        assert_eq!(rank(&taste(), pool, &mut rng()).len(), MAX_HELD);
     }
 
     #[test]
     fn fills_the_list_up_to_fifty() {
-        let pool: Vec<Candidate> = (0..80)
-            .map(|n| {
-                song(
-                    &format!("s{n}"),
-                    &format!("Song {n}"),
-                    &format!("Artist {n}"),
-                    &format!("Album {n}"),
-                    WANTED,
-                )
-            })
-            .collect();
-
-        assert_eq!(rank(&taste(), pool).len(), KEEP);
+        assert_eq!(rank(&taste(), many(80), &mut rng()).len(), KEEP);
     }
 
     #[test]
@@ -815,26 +1066,37 @@ mod tests {
             song("liked", "Liked", "Artist", "Other Album", WANTED),
         ];
 
-        assert_eq!(ids(&rank(&taste, pool))[0], "liked");
+        assert_eq!(ids(&rank(&taste, pool, &mut rng()))[0], "liked");
     }
 
     #[test]
-    fn the_same_record_always_picks_the_same_songs() {
-        let pool: Vec<Candidate> = (0..40)
-            .map(|n| {
-                song(
-                    &format!("s{n}"),
-                    &format!("Song {n}"),
-                    &format!("Artist {}", n % 7),
-                    &format!("Album {}", n % 11),
-                    WANTED,
-                )
-            })
-            .collect();
-
-        let once = rank(&taste(), pool.clone());
-        let twice = rank(&taste(), pool);
+    fn the_same_seed_picks_the_same_songs() {
+        let once = rank(&taste(), many(40), &mut rng());
+        let twice = rank(&taste(), many(40), &mut rng());
         assert_eq!(ids(&once), ids(&twice));
+    }
+
+    #[test]
+    fn the_next_run_picks_a_different_list() {
+        let one = rank(&taste(), many(40), &mut Rng::seeded(1));
+        let two = rank(&taste(), many(40), &mut Rng::seeded(2));
+        assert_ne!(ids(&one), ids(&two));
+    }
+
+    #[test]
+    fn every_run_starts_somewhere_new() {
+        assert_ne!(Rng::new().0, Rng::new().0);
+
+        let value = Rng::seeded(7).unit();
+        assert!((0.0..1.0).contains(&value), "{value} is not a fraction");
+    }
+
+    #[test]
+    fn a_shuffle_keeps_every_item_once() {
+        let mut items: Vec<usize> = (0..10).collect();
+        rng().shuffle(&mut items);
+        items.sort_unstable();
+        assert_eq!(items, (0..10).collect::<Vec<_>>());
     }
 
     #[test]

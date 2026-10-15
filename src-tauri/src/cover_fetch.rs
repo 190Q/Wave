@@ -173,6 +173,19 @@ fn find_cover(token: Option<&str>, track: &Track) -> Result<Option<Found>, Strin
     Ok(None)
 }
 
+pub fn look_up(artist: &str, title: &str) -> Option<Vec<u8>> {
+    let artist = artist.trim();
+    let title = title.trim();
+    if artist.is_empty() || title.is_empty() {
+        return None;
+    }
+
+    SOURCES
+        .iter()
+        .filter_map(|source| source.look_up(artist, title).ok().flatten())
+        .find_map(|url| download(&url).ok().flatten())
+}
+
 /// The art already inside the file, if it has any.
 fn embedded(track: &Track) -> Option<Vec<u8>> {
     let tagged = lofty::read_from_path(&track.path).ok()?;
@@ -224,7 +237,7 @@ fn embed(path: &str, bytes: &[u8], mime: MimeType) -> Result<(), String> {
         .map_err(|e| format!("could not write a cover into {}: {e}", path.display()))
 }
 
-fn is_png(bytes: &[u8]) -> bool {
+pub(crate) fn is_png(bytes: &[u8]) -> bool {
     bytes.starts_with(&[0x89, b'P', b'N', b'G'])
 }
 

@@ -28,6 +28,7 @@ pub const SOURCE_LYRICS_DIR: &str = "lyrics";
 /// file name and two songs may share one.
 pub const SONGS_DIR: &str = "songs";
 pub const CONFIG_DIR: &str = "config";
+pub const PENDING_DIR: &str = "pending";
 
 pub const AUDIO_STEM: &str = "audio";
 pub const COVER_STEM: &str = "cover";
@@ -64,6 +65,11 @@ pub fn cover_path(root: &Path, id: &str, extension: &str) -> PathBuf {
 
 pub fn lyrics_path(root: &Path, id: &str) -> PathBuf {
     track_dir(root, id).join(LYRICS_NAME)
+}
+
+/// Where the cover of a song that is still only a catalogue entry is kept.
+pub fn pending_cover_path(root: &Path, id: &str, extension: &str) -> PathBuf {
+    root.join(CONFIG_DIR).join(PENDING_DIR).join(format!("{id}.{extension}"))
 }
 
 /// A library-relative path, always with forward slashes, which is what the

@@ -102,19 +102,25 @@ export function openMenu(anchor: HTMLElement, items: MenuItem[], at?: MenuPoint)
   };
   const onMove = () => closeMenu();
 
+  const onScroll = (event: Event) => {
+    if (!menu.contains(event.target as Node)) {
+      closeMenu();
+    }
+  };
+
   // Deferred so the click that opened the menu does not immediately close it.
   window.setTimeout(() => {
     document.addEventListener("pointerdown", onPointerDown, true);
   }, 0);
   document.addEventListener("keydown", onKeyDown, true);
   window.addEventListener("resize", onMove);
-  window.addEventListener("scroll", onMove, true);
+  window.addEventListener("scroll", onScroll, true);
 
   dismiss = () => {
     document.removeEventListener("pointerdown", onPointerDown, true);
     document.removeEventListener("keydown", onKeyDown, true);
     window.removeEventListener("resize", onMove);
-    window.removeEventListener("scroll", onMove, true);
+    window.removeEventListener("scroll", onScroll, true);
   };
   open = menu;
 }

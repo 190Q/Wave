@@ -49,6 +49,7 @@ export interface PendingTrack {
   genres: string[];
   isrc: string;
   coverUrl: string | null;
+  coverPath: string | null;
   releaseDate: string;
   trackNumber: number | null;
   discNumber: number | null;

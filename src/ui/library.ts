@@ -963,7 +963,7 @@ function pendingRowHtml(pending: PendingTrack, index: number): string {
   const meta = [(pending.artists ?? []).join(", "), pending.album ?? ""]
     .filter(Boolean)
     .join(" - ");
-  const cover = pending.coverUrl ? ` style="${coverImageStyle(pending.coverUrl)}"` : "";
+  const cover = pending.coverPath ? ` data-cover="${escapeHtml(pending.coverPath)}"` : "";
 
   return `
     <li class="track-row is-pending" data-track-index="${index}" data-track="${escapeHtml(pending.id)}">
@@ -1019,34 +1019,45 @@ function coverPlayHtml(collection: Collection): string {
           </button>`;
 }
 
-/** A collection's cover, from its library songs or from the first pick still to download. */
+/** A collection's cover, from its library songs or from the picks still to download. */
 function collectionCover(state: AppState, collection: Collection): string {
   if (collection.kind !== "generated" || collection.trackIds.length > 0) {
     return collectionCoverHtml(collection, state.tracksById);
   }
 
-  const url = firstPendingCover(state, collection);
-  if (url) {
-    return `<span class="mosaic single"><span class="mosaic-cell" style="${coverImageStyle(url)}"></span></span>`;
-  }
-
-  return `<span class="generated-cover"><span class="btn-icon" data-icon="import"></span></span>`;
+  return pendingMosaicHtml(pendingCoverPaths(state, collection));
 }
 
-/** The cover of the first entry the catalogue still has to fetch. */
-function firstPendingCover(state: AppState, collection: Collection): string | null {
+/**
+ * The covers of the first few entries the catalogue still has to fetch, one per
+ * record. Three songs off the same album would otherwise fill the mosaic with
+ * the same picture three times over.
+ */
+function pendingCoverPaths(state: AppState, collection: Collection): string[] {
+  const paths: string[] = [];
   for (const id of collection.entries) {
-    const cover = state.pendingById.get(id)?.coverUrl;
-    if (cover) {
-      return cover;
+    const path = state.pendingById.get(id)?.coverPath;
+    if (path && !paths.includes(path)) {
+      paths.push(path);
+    }
+    if (paths.length === 4) {
+      break;
     }
   }
-  return null;
+  return paths;
 }
 
-/** A pending entry's cover comes straight from the catalogue, so no CSP is in the way. */
-function coverImageStyle(url: string): string {
-  return `background-image: url('${url.replace(/'/g, "%27")}')`;
+/** The same mosaic a collection of library songs gets, from covers on disk. */
+function pendingMosaicHtml(paths: string[]): string {
+  if (paths.length === 0) {
+    return `<span class="generated-cover"><span class="btn-icon" data-icon="import"></span></span>`;
+  }
+
+  const cells = paths.length === 3 ? [...paths, paths[0]] : paths;
+  const layout = cells.length === 1 ? "mosaic single" : cells.length === 2 ? "mosaic pair" : "mosaic";
+  const tiles = cells.map(() => `<span class="mosaic-cell"></span>`).join("");
+
+  return `<span class="${layout}" data-cover="${escapeHtml(paths.join("|"))}">${tiles}</span>`;
 }
 
 /** A playlist the user can rename and delete; a generated one included. */

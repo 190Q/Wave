@@ -10,7 +10,7 @@ use crate::state::{PendingTrack, Playlist, GENERATED_KIND};
 
 pub const CATALOG_FILE: &str = "library.db";
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 pub const LAYOUT_VERSION_KEY: &str = "layout_version";
 pub const LAYOUT_VERSION: &str = "2";
@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS pending_tracks (
   genres       TEXT NOT NULL DEFAULT '',
   isrc         TEXT NOT NULL DEFAULT '',
   cover_url    TEXT,
+  cover_path   TEXT,
   release_date TEXT NOT NULL DEFAULT '',
   track_number INTEGER,
   disc_number  INTEGER,
@@ -94,7 +95,7 @@ CREATE INDEX IF NOT EXISTS pending_tracks_playlist ON pending_tracks (playlist_i
 "#;
 
 const PENDING_COLUMNS: &str = "id, title, artists, album, album_artist, genres, isrc, cover_url, \
-     release_date, track_number, disc_number, source, source_id";
+     cover_path, release_date, track_number, disc_number, source, source_id";
 
 #[derive(Debug, Clone, Default)]
 pub struct TrackRow {
@@ -201,6 +202,11 @@ impl Catalog {
             connection
                 .execute_batch(PENDING_TABLE)
                 .map_err(|e| format!("could not add the waiting songs: {e}"))?;
+            if !has_column(&connection, "pending_tracks", "cover_path") {
+                connection
+                    .execute_batch("ALTER TABLE pending_tracks ADD COLUMN cover_path TEXT")
+                    .map_err(|e| format!("could not add the waiting covers: {e}"))?;
+            }
             return stamp(&connection);
         }
 
@@ -474,7 +480,9 @@ impl Catalog {
                 for entry in contents.remove(&id).unwrap_or_default() {
                     if let Some(track) = waiting.get(&entry) {
                         entries.push(entry);
-                        pending.push(track.clone());
+                        let mut track = track.clone();
+                        track.cover_path = absolute(&self.root, track.cover_path.as_deref());
+                        pending.push(track);
                     } else if present.contains(&entry) {
                         entries.push(entry.clone());
                         track_ids.push(entry);
@@ -600,7 +608,9 @@ impl Catalog {
 
         let mut found = Vec::new();
         for row in rows {
-            found.push(row.map_err(|e| format!("could not read a waiting song: {e}"))?);
+            let mut track = row.map_err(|e| format!("could not read a waiting song: {e}"))?;
+            track.cover_path = absolute(&self.root, track.cover_path.as_deref());
+            found.push(track);
         }
         Ok(found)
     }
@@ -858,12 +868,17 @@ fn read_pending(row: &Row<'_>) -> rusqlite::Result<PendingTrack> {
         genres: read_list(row.get(5)?),
         isrc: row.get(6)?,
         cover_url: row.get(7)?,
-        release_date: row.get(8)?,
-        track_number: row.get::<_, Option<i64>>(9)?.map(|value| value as u32),
-        disc_number: row.get::<_, Option<i64>>(10)?.map(|value| value as u32),
-        source: row.get(11)?,
-        source_id: row.get(12)?,
+        cover_path: row.get(8)?,
+        release_date: row.get(9)?,
+        track_number: row.get::<_, Option<i64>>(10)?.map(|value| value as u32),
+        disc_number: row.get::<_, Option<i64>>(11)?.map(|value| value as u32),
+        source: row.get(12)?,
+        source_id: row.get(13)?,
     })
+}
+
+fn absolute(root: &Path, relative: Option<&str>) -> Option<String> {
+    relative.map(|path| root.join(path).to_string_lossy().into_owned())
 }
 
 /// The lists are stored as JSON, so a genre holding a comma survives.
@@ -905,8 +920,9 @@ fn write_pending(
     transaction
         .execute(
             "INSERT INTO pending_tracks (id, playlist_id, title, artists, album, album_artist, \
-             genres, isrc, cover_url, release_date, track_number, disc_number, source, source_id, \
-             added_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+             genres, isrc, cover_url, cover_path, release_date, track_number, disc_number, source, \
+             source_id, added_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 track.id,
                 playlist_id,
@@ -917,6 +933,7 @@ fn write_pending(
                 write_list(&track.genres),
                 track.isrc,
                 track.cover_url,
+                track.cover_path,
                 track.release_date,
                 track.track_number.map(i64::from),
                 track.disc_number.map(i64::from),
@@ -1257,6 +1274,73 @@ mod tests {
         {
             let again = Connection::open(&path).unwrap();
             again.execute_batch("PRAGMA user_version = 1;").unwrap();
+        }
+
+        let catalog = Catalog::open(&root).unwrap();
+        assert_eq!(catalog.playlists().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_version_two_catalog_gains_the_waiting_covers() {
+        let root = scratch("upgrade-covers");
+        let dir = root.join(CONFIG_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(CATALOG_FILE);
+
+        // The catalog as it stood with generated playlists but no covers.
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(
+                "CREATE TABLE tracks (id TEXT PRIMARY KEY, missing INTEGER NOT NULL DEFAULT 0);\
+                 CREATE TABLE playlists (id TEXT PRIMARY KEY, name TEXT NOT NULL, \
+                   kind TEXT NOT NULL DEFAULT 'custom', created_at INTEGER NOT NULL DEFAULT 0, \
+                   updated_at INTEGER NOT NULL DEFAULT 0);\
+                 CREATE TABLE playlist_tracks (playlist_id TEXT NOT NULL, track_id TEXT NOT NULL, \
+                   position INTEGER NOT NULL, PRIMARY KEY (playlist_id, position));\
+                 CREATE TABLE pending_tracks (id TEXT PRIMARY KEY, playlist_id TEXT NOT NULL, \
+                   title TEXT NOT NULL DEFAULT '', artists TEXT NOT NULL DEFAULT '', \
+                   album TEXT NOT NULL DEFAULT '', album_artist TEXT NOT NULL DEFAULT '', \
+                   genres TEXT NOT NULL DEFAULT '', isrc TEXT NOT NULL DEFAULT '', \
+                   cover_url TEXT, release_date TEXT NOT NULL DEFAULT '', \
+                   track_number INTEGER, disc_number INTEGER, \
+                   source TEXT NOT NULL DEFAULT '', source_id TEXT NOT NULL DEFAULT '', \
+                   added_at INTEGER NOT NULL DEFAULT 0);\
+                 PRAGMA user_version = 2;",
+            )
+            .unwrap();
+            old.execute(
+                "INSERT INTO playlists (id, name, kind, created_at, updated_at) \
+                 VALUES ('p', 'Made for you', 'generated', 1, 1)",
+                [],
+            )
+            .unwrap();
+            old.execute(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES ('p', 'w', 0)",
+                [],
+            )
+            .unwrap();
+            old.execute(
+                "INSERT INTO pending_tracks (id, playlist_id, title, artists) \
+                 VALUES ('w', 'p', 'A pick', '[\"An Artist\"]')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let catalog = Catalog::open(&root).unwrap();
+        let read = one_playlist(&catalog, "p");
+        assert_eq!(read.entries, vec!["w"]);
+        assert_eq!(read.pending.len(), 1);
+        assert_eq!(read.pending[0].title, "A pick");
+        assert_eq!(read.pending[0].artists, vec!["An Artist"]);
+        // The new column is there, and the row that predates it still reads.
+        assert!(read.pending[0].cover_path.is_none());
+        drop(catalog);
+
+        // A stamp that did not land leaves the upgrade to run again.
+        {
+            let again = Connection::open(&path).unwrap();
+            again.execute_batch("PRAGMA user_version = 2;").unwrap();
         }
 
         let catalog = Catalog::open(&root).unwrap();

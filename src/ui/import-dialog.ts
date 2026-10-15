@@ -620,7 +620,7 @@ function progressHtml(progress: ImportProgress): string {
 function duplicateMessage(plan: ImportPlan): string {
   const what = `${plan.duplicates} of ${plan.total} ${
     plan.total === 1 ? "song is" : "songs are"
-  } already in your library, with the identical audio`;
+  } already in your library`;
   const which = plan.examples.length > 0 ? ` (${plan.examples.join(", ")})` : "";
   return `${what}${which}. Songs that only share a title are imported as their own tracks. Download them again?`;
 }

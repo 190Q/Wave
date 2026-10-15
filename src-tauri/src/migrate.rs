@@ -89,17 +89,31 @@ pub fn run(
     catalog: &Catalog,
     store: &Store,
 ) -> Result<Option<MigrationReport>, String> {
+    let root = library_root(app)?;
+    let state = crate::state::state_file(app).ok();
+
+    upgrade(&root, catalog, state.as_deref(), |tracks, playlists| {
+        crate::state::remap_ids(app, store, tracks, playlists)?;
+        crate::analytics::remap_track_ids(app, tracks)
+    })
+}
+
+pub fn upgrade(
+    root: &Path,
+    catalog: &Catalog,
+    state_file: Option<&Path>,
+    remap: impl FnOnce(&HashMap<String, String>, &HashMap<String, String>) -> Result<(), String>,
+) -> Result<Option<MigrationReport>, String> {
     if catalog.meta(LAYOUT_VERSION_KEY).is_some() {
         return Ok(None);
     }
 
-    let root = library_root(app)?;
     let journal_path = root.join(CONFIG_DIR).join(JOURNAL_FILE);
 
     let journal = match read_journal(&journal_path) {
         Some(journal) => journal,
         None => {
-            let loose = loose_songs(&root)?;
+            let loose = loose_songs(root)?;
             let index_exists = root.join(CONFIG_DIR).join(LEGACY_INDEX_FILE).is_file();
 
             if loose.is_empty() && !index_exists {
@@ -110,7 +124,7 @@ pub fn run(
             }
 
             let journal = Journal {
-                backup: backup_dir(&root)?.to_string_lossy().into_owned(),
+                backup: backup_dir(root)?.to_string_lossy().into_owned(),
                 moves: plan(&loose)?,
             };
             write_journal(&journal_path, &journal)?;
@@ -118,7 +132,7 @@ pub fn run(
         }
     };
 
-    let report = upgrade(app, catalog, store, &root, &journal)?;
+    let report = apply(root, catalog, state_file, &journal, remap)?;
 
     // The layout is recorded before the journal goes, so a crash in between
     // leaves a journal that is simply ignored.
@@ -128,12 +142,12 @@ pub fn run(
     Ok(Some(report))
 }
 
-fn upgrade(
-    app: &AppHandle,
-    catalog: &Catalog,
-    store: &Store,
+fn apply(
     root: &Path,
+    catalog: &Catalog,
+    state_file: Option<&Path>,
     journal: &Journal,
+    remap: impl FnOnce(&HashMap<String, String>, &HashMap<String, String>) -> Result<(), String>,
 ) -> Result<MigrationReport, String> {
     let backup = PathBuf::from(&journal.backup);
     fs::create_dir_all(&backup).map_err(|e| format!("could not create {}: {e}", backup.display()))?;
@@ -143,7 +157,7 @@ fn upgrade(
         ..MigrationReport::default()
     };
 
-    back_up_records(app, root, &backup)?;
+    back_up_records(root, &backup, state_file)?;
 
     let index = read_legacy_index(root);
     let loudness = read_legacy_loudness(root);
@@ -210,8 +224,7 @@ fn upgrade(
 
     // Everything that was filed by name is renumbered, so likes, artwork
     // colours, the queue and the listening record survive the upgrade.
-    crate::state::remap_ids(app, store, &ids, &playlist_ids)?;
-    crate::analytics::remap_track_ids(app, &ids)?;
+    remap(&ids, &playlist_ids)?;
 
     sweep(root, &backup)?;
     Ok(report)
@@ -219,7 +232,7 @@ fn upgrade(
 
 /// Copies the records the catalog replaces into the backup folder, before
 /// anything is moved or deleted.
-fn back_up_records(app: &AppHandle, root: &Path, backup: &Path) -> Result<(), String> {
+fn back_up_records(root: &Path, backup: &Path, state: Option<&Path>) -> Result<(), String> {
     for name in [LEGACY_INDEX_FILE, LEGACY_LOUDNESS_FILE] {
         let from = root.join(CONFIG_DIR).join(name);
         if from.is_file() {
@@ -228,12 +241,9 @@ fn back_up_records(app: &AppHandle, root: &Path, backup: &Path) -> Result<(), St
         }
     }
 
-    if let Ok(state) = crate::state::state_file(app) {
-        if state.is_file() {
-            let to = backup.join("state.json");
-            fs::copy(&state, &to)
-                .map_err(|e| format!("could not back up {}: {e}", state.display()))?;
-        }
+    if let Some(state) = state.filter(|path| path.is_file()) {
+        let to = backup.join("state.json");
+        fs::copy(state, &to).map_err(|e| format!("could not back up {}: {e}", state.display()))?;
     }
 
     let playlists = root.join(LEGACY_PLAYLISTS_DIR);

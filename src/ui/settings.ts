@@ -19,6 +19,7 @@ import {
 } from "../lib/state";
 import type {
   AnalyticsStats,
+  LibraryInfo,
   ReduceMotionMode,
   SearchAlgorithm,
   Settings,
@@ -536,6 +537,11 @@ function libraryHtml(state: AppState, exportId: string): string {
         .join("")}</ul>`
     : "";
 
+  const info = state.libraryInfo;
+  const storage = info
+    ? `<p class="settings-hint">${escapeHtml(storageLine(info))}</p>`
+    : "";
+
   return section(
     "Library",
     `<div class="settings-row is-stacked">
@@ -550,6 +556,7 @@ function libraryHtml(state: AppState, exportId: string): string {
         <button class="pill" type="button" data-command="rescan"${state.scanning ? " disabled" : ""}>Rescan library</button>
       </div>
       <p class="settings-hint">${escapeHtml(notes.join(". "))}</p>
+      ${storage}
       ${errors}
     </div>
     <div class="settings-row is-stacked">
@@ -564,6 +571,17 @@ function libraryHtml(state: AppState, exportId: string): string {
       </div>
     </div>`,
   );
+}
+
+/** What the library holds on disk, in the wording the notes above use. */
+function storageLine(info: LibraryInfo): string {
+  const parts = [`Storage format ${info.formatVersion}`];
+  if (info.missing > 0) {
+    parts.push(
+      `${plural(info.missing, "song")} missing, kept with their likes, playlists and history`,
+    );
+  }
+  return parts.join(". ");
 }
 
 function analyticsHtml(

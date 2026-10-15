@@ -9,6 +9,7 @@ import type {
   ImportPlan,
   ImportProgress,
   ImportRecord,
+  LibraryInfo,
   LyricLine,
   LoudnessUpdate,
   LyricsOutcome,
@@ -73,6 +74,8 @@ export interface AppState {
   root: string;
   skipped: number;
   scanErrors: string[];
+  /** What the library holds on disk, `null` when it could not be read. */
+  libraryInfo: LibraryInfo | null;
   likes: Set<string>;
   playlists: Playlist[];
   /** The last few imports, newest first. */
@@ -118,6 +121,7 @@ const state: AppState = {
   root: "",
   skipped: 0,
   scanErrors: [],
+  libraryInfo: null,
   likes: new Set(),
   playlists: [],
   recentImports: [],
@@ -578,6 +582,14 @@ export async function init(): Promise<void> {
   emit();
 }
 
+async function readLibraryInfo(): Promise<void> {
+  try {
+    state.libraryInfo = await ipc.libraryInfo();
+  } catch {
+    state.libraryInfo = null;
+  }
+}
+
 export async function rescan(): Promise<void> {
   state.scanning = true;
   emit();
@@ -591,6 +603,7 @@ export async function rescan(): Promise<void> {
     state.root = summary.root;
     state.skipped = summary.skipped;
     state.scanErrors = summary.errors;
+    await readLibraryInfo();
     recomputeCollections();
     repairQueue();
     rememberTracks(summary.tracks);
@@ -645,6 +658,12 @@ async function analyseLoudness(): Promise<void> {
 /** The one-line summary both import paths finish with. */
 function importSummary(outcome: ImportOutcome): string {
   const parts = [`${plural(outcome.songs, "song")} imported`];
+  if (outcome.duplicates > 0) {
+    parts.push(`${plural(outcome.duplicates, "duplicate")} skipped`);
+  }
+  if (outcome.similar > 0) {
+    parts.push(`${plural(outcome.similar, "song")} sharing a title`);
+  }
   if (outcome.images > 0) {
     parts.push(plural(outcome.images, "image"));
   }
@@ -1527,8 +1546,8 @@ export function stepVolume(direction: number): void {
 }
 
 /**
- * Reads the lyrics for a track. The index points at the copied `.lrc`; without
- * one, a sidecar sitting beside the song is used. Empty when there is neither.
+ * Reads the lyrics for a track. The backend resolves the file it recorded, or a
+ * sidecar sitting beside the audio. Empty when there is neither.
  */
 export async function ensureLyrics(track: Track | undefined): Promise<void> {
   const trackId = track?.id ?? null;
@@ -1545,7 +1564,7 @@ export async function ensureLyrics(track: Track | undefined): Promise<void> {
   }
 
   try {
-    const raw = await ipc.loadLyrics(track.lyricsPath ?? track.path);
+    const raw = await ipc.loadLyrics(track.id);
     if (state.lyricsTrackId !== trackId) {
       return; // a newer track was requested while this one was loading
     }

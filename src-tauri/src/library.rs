@@ -259,13 +259,10 @@ fn reconcile(
     if unchanged {
         let mut row = known.unwrap_or_default();
         row.missing = false;
-        // A cover or lyrics file deleted by hand stops being advertised.
-        if row.cover_path.as_deref().is_some_and(|rel| !root.join(rel).is_file()) {
-            row.cover_path = None;
-        }
-        if row.lyrics_path.as_deref().is_some_and(|rel| !root.join(rel).is_file()) {
-            row.lyrics_path = None;
-        }
+        let cover = kept(root, row.cover_path.clone(), &dir, cover_in);
+        let lyrics = kept(root, row.lyrics_path.clone(), &dir, lyrics_in);
+        row.cover_path = cover;
+        row.lyrics_path = lyrics;
         return Ok(Some(row));
     }
 
@@ -420,6 +417,21 @@ fn audio_files(dir: &Path) -> Result<Vec<OsString>, String> {
         (u8::from(!text.starts_with(AUDIO_STEM)), text)
     });
     Ok(found)
+}
+
+fn kept(
+    root: &Path,
+    recorded: Option<String>,
+    dir: &Path,
+    find: impl Fn(&Path) -> Option<PathBuf>,
+) -> Option<String> {
+    if let Some(relative) = recorded {
+        if root.join(&relative).is_file() {
+            return Some(relative);
+        }
+    }
+
+    find(dir).as_deref().and_then(|path| relative_owned(path, dir))
 }
 
 /// The cover sitting beside a song, if one does.

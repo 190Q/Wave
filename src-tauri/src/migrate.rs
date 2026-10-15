@@ -180,43 +180,39 @@ fn apply(
             continue;
         }
 
-        let target = root.join(&planned.to);
-        if target.is_file() {
-            continue; // already moved by an earlier run
-        }
         let source = root.join(&planned.from);
-        if !source.is_file() {
-            report
-                .failures
-                .push(format!("{} is missing", planned.name));
-            continue;
+        let target = root.join(&planned.to);
+
+        if !target.is_file() {
+            if !source.is_file() {
+                report.failures.push(format!("{} is missing", planned.name));
+                continue;
+            }
+            let dir = track_dir(root, &planned.new_id);
+            fs::create_dir_all(&dir)
+                .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+            move_file(&source, &target)?;
         }
 
-        let dir = track_dir(root, &planned.new_id);
-        fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-        move_file(&source, &target)?;
+        let cover = copy_cover(&index, root, planned)?;
+        let lyrics = copy_lyrics(&index, root, planned)?;
 
         match library::describe(root, &planned.new_id, &target, &planned.name) {
-            Ok(mut row) => {
-                row.added_at = identity::now_ms();
+            Ok(row) => {
                 catalog.upsert_track(&row)?;
                 report.songs += 1;
+                report.covers += usize::from(cover);
+                report.lyrics += usize::from(lyrics);
 
                 if let Some(reading) = loudness.songs.get(&planned.from) {
                     catalog.set_loudness(&planned.new_id, reading.lufs, reading.peak, row.bytes)?;
-                }
-                if copy_cover(&index, root, planned)? {
-                    report.covers += 1;
-                }
-                if copy_lyrics(&index, root, planned)? {
-                    report.lyrics += 1;
                 }
             }
             Err(error) => report.failures.push(format!("{}: {error}", planned.name)),
         }
     }
 
-    let (playlists, playlist_ids) = legacy_playlists(root, &ids)?;
+    let (playlists, playlist_ids) = legacy_playlists(root, &ids, &mut report.failures)?;
     if !playlists.is_empty() {
         catalog.insert_playlists(&playlists)?;
         report.playlists = playlists.len();
@@ -368,6 +364,7 @@ fn copy_lyrics(index: &LegacyIndex, root: &Path, planned: &PlannedMove) -> Resul
 fn legacy_playlists(
     root: &Path,
     ids: &HashMap<String, String>,
+    failures: &mut Vec<String>,
 ) -> Result<(Vec<Playlist>, HashMap<String, String>), String> {
     let dir = root.join(LEGACY_PLAYLISTS_DIR);
     let Ok(entries) = fs::read_dir(&dir) else {
@@ -393,10 +390,20 @@ fn legacy_playlists(
             continue;
         }
 
-        let files: Vec<String> = fs::read_to_string(&path)
-            .ok()
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_default();
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) => {
+                failures.push(format!("{name} could not be read: {error}"));
+                continue;
+            }
+        };
+        let files: Vec<String> = match serde_json::from_str(&raw) {
+            Ok(files) => files,
+            Err(error) => {
+                failures.push(format!("{name} is not a readable playlist: {error}"));
+                continue;
+            }
+        };
 
         let track_ids: Vec<String> = files
             .iter()
@@ -456,7 +463,16 @@ fn sweep(root: &Path, backup: &Path) -> Result<(), String> {
     for name in [LEGACY_INDEX_FILE, LEGACY_LOUDNESS_FILE] {
         let _ = fs::remove_file(root.join(CONFIG_DIR).join(name));
     }
-    let _ = fs::remove_dir(root.join(LEGACY_PLAYLISTS_DIR));
+
+    let playlists = root.join(LEGACY_PLAYLISTS_DIR);
+    if let Ok(entries) = fs::read_dir(&playlists) {
+        for entry in entries.flatten() {
+            if entry.path().is_file() {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    let _ = fs::remove_dir(&playlists);
 
     Ok(())
 }
@@ -590,7 +606,7 @@ mod tests {
             "id-two".to_string(),
         );
 
-        let (playlists, names) = legacy_playlists(&root, &ids).unwrap();
+        let (playlists, names) = legacy_playlists(&root, &ids, &mut Vec::new()).unwrap();
 
         assert_eq!(playlists.len(), 1);
         assert_eq!(playlists[0].name, "Road trip");

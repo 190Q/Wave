@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalSize, Runtime, State, WebviewWindow};
 
-use crate::library::TrackPaths;
 use crate::playlists;
 use crate::spotify::SpotifyStatus;
 
@@ -222,6 +221,10 @@ fn state_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(dir.join(STATE_FILE))
 }
 
+pub fn state_file<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    state_path(app)
+}
+
 fn read_state<R: Runtime>(app: &AppHandle<R>) -> Result<PersistedState, String> {
     let path = state_path(app)?;
     if !path.exists() {
@@ -262,6 +265,49 @@ pub fn save<R: Runtime>(app: &AppHandle<R>, state: &PersistedState) -> Result<()
     write_state(app, state)
 }
 
+pub fn remap_ids<R: Runtime>(
+    app: &AppHandle<R>,
+    store: &Store,
+    tracks: &HashMap<String, String>,
+    playlists: &HashMap<String, String>,
+) -> Result<(), String> {
+    if tracks.is_empty() && playlists.is_empty() {
+        return Ok(());
+    }
+
+    let next = store.update(|state| {
+        state.likes = remap(&std::mem::take(&mut state.likes), tracks);
+
+        state.artwork_colours = std::mem::take(&mut state.artwork_colours)
+            .into_iter()
+            .map(|(id, colour)| (tracks.get(&id).cloned().unwrap_or(id), colour))
+            .collect();
+
+        let order = remap(&state.session.playback.order, tracks);
+        let source_order = remap(&state.session.playback.source_order, tracks);
+        state.session.playback.order = order;
+        state.session.playback.source_order = source_order;
+
+        let recents = std::mem::take(&mut state.session.recents);
+        state.session.recents = remap(&recents, tracks);
+
+        // A queue that was playing a playlist still knows what it was playing.
+        if let Some(source) = state.session.playback.source_id.as_ref() {
+            if let Some(id) = playlists.get(source) {
+                state.session.playback.source_id = Some(id.clone());
+            }
+        }
+    });
+
+    save(app, &next)
+}
+
+fn remap(ids: &[String], map: &HashMap<String, String>) -> Vec<String> {
+    ids.iter()
+        .map(|id| map.get(id).cloned().unwrap_or_else(|| id.clone()))
+        .collect()
+}
+
 /// Pushes an import onto the history and writes it, newest first.
 pub fn remember_import<R: Runtime>(app: &AppHandle<R>, record: ImportRecord) {
     let store = app.state::<Store>();
@@ -274,13 +320,9 @@ pub fn remember_import<R: Runtime>(app: &AppHandle<R>, record: ImportRecord) {
 }
 
 #[tauri::command]
-pub fn get_state(
-    app: AppHandle,
-    store: State<'_, Store>,
-    paths: State<'_, TrackPaths>,
-) -> PersistedState {
-    // Playlists live on disk, so the cached copy is refreshed on every read.
-    playlists::refresh(&app, &store, &paths)
+pub fn get_state(app: AppHandle, store: State<'_, Store>) -> PersistedState {
+    // Playlists live in the catalog, so the cached copy is refreshed on read.
+    playlists::refresh(&app, &store)
 }
 
 #[tauri::command]

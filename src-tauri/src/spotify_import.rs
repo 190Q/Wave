@@ -7,10 +7,11 @@ use notify::Watcher;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::catalog::Catalog;
 use crate::download;
 use crate::genre_fetch;
 use crate::import::{self, ImportOutcome};
-use crate::library::{self, TrackPaths, SONGS_DIR};
+use crate::library;
 use crate::playlists;
 use crate::progress::Reporter;
 use crate::spotify::{self, RefKind, SpotifyRef, TrackMeta};
@@ -68,23 +69,25 @@ fn run_inner(
     report.phase("downloading", &download_message(todo, duplicates));
     report.count(tracks.len());
 
-    // What the playlist will point at, kept in the order Spotify gave.
-    let mut files: Vec<String> = Vec::new();
+    // What the playlist will point at, kept in the order Spotify gave. Every
+    // track is fetched into a directory of its own, so two songs with the same
+    // title cannot land on each other while they are on their way in.
+    let mut entries: Vec<Entry> = Vec::new();
 
     for (index, meta) in tracks.iter().enumerate() {
         let label = track_label(meta);
         report.at(index + 1, &label);
 
         if !download_duplicates {
-            if let Some(path) = existing.get(&meta_key(meta)) {
-                files.push(path.clone());
+            if let Some(id) = existing.get(&meta_key(meta)) {
+                entries.push(Entry::Known(id.clone()));
                 report.reuse();
                 continue;
             }
         }
 
-        match download::download(&tools, meta, &staging) {
-            Ok(_) => files.push(format!("{SONGS_DIR}/{}.mp3", spotify::sanitize(&meta.title))),
+        match download::download(&tools, meta, &staging.join(index.to_string())) {
+            Ok(_) => entries.push(Entry::Fetched(staged_key(index))),
             Err(error) => report.fail(format!("{label}: {error}")),
         }
     }
@@ -92,14 +95,21 @@ fn run_inner(
     report.phase("importing", "Adding the songs to your library.");
     // The playlist is written here rather than by the importer, so the songs the
     // library already held can keep their place in the order.
-    let mut outcome = import::import_into_library(app, &staging, false, None)?;
+    let imported = import::import_into_library(app, &staging, false, None)?;
+    let mut outcome = imported.outcome;
 
     if reference.kind == RefKind::Playlist {
-        playlists::write(app, &name, &files)?;
-        outcome.playlist = Some(name.clone());
+        let chosen: Vec<String> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Known(id) => Some(id.clone()),
+                Entry::Fetched(key) => imported.by_source.get(key).cloned(),
+            })
+            .collect();
+
+        outcome.playlist = Some(playlists::write(app, &name, &chosen)?);
         let store = app.state::<Store>();
-        let paths = app.state::<TrackPaths>();
-        outcome.state = playlists::refresh(app, &store, &paths);
+        outcome.state = playlists::refresh(app, &store);
     }
 
     // The download failures belong in the same list as the import ones.
@@ -116,6 +126,15 @@ fn run_inner(
     Ok(outcome)
 }
 
+enum Entry {
+    Known(String),
+    Fetched(String),
+}
+
+fn staged_key(index: usize) -> String {
+    format!("{index}/{}.mp3", library::AUDIO_STEM)
+}
+
 fn download_message(todo: usize, duplicates: usize) -> String {
     if duplicates == 0 {
         return format!("Downloading {todo} tracks.");
@@ -128,7 +147,7 @@ struct Resolved {
     reference: SpotifyRef,
     name: String,
     tracks: Vec<TrackMeta>,
-    /// Keyed by title, artist and album; the value is the library-relative path.
+    /// Keyed by title, artist and album; the value is the track's id.
     existing: HashMap<String, String>,
 }
 
@@ -168,17 +187,17 @@ fn resolve(app: &AppHandle, url: &str, report: &mut Reporter) -> Result<Resolved
 
 /// Every library track, by the three fields a duplicate is judged on.
 fn library_index(app: &AppHandle) -> HashMap<String, String> {
-    let paths = app.state::<TrackPaths>();
+    let catalog = app.state::<Catalog>();
     let mut index = HashMap::new();
 
-    for track in library::scan(app, &paths).tracks {
+    for track in library::scan(app, &catalog).tracks {
         let key = track_key(
             &track.title,
             track.artist.as_deref().unwrap_or_default(),
             track.album.as_deref().unwrap_or_default(),
         );
-        // The first file wins, so a rescan cannot shuffle the choice.
-        index.entry(key).or_insert(track.relative_path);
+        // The first song wins, so a rescan cannot shuffle the choice.
+        index.entry(key).or_insert(track.id);
     }
 
     index

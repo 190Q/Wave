@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -329,6 +330,45 @@ impl Analytics {
         self.conn
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn remap_track_ids(&self, map: &HashMap<String, String>) -> Result<(), String> {
+        if map.is_empty() {
+            return Ok(());
+        }
+
+        let mut conn = self.guard();
+        let tx = conn.transaction().map_err(db_error)?;
+
+        for (old, new) in map {
+            if old == new {
+                continue;
+            }
+
+            tx.execute(
+                "DELETE FROM tracks WHERE track_id = ?1 \
+                 AND EXISTS (SELECT 1 FROM tracks WHERE track_id = ?2)",
+                params![old, new],
+            )
+            .map_err(db_error)?;
+            tx.execute(
+                "UPDATE tracks SET track_id = ?2 WHERE track_id = ?1",
+                params![old, new],
+            )
+            .map_err(db_error)?;
+            tx.execute(
+                "UPDATE plays SET track_id = ?2 WHERE track_id = ?1",
+                params![old, new],
+            )
+            .map_err(db_error)?;
+            tx.execute(
+                "UPDATE events SET track_id = ?2 WHERE track_id = ?1",
+                params![old, new],
+            )
+            .map_err(db_error)?;
+        }
+
+        tx.commit().map_err(db_error)
     }
 
     /// Snapshots the library, so a song that is later deleted still has a name.
@@ -971,6 +1011,12 @@ fn now_ms() -> i64 {
 
 fn db_error(error: rusqlite::Error) -> String {
     format!("analytics database error: {error}")
+}
+
+/// Renumbers the listening record, for a library whose ids have changed.
+pub fn remap_track_ids(app: &AppHandle, map: &HashMap<String, String>) -> Result<(), String> {
+    let analytics = app.state::<Analytics>();
+    analytics.remap_track_ids(map)
 }
 
 #[tauri::command(async)]

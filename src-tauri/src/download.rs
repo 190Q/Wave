@@ -7,10 +7,9 @@ use lofty::picture::{MimeType, Picture, PictureType};
 use lofty::prelude::{Accessor, TagExt};
 use lofty::tag::{ItemKey, Tag, TagType};
 
-use crate::spotify::{client, find_yt_dlp, hide_console, sanitize, tool_path, Env, TrackMeta, YtDlp};
+use crate::spotify::{client, find_yt_dlp, hide_console, tool_path, Env, TrackMeta, YtDlp};
 
-/// Where covers are written, matching the folder the importer looks in.
-const IMAGES_DIR: &str = "images";
+const AUDIO_STEM: &str = "audio";
 
 /// The external programs the download needs. Neither is a Rust library.
 pub struct Tools {
@@ -50,16 +49,11 @@ fn yt_dlp_command(yt_dlp: &YtDlp) -> Command {
     }
 }
 
-/// Downloads one track into `out_dir`, and tags it. `false` means the file was
-/// already there, so a re-run picks up where the last one stopped.
+/// Downloads one track into `out_dir`, which the caller has given to this track
+/// alone, and tags it. `false` means the file was already there, so a re-run
+/// picks up where the last one stopped.
 pub fn download(tools: &Tools, meta: &TrackMeta, out_dir: &Path) -> Result<bool, String> {
-    let name = sanitize(&meta.title);
-    download_named(tools, meta, out_dir, &name)
-}
-
-/// A caller-supplied safe stem keeps different tracks with the same title apart.
-pub fn download_named(tools: &Tools, meta: &TrackMeta, out_dir: &Path, name: &str) -> Result<bool, String> {
-    let target = out_dir.join(format!("{name}.mp3"));
+    let target = out_dir.join(format!("{AUDIO_STEM}.mp3"));
 
     if target.is_file() {
         return Ok(false);
@@ -113,7 +107,8 @@ pub fn download_named(tools: &Tools, meta: &TrackMeta, out_dir: &Path, name: &st
         }
     };
 
-    // yt-dlp can settle on a different name; the sidecars follow the song.
+    // yt-dlp can settle on a different name, so the file is put where the
+    // caller expects it.
     let path = if path == target {
         path
     } else {
@@ -121,13 +116,7 @@ pub fn download_named(tools: &Tools, meta: &TrackMeta, out_dir: &Path, name: &st
     };
 
     match fetch_cover(meta.cover_url.as_deref()) {
-        Some(cover) => {
-            let images = out_dir.join(IMAGES_DIR);
-            let _ = fs::create_dir_all(&images);
-            // Named after the song so the importer pairs it by stem.
-            let _ = fs::write(images.join(format!("{name}.jpg")), &cover);
-            tag(&path, meta, Some(cover))
-        }
+        Some(cover) => tag(&path, meta, Some(cover)),
         None => tag(&path, meta, None),
     }
     .map_err(|e| format!("downloaded, but could not tag it: {e}"))?;
@@ -145,22 +134,31 @@ fn search_query(meta: &TrackMeta) -> String {
     )
 }
 
-/// The `-o` template: the song's own name, so the importer finds it, with any
-/// `%` in the title doubled. yt-dlp reads `%` as a template, so a title like
-/// `100% Pure` would otherwise swallow the `%(ext)s` that fills in the format.
+/// The `-o` template for a target path, with any `%` doubled. yt-dlp reads `%`
+/// as a template, so a path containing one — a folder the user chose, or a title
+/// — would otherwise swallow the `%(ext)s` that fills in the format.
 fn output_template(target: &Path) -> String {
-    let stem = target
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().replace('%', "%%"))
-        .unwrap_or_else(|| "track".to_string());
+    let stem = escape(
+        &target
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "track".to_string()),
+    );
+    let file = format!("{stem}.%(ext)s");
 
     match target.parent() {
-        Some(dir) => dir
-            .join(format!("{stem}.%(ext)s"))
-            .to_string_lossy()
-            .into_owned(),
-        None => format!("{stem}.%(ext)s"),
+        Some(dir) => format!(
+            "{}{}{file}",
+            escape(&dir.to_string_lossy()),
+            std::path::MAIN_SEPARATOR
+        ),
+        None => file,
     }
+}
+
+/// A literal `%`, for a string that is about to be read as a template.
+fn escape(text: &str) -> String {
+    text.replace('%', "%%")
 }
 
 /// The path yt-dlp printed for the finished file.

@@ -10,9 +10,10 @@ use lofty::prelude::{ItemKey, TagExt, TaggedFileExt};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+use crate::catalog::Catalog;
 use crate::download;
 use crate::import::{self, ImportOutcome};
-use crate::library::{self, TrackPaths, IMAGES_DIR, LYRICS_DIR, SONGS_DIR};
+use crate::library;
 use crate::playlists;
 use crate::progress::Reporter;
 use crate::spotify::{self, TrackMeta};
@@ -77,8 +78,8 @@ fn read(path: &Path) -> Result<WaveList, String> {
 }
 
 fn export(app: &AppHandle, path: &Path, name: String, ids: &[String]) -> Result<usize, String> {
-    let paths = app.state::<TrackPaths>();
-    let tracks: HashMap<_, _> = library::scan(app, &paths).tracks.into_iter()
+    let catalog = app.state::<Catalog>();
+    let tracks: HashMap<_, _> = library::scan(app, &catalog).tracks.into_iter()
         .map(|track| (track.id.clone(), track)).collect();
     let mut entries = Vec::new();
     for id in ids {
@@ -125,42 +126,64 @@ fn key(title: &str, artist: &str, album: &str) -> String {
     [title, artist, album].map(|part| part.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()).join("\u{1}")
 }
 
-fn unique_playlist(name: &str, exists: impl Fn(&str) -> bool) -> String {
-    let base = spotify::sanitize(name).trim_end_matches('.').to_string();
-    let mut candidate = base.clone();
-    let mut suffix = 2;
-    while exists(&candidate) {
-        candidate = format!("{base} ({suffix})");
-        suffix += 1;
-    }
-    candidate
+fn staged_key(position: usize) -> String {
+    format!("{position}/{}.mp3", library::AUDIO_STEM)
 }
 
-fn restore(entry: &Entry, root: &Path, relative: &str) -> Result<(usize, usize), String> {
-    let mut index = library::read_index(root);
-    let stem = library::song_stem(relative);
+fn key_of(track: &library::Track) -> String {
+    key(
+        &track.title,
+        track.artist.as_deref().unwrap_or_default(),
+        track.album.as_deref().unwrap_or_default(),
+    )
+}
+
+fn key_of_meta(meta: &TrackMeta) -> String {
+    key(&meta.title, &meta.artists.join(", "), &meta.album)
+}
+
+fn restore(
+    entry: &Entry,
+    root: &Path,
+    catalog: &Catalog,
+    id: &str,
+) -> Result<(usize, usize), String> {
+    let song = catalog
+        .track(id)?
+        .map(|row| root.join(&row.rel_path))
+        .ok_or("The restored song is not in the library.")?;
+
     let mut images = 0;
     let mut lyrics = 0;
+
     if let Some(bytes) = &entry.cover {
         let extension = if bytes.starts_with(b"\x89PNG") { "png" } else { "jpg" };
-        let image = format!("{IMAGES_DIR}/{stem}.{extension}");
-        fs::write(root.join(&image), bytes).map_err(|e| e.to_string())?;
-        index.songs.insert(relative.into(), image);
+        let cover = library::cover_path(root, id, extension);
+        fs::write(&cover, bytes).map_err(|e| e.to_string())?;
+        if let Some(relative) = library::relative(root, &cover) {
+            catalog.set_cover(id, Some(&relative))?;
+        }
         images = 1;
     }
+
     if let Some(text) = &entry.synced_lyrics {
-        let lyric = format!("{LYRICS_DIR}/{stem}.lrc");
-        fs::write(root.join(&lyric), text).map_err(|e| e.to_string())?;
-        index.lyrics.insert(relative.into(), lyric);
+        let words = library::lyrics_path(root, id);
+        fs::write(&words, text).map_err(|e| e.to_string())?;
+        if let Some(relative) = library::relative(root, &words) {
+            catalog.set_lyrics(id, Some(&relative))?;
+        }
         lyrics = 1;
     }
-    library::write_index(root, &index)?;
-    // The downloader already writes metadata/genres. Restore portable tag assets too.
+
+    // The downloader already writes metadata and genres. Restore the tag assets
+    // that travel only in the export.
     if entry.cover.is_some() || entry.plain_lyrics.is_some() {
-        let song = root.join(relative);
         let mut tag = {
             let tagged = lofty::read_from_path(&song).map_err(|e| e.to_string())?;
-            tagged.primary_tag().or_else(|| tagged.first_tag()).cloned()
+            tagged
+                .primary_tag()
+                .or_else(|| tagged.first_tag())
+                .cloned()
                 .ok_or("The downloaded song has no tags.")?
         };
         if let Some(text) = &entry.plain_lyrics {
@@ -169,72 +192,112 @@ fn restore(entry: &Entry, root: &Path, relative: &str) -> Result<(usize, usize),
         if let Some(bytes) = &entry.cover {
             let mime = if bytes.starts_with(b"\x89PNG") { MimeType::Png } else { MimeType::Jpeg };
             tag.remove_picture_type(PictureType::CoverFront);
-            tag.push_picture(Picture::unchecked(bytes.clone()).pic_type(PictureType::CoverFront).mime_type(mime).build());
+            tag.push_picture(
+                Picture::unchecked(bytes.clone())
+                    .pic_type(PictureType::CoverFront)
+                    .mime_type(mime)
+                    .build(),
+            );
         }
         tag.save_to_path(&song, WriteOptions::default()).map_err(|e| e.to_string())?;
     }
+
     Ok((images, lyrics))
 }
 
 fn run(app: &AppHandle, path: &Path, report: &mut Reporter) -> Result<ImportOutcome, String> {
     let list = read(path)?;
     let root = library::library_root(app)?;
-    let paths = app.state::<TrackPaths>();
-    let mut existing: HashMap<String, String> = library::scan(app, &paths).tracks.into_iter()
-        .map(|track| (key(&track.title, track.artist.as_deref().unwrap_or_default(), track.album.as_deref().unwrap_or_default()), track.relative_path)).collect();
-    let missing = list.tracks.iter().any(|entry| !existing.contains_key(&key(&entry.meta.title, &entry.meta.artists.join(", "), &entry.meta.album)));
-    let tools = if missing { Some(download::resolve_tools(&spotify::read_env(app))?) } else { None };
+    let catalog = app.state::<Catalog>();
+
+    let mut existing: HashMap<String, String> = library::scan(app, &catalog)
+        .tracks
+        .into_iter()
+        .map(|track| (key_of(&track), track.id))
+        .collect();
+
+    // The download tools are only needed for the entries the library is missing.
+    let wanted = list
+        .tracks
+        .iter()
+        .any(|entry| !existing.contains_key(&key_of_meta(&entry.meta)));
+    let tools = if wanted {
+        Some(download::resolve_tools(&spotify::read_env(app))?)
+    } else {
+        None
+    };
+
     let job = format!("{}-{}", spotify::now_ms(), NEXT_JOB.fetch_add(1, Ordering::Relaxed));
     let staging = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("transfer").join(&job);
     fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+
     let result = (|| {
         report.phase("downloading", "Downloading audio directly. Spotify is not needed.");
         report.count(list.tracks.len());
-        let mut files = Vec::new();
-        let mut assets = Vec::new();
+
         for (position, entry) in list.tracks.iter().enumerate() {
             let label = entry.meta.title.clone();
             report.at(position + 1, &label);
-            let track_key = key(&entry.meta.title, &entry.meta.artists.join(", "), &entry.meta.album);
-            if let Some(relative) = existing.get(&track_key) {
-                files.push(relative.clone());
-                assets.push((entry, relative.clone()));
+
+            if existing.contains_key(&key_of_meta(&entry.meta)) {
                 report.reuse();
                 continue;
             }
-            // Names never come from paths in the document, and never overwrite library files.
-            let stem = format!("wave-{job}-{position}");
             let mut meta = entry.meta.clone();
             meta.cover_url = None;
-            match download::download_named(tools.as_ref().ok_or("Download tools are unavailable.")?, &meta, &staging, &stem) {
-                Ok(_) => {
-                    let relative = format!("{SONGS_DIR}/{stem}.mp3");
-                    existing.insert(track_key, relative.clone());
-                    files.push(relative.clone());
-                    assets.push((entry, relative));
-                }
+            let dir = staging.join(position.to_string());
+            match download::download(
+                tools.as_ref().ok_or("Download tools are unavailable.")?,
+                &meta,
+                &dir,
+            ) {
+                Ok(_) => {}
                 Err(error) => report.fail(format!("{label}: {error}")),
             }
         }
+
         report.phase("importing", "Restoring the playlist, covers and lyrics.");
-        let mut outcome = import::import_into_library(app, &staging, false, None)?;
-        for (entry, relative) in assets {
-            match restore(entry, &root, &relative) {
-                Ok((images, lyrics)) => { outcome.images += images; outcome.lyrics += lyrics; }
+        let imported = import::import_into_library(app, &staging, false, None)?;
+        let mut outcome = imported.outcome;
+
+        let mut playlist: Vec<String> = Vec::new();
+        let mut assets: Vec<(&Entry, String)> = Vec::new();
+        for (position, entry) in list.tracks.iter().enumerate() {
+            let track_key = key_of_meta(&entry.meta);
+            let id = existing.get(&track_key).cloned().or_else(|| {
+                let found = imported.by_source.get(&staged_key(position)).cloned();
+                if let Some(id) = &found {
+                    existing.insert(track_key.clone(), id.clone());
+                }
+                found
+            });
+
+            if let Some(id) = id {
+                playlist.push(id.clone());
+                assets.push((entry, id));
+            }
+        }
+
+        for (entry, id) in assets {
+            match restore(entry, &root, &catalog, &id) {
+                Ok((images, lyrics)) => {
+                    outcome.images += images;
+                    outcome.lyrics += lyrics;
+                }
                 Err(error) => report.fail(format!("{}: {error}", entry.meta.title)),
             }
         }
-        if !files.is_empty() {
-            let name = unique_playlist(&list.name, |name| root.join(library::PLAYLISTS_DIR).join(format!("{name}.json")).exists());
-            playlists::write(app, &name, &files)?;
-            outcome.playlist = Some(name);
+
+        if !playlist.is_empty() {
+            outcome.playlist = Some(playlists::write(app, &list.name, &playlist)?);
         }
         outcome.errors.extend_from_slice(report.failures());
         import::remember_import(app, "wavelist", &list.name, &outcome);
-        library::scan(app, &paths);
-        outcome.state = playlists::refresh(app, &app.state::<Store>(), &paths);
+        library::scan(app, &catalog);
+        outcome.state = playlists::refresh(app, &app.state::<Store>());
         Ok(outcome)
     })();
+
     let _ = fs::remove_dir_all(&staging);
     result
 }
@@ -295,11 +358,9 @@ mod tests {
     }
 
     #[test]
-    fn playlist_names_are_safe_and_do_not_replace_existing_ones() {
-        assert_eq!(unique_playlist("../Rock", |_| false), ".._Rock");
-        assert_eq!(unique_playlist("Rock", |name| name == "Rock" || name == "Rock (2)"), "Rock (3)");
+    fn a_downloaded_track_is_staged_under_its_own_directory() {
+        assert_eq!(staged_key(3), format!("3/{}.mp3", library::AUDIO_STEM));
     }
-
     #[test]
     fn duplicate_matching_preserves_artist_and_album_identity() {
         assert_eq!(key("  SONG ", "Artist", " Album"), key("song", "artist", "album"));

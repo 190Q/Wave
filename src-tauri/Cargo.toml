@@ -39,6 +39,8 @@ reqwest = { version = "0.13.5", default-features = false, features = [
 ebur128 = "0.1.10"
 symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "alac", "aiff"] }
 rusqlite = { version = "0.40.2", features = ["bundled"], default-features = false }
+uuid = { version = "1", features = ["v4", "v5"] }
+blake3 = "1"
 
 # Used to turn off WebView2's own browser shortcuts (Ctrl+R, F5, F12, ...).
 [target.'cfg(windows)'.dependencies]

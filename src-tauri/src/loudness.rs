@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
 use ebur128::{EbuR128, Mode};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
 use symphonia::core::errors::Error as DecodeError;
@@ -11,32 +11,13 @@ use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager};
 
-use crate::library::{self, TrackPaths, CONFIG_DIR};
+use crate::catalog::{Catalog, TrackRow};
+use crate::library;
 
 /// Follows one loudness pass, one song at a time.
 pub const PROGRESS_EVENT: &str = "loudness-scan";
-
-const LOUDNESS_FILE: &str = "loudness.json";
-
-/// How many readings are collected before the index is written out.
-const FLUSH_EVERY: usize = 25;
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Measurement {
-    pub lufs: f32,
-    pub peak: f32,
-    pub bytes: u64,
-}
-
-/// Readings by library-relative song path, so they survive the library moving.
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct LoudnessIndex {
-    #[serde(default)]
-    pub songs: HashMap<String, Measurement>,
-}
 
 /// One song's reading, sent as soon as it is taken.
 #[derive(Debug, Clone, Serialize)]
@@ -65,25 +46,6 @@ pub struct LoudnessOutcome {
     pub failures: Vec<String>,
 }
 
-pub fn read_index(root: &Path) -> LoudnessIndex {
-    fs::read_to_string(root.join(CONFIG_DIR).join(LOUDNESS_FILE))
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default()
-}
-
-/// Writes via a temp file so a crash mid-write cannot truncate the real one.
-pub fn write_index(root: &Path, index: &LoudnessIndex) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(index).map_err(|e| e.to_string())?;
-    let path = root.join(CONFIG_DIR).join(LOUDNESS_FILE);
-    let temp = path.with_extension("json.tmp");
-    fs::write(&temp, json).map_err(|e| format!("could not write {}: {e}", temp.display()))?;
-    // `rename` does not overwrite on Windows, so clear the target first.
-    if path.exists() {
-        let _ = fs::remove_file(&path);
-    }
-    fs::rename(&temp, &path).map_err(|e| format!("could not replace {}: {e}", path.display()))
-}
 
 pub fn measure(path: &Path) -> Result<Measurement, String> {
     let bytes = fs::metadata(path)
@@ -204,31 +166,58 @@ pub fn measure(path: &Path) -> Result<Measurement, String> {
     })
 }
 
-fn analyse<R: Runtime>(app: &AppHandle<R>, songs: &[(String, String)]) -> LoudnessOutcome {
+#[derive(Debug, Clone, Copy)]
+pub struct Measurement {
+    pub lufs: f32,
+    pub peak: f32,
+    pub bytes: u64,
+}
+
+fn pending<'a>(rows: &[&'a TrackRow]) -> Vec<&'a TrackRow> {
+    rows.iter()
+        .copied()
+        .filter(|row| row.loudness_bytes != Some(row.bytes))
+        .collect()
+}
+
+fn analyse(app: &AppHandle, track_ids: &[String]) -> LoudnessOutcome {
     let Ok(root) = library::library_root(app) else {
         return LoudnessOutcome::default();
     };
+    let catalog = app.state::<Catalog>();
 
-    let mut index = read_index(&root);
-    let todo: Vec<&(String, String)> = songs
-        .iter()
-        .filter(|(_, relative)| needs_measuring(&root, &index, relative))
-        .collect();
+    let Ok(rows) = catalog.tracks() else {
+        return LoudnessOutcome::default();
+    };
 
+    let wanted: Vec<&TrackRow> = if track_ids.is_empty() {
+        rows.iter().collect()
+    } else {
+        let asked: HashSet<&str> = track_ids.iter().map(String::as_str).collect();
+        rows.iter().filter(|row| asked.contains(row.id.as_str())).collect()
+    };
+
+    let todo = pending(&wanted);
     let total = todo.len();
-    let skipped = songs.len() - total;
+    let skipped = wanted.len() - total;
     let mut measured = 0usize;
     let mut failures = Vec::new();
 
-    for (position, (id, relative)) in todo.iter().enumerate() {
-        match measure(&root.join(relative)) {
+    for (position, row) in todo.iter().enumerate() {
+        match measure(&root.join(&row.rel_path)) {
             Ok(reading) => {
-                index.songs.insert(relative.clone(), reading);
+                if catalog
+                    .set_loudness(&row.id, reading.lufs, reading.peak, reading.bytes)
+                    .is_err()
+                {
+                    failures.push(format!("{} could not be saved", row.title));
+                    continue;
+                }
                 measured += 1;
                 let _ = app.emit(
                     PROGRESS_EVENT,
                     LoudnessUpdate {
-                        id: id.clone(),
+                        id: row.id.clone(),
                         lufs: reading.lufs,
                         peak: reading.peak,
                         done: position + 1,
@@ -240,15 +229,7 @@ fn analyse<R: Runtime>(app: &AppHandle<R>, songs: &[(String, String)]) -> Loudne
             }
             Err(error) => failures.push(error),
         }
-
-        // Written as it goes, so a long pass is not lost to a crash.
-        if (position + 1) % FLUSH_EVERY == 0 {
-            let _ = write_index(&root, &index);
-        }
     }
-
-    prune(&root, &mut index);
-    let _ = write_index(&root, &index);
 
     LoudnessOutcome {
         measured,
@@ -257,31 +238,11 @@ fn analyse<R: Runtime>(app: &AppHandle<R>, songs: &[(String, String)]) -> Loudne
     }
 }
 
-fn needs_measuring(root: &Path, index: &LoudnessIndex, relative: &str) -> bool {
-    let Ok(bytes) = fs::metadata(root.join(relative)).map(|meta| meta.len()) else {
-        return false;
-    };
-    match index.songs.get(relative) {
-        Some(known) => known.bytes != bytes,
-        None => true,
-    }
-}
-
-/// Drops readings for files that are no longer in the library.
-fn prune(root: &Path, index: &mut LoudnessIndex) {
-    index.songs.retain(|relative, _| root.join(relative).is_file());
-}
-
 #[tauri::command]
 pub async fn analyse_loudness(app: AppHandle, track_ids: Vec<String>) -> LoudnessOutcome {
-    // Resolved before the await: a state guard cannot cross one.
-    let songs = {
-        let paths = app.state::<TrackPaths>();
-        paths.ids_to_pairs(&track_ids)
-    };
 
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || analyse(&handle, &songs))
+    tauri::async_runtime::spawn_blocking(move || analyse(&handle, &track_ids))
         .await
         .unwrap_or_else(|error| LoudnessOutcome {
             measured: 0,
@@ -338,6 +299,15 @@ mod tests {
         fs::write(path, &file).unwrap();
     }
 
+    fn row(id: &str, bytes: u64, measured: Option<u64>) -> TrackRow {
+        TrackRow {
+            id: id.to_string(),
+            bytes,
+            loudness_bytes: measured,
+            ..TrackRow::default()
+        }
+    }
+
     #[test]
     fn a_quieter_file_measures_the_expected_number_of_lu_lower() {
         let dir = scratch("level");
@@ -390,59 +360,17 @@ mod tests {
     }
 
     #[test]
-    fn a_song_is_measured_until_its_reading_still_fits() {
-        let dir = scratch("stale");
-        let songs = dir.join(library::SONGS_DIR);
-        fs::create_dir_all(&songs).unwrap();
+    fn only_songs_whose_file_has_changed_are_measured_again() {
+        let unmeasured = row("one", 100, None);
+        let measured = row("two", 100, Some(100));
+        let replaced = row("three", 200, Some(100));
 
-        let song = songs.join("song.mp3");
-        let relative = format!("{}/song.mp3", library::SONGS_DIR);
-        fs::write(&song, b"0123456789").unwrap();
+        let rows = vec![&unmeasured, &measured, &replaced];
+        let todo = pending(&rows);
 
-        let mut index = LoudnessIndex::default();
-        assert!(needs_measuring(&dir, &index, &relative));
-
-        // A reading taken from this exact file stands.
-        index.songs.insert(
-            relative.clone(),
-            Measurement {
-                lufs: -9.0,
-                peak: 0.9,
-                bytes: 10,
-            },
+        assert_eq!(
+            todo.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            vec!["one", "three"]
         );
-        assert!(!needs_measuring(&dir, &index, &relative));
-
-        // A different file under the same name does not.
-        fs::write(&song, b"a longer file").unwrap();
-        assert!(needs_measuring(&dir, &index, &relative));
-
-        // A file that is gone is left alone rather than reported.
-        assert!(!needs_measuring(&dir, &index, "songs/missing.mp3"));
-    }
-
-    #[test]
-    fn the_index_round_trips() {
-        let dir = scratch("index");
-        fs::create_dir_all(dir.join(CONFIG_DIR)).unwrap();
-
-        let mut index = LoudnessIndex::default();
-        index.songs.insert(
-            "songs/one.mp3".to_string(),
-            Measurement {
-                lufs: -9.5,
-                peak: 0.98,
-                bytes: 4096,
-            },
-        );
-        write_index(&dir, &index).unwrap();
-
-        let read = read_index(&dir);
-        let one = read.songs.get("songs/one.mp3").unwrap();
-        assert_eq!(one.bytes, 4096);
-        assert!((one.lufs + 9.5).abs() < 0.001);
-        assert!((one.peak - 0.98).abs() < 0.001);
-        // A library with no readings reads as an empty index, not a failure.
-        assert!(read_index(&dir.join("nowhere")).songs.is_empty());
     }
 }

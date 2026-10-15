@@ -7,10 +7,8 @@ use lofty::prelude::{TagExt, TaggedFileExt};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use crate::library::{
-    self, library_root, read_index, song_stem, track_label, write_index, LibraryIndex, Track,
-    TrackPaths, IMAGES_DIR,
-};
+use crate::catalog::Catalog;
+use crate::library::{self, library_root, track_label, Track};
 use crate::progress::Reporter;
 use crate::spotify::{self, client};
 
@@ -60,9 +58,9 @@ fn run_inner(
     report: &mut Reporter,
 ) -> Result<CoversOutcome, String> {
     let root = library_root(app)?;
-    let paths = app.state::<TrackPaths>();
+    let catalog = app.state::<Catalog>();
 
-    let by_id: std::collections::HashMap<String, Track> = library::scan(app, &paths)
+    let by_id: std::collections::HashMap<String, Track> = library::scan(app, &catalog)
         .tracks
         .into_iter()
         .map(|track| (track.id.clone(), track))
@@ -88,22 +86,20 @@ fn run_inner(
     );
     report.count(wanted.len());
 
-    let images_dir = root.join(IMAGES_DIR);
-    let mut index = read_index(&root);
     let mut outcome = CoversOutcome::default();
 
     for (position, track) in wanted.iter().enumerate() {
         let label = track_label(track);
         report.at(position + 1, &label);
 
-        // The index is what says a song has a cover, not the file.
-        if index.songs.contains_key(&track.relative_path) {
+        // A song that already has a cover beside it is left alone.
+        if track.artwork_path.is_some() {
             outcome.skipped += 1;
             continue;
         }
 
         match find_cover(token.as_deref(), track) {
-            Ok(Some(found)) => match write_cover(&images_dir, &mut index, track, &found.bytes) {
+            Ok(Some(found)) => match write_cover(&root, &catalog, track, &found.bytes) {
                 Ok(()) => {
                     outcome.restored += 1;
                     if found.from_file {
@@ -131,7 +127,6 @@ fn run_inner(
         }
     }
 
-    write_index(&root, &index)?;
     Ok(outcome)
 }
 
@@ -184,14 +179,8 @@ fn embedded(track: &Track) -> Option<Vec<u8>> {
     tag.pictures().first().map(|picture| picture.data().to_vec())
 }
 
-/// Files the cover beside the songs, links it in the index, and puts it in the
-/// file itself.
-fn write_cover(
-    images_dir: &Path,
-    index: &mut LibraryIndex,
-    track: &Track,
-    bytes: &[u8],
-) -> Result<(), String> {
+/// Files the cover inside the song's own directory and links it in the catalog.
+fn write_cover(root: &Path, catalog: &Catalog, track: &Track, bytes: &[u8]) -> Result<(), String> {
     // The extension follows the bytes, so the image is served as what it is.
     let (extension, mime) = if is_png(bytes) {
         ("png", MimeType::Png)
@@ -199,15 +188,15 @@ fn write_cover(
         ("jpg", MimeType::Jpeg)
     };
 
-    let name = format!("{}.{extension}", song_stem(&track.path));
-    let target = images_dir.join(&name);
+    let target = library::cover_path(root, &track.id, extension);
     fs::write(&target, bytes).map_err(|e| format!("could not write {}: {e}", target.display()))?;
 
-    index
-        .songs
-        .insert(track.relative_path.clone(), format!("{IMAGES_DIR}/{name}"));
+    if let Some(relative) = library::relative(root, &target) {
+        catalog.set_cover(&track.id, Some(&relative))?;
+    }
 
-    embed(&track.path, bytes, mime)
+    let _ = embed(&track.path, bytes, mime);
+    Ok(())
 }
 
 fn embed(path: &str, bytes: &[u8], mime: MimeType) -> Result<(), String> {
@@ -416,8 +405,11 @@ mod tests {
     }
 
     #[test]
-    fn names_the_cover_after_the_song() {
-        assert_eq!(song_stem("C:\\library\\songs\\Hey Jude.mp3"), "Hey Jude");
+    fn a_cover_lands_in_the_song_that_owns_it() {
+        let root = Path::new("library");
+        let path = library::cover_path(root, "a-song", "png");
+
+        assert!(path.ends_with(Path::new("songs").join("a-song").join("cover.png")));
     }
 
     #[test]

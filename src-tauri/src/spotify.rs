@@ -841,27 +841,6 @@ fn normalise_item(item: &Value) -> Option<TrackMeta> {
     })
 }
 
-/// Strips what Windows refuses in a file name.
-pub fn sanitize(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|character| {
-            if r#"<>:"/\|?*"#.contains(character) || (character as u32) < 0x20 {
-                '_'
-            } else {
-                character
-            }
-        })
-        .collect();
-    let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
-    let trimmed = collapsed.trim();
-    if trimmed.is_empty() {
-        "unknown".to_string()
-    } else {
-        trimmed.chars().take(150).collect()
-    }
-}
-
 /// Opens the config folder, writing the template first so there is a file to edit.
 #[tauri::command]
 pub fn open_spotify_config(app: AppHandle) -> Result<(), String> {
@@ -927,13 +906,6 @@ mod tests {
     fn rejects_what_is_not_a_link() {
         assert!(resolve_ref("https://example.com/nothing").is_err());
         assert!(resolve_ref("   ").is_err());
-    }
-
-    #[test]
-    fn sanitises_a_file_name() {
-        assert_eq!(sanitize("AC/DC: Back in Black?"), "AC_DC_ Back in Black_");
-        assert_eq!(sanitize("  spaced   out  "), "spaced out");
-        assert_eq!(sanitize(""), "unknown");
     }
 
     #[test]

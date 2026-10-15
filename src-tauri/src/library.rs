@@ -1,14 +1,15 @@
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use lofty::file::FileType;
 use lofty::prelude::{Accessor, AudioFile, ItemKey, TaggedFileExt};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime, State};
 
-use crate::loudness::LoudnessIndex;
+use crate::catalog::{Catalog, TrackRow, LAYOUT_VERSION};
+use crate::identity;
 use crate::state::{save, PersistedState, Store};
 
 /// Extensions treated as music. `mp4`/`m4v` are deliberately absent.
@@ -18,65 +19,58 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
 
 /// Extensions treated as artwork.
 pub const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp"];
-pub const SOURCE_ARTWORK_DIR: &str = "images";
 
 /// Extensions treated as lyrics.
 pub const LYRICS_EXTENSIONS: &[&str] = &["lrc"];
+
+pub const SOURCE_ARTWORK_DIR: &str = "images";
 pub const SOURCE_LYRICS_DIR: &str = "lyrics";
 
 pub const SONGS_DIR: &str = "songs";
-pub const IMAGES_DIR: &str = "images";
-pub const LYRICS_DIR: &str = "lyrics";
-pub const PLAYLISTS_DIR: &str = "playlists";
 pub const CONFIG_DIR: &str = "config";
-pub const INDEX_FILE: &str = "index.json";
 
-/// Song path relative to the library root, mapped to the relative paths of its
-/// sidecars.
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct LibraryIndex {
-    #[serde(default)]
-    pub songs: HashMap<String, String>,
-    #[serde(default)]
-    pub lyrics: HashMap<String, String>,
+/// The audio inside a track's directory. The extension follows the codec.
+pub const AUDIO_STEM: &str = "audio";
+/// The cover inside a track's directory. The extension follows the image.
+pub const COVER_STEM: &str = "cover";
+/// The lyrics inside a track's directory.
+pub const LYRICS_NAME: &str = "lyrics.lrc";
+
+/// The library root, with the directories the catalog needs in place.
+pub fn library_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("could not resolve the app data directory: {e}"))?
+        .join("library");
+
+    for dir in [SONGS_DIR, CONFIG_DIR] {
+        let path = root.join(dir);
+        fs::create_dir_all(&path).map_err(|e| format!("could not create {}: {e}", path.display()))?;
+    }
+
+    Ok(root)
 }
 
-#[derive(Default)]
-pub struct TrackPaths(pub Mutex<HashMap<String, String>>);
+pub fn track_dir(root: &Path, id: &str) -> PathBuf {
+    root.join(SONGS_DIR).join(id)
+}
 
-impl TrackPaths {
-    pub fn ids_to_files(&self, track_ids: &[String]) -> Vec<String> {
-        let guard = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        track_ids
-            .iter()
-            .filter_map(|id| guard.get(id).cloned())
-            .collect()
-    }
+pub fn audio_path(root: &Path, id: &str, extension: &str) -> PathBuf {
+    track_dir(root, id).join(format!("{AUDIO_STEM}.{extension}"))
+}
 
-    /// The same lookup, keeping each id, so a result can name the song it is for.
-    pub fn ids_to_pairs(&self, track_ids: &[String]) -> Vec<(String, String)> {
-        let guard = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        track_ids
-            .iter()
-            .filter_map(|id| guard.get(id).map(|relative| (id.clone(), relative.clone())))
-            .collect()
-    }
+pub fn cover_path(root: &Path, id: &str, extension: &str) -> PathBuf {
+    track_dir(root, id).join(format!("{COVER_STEM}.{extension}"))
+}
 
-    /// Drops an id, for a song that is no longer in the library.
-    pub fn forget(&self, track_id: &str) {
-        self.0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(track_id);
-    }
+pub fn lyrics_path(root: &Path, id: &str) -> PathBuf {
+    track_dir(root, id).join(LYRICS_NAME)
+}
 
-    /// A copy of the whole map, for resolving every playlist file at once.
-    pub fn ids_to_file_map(&self) -> HashMap<String, String> {
-        self.0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
+pub fn relative(root: &Path, path: &Path) -> Option<String> {
+    let stripped = path.strip_prefix(root).ok()?;
+    Some(stripped.to_string_lossy().replace('\\', "/"))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -98,9 +92,9 @@ pub struct Track {
     pub codec: String,
     pub bitrate: Option<u32>,
     pub sample_rate: Option<u32>,
-    /// Copied sidecar image if the index has one, otherwise extracted tag art.
+    /// The cover beside the song, if it has one.
     pub artwork_path: Option<String>,
-    /// Copied sidecar lyrics if the index has one.
+    /// The lyrics beside the song, if it has any.
     pub lyrics_path: Option<String>,
     pub has_embedded_art: bool,
     /// Integrated loudness in LUFS, `None` until the song has been measured.
@@ -119,36 +113,430 @@ pub struct ScanSummary {
     pub errors: Vec<String>,
 }
 
-pub fn library_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    let root = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("could not resolve the app data directory: {e}"))?
-        .join("library");
+/// What the settings panel shows about how the library is kept.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryInfo {
+    /// On-disk storage format. 2 is the per-track catalog layout.
+    pub format_version: u32,
+    /// Songs whose audio is where the catalog expects it.
+    pub tracks: usize,
+    /// Songs whose audio is gone, whose likes, playlists and history are kept.
+    pub missing: usize,
+    pub db_bytes: u64,
+}
 
-    for dir in [SONGS_DIR, IMAGES_DIR, LYRICS_DIR, PLAYLISTS_DIR, CONFIG_DIR] {
-        let path = root.join(dir);
-        fs::create_dir_all(&path).map_err(|e| format!("could not create {}: {e}", path.display()))?;
+
+pub fn scan<R: Runtime>(app: &AppHandle<R>, catalog: &Catalog) -> ScanSummary {
+    let root = match library_root(app) {
+        Ok(root) => root,
+        Err(error) => {
+            return ScanSummary {
+                tracks: Vec::new(),
+                root: String::new(),
+                skipped: 0,
+                errors: vec![error],
+            };
+        }
+    };
+
+    let mut errors = Vec::new();
+    let mut rows: Vec<TrackRow> = Vec::new();
+    let mut skipped = 0usize;
+
+    let songs = root.join(SONGS_DIR);
+    match fs::read_dir(&songs) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+
+                if !is_dir {
+                    if has_extension(&path, AUDIO_EXTENSIONS) {
+                        errors.push(format!(
+                            "{} is not in a song folder yet; restart Wave to finish filing the library",
+                            entry.file_name().to_string_lossy()
+                        ));
+                    } else {
+                        skipped += 1;
+                    }
+                    continue;
+                }
+
+                match reconcile(&path, &root, catalog, &mut errors) {
+                    Ok(Some(row)) => rows.push(row),
+                    Ok(None) => {}
+                    Err(error) => errors.push(error),
+                }
+            }
+        }
+        Err(error) => errors.push(format!("could not read {}: {error}", songs.display())),
     }
 
-    Ok(root)
+    if let Err(error) = catalog.sync_scan(&rows) {
+        errors.push(error);
+    }
+
+    let mut tracks: Vec<Track> = rows.iter().map(|row| to_track(row, &root)).collect();
+    tracks.sort_by_key(|track| track.title.to_lowercase());
+
+    ScanSummary {
+        tracks,
+        root: root.to_string_lossy().into_owned(),
+        skipped,
+        errors,
+    }
 }
 
-pub fn read_index(root: &Path) -> LibraryIndex {
-    fs::read_to_string(root.join(CONFIG_DIR).join(INDEX_FILE))
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
+fn reconcile(
+    dir: &Path,
+    root: &Path,
+    catalog: &Catalog,
+    errors: &mut Vec<String>,
+) -> Result<Option<TrackRow>, String> {
+    let dir_name = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    // A directory named after an id is a song the catalog already knows.
+    let named_as_id = identity::is_id(&dir_name);
+    let known = if named_as_id {
+        catalog.track(&dir_name)?
+    } else {
+        None
+    };
+
+    let recorded = known
+        .as_ref()
+        .map(|row| root.join(&row.rel_path))
+        .filter(|path| path.is_file());
+
+    let audio_name = match &recorded {
+        Some(path) => path.file_name().map(OsString::from).unwrap_or_default(),
+        None => {
+            let found = audio_files(dir)?;
+            if found.len() > 1 {
+                errors.push(format!(
+                    "{} holds more than one audio file; {} was used",
+                    dir.display(),
+                    found[0].to_string_lossy()
+                ));
+            }
+            match found.into_iter().next() {
+                Some(name) => name,
+                None => return Ok(None),
+            }
+        }
+    };
+
+    let (id, dir) = if named_as_id {
+        (dir_name, dir.to_path_buf())
+    } else {
+        let id = identity::new_id();
+        let target = track_dir(root, &id);
+        if target.exists() {
+            return Err(format!(
+                "{} is already taken, so {} was left alone",
+                target.display(),
+                dir.display()
+            ));
+        }
+        fs::rename(dir, &target)
+            .map_err(|e| format!("could not rename {}: {e}", dir.display()))?;
+        (id, target)
+    };
+
+    let audio = dir.join(&audio_name);
+    let rel_path = relative(root, &audio)
+        .ok_or_else(|| format!("{} is outside the library", audio.display()))?;
+    let stamp = identity::stamp_of(&audio)?;
+
+    let unchanged = known.as_ref().is_some_and(|row| {
+        row.rel_path == rel_path && row.bytes == stamp.bytes && row.modified_ms == stamp.modified_ms
+    });
+
+    if unchanged {
+        let mut row = known.unwrap_or_default();
+        row.missing = false;
+        // A cover or lyrics file deleted by hand stops being advertised.
+        if row.cover_path.as_deref().is_some_and(|rel| !root.join(rel).is_file()) {
+            row.cover_path = None;
+        }
+        if row.lyrics_path.as_deref().is_some_and(|rel| !root.join(rel).is_file()) {
+            row.lyrics_path = None;
+        }
+        return Ok(Some(row));
+    }
+
+    let original_name = known
+        .as_ref()
+        .map(|row| row.original_name.clone())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| {
+            audio
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        });
+
+    let mut row = read_row(&id, &audio, &dir, &rel_path, &original_name, stamp)?;
+    // A song that has been in the library all along keeps the day it arrived.
+    row.added_at = known
+        .as_ref()
+        .map(|row| row.added_at)
+        .unwrap_or(row.added_at);
+    Ok(Some(row))
+}
+
+pub fn describe(
+    root: &Path,
+    id: &str,
+    audio: &Path,
+    original_name: &str,
+) -> Result<TrackRow, String> {
+    let dir = audio
+        .parent()
+        .ok_or_else(|| format!("{} has no folder", audio.display()))?;
+    let rel_path = relative(root, audio)
+        .ok_or_else(|| format!("{} is outside the library", audio.display()))?;
+    let stamp = identity::stamp_of(audio)?;
+
+    read_row(id, audio, dir, &rel_path, original_name, stamp)
+}
+
+/// Reads a song from its file: its tags, its hash, and whatever sits beside it.
+fn read_row(
+    id: &str,
+    audio: &Path,
+    dir: &Path,
+    rel_path: &str,
+    original_name: &str,
+    stamp: identity::Stamp,
+) -> Result<TrackRow, String> {
+    let file_name = audio
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tagged =
+        lofty::read_from_path(audio).map_err(|e| format!("could not read {file_name}: {e}"))?;
+
+    let properties = tagged.properties();
+    let mut title: Option<String> = None;
+    let mut artist = None;
+    let mut album = None;
+    let mut album_artist = None;
+    let mut track_no = None;
+    let mut disc_no = None;
+    let mut year = None;
+    let mut genre = None;
+    let mut embedded: Option<(Vec<u8>, String)> = None;
+
+    if let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) {
+        title = tag.title().map(|value| value.to_string());
+        artist = tag.artist().map(|value| value.to_string());
+        album = tag.album().map(|value| value.to_string());
+        album_artist = tag.get_string(ItemKey::AlbumArtist).map(str::to_string);
+        track_no = tag.track();
+        disc_no = tag.disk();
+        year = tag.date().map(|date| date.year);
+        genre = tag.genre().map(|value| value.to_string());
+
+        if let Some(picture) = tag.pictures().first() {
+            let extension = picture
+                .mime_type()
+                .and_then(|mime| mime.ext())
+                .unwrap_or("jpg")
+                .to_string();
+            embedded = Some((picture.data().to_vec(), extension));
+        }
+    }
+
+    let has_embedded_art = embedded.is_some();
+
+
+    let title = title
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| fallback_title(original_name, audio));
+
+
+    let cover = cover_in(dir).or_else(|| {
+        embedded
+            .as_ref()
+            .and_then(|(data, extension)| write_cover(dir, data, extension))
+    });
+
+    Ok(TrackRow {
+        id: id.to_string(),
+        rel_path: rel_path.to_string(),
+        original_name: original_name.to_string(),
+        bytes: stamp.bytes,
+        modified_ms: stamp.modified_ms,
+        content_hash: Some(identity::content_hash(audio)?),
+        title,
+        artist: clean(artist),
+        album: clean(album),
+        album_artist: clean(album_artist),
+        track_no,
+        disc_no,
+        year,
+        genre: clean(genre),
+        duration_ms: properties.duration().as_millis() as u64,
+        codec: codec_label(tagged.file_type()),
+        bitrate: properties.audio_bitrate(),
+        sample_rate: properties.sample_rate(),
+        has_embedded_art,
+        cover_path: cover.as_deref().and_then(|path| relative_owned(path, dir)),
+        lyrics_path: lyrics_in(dir).as_deref().and_then(|path| relative_owned(path, dir)),
+        lufs: None,
+        peak: None,
+        loudness_bytes: None,
+        missing: false,
+        added_at: identity::now_ms(),
+        updated_at: identity::now_ms(),
+    })
+}
+
+/// A library-relative path for a file known to sit inside a track's directory.
+fn relative_owned(path: &Path, dir: &Path) -> Option<String> {
+    let name = path.file_name()?.to_string_lossy();
+    let id = dir.file_name()?.to_string_lossy();
+    Some(format!("{SONGS_DIR}/{id}/{name}"))
+}
+
+fn audio_files(dir: &Path) -> Result<Vec<OsString>, String> {
+    let entries = fs::read_dir(dir).map_err(|e| format!("could not read {}: {e}", dir.display()))?;
+
+    let mut found: Vec<OsString> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && has_extension(&path, AUDIO_EXTENSIONS) {
+            found.push(entry.file_name());
+        }
+    }
+
+    found.sort_by_key(|name| {
+        let text = name.to_string_lossy().to_lowercase();
+        (u8::from(!text.starts_with(AUDIO_STEM)), text)
+    });
+    Ok(found)
+}
+
+/// The cover sitting beside a song, if one does.
+fn cover_in(dir: &Path) -> Option<PathBuf> {
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file()
+            && has_extension(&path, IMAGE_EXTENSIONS)
+            && file_stem_lower(&path) == COVER_STEM
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn lyrics_in(dir: &Path) -> Option<PathBuf> {
+    let path = dir.join(LYRICS_NAME);
+    path.is_file().then_some(path)
+}
+
+/// Writes the art a file carries out beside it, so the song keeps its cover.
+fn write_cover(dir: &Path, data: &[u8], extension: &str) -> Option<PathBuf> {
+    let target = dir.join(format!("{COVER_STEM}.{extension}"));
+    if target.exists() {
+        return Some(target);
+    }
+    fs::write(&target, data).ok()?;
+    Some(target)
+}
+
+fn to_track(row: &TrackRow, root: &Path) -> Track {
+    let path = root.join(&row.rel_path);
+    Track {
+        id: row.id.clone(),
+        path: path.to_string_lossy().into_owned(),
+        relative_path: row.rel_path.clone(),
+        title: row.title.clone(),
+        artist: row.artist.clone(),
+        album: row.album.clone(),
+        album_artist: row.album_artist.clone(),
+        track_no: row.track_no,
+        disc_no: row.disc_no,
+        year: row.year,
+        genre: row.genre.clone(),
+        duration_ms: row.duration_ms,
+        codec: row.codec.clone(),
+        bitrate: row.bitrate,
+        sample_rate: row.sample_rate,
+        artwork_path: absolute(root, row.cover_path.as_deref()),
+        lyrics_path: absolute(root, row.lyrics_path.as_deref()),
+        has_embedded_art: row.has_embedded_art,
+        lufs: row.lufs,
+        peak: row.peak,
+    }
+}
+
+fn absolute(root: &Path, relative: Option<&str>) -> Option<String> {
+    relative.map(|relative| root.join(relative).to_string_lossy().into_owned())
+}
+
+/// Tag values are frequently empty strings; treat those as absent.
+fn clean(value: Option<String>) -> Option<String> {
+    value.filter(|text| !text.trim().is_empty())
+}
+
+/// A song with no title tag still needs something to show in a list.
+fn fallback_title(original_name: &str, audio: &Path) -> String {
+    let from_original = Path::new(original_name)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .filter(|stem| !stem.trim().is_empty() && stem != AUDIO_STEM);
+
+    from_original
+        .or_else(|| {
+            audio
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .filter(|stem| !stem.trim().is_empty() && stem != AUDIO_STEM)
+        })
+        .unwrap_or_else(|| "Untitled".to_string())
+}
+
+pub fn has_extension(path: &Path, allowed: &[&str]) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| allowed.contains(&extension.to_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+pub fn file_stem_lower(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
         .unwrap_or_default()
+        .to_lowercase()
 }
 
-pub fn write_index(root: &Path, index: &LibraryIndex) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(index).map_err(|e| e.to_string())?;
-    let path = root.join(CONFIG_DIR).join(INDEX_FILE);
-    fs::write(&path, json).map_err(|e| format!("could not write {}: {e}", path.display()))
+/// `artist - title`, or just the title when the file carries no artist.
+pub fn track_label(track: &Track) -> String {
+    match track.artist.as_deref() {
+        Some(artist) if !artist.trim().is_empty() => format!("{artist} - {}", track.title),
+        _ => track.title.clone(),
+    }
 }
 
-/// Lookup table for the sidecar files in an imported folder. Covers and lyrics
-/// are matched the same way, so one index serves both.
+pub fn source_subdir(root: &Path, name: &str) -> Option<PathBuf> {
+    let entries = fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+        if is_dir && entry.file_name().to_string_lossy().eq_ignore_ascii_case(name) {
+            return Some(entry.path());
+        }
+    }
+    None
+}
+
 #[derive(Default)]
 pub struct SidecarIndex {
     /// Keyed by the song part of `artist - song.ext`.
@@ -209,232 +597,6 @@ impl SidecarIndex {
     }
 }
 
-/// Locates a subfolder of an imported folder, matching the name case-insensitively.
-pub fn source_subdir(root: &Path, name: &str) -> Option<PathBuf> {
-    let entries = fs::read_dir(root).ok()?;
-    for entry in entries.flatten() {
-        let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
-        if is_dir && entry.file_name().to_string_lossy().eq_ignore_ascii_case(name) {
-            return Some(entry.path());
-        }
-    }
-    None
-}
-
-pub fn scan<R: Runtime>(app: &AppHandle<R>, paths: &TrackPaths) -> ScanSummary {
-    let root = match library_root(app) {
-        Ok(root) => root,
-        Err(error) => {
-            return ScanSummary {
-                tracks: Vec::new(),
-                root: String::new(),
-                skipped: 0,
-                errors: vec![error],
-            };
-        }
-    };
-
-    let index = read_index(&root);
-    let loudness = crate::loudness::read_index(&root);
-    let cache = app.path().app_cache_dir().ok().map(|dir| dir.join("artwork"));
-    if let Some(dir) = &cache {
-        let _ = fs::create_dir_all(dir);
-    }
-
-    let mut tracks = Vec::new();
-    let mut errors = Vec::new();
-    let mut skipped = 0usize;
-
-    let songs = root.join(SONGS_DIR);
-    match fs::read_dir(&songs) {
-        Ok(entries) => {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_file() {
-                    continue;
-                }
-                if !has_extension(&path, AUDIO_EXTENSIONS) {
-                    skipped += 1;
-                    continue;
-                }
-                match read_track(&path, &root, &index, &loudness, cache.as_deref()) {
-                    Ok(track) => tracks.push(track),
-                    Err(error) => errors.push(error),
-                }
-            }
-        }
-        Err(error) => errors.push(format!("could not read {}: {error}", songs.display())),
-    }
-
-    tracks.sort_by_key(|track| track.title.to_lowercase());
-
-    if let Ok(mut guard) = paths.0.lock() {
-        *guard = tracks
-            .iter()
-            .map(|track| (track.id.clone(), track.relative_path.clone()))
-            .collect();
-    }
-
-    ScanSummary {
-        tracks,
-        root: root.to_string_lossy().into_owned(),
-        skipped,
-        errors,
-    }
-}
-
-fn read_track(
-    path: &Path,
-    root: &Path,
-    index: &LibraryIndex,
-    loudness: &LoudnessIndex,
-    artwork_cache: Option<&Path>,
-) -> Result<Track, String> {
-    let file_name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let relative_path = format!("{SONGS_DIR}/{file_name}");
-    let id = track_id(&relative_path);
-
-    let tagged = lofty::read_from_path(path).map_err(|e| format!("could not read {file_name}: {e}"))?;
-
-    let properties = tagged.properties();
-    let duration_ms = properties.duration().as_millis() as u64;
-    let bitrate = properties.audio_bitrate();
-    let sample_rate = properties.sample_rate();
-    let codec = codec_label(tagged.file_type());
-
-    let mut title: Option<String> = None;
-    let mut artist = None;
-    let mut album = None;
-    let mut album_artist = None;
-    let mut track_no = None;
-    let mut disc_no = None;
-    let mut year = None;
-    let mut genre = None;
-    let mut embedded: Option<(Vec<u8>, String)> = None;
-
-    if let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) {
-        title = tag.title().map(|value| value.to_string());
-        artist = tag.artist().map(|value| value.to_string());
-        album = tag.album().map(|value| value.to_string());
-        album_artist = tag.get_string(ItemKey::AlbumArtist).map(str::to_string);
-        track_no = tag.track();
-        disc_no = tag.disk();
-        year = tag.date().map(|date| date.year);
-        genre = tag.genre().map(|value| value.to_string());
-
-        if let Some(picture) = tag.pictures().first() {
-            let extension = picture
-                .mime_type()
-                .and_then(|mime| mime.ext())
-                .unwrap_or("jpg")
-                .to_string();
-            embedded = Some((picture.data().to_vec(), extension));
-        }
-    }
-
-    let has_embedded_art = embedded.is_some();
-
-    // An untitled file still needs something to show in a list.
-    let title = title
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| file_stem_lower(path));
-
-    let artwork_path = match index.songs.get(&relative_path) {
-        Some(relative) => Some(root.join(relative).to_string_lossy().into_owned()),
-        None => embedded
-            .as_ref()
-            .and_then(|(data, extension)| cache_embedded(data, extension, &id, artwork_cache)),
-    };
-
-    let lyrics_path = index
-        .lyrics
-        .get(&relative_path)
-        .map(|relative| root.join(relative).to_string_lossy().into_owned());
-
-    let reading = loudness.songs.get(&relative_path);
-
-    Ok(Track {
-        id,
-        path: path.to_string_lossy().into_owned(),
-        relative_path,
-        title,
-        artist: clean(artist),
-        album: clean(album),
-        album_artist: clean(album_artist),
-        track_no,
-        disc_no,
-        year,
-        genre: clean(genre),
-        duration_ms,
-        codec,
-        bitrate,
-        sample_rate,
-        artwork_path,
-        lyrics_path,
-        has_embedded_art,
-        lufs: reading.map(|measurement| measurement.lufs),
-        peak: reading.map(|measurement| measurement.peak),
-    })
-}
-
-/// Writes embedded art to the cache so it can be served like any other image.
-fn cache_embedded(data: &[u8], extension: &str, id: &str, cache: Option<&Path>) -> Option<String> {
-    let cache = cache?;
-    let target = cache.join(format!("{id}.{extension}"));
-    if !target.exists() && fs::write(&target, data).is_err() {
-        return None;
-    }
-    Some(target.to_string_lossy().into_owned())
-}
-
-/// Tag values are frequently empty strings; treat those as absent.
-fn clean(value: Option<String>) -> Option<String> {
-    value.filter(|text| !text.trim().is_empty())
-}
-
-pub fn has_extension(path: &Path, allowed: &[&str]) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| allowed.contains(&extension.to_lowercase().as_str()))
-        .unwrap_or(false)
-}
-
-/// The file stem of a song, used to name the files that go beside it.
-pub fn song_stem(path: &str) -> String {
-    Path::new(path)
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// `artist - title`, or just the title when the file carries no artist.
-pub fn track_label(track: &Track) -> String {
-    match track.artist.as_deref() {
-        Some(artist) if !artist.trim().is_empty() => format!("{artist} - {}", track.title),
-        _ => track.title.clone(),
-    }
-}
-
-pub fn file_stem_lower(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or_default()
-        .to_lowercase()
-}
-
-/// FNV-1a over the library-relative path, so ids survive the library moving.
-fn track_id(relative_path: &str) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in relative_path.to_lowercase().as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{hash:016x}")
-}
-
 fn codec_label(file_type: FileType) -> String {
     match file_type {
         FileType::Mpeg => "MP3".to_string(),
@@ -457,75 +619,69 @@ fn codec_label(file_type: FileType) -> String {
 pub fn scan_library(
     app: AppHandle,
     store: State<'_, Store>,
-    paths: State<'_, TrackPaths>,
+    catalog: State<'_, Catalog>,
 ) -> ScanSummary {
-    let summary = scan(&app, &paths);
-    // Playlist files store paths, so they can only be resolved after a scan.
-    let _ = crate::playlists::refresh(&app, &store, &paths);
+    let summary = scan(&app, &catalog);
+    let _ = crate::playlists::refresh(&app, &store);
     summary
 }
 
-fn remove_song_files(root: &Path, relative: &str) -> Result<(), String> {
-    let song = root.join(relative);
-    if song.exists() {
-        fs::remove_file(&song).map_err(|e| format!("could not delete {}: {e}", song.display()))?;
+/// How the library is kept, for the settings panel.
+#[tauri::command]
+pub fn library_info(catalog: State<'_, Catalog>) -> LibraryInfo {
+    let (tracks, missing) = catalog.counts();
+    LibraryInfo {
+        format_version: LAYOUT_VERSION.parse().unwrap_or(2),
+        tracks,
+        missing,
+        db_bytes: catalog.file_size(),
     }
-
-    // The copied cover and lyrics go with the song that used them.
-    let mut index = read_index(root);
-    let mut touched = false;
-    if let Some(artwork) = index.songs.remove(relative) {
-        let _ = fs::remove_file(root.join(artwork));
-        touched = true;
-    }
-    if let Some(lyrics) = index.lyrics.remove(relative) {
-        let _ = fs::remove_file(root.join(lyrics));
-        touched = true;
-    }
-    if touched {
-        write_index(root, &index)?;
-    }
-
-    // The reading goes with the file it was taken from.
-    let mut loudness = crate::loudness::read_index(root);
-    if loudness.songs.remove(relative).is_some() {
-        let _ = crate::loudness::write_index(root, &loudness);
-    }
-
-    Ok(())
 }
 
 #[tauri::command]
 pub fn delete_tracks(
     app: AppHandle,
     store: State<'_, Store>,
-    paths: State<'_, TrackPaths>,
+    catalog: State<'_, Catalog>,
     track_ids: Vec<String>,
 ) -> Result<PersistedState, String> {
-    let songs = paths.ids_to_pairs(&track_ids);
-    if songs.is_empty() {
+    let root = library_root(&app)?;
+    let mut removed: Vec<String> = Vec::new();
+
+    for id in &track_ids {
+        let Some(row) = catalog.track(id)? else {
+            continue;
+        };
+
+        // The song's whole directory goes: the audio, its cover and its lyrics.
+        let dir = track_dir(&root, id);
+        if dir.is_dir() {
+            fs::remove_dir_all(&dir)
+                .map_err(|e| format!("could not delete {}: {e}", dir.display()))?;
+        } else {
+            let audio = root.join(&row.rel_path);
+            if audio.is_file() {
+                fs::remove_file(&audio)
+                    .map_err(|e| format!("could not delete {}: {e}", audio.display()))?;
+            }
+        }
+
+        removed.push(id.clone());
+    }
+
+    if removed.is_empty() {
         return Err("none of those songs are in the library".to_string());
     }
 
-    let root = library_root(&app)?;
-    let relatives: Vec<String> = songs.iter().map(|(_, relative)| relative.clone()).collect();
-
-    for relative in &relatives {
-        remove_song_files(&root, relative)?;
-    }
-
-    crate::playlists::remove_files_from_all(&app, &relatives)?;
-    for (track_id, _) in &songs {
-        paths.forget(track_id);
-    }
+    catalog.delete_tracks(&removed)?;
 
     let next = store.update(|state| {
-        state.likes.retain(|id| !track_ids.contains(id));
-        for track_id in &track_ids {
-            state.artwork_colours.remove(track_id);
+        state.likes.retain(|id| !removed.contains(id));
+        for id in &removed {
+            state.artwork_colours.remove(id);
         }
     });
     save(&app, &next)?;
 
-    Ok(crate::playlists::refresh(&app, &store, &paths))
+    Ok(crate::playlists::refresh(&app, &store))
 }

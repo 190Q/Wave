@@ -8,7 +8,8 @@ use lofty::prelude::{Accessor, TagExt, TaggedFileExt};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use crate::library::{self, track_label, Track, TrackPaths};
+use crate::catalog::Catalog;
+use crate::library::{self, track_label, Track};
 use crate::progress::Reporter;
 use crate::spotify::{TrackMeta, client, wait_phrase};
 
@@ -320,9 +321,9 @@ fn run_inner(
     track_ids: &[String],
     report: &mut Reporter,
 ) -> Result<GenresOutcome, String> {
-    let paths = app.state::<TrackPaths>();
+    let catalog = app.state::<Catalog>();
 
-    let by_id: HashMap<String, Track> = library::scan(app, &paths)
+    let by_id: HashMap<String, Track> = library::scan(app, &catalog)
         .tracks
         .into_iter()
         .map(|track| (track.id.clone(), track))

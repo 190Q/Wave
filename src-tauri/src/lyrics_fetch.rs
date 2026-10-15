@@ -9,10 +9,8 @@ use lofty::prelude::{ItemKey, TagExt, TaggedFileExt};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use crate::library::{
-    self, library_root, read_index, song_stem, track_label, write_index, LibraryIndex, Track,
-    TrackPaths, LYRICS_DIR,
-};
+use crate::catalog::Catalog;
+use crate::library::{self, library_root, lyrics_path, track_label, Track};
 use crate::progress::Reporter;
 use crate::spotify::{client, encode};
 
@@ -81,9 +79,9 @@ fn run_inner(
     report: &mut Reporter,
 ) -> Result<LyricsOutcome, String> {
     let root = library_root(app)?;
-    let paths = app.state::<TrackPaths>();
+    let catalog = app.state::<Catalog>();
 
-    let by_id: HashMap<String, Track> = library::scan(app, &paths)
+    let by_id: HashMap<String, Track> = library::scan(app, &catalog)
         .tracks
         .into_iter()
         .map(|track| (track.id.clone(), track))
@@ -103,8 +101,6 @@ fn run_inner(
     );
     report.count(wanted.len());
 
-    let lyrics_dir = root.join(LYRICS_DIR);
-    let mut index = read_index(&root);
     let mut outcome = LyricsOutcome::default();
 
     for (position, track) in wanted.iter().enumerate() {
@@ -125,7 +121,7 @@ fn run_inner(
 
         match look_up(track) {
             Ok(Some(found)) => {
-                match file_lyrics(&lyrics_dir, &mut index, track, &found) {
+                match file_lyrics(&root, &catalog, track, &found) {
                     Ok(()) => {
                         if !found.synced_lyrics.trim().is_empty() {
                             outcome.synced += 1;
@@ -148,26 +144,19 @@ fn run_inner(
         sleep(Duration::from_millis(DELAY_MS));
     }
 
-    write_index(&root, &index)?;
     Ok(outcome)
 }
 
 /// Writes what was found: timings beside the song, plain text inside it.
-fn file_lyrics(
-    lyrics_dir: &Path,
-    index: &mut LibraryIndex,
-    track: &Track,
-    found: &Found,
-) -> Result<(), String> {
+fn file_lyrics(root: &Path, catalog: &Catalog, track: &Track, found: &Found) -> Result<(), String> {
     let synced = found.synced_lyrics.trim();
     if !synced.is_empty() {
-        let name = format!("{}.lrc", song_stem(&track.path));
-        let target = lyrics_dir.join(&name);
+        let target = lyrics_path(root, &track.id);
         fs::write(&target, synced)
             .map_err(|e| format!("could not write {}: {e}", target.display()))?;
-        index
-            .lyrics
-            .insert(track.relative_path.clone(), format!("{LYRICS_DIR}/{name}"));
+        if let Some(relative) = library::relative(root, &target) {
+            catalog.set_lyrics(&track.id, Some(&relative))?;
+        }
     }
 
     let plain = found.plain_lyrics.trim();

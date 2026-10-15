@@ -1,13 +1,16 @@
 mod analytics;
 mod artwork;
+mod catalog;
 mod cover_fetch;
 mod download;
 mod genre_fetch;
+mod identity;
 mod import;
 mod library;
 mod loudness;
 mod lyrics;
 mod lyrics_fetch;
+mod migrate;
 mod playlists;
 mod progress;
 mod spotify;
@@ -61,12 +64,36 @@ fn reveal_main_window(app: &tauri::AppHandle) {
     let _ = window.show();
 }
 
+fn open_catalog(app: &tauri::AppHandle) -> catalog::Catalog {
+    let opened = library::library_root(app).and_then(|root| catalog::Catalog::open(&root));
+
+    match opened {
+        Ok(catalog) => {
+            let store = app.state::<state::Store>();
+            match migrate::run(app, &catalog, &store) {
+                Ok(Some(report)) => eprintln!(
+                    "the library was upgraded: {} songs, {} playlists, {} covers, {} lyrics. \
+                     The old records are in {}",
+                    report.songs, report.playlists, report.covers, report.lyrics, report.backup
+                ),
+                Ok(None) => {}
+                Err(error) => eprintln!("the library could not be upgraded: {error}"),
+            }
+            catalog
+        }
+        Err(error) => {
+            eprintln!("the library cannot be opened, so nothing will be kept: {error}");
+            catalog::Catalog::in_memory().expect("an in-memory catalog always opens")
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn tune_webkit() {
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
         // SAFETY: this runs before the builder starts any thread, so nothing
         // else can be reading the environment at the same time.
-        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
+        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") }
     }
 }
 
@@ -81,8 +108,8 @@ pub fn run() {
         .setup(|app| {
             let store = state::Store::load(app.handle());
             app.manage(store);
-            // Filled in by every scan; playlist files store paths, not ids.
-            app.manage(library::TrackPaths::default());
+            // Every song, its cover, its lyrics and every playlist live here.
+            app.manage(open_catalog(app.handle()));
 
             let analytics = match analytics::Analytics::open(app.handle()) {
                 Ok(analytics) => analytics,
@@ -123,6 +150,7 @@ pub fn run() {
             state::toggle_like,
             state::set_likes,
             library::scan_library,
+            library::library_info,
             library::delete_tracks,
             loudness::analyse_loudness,
             import::import_folder,

@@ -1,11 +1,26 @@
 use std::fs;
-use std::path::Path;
 
-/// Returns the raw contents of the `.lrc` sidecar next to `path`, if any.
+use tauri::State;
+
+use crate::catalog::Catalog;
+use crate::library;
+
 #[tauri::command]
-pub fn load_lyrics(path: String) -> Option<String> {
-    let sidecar = Path::new(&path).with_extension("lrc");
-    fs::read_to_string(sidecar)
+pub fn load_lyrics(catalog: State<'_, Catalog>, track_id: String) -> Option<String> {
+    let row = catalog.track(&track_id).ok().flatten()?;
+    let root = catalog.root();
+
+    let path = row
+        .lyrics_path
+        .as_deref()
+        .map(|relative| root.join(relative))
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            let beside = library::lyrics_path(root, &track_id);
+            beside.is_file().then_some(beside)
+        })?;
+
+    fs::read_to_string(path)
         .ok()
         .filter(|text| !text.trim().is_empty())
 }

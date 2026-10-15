@@ -31,9 +31,12 @@ export interface SwellLoad {
 export interface SprintBar {
   key: string;
   count: number;
-  /** `0` to `1` of the tallest bar anywhere in the chart. */
+  /** `0` to `1` of the row's own busiest bucket. */
   fraction: number;
 }
+
+/** A bucket with a stream or two still has to be seen, so nothing is a sliver. */
+const SPRINT_MIN_FRACTION = 0.08;
 
 export function swellWindow(period: SwellPeriod, now: Date = new Date()): SwellWindow {
   switch (period) {
@@ -111,37 +114,43 @@ export async function loadSwell(now: Date = new Date()): Promise<SwellLoad> {
   return { summaries: loaded, period: ready ?? "year" };
 }
 
-export function swellAxis(window: SwellWindow, summary: SwellSummary | undefined): string[] {
+export function swellAxis(
+  window: SwellWindow,
+  summary: SwellSummary | undefined,
+  now: Date = new Date(),
+): string[] {
+  // A window that is still open stops at today, so the bars fill the width
+  // instead of reserving days and months that have not happened yet.
+  const to = new Date(Math.min(window.to, now.getTime()));
   switch (window.bucket) {
     case "day":
-      return dayKeys(new Date(window.from), new Date(window.to));
+      return dayKeys(new Date(window.from), to);
     case "month":
-      return window.period === "all"
-        ? collectedKeys(summary)
-        : monthKeys(new Date(window.from), new Date(window.to));
+      return window.period === "all" ? collectedKeys(summary) : monthKeys(new Date(window.from), to);
     default:
       return collectedKeys(summary);
   }
 }
 
-/** The tallest bar anywhere in the chart, so every row shares one scale. */
-export function sprintMax(summary: SwellSummary): number {
-  let max = 0;
-  for (const sprint of summary.artistSprint) {
-    for (const point of sprint.points) {
-      max = Math.max(max, point.count);
-    }
-  }
-  return max;
-}
-
-/** One artist's series, padded out to the whole axis. */
-export function sprintSeries(sprint: ArtistSprint, axis: string[], max: number): SprintBar[] {
+/** One artist's series over the axis, scaled to that artist's own busiest bucket. */
+export function sprintSeries(sprint: ArtistSprint, axis: string[]): SprintBar[] {
   const counts = new Map(sprint.points.map((point) => [point.key, point.count]));
+
+  let peak = 0;
+  for (const key of axis) {
+    peak = Math.max(peak, counts.get(key) ?? 0);
+  }
+
   return axis.map((key) => {
     const count = counts.get(key) ?? 0;
-    return { key, count, fraction: max > 0 ? count / max : 0 };
+    const fraction = count > 0 && peak > 0 ? Math.max(count / peak, SPRINT_MIN_FRACTION) : 0;
+    return { key, count, fraction };
   });
+}
+
+/** Every stream the artist has in the window, for the count beside the row. */
+export function sprintTotal(sprint: ArtistSprint): number {
+  return sprint.points.reduce((sum, point) => sum + point.count, 0);
 }
 
 /** What a bucket is called in a tooltip. */
@@ -155,6 +164,25 @@ export function bucketLabel(key: string, bucket: SwellBucket): string {
       month: "long",
       year: "numeric",
     });
+  }
+  return new Date(year, (month ?? 1) - 1, day ?? 1).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+/** A bucket named short enough to sit under the bars. */
+export function tickLabel(key: string, bucket: SwellBucket, withYear: boolean): string {
+  if (bucket === "year") {
+    return key;
+  }
+  const [year, month, day] = key.split("-").map(Number);
+  if (bucket === "month") {
+    const options: Intl.DateTimeFormatOptions = { month: "short" };
+    if (withYear) {
+      options.year = "2-digit";
+    }
+    return new Date(year, (month ?? 1) - 1, 1).toLocaleDateString(undefined, options);
   }
   return new Date(year, (month ?? 1) - 1, day ?? 1).toLocaleDateString(undefined, {
     month: "short",

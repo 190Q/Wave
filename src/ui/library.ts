@@ -28,18 +28,27 @@ import {
   SWELL_PERIODS,
   bucketLabel,
   loadSwell,
-  sprintMax,
   sprintSeries,
+  sprintTotal,
   swellAxis,
   swellHasEnough,
   swellHeading,
   swellPeriodLabel,
   swellProgress,
   swellWindow,
+  tickLabel,
   type SwellLoad,
   type SwellWindow,
 } from "../lib/swell";
-import type { Collection, CollectionFilter, CollectionKind, SwellPeriod, SwellSummary, Track } from "../types";
+import type {
+  Collection,
+  CollectionFilter,
+  CollectionKind,
+  SwellBucket,
+  SwellPeriod,
+  SwellSummary,
+  Track,
+} from "../types";
 import { closeAddToPlaylist, openAddToPlaylist } from "./add-to-playlist";
 import { collectionCoverHtml, plainCoverStyle } from "./artwork";
 import { confirmDialog } from "./confirm";
@@ -1051,38 +1060,54 @@ function rankBlock(title: string, rows: RankRow[], empty: string): string {
 
 /** How the top five moved across the window, one row of bars each. */
 function sprintBlock(summary: SwellSummary, window: SwellWindow): string {
-  if (summary.artistSprint.length === 0) {
-    return "";
-  }
-
   const axis = swellAxis(window, summary);
-  if (axis.length === 0) {
+
+  // One bucket is not a shape, and the ranking above already names the artists.
+  if (summary.artistSprint.length === 0 || axis.length < 2) {
     return "";
   }
 
-  const max = sprintMax(summary);
+  const unit = window.bucket === "day" ? "day" : "month";
   const rows = summary.artistSprint
-    .map((sprint) => {
-      const bars = sprintSeries(sprint, axis, max)
+    .slice(0, 5)
+    .map((sprint, index) => {
+      const bars = sprintSeries(sprint, axis)
         .map((bar) => {
-          // A bucket with nothing in it leaves a gap rather than a sliver.
-          const height = bar.count === 0 ? 0 : Math.max(bar.fraction, 0.12);
           const label = `${bucketLabel(bar.key, window.bucket)}: ${plural(bar.count, "stream")}`;
-          return `<i class="swell-bar" style="--h: ${(height * 100).toFixed(1)}%" title="${escapeHtml(label)}"></i>`;
+          return `<i class="swell-bar" style="--h: ${(bar.fraction * 100).toFixed(1)}%" title="${escapeHtml(label)}"></i>`;
         })
         .join("");
+      const total = sprintTotal(sprint);
       return `
-        <li class="swell-sprint-row">
-          <span class="swell-sprint-name" title="${escapeHtml(sprint.artist)}">${escapeHtml(sprint.artist)}</span>
+        <li class="swell-rank swell-sprint-row">
+          <span class="swell-rank-index">${index + 1}</span>
+          <span class="swell-rank-name" title="${escapeHtml(sprint.artist)}">${escapeHtml(sprint.artist)}</span>
+          <span class="swell-rank-count" title="${escapeHtml(plural(total, "stream"))}">${escapeHtml(formatCount(total))}</span>
           <span class="swell-sprint-bars">${bars}</span>
         </li>`;
     })
     .join("");
 
+  const title = summary.artistSprint.length >= 5 ? "Top 5 artists" : "Top artists";
   return `<section class="swell-block">
-    <h4 class="swell-label">Top 5 sprint</h4>
+    <h4 class="swell-label">${title} by ${unit}</h4>
     <ul class="swell-sprint">${rows}</ul>
+    ${sprintAxis(axis, window.bucket)}
   </section>`;
+}
+
+/** The first, middle and last bucket named under the bars. */
+function sprintAxis(axis: string[], bucket: SwellBucket): string {
+  const last = axis.length - 1;
+  const middle = axis.length >= 3 ? axis[Math.floor(last / 2)] : null;
+  const withYear = bucket === "month" && axis[0].slice(0, 4) !== axis[last].slice(0, 4);
+  const tick = (key: string): string => escapeHtml(tickLabel(key, bucket, withYear));
+
+  return `<div class="swell-sprint-axis">
+    <span>${tick(axis[0])}</span>
+    <span>${middle === null ? "" : tick(middle)}</span>
+    <span class="swell-sprint-axis-last">${tick(axis[last])}</span>
+  </div>`;
 }
 
 function swellHeadline(summary: SwellSummary | null): string {

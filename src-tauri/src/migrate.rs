@@ -1360,7 +1360,7 @@ mod migration_tests {
     }
 
     #[test]
-    fn a_playlist_that_is_not_json_becomes_an_empty_playlist() {
+    fn a_playlist_that_cannot_be_read_is_reported_rather_than_invented() {
         let root = legacy("broken-playlist");
         let one = root.join(SONGS_DIR).join("one.wav");
         write_tagged_sine(&one, 0.5, 1.0, "One", "An Artist", "An Album");
@@ -1373,13 +1373,16 @@ mod migration_tests {
 
         let (report, ..) = run_upgrade(&root);
         let report = report.expect("the upgrade runs");
-        assert!(report.failures.is_empty(), "{:?}", report.failures);
-        assert_eq!(report.playlists, 1);
 
-        let playlists = Catalog::open(&root).unwrap().playlists().unwrap();
-        assert_eq!(playlists.len(), 1);
-        assert_eq!(playlists[0].name, "Broken");
-        assert!(playlists[0].track_ids.is_empty());
+        assert_eq!(report.songs, 1);
+        assert_eq!(report.playlists, 0);
+        assert_eq!(report.failures.len(), 1, "{:?}", report.failures);
+        assert!(
+            report.failures[0].contains("Broken"),
+            "{:?}",
+            report.failures
+        );
+        assert!(Catalog::open(&root).unwrap().playlists().unwrap().is_empty());
     }
 
     #[test]

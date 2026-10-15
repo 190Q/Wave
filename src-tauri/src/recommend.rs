@@ -478,8 +478,7 @@ fn generate_inner(
     let mut entries = Vec::new();
     let mut pending = Vec::new();
     for candidate in &chosen {
-        let key = import_source::track_key(&candidate.title, &candidate.artist(), &candidate.album);
-        match held.get(&key) {
+        match import_source::held(&held, &candidate.meta()) {
             Some(id) => entries.push(id.clone()),
             None => {
                 let track = PendingTrack::from_meta(&candidate.meta(), SOURCE, &candidate.id);
@@ -798,7 +797,7 @@ fn entries_pool(
         .into_iter()
         .map(|entry| {
             let meta = entry.meta;
-            let known = held.contains_key(&import_source::meta_key(&meta));
+            let known = import_source::held(held, &meta).is_some();
             let mut genres = meta.genres.clone();
             // A listing carries no genres, so the chart's own genre stands in
             // for them.

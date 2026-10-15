@@ -51,8 +51,12 @@ fn yt_dlp_command(yt_dlp: &YtDlp) -> Command {
 }
 
 /// `false` means the file was already there, so a re-run picks up where the last
-/// one stopped.
-pub fn download(tools: &Tools, meta: &TrackMeta, out_dir: &Path) -> Result<bool, String> {
+pub fn download(
+    tools: &Tools,
+    meta: &TrackMeta,
+    out_dir: &Path,
+    cover: Option<&Path>,
+) -> Result<bool, String> {
     let target = out_dir.join(format!("{AUDIO_STEM}.mp3"));
 
     if target.is_file() {
@@ -114,11 +118,8 @@ pub fn download(tools: &Tools, meta: &TrackMeta, out_dir: &Path) -> Result<bool,
         fs::rename(&path, &target).map(|_| target.clone()).unwrap_or(path)
     };
 
-    match fetch_cover(meta.cover_url.as_deref()) {
-        Some(cover) => tag(&path, meta, Some(cover)),
-        None => tag(&path, meta, None),
-    }
-    .map_err(|e| format!("downloaded, but could not tag it: {e}"))?;
+    tag(&path, meta, cover_bytes(cover, meta.cover_url.as_deref()))
+        .map_err(|e| format!("downloaded, but could not tag it: {e}"))?;
 
     Ok(true)
 }
@@ -178,7 +179,13 @@ fn last_line(bytes: &[u8]) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Spotify's cover art, or `None` when it cannot be read.
+fn cover_bytes(local: Option<&Path>, url: Option<&str>) -> Option<Vec<u8>> {
+    local
+        .and_then(|path| fs::read(path).ok())
+        .or_else(|| fetch_cover(url))
+}
+
+/// The source's cover art, or `None` when it cannot be read.
 pub fn fetch_cover(url: Option<&str>) -> Option<Vec<u8>> {
     let url = url?;
     let response = client().get(url).send().ok()?;
@@ -223,10 +230,15 @@ fn tag(path: &Path, meta: &TrackMeta, cover: Option<Vec<u8>>) -> Result<(), Stri
     }
 
     if let Some(data) = cover {
+        let mime = if crate::cover_fetch::is_png(&data) {
+            MimeType::Png
+        } else {
+            MimeType::Jpeg
+        };
         tag.push_picture(
             Picture::unchecked(data)
                 .pic_type(PictureType::CoverFront)
-                .mime_type(MimeType::Jpeg)
+                .mime_type(mime)
                 .build(),
         );
     }
@@ -278,5 +290,22 @@ mod tests {
     fn reports_the_last_line_of_a_failure() {
         let stderr = b"WARNING: something\nERROR: Video unavailable\n";
         assert_eq!(last_line(stderr).as_deref(), Some("ERROR: Video unavailable"));
+    }
+
+    #[test]
+    fn keeps_the_cover_the_playlist_already_fetched() {
+        let dir = std::env::temp_dir().join("wave-download-cover");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cover.jpg");
+        fs::write(&path, b"the cover bytes").unwrap();
+
+        // The file on disk wins, so a download never loses a cover it has.
+        assert_eq!(
+            cover_bytes(Some(&path), Some("http://127.0.0.1:1/nowhere.jpg")).as_deref(),
+            Some(&b"the cover bytes"[..])
+        );
+        assert_eq!(cover_bytes(None, None), None);
+        assert_eq!(cover_bytes(Some(&dir.join("absent.jpg")), None), None);
     }
 }

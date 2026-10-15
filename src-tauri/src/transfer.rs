@@ -253,6 +253,7 @@ fn run(app: &AppHandle, path: &Path, report: &mut Reporter) -> Result<ImportOutc
                 tools.as_ref().ok_or("Download tools are unavailable.")?,
                 &meta,
                 &dir,
+                None,
             ) {
                 Ok(_) => {}
                 Err(error) => report.fail(format!("{label}: {error}")),

@@ -69,7 +69,7 @@ fn run_inner(
     let existing = library_index(app);
     let duplicates = tracks
         .iter()
-        .filter(|meta| existing.contains_key(&meta_key(meta)))
+        .filter(|meta| held(&existing, meta).is_some())
         .count();
     let todo = if download_duplicates {
         tracks.len()
@@ -98,7 +98,7 @@ fn run_inner(
         let known = if download_duplicates {
             None
         } else {
-            existing.get(&meta_key(meta))
+            held(&existing, meta)
         };
         if let Some(id) = known {
             entries.push(Entry::Known(id.clone()));
@@ -109,7 +109,7 @@ fn run_inner(
         downloading += 1;
         report.at(downloading, &label);
 
-        match download::download(&tools, meta, &staging.join(index.to_string())) {
+        match download::download(&tools, meta, &staging.join(index.to_string()), None) {
             Ok(_) => entries.push(Entry::Fetched(staged_key(index))),
             Err(error) => report.fail(format!("{label}: {error}")),
         }
@@ -170,7 +170,7 @@ fn to_look_up<'a>(
 ) -> Vec<&'a mut TrackMeta> {
     tracks
         .iter_mut()
-        .filter(|meta| download_duplicates || !existing.contains_key(&meta_key(meta)))
+        .filter(|meta| download_duplicates || held(existing, meta).is_none())
         .collect()
 }
 
@@ -187,13 +187,13 @@ fn library_index(app: &AppHandle) -> HashMap<String, String> {
     let mut index = HashMap::new();
 
     for track in library::scan(app, &catalog).tracks {
-        let key = track_key(
+        remember(
+            &mut index,
+            &track.id,
             &track.title,
             track.artist.as_deref().unwrap_or_default(),
             track.album.as_deref().unwrap_or_default(),
         );
-        // The first song wins, so a rescan cannot shuffle the choice.
-        index.entry(key).or_insert(track.id);
     }
 
     index
@@ -203,19 +203,36 @@ pub(crate) fn catalog_index(catalog: &Catalog) -> Result<HashMap<String, String>
     let mut index = HashMap::new();
 
     for row in catalog.tracks()? {
-        let key = track_key(
+        remember(
+            &mut index,
+            &row.id,
             &row.title,
             row.artist.as_deref().unwrap_or_default(),
             row.album.as_deref().unwrap_or_default(),
         );
-        index.entry(key).or_insert(row.id);
     }
 
     Ok(index)
 }
 
+fn remember(index: &mut HashMap<String, String>, id: &str, title: &str, artist: &str, album: &str) {
+    index
+        .entry(track_key(title, artist, album))
+        .or_insert_with(|| id.to_string());
+    index
+        .entry(loose_key(title, artist))
+        .or_insert_with(|| id.to_string());
+}
+
 pub(crate) fn meta_key(meta: &TrackMeta) -> String {
     track_key(&meta.title, &meta.artists.join(", "), &meta.album)
+}
+
+/// The library song this track answers to, if the library holds one.
+pub(crate) fn held<'a>(index: &'a HashMap<String, String>, meta: &TrackMeta) -> Option<&'a String> {
+    index
+        .get(&meta_key(meta))
+        .or_else(|| index.get(&loose_key(&meta.title, &meta.artists.join(", "))))
 }
 
 /// Folded so case and stray spacing do not stand in for a different song.
@@ -223,12 +240,71 @@ pub(crate) fn track_key(title: &str, artist: &str, album: &str) -> String {
     format!("{}\u{1}{}\u{1}{}", fold(title), fold(artist), fold(album))
 }
 
+pub(crate) fn loose_key(title: &str, artist: &str) -> String {
+    format!("{}\u{1}{}", fold(title), fold(main_artist(artist)))
+}
+
+/// The first name in a credit, which is the one every source agrees on.
+fn main_artist(artist: &str) -> &str {
+    artist
+        .split([',', ';'])
+        .map(str::trim)
+        .find(|name| !name.is_empty())
+        .unwrap_or(artist)
+}
+
 fn fold(value: &str) -> String {
     value
         .split_whitespace()
+        .map(|word| word.to_lowercase().chars().map(plain).collect::<String>())
         .collect::<Vec<_>>()
         .join(" ")
-        .to_lowercase()
+}
+
+/// The plain letter behind a decorative one. Tags spell Korn as "KoЯn", and put
+/// accents on names that need none.
+fn plain(character: char) -> char {
+    match character {
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
+        'ç' | 'ć' | 'č' | 'ĉ' | 'ċ' => 'c',
+        'ď' | 'đ' => 'd',
+        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => 'e',
+        'ĝ' | 'ğ' | 'ġ' | 'ģ' => 'g',
+        'ĥ' | 'ħ' => 'h',
+        'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' => 'i',
+        'ĵ' => 'j',
+        'ķ' => 'k',
+        'ĺ' | 'ļ' | 'ľ' | 'ł' | 'ŀ' => 'l',
+        'ñ' | 'ń' | 'ņ' | 'ň' => 'n',
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => 'o',
+        'ŕ' | 'ŗ' | 'ř' => 'r',
+        'ś' | 'ŝ' | 'ş' | 'š' | 'ș' => 's',
+        'ţ' | 'ť' | 'ŧ' | 'ț' => 't',
+        'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
+        'ŵ' => 'w',
+        'ý' | 'ÿ' | 'ŷ' => 'y',
+        'ź' | 'ż' | 'ž' => 'z',
+        // Cyrillic and Greek letters that stand in for Latin ones.
+        'а' => 'a',
+        'в' => 'b',
+        'с' => 'c',
+        'ԁ' => 'd',
+        'е' => 'e',
+        'ɡ' => 'g',
+        'н' => 'h',
+        'і' => 'i',
+        'ј' => 'j',
+        'к' => 'k',
+        'м' => 'm',
+        'о' => 'o',
+        'р' => 'p',
+        'я' => 'r',
+        'ѕ' => 's',
+        'т' => 't',
+        'υ' => 'y',
+        'х' => 'x',
+        other => other,
+    }
 }
 
 fn staging_dir(app: &AppHandle, source: &str, id: &str) -> Result<PathBuf, String> {
@@ -269,7 +345,7 @@ pub fn plan(
     let duplicates: Vec<String> = link
         .tracks
         .iter()
-        .filter(|meta| existing.contains_key(&meta_key(meta)))
+        .filter(|meta| held(&existing, meta).is_some())
         .map(track_label)
         .collect();
 
@@ -304,6 +380,60 @@ mod tests {
         assert_ne!(meta_key(&meta), track_key("Hey Jude", "The Beatles", "1"));
         // And so is a different artist.
         assert_ne!(meta_key(&meta), track_key("Hey Jude", "Someone", "Past Masters"));
+    }
+
+    #[test]
+    fn a_song_the_library_holds_under_another_spelling_is_still_that_song() {
+        let mut index = HashMap::new();
+        remember(&mut index, "id", "Eyeless", "Slipknot", "Slipknot");
+
+        // The same song, on another album edition.
+        let edition = TrackMeta {
+            title: "Eyeless".to_string(),
+            artists: vec!["Slipknot".to_string()],
+            album: "Slipknot (10th Anniversary Edition)".to_string(),
+            ..TrackMeta::default()
+        };
+        assert_eq!(held(&index, &edition).map(String::as_str), Some("id"));
+
+        // A credit that names one artist where the library names three.
+        let mut credited = HashMap::new();
+        remember(
+            &mut credited,
+            "j",
+            "Joseph",
+            "Falling In Reverse, Corey Taylor, Serj Tankian",
+            "Joseph",
+        );
+        let listed = TrackMeta {
+            title: "Joseph".to_string(),
+            artists: vec!["Falling In Reverse".to_string()],
+            album: "Joseph".to_string(),
+            ..TrackMeta::default()
+        };
+        assert_eq!(held(&credited, &listed).map(String::as_str), Some("j"));
+
+        // The spelling a source uses for the artist.
+        let mut spelled = HashMap::new();
+        remember(&mut spelled, "k", "Freak On a Leash", "Korn", "Follow The Leader");
+        let decorated = TrackMeta {
+            title: "Freak On a Leash".to_string(),
+            artists: vec!["KoЯn".to_string()],
+            album: "Follow The Leader".to_string(),
+            ..TrackMeta::default()
+        };
+        assert_eq!(held(&spelled, &decorated).map(String::as_str), Some("k"));
+
+        // Another song with the same title is another song.
+        let mut hostage = HashMap::new();
+        remember(&mut hostage, "h", "Hostage", "Chelsea Grin", "Eternal Nightmare");
+        let other = TrackMeta {
+            title: "Hostage".to_string(),
+            artists: vec!["Jane & The Boy".to_string()],
+            album: "Turn It Up".to_string(),
+            ..TrackMeta::default()
+        };
+        assert!(held(&hostage, &other).is_none());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Manager};
 
@@ -71,18 +71,19 @@ fn run_inner(
     let mut fetched: Vec<(usize, String)> = Vec::new();
 
     for (index, track) in chosen.iter().enumerate() {
-        let label = import_source::track_label(&track.meta());
-        let key = import_source::track_key(&track.title, &track.artists.join(", "), &track.album);
+        let meta = track.meta();
+        let label = import_source::track_label(&meta);
 
         // A song the library already holds is used as it stands.
-        if let Some(id) = known.get(&key) {
+        if let Some(id) = import_source::held(&known, &meta) {
             landed.insert(track.id.clone(), id.clone());
             report.reuse(&label);
             continue;
         }
 
         report.at(index + 1, &label);
-        match download::download(&tools, &track.meta(), &staging.join(index.to_string())) {
+        let cover = track.cover_path.as_deref().map(Path::new);
+        match download::download(&tools, &meta, &staging.join(index.to_string()), cover) {
             Ok(_) => fetched.push((index, track.id.clone())),
             Err(error) => report.fail(format!("{label}: {error}")),
         }

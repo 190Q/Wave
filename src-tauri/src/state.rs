@@ -33,6 +33,8 @@ static APPLYING_SINCE: Mutex<Option<Instant>> = Mutex::new(None);
 
 static MINI_INNER: Mutex<Option<PhysicalSize<u32>>> = Mutex::new(None);
 
+static NORMAL_FRAME: Mutex<Option<WindowGeometry>> = Mutex::new(None);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -471,7 +473,23 @@ fn read_frame<R: Runtime>(window: &WebviewWindow<R>) -> Option<WindowGeometry> {
     if window.is_minimized().unwrap_or(false) {
         return None;
     }
-    read_window_geometry(window).ok()
+    let live = read_window_geometry(window).ok()?;
+    Some(frame_to_remember(live, last_normal_frame()))
+}
+
+/// Picks the frame to keep: the live one, unless it is the maximised one.
+fn frame_to_remember(live: WindowGeometry, normal: Option<WindowGeometry>) -> WindowGeometry {
+    if !live.maximized {
+        return live;
+    }
+    match normal {
+        Some(mut normal) => {
+            normal.maximized = true;
+            normal
+        }
+        // Nothing was seen before it was maximised, so this is all there is.
+        None => live,
+    }
 }
 
 fn read_window_geometry<R: Runtime>(window: &WebviewWindow<R>) -> Result<WindowGeometry, String> {
@@ -528,6 +546,12 @@ fn apply_geometry<R: Runtime>(
 
     if part == SnapPart::Frame && geometry.maximized {
         let _ = window.maximize();
+        // It fills the screen now, so the size just applied is the one to keep.
+        let mut frame = geometry.clone();
+        clamp_geometry(&mut frame);
+        remember_normal_frame(frame);
+    } else if let Ok(frame) = read_window_geometry(window) {
+        remember_normal_frame(frame);
     }
 }
 
@@ -673,7 +697,10 @@ pub fn watch_window<R: Runtime>(app: &AppHandle<R>) {
 
     let handle = app.clone();
     window.on_window_event(move |event| match event {
-        tauri::WindowEvent::Resized(size) => note_resized(&handle, *size),
+        tauri::WindowEvent::Resized(size) => {
+            note_resized(&handle, *size);
+            note_normal_frame(&handle, *size);
+        }
         tauri::WindowEvent::ScaleFactorChanged { .. } => note_programmatic_change(),
         _ => {}
     });
@@ -714,6 +741,31 @@ fn note_resized<R: Runtime>(app: &AppHandle<R>, size: PhysicalSize<u32>) {
     let _ = window.set_always_on_top(next.settings.always_on_top);
 }
 
+fn note_normal_frame<R: Runtime>(app: &AppHandle<R>, size: PhysicalSize<u32>) {
+    if applying() || is_mini_size(size) {
+        return;
+    }
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if window.is_maximized().unwrap_or(false) || window.is_minimized().unwrap_or(false) {
+        return;
+    }
+    if let Ok(geometry) = read_window_geometry(&window) {
+        remember_normal_frame(geometry);
+    }
+}
+
+fn remember_normal_frame(geometry: WindowGeometry) {
+    let mut recorded = NORMAL_FRAME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *recorded = Some(geometry);
+}
+
+fn last_normal_frame() -> Option<WindowGeometry> {
+    let recorded = NORMAL_FRAME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    recorded.clone()
+}
+
 fn remember_mini_size(size: PhysicalSize<u32>) {
     let mut recorded = MINI_INNER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     *recorded = Some(size);
@@ -729,14 +781,19 @@ fn is_mini_size(size: PhysicalSize<u32>) -> bool {
 
 /// Applies the remembered geometry to the main window, before it is shown.
 pub fn restore_window_geometry<R: Runtime>(app: &AppHandle<R>, store: &Store) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    // The frame the window opens at, for a maximise before the first resize.
+    if let Ok(geometry) = read_window_geometry(&window) {
+        remember_normal_frame(geometry);
+    }
+
     let state = store.snapshot();
     if !state.settings.remember_window {
         return;
     }
     let Some(geometry) = state.window else {
-        return;
-    };
-    let Some(window) = app.get_webview_window("main") else {
         return;
     };
     apply_geometry(app, &window, &geometry, SnapPart::Frame);
@@ -789,7 +846,9 @@ pub fn save_window_slot(
         return Ok(store.snapshot());
     };
 
-    let geometry = read_window_geometry(&window)?;
+    let Some(geometry) = read_frame(&window) else {
+        return Err("the window frame could not be read".to_string());
+    };
 
     let next = store.update(|state| {
         while state.window_slots.len() < SLOT_COUNT {
@@ -869,6 +928,41 @@ pub fn set_likes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn frame(width: u32, height: u32, maximized: bool) -> WindowGeometry {
+        WindowGeometry {
+            width,
+            height,
+            x: 40,
+            y: 60,
+            monitor: None,
+            maximized,
+        }
+    }
+
+    #[test]
+    fn a_maximised_window_remembers_the_size_it_had_before() {
+        let kept = frame_to_remember(frame(1920, 1080, true), Some(frame(900, 655, false)));
+
+        assert_eq!(kept.width, 900);
+        assert_eq!(kept.height, 655);
+        assert_eq!(kept.x, 40);
+        assert!(kept.maximized);
+    }
+
+    #[test]
+    fn a_maximised_window_with_nothing_remembered_keeps_its_own_frame() {
+        let live = frame(1920, 1080, true);
+
+        assert_eq!(frame_to_remember(live.clone(), None), live);
+    }
+
+    #[test]
+    fn a_window_that_was_not_maximised_keeps_its_own_frame() {
+        let live = frame(900, 655, false);
+
+        assert_eq!(frame_to_remember(live.clone(), Some(frame(400, 300, false))), live);
+    }
 
     #[test]
     fn a_playlist_saved_before_generated_playlists_still_loads() {

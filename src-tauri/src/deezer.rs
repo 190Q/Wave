@@ -461,6 +461,8 @@ fn normalise(track: &Value) -> Option<TrackMeta> {
         artists: vec![artist],
         album: track["album"]["title"].as_str().unwrap_or_default().to_string(),
         isrc: track["isrc"].as_str().unwrap_or_default().to_string(),
+        // Deezer counts in seconds, and the rest of Wave in milliseconds.
+        duration_ms: track["duration"].as_u64().map(|seconds| seconds * 1000),
         cover_url: cover_in(track),
         ..TrackMeta::default()
     })

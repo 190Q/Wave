@@ -253,7 +253,7 @@ fn main_artist(artist: &str) -> &str {
         .unwrap_or(artist)
 }
 
-fn fold(value: &str) -> String {
+pub(crate) fn fold(value: &str) -> String {
     value
         .split_whitespace()
         .map(|word| word.to_lowercase().chars().map(plain).collect::<String>())

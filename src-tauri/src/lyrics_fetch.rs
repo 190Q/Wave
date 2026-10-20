@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::catalog::Catalog;
+use crate::import_source::fold;
 use crate::library::{self, library_root, lyrics_path, track_label, Track};
 use crate::progress::Reporter;
 use crate::source::{client, encode};
@@ -26,6 +27,8 @@ const BROWSER_AGENT: &str =
 
 /// A pause between lookups so the API is not hammered, matching the script.
 const DELAY_MS: u64 = 500;
+
+const STRAY_LENGTH_MS: u64 = 60_000;
 
 /// Follows one lyrics fetch, song by song.
 pub const PROGRESS_EVENT: &str = "lyrics-fetch";
@@ -53,6 +56,7 @@ struct Found {
     plain_lyrics: String,
     synced_lyrics: String,
     track_name: String,
+    duration: f64,
 }
 
 impl Found {
@@ -209,9 +213,9 @@ impl Source {
         }
     }
 
-    fn look_up(self, track: &Track) -> Result<Option<Found>, String> {
+    fn look_up(self, track: &Track, length: u64) -> Result<Option<Found>, String> {
         match self {
-            Source::Lrclib => lrclib(track),
+            Source::Lrclib => lrclib(track, length),
             Source::LyricsOvh => lyrics_ovh(track),
             Source::NetEase => netease(track),
         }
@@ -219,10 +223,11 @@ impl Source {
 }
 
 fn look_up(track: &Track) -> Result<Option<Found>, String> {
+    let length = song_length(track);
     let mut refusals: Vec<String> = Vec::new();
 
     for source in SOURCES {
-        match source.look_up(track) {
+        match source.look_up(track, length) {
             Ok(Some(found)) if found.has_lyrics() => return Ok(Some(found)),
             Ok(_) => {}
             Err(error) => refusals.push(format!("{}: {error}", source.name())),
@@ -235,7 +240,29 @@ fn look_up(track: &Track) -> Result<Option<Found>, String> {
     Ok(None)
 }
 
-fn lrclib(track: &Track) -> Result<Option<Found>, String> {
+fn song_length(track: &Track) -> u64 {
+    let recorded = lofty::read_from_path(Path::new(&track.path))
+        .ok()
+        .and_then(|tagged| {
+            tagged
+                .primary_tag()
+                .or_else(|| tagged.first_tag())
+                .and_then(|tag| tag.get_string(ItemKey::Length))
+                .and_then(|value| value.trim().parse::<u64>().ok())
+        });
+
+    match recorded {
+        Some(length) if within_a_song(length, track.duration_ms) => length,
+        _ => track.duration_ms,
+    }
+}
+
+/// Whether a length is this file's song rather than a stray reading of it.
+fn within_a_song(recorded: u64, own: u64) -> bool {
+    own == 0 || recorded.abs_diff(own) <= STRAY_LENGTH_MS
+}
+
+fn lrclib(track: &Track, length: u64) -> Result<Option<Found>, String> {
     let artist = track.artist.clone().unwrap_or_default();
     let title = track.title.clone();
 
@@ -246,7 +273,7 @@ fn lrclib(track: &Track) -> Result<Option<Found>, String> {
     if let Some(album) = track.album.as_deref().filter(|album| !album.trim().is_empty()) {
         exact.push(("album_name", album.to_string()));
     }
-    let seconds = track.duration_ms / 1000;
+    let seconds = length / 1000;
     if seconds > 0 {
         exact.push(("duration", seconds.to_string()));
     }
@@ -263,14 +290,57 @@ fn lrclib(track: &Track) -> Result<Option<Found>, String> {
     ];
     let results = lrclib_list(&format!("{LRCLIB}/search"), &search)?;
 
-    // A result whose title matches exactly is the one to trust; otherwise the
-    // first that has any lyrics at all.
-    let wanted = title.to_lowercase();
-    Ok(results
-        .iter()
-        .find(|found| found.has_lyrics() && found.track_name.to_lowercase() == wanted)
-        .or_else(|| results.iter().find(|found| found.has_lyrics()))
-        .cloned())
+    Ok(best_of(results, &title, seconds))
+}
+
+fn best_of(results: Vec<Found>, title: &str, seconds: u64) -> Option<Found> {
+    let mut best: Option<(u8, u64, Found)> = None;
+
+    for found in results {
+        if !found.has_lyrics() {
+            continue;
+        }
+        let Some(rank) = title_rank(&found.track_name, title) else {
+            continue;
+        };
+        // A song of unknown length is judged on its name alone.
+        let gap = if seconds == 0 {
+            0
+        } else {
+            (found.duration - seconds as f64).abs().round() as u64
+        };
+
+        let closer = match &best {
+            Some((ranked, gapped, _)) => (rank, gap) < (*ranked, *gapped),
+            None => true,
+        };
+        if closer {
+            best = Some((rank, gap, found));
+        }
+    }
+
+    best.map(|(_, _, found)| found)
+}
+
+fn title_rank(record: &str, title: &str) -> Option<u8> {
+    let wanted = title_words(title);
+    let found = title_words(record);
+
+    if wanted.is_empty() {
+        return None;
+    }
+    if wanted == found {
+        return Some(0);
+    }
+    wanted.iter().all(|word| found.contains(word)).then_some(1)
+}
+
+fn title_words(title: &str) -> Vec<String> {
+    fold(title)
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Plain lyrics, with the artist and title as path segments.
@@ -558,6 +628,59 @@ mod tests {
 
         // Text without the header is left alone.
         assert_eq!(clean_plain("  one\n\ntwo\n"), "  one\n\ntwo");
+    }
+
+    fn found(title: &str, seconds: f64) -> Found {
+        Found {
+            synced_lyrics: "[00:01.00]words".to_string(),
+            track_name: title.to_string(),
+            duration: seconds,
+            ..Found::default()
+        }
+    }
+
+    #[test]
+    fn takes_the_record_that_runs_the_songs_own_length() {
+        let results = vec![
+            found("Duality", 250.0),
+            found("Duality", 252.0),
+            found("Duality (Live)", 252.0),
+        ];
+
+        assert_eq!(
+            best_of(results, "Duality", 252).map(|found| found.duration),
+            Some(252.0)
+        );
+    }
+
+    #[test]
+    fn a_record_of_another_song_is_not_the_song() {
+        assert!(best_of(vec![found("Surfacing", 252.0)], "Duality", 252).is_none());
+        // A record with no words is nothing to write.
+        let silent = Found {
+            track_name: "Duality".to_string(),
+            duration: 252.0,
+            ..Found::default()
+        };
+        assert!(best_of(vec![silent], "Duality", 252).is_none());
+    }
+
+    #[test]
+    fn ranks_a_record_on_how_it_names_the_song() {
+        assert_eq!(title_rank("Duality", "Duality"), Some(0));
+        assert_eq!(title_rank("Duality (Live)", "Duality"), Some(1));
+        assert_eq!(title_rank("Surfacing", "Duality"), None);
+        // Another spelling of the name is the same name.
+        assert_eq!(title_rank("Freak on a Leash", "Freak On a Leash"), Some(0));
+    }
+
+    #[test]
+    fn a_stray_length_in_a_tag_is_not_the_songs() {
+        // A tagger that wrote seconds where milliseconds belong.
+        assert!(!within_a_song(252, 252_000));
+        assert!(within_a_song(252_500, 252_000));
+        // With nothing to compare against, what was recorded is taken.
+        assert!(within_a_song(252, 0));
     }
 
     #[test]

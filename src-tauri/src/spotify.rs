@@ -553,6 +553,7 @@ fn normalise_item(item: &Value) -> Option<TrackMeta> {
             .as_str()
             .unwrap_or_default()
             .to_string(),
+        duration_ms: track["duration_ms"].as_u64(),
         cover_url: album["images"]
             .as_array()
             .and_then(|images| images.first())

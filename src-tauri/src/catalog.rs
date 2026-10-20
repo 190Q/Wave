@@ -10,7 +10,7 @@ use crate::state::{PendingTrack, Playlist, GENERATED_KIND};
 
 pub const CATALOG_FILE: &str = "library.db";
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 pub const LAYOUT_VERSION_KEY: &str = "layout_version";
 pub const LAYOUT_VERSION: &str = "2";
@@ -89,13 +89,14 @@ CREATE TABLE IF NOT EXISTS pending_tracks (
   disc_number  INTEGER,
   source       TEXT NOT NULL DEFAULT '',
   source_id    TEXT NOT NULL DEFAULT '',
-  added_at     INTEGER NOT NULL DEFAULT 0
+  added_at     INTEGER NOT NULL DEFAULT 0,
+  duration_ms  INTEGER
 );
 CREATE INDEX IF NOT EXISTS pending_tracks_playlist ON pending_tracks (playlist_id);
 "#;
 
 const PENDING_COLUMNS: &str = "id, title, artists, album, album_artist, genres, isrc, cover_url, \
-     cover_path, release_date, track_number, disc_number, source, source_id";
+     cover_path, release_date, track_number, disc_number, source, source_id, duration_ms";
 
 #[derive(Debug, Clone, Default)]
 pub struct TrackRow {
@@ -206,6 +207,11 @@ impl Catalog {
                 connection
                     .execute_batch("ALTER TABLE pending_tracks ADD COLUMN cover_path TEXT")
                     .map_err(|e| format!("could not add the waiting covers: {e}"))?;
+            }
+            if !has_column(&connection, "pending_tracks", "duration_ms") {
+                connection
+                    .execute_batch("ALTER TABLE pending_tracks ADD COLUMN duration_ms INTEGER")
+                    .map_err(|e| format!("could not add the waiting lengths: {e}"))?;
             }
             return stamp(&connection);
         }
@@ -874,6 +880,7 @@ fn read_pending(row: &Row<'_>) -> rusqlite::Result<PendingTrack> {
         disc_number: row.get::<_, Option<i64>>(11)?.map(|value| value as u32),
         source: row.get(12)?,
         source_id: row.get(13)?,
+        duration_ms: row.get::<_, Option<i64>>(14)?.map(|value| value as u64),
     })
 }
 
@@ -921,8 +928,8 @@ fn write_pending(
         .execute(
             "INSERT INTO pending_tracks (id, playlist_id, title, artists, album, album_artist, \
              genres, isrc, cover_url, cover_path, release_date, track_number, disc_number, source, \
-             source_id, added_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+             source_id, added_at, duration_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 track.id,
                 playlist_id,
@@ -940,6 +947,7 @@ fn write_pending(
                 track.source,
                 track.source_id,
                 identity::now_ms(),
+                track.duration_ms.map(|value| value as i64),
             ],
         )
         .map(|_| ())

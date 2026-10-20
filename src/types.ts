@@ -53,6 +53,7 @@ export interface PendingTrack {
   releaseDate: string;
   trackNumber: number | null;
   discNumber: number | null;
+  durationMs: number | null;
 }
 
 export interface RecommendStatus {

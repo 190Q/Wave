@@ -112,6 +112,7 @@ pub struct PendingTrack {
     pub release_date: String,
     pub track_number: Option<u32>,
     pub disc_number: Option<u32>,
+    pub duration_ms: Option<u64>,
     /// Where it came from. Kept in the catalog rather than sent to the UI.
     #[serde(skip)]
     pub source: String,
@@ -135,6 +136,7 @@ impl PendingTrack {
             release_date: meta.release_date.clone(),
             track_number: meta.track_number,
             disc_number: meta.disc_number,
+            duration_ms: meta.duration_ms,
             source: source.to_string(),
             source_id: source_id.to_string(),
         }
@@ -153,6 +155,7 @@ impl PendingTrack {
             genres: self.genres.clone(),
             isrc: self.isrc.clone(),
             cover_url: self.cover_url.clone(),
+            duration_ms: self.duration_ms,
             ..TrackMeta::default()
         }
     }

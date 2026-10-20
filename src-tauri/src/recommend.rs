@@ -209,6 +209,7 @@ struct Candidate {
     release_date: String,
     track_number: Option<u32>,
     disc_number: Option<u32>,
+    duration_ms: Option<u64>,
     /// What the pool it came from is worth.
     weight: f64,
     /// The library already holds this song.
@@ -235,6 +236,7 @@ impl Candidate {
             release_date: self.release_date.clone(),
             track_number: self.track_number,
             disc_number: self.disc_number,
+            duration_ms: self.duration_ms,
             ..TrackMeta::default()
         }
     }
@@ -818,6 +820,7 @@ fn entries_pool(
                 release_date: meta.release_date,
                 track_number: meta.track_number,
                 disc_number: meta.disc_number,
+                duration_ms: meta.duration_ms,
                 weight,
                 held: known,
             }
@@ -921,6 +924,7 @@ mod tests {
             release_date: String::new(),
             track_number: None,
             disc_number: None,
+            duration_ms: None,
             weight,
             held: false,
         }

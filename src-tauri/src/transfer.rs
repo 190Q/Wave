@@ -105,6 +105,7 @@ fn export(app: &AppHandle, path: &Path, name: String, ids: &[String]) -> Result<
                 disc_number: track.disc_no,
                 genres: track.genre.clone().into_iter().collect(),
                 isrc: tag.and_then(|tag| tag.get_string(ItemKey::Isrc)).unwrap_or_default().into(),
+                duration_ms: Some(track.duration_ms),
                 ..TrackMeta::default()
             },
             cover,

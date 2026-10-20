@@ -27,6 +27,7 @@ pub struct TrackMeta {
     pub genres: Vec<String>,
     pub isrc: String,
     pub cover_url: Option<String>,
+    pub duration_ms: Option<u64>,
 }
 
 /// The credentials and tool overrides read from the config `.env`. The file is

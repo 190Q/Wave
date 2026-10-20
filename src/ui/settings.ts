@@ -1,8 +1,12 @@
-import { openPath } from "@tauri-apps/plugin-opener";
-
 import { forgetCaptured } from "../lib/analytics";
 import { escapeHtml, formatTotalDuration, plural } from "../lib/format";
-import { analyticsStats, analyticsSwell, clearAnalytics, resetWindowGeometry } from "../lib/ipc";
+import {
+  analyticsStats,
+  analyticsSwell,
+  clearAnalytics,
+  openLibraryFolder,
+  resetWindowGeometry,
+} from "../lib/ipc";
 import { swellWindow } from "../lib/swell";
 import { KEYBIND_GROUPS, SLOT_ACTIONS, SLOT_COUNT, slotLabel } from "../lib/keybinds";
 import { SEARCH_ALGORITHMS } from "../lib/search";
@@ -299,14 +303,10 @@ export function mountSettings(): void {
         return;
       }
       case "open-folder": {
-        const { root } = getState();
-        if (!root) {
-          return;
-        }
         try {
-          await openPath(root);
-        } catch {
-          setNotice("Could not open the library folder.");
+          await openLibraryFolder();
+        } catch (error) {
+          setNotice(typeof error === "string" ? error : "Could not open the library folder.");
         }
         return;
       }

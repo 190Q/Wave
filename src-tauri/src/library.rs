@@ -7,6 +7,7 @@ use lofty::file::FileType;
 use lofty::prelude::{Accessor, AudioFile, ItemKey, TaggedFileExt};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::catalog::{Catalog, TrackRow, LAYOUT_VERSION};
 use crate::identity;
@@ -656,6 +657,14 @@ pub fn library_info(catalog: State<'_, Catalog>) -> LibraryInfo {
         missing,
         db_bytes: catalog.file_size(),
     }
+}
+
+#[tauri::command]
+pub fn open_library_folder(app: AppHandle) -> Result<(), String> {
+    let root = library_root(&app)?;
+    app.opener()
+        .open_path(root.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|e| format!("could not open {}: {e}", root.display()))
 }
 
 #[tauri::command]

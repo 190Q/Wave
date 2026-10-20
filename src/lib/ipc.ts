@@ -135,6 +135,11 @@ export function libraryInfo(): Promise<LibraryInfo> {
   return invoke("library_info");
 }
 
+/** Opens the library folder in the file manager of whatever system this is. */
+export function openLibraryFolder(): Promise<void> {
+  return invoke("open_library_folder");
+}
+
 /** Measures the loudness of the given songs, so playback can level them. */
 export function analyseLoudness(trackIds: string[]): Promise<LoudnessOutcome> {
   return invoke("analyse_loudness", { trackIds });

@@ -159,6 +159,7 @@ pub fn run() {
             state::set_likes,
             library::scan_library,
             library::library_info,
+            library::open_library_folder,
             library::delete_tracks,
             loudness::analyse_loudness,
             import::import_folder,

@@ -8,7 +8,6 @@ use crate::catalog::Catalog;
 use crate::download;
 use crate::import::{self, ImportOutcome};
 use crate::import_source::{self, PROGRESS_EVENT};
-use crate::library;
 use crate::playlists;
 use crate::progress::Reporter;
 use crate::source::read_env;
@@ -67,8 +66,11 @@ fn run_inner(
 
     // The waiting id -> the library track it became.
     let mut landed: HashMap<String, String> = HashMap::new();
-    // Staged folders, so the import can say which file became which song.
-    let mut fetched: Vec<(usize, String)> = Vec::new();
+    let mut songs = 0usize;
+    let mut images = 0usize;
+    let mut lyrics = 0usize;
+    let mut similar = 0usize;
+    let mut duplicates = 0usize;
 
     for (index, track) in chosen.iter().enumerate() {
         let meta = track.meta();
@@ -77,43 +79,47 @@ fn run_inner(
         // A song the library already holds is used as it stands.
         if let Some(id) = import_source::held(&known, &meta) {
             landed.insert(track.id.clone(), id.clone());
+            duplicates += 1;
             report.reuse(&label);
             continue;
         }
 
         report.at(index + 1, &label);
         let cover = track.cover_path.as_deref().map(Path::new);
-        match download::download(&tools, &meta, &staging.join(index.to_string()), cover) {
-            Ok(_) => fetched.push((index, track.id.clone())),
+        let file = match download::download(&tools, &meta, &staging.join(index.to_string()), cover) {
+            Ok(file) => file,
+            Err(error) => {
+                report.fail(format!("{label}: {error}"));
+                continue;
+            }
+        };
+
+        match import::land(app, &file) {
+            Ok(song) => {
+                let done = import::complete(app, &song.id);
+
+                songs += usize::from(!song.duplicate);
+                duplicates += usize::from(song.duplicate);
+                images += usize::from(song.cover || done.cover);
+                lyrics += usize::from(song.lyrics || done.lyrics);
+                similar += usize::from(song.similar);
+                landed.insert(track.id.clone(), song.id);
+            }
             Err(error) => report.fail(format!("{label}: {error}")),
         }
     }
 
-    let mut outcome = ImportOutcome {
-        songs: 0,
-        images: 0,
-        lyrics: 0,
+    let outcome = ImportOutcome {
+        songs,
+        images,
+        lyrics,
         skipped: 0,
-        duplicates: 0,
-        similar: 0,
+        duplicates,
+        similar,
         playlist: Some(playlist_id.to_string()),
-        errors: Vec::new(),
+        errors: report.failures().to_vec(),
         state: PersistedState::default(),
     };
-
-    if !fetched.is_empty() {
-        report.phase("importing", "Adding the songs to your library.");
-        let imported = import::import_into_library(app, &staging, false, None)?;
-        outcome = imported.outcome;
-        outcome.playlist = Some(playlist_id.to_string());
-
-        for (index, pending_id) in &fetched {
-            let source = format!("{index}/{}.mp3", library::AUDIO_STEM);
-            if let Some(track_id) = imported.by_source.get(&source) {
-                landed.insert(pending_id.clone(), track_id.clone());
-            }
-        }
-    }
 
     // A song that would not download keeps its place, so it stays waiting.
     let next = rewritten(&entries, &landed);
@@ -122,8 +128,8 @@ fn run_inner(
         catalog.resolve_pending(playlist_id, &next, &done)?;
     }
 
-    outcome.errors.extend(report.failures().to_vec());
     import::remember_import(app, "playlist", &name, &outcome);
+    let mut outcome = outcome;
     outcome.state = playlists::refresh(app, &store);
 
     Ok(outcome)

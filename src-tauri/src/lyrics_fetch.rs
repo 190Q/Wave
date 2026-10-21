@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::thread::sleep;
@@ -65,7 +64,11 @@ impl Found {
     }
 }
 
-fn run(app: &AppHandle, track_ids: &[String]) -> Result<LyricsOutcome, String> {
+pub fn fill(app: &AppHandle, track_ids: &[String]) -> Result<LyricsOutcome, String> {
+    run_inner(app, track_ids, &mut Reporter::quiet())
+}
+
+pub fn run(app: &AppHandle, track_ids: &[String]) -> Result<LyricsOutcome, String> {
     let mut report = Reporter::new(app, PROGRESS_EVENT);
     let outcome = run_inner(app, track_ids, &mut report);
 
@@ -85,16 +88,7 @@ fn run_inner(
     let root = library_root(app)?;
     let catalog = app.state::<Catalog>();
 
-    let by_id: HashMap<String, Track> = library::scan(app, &catalog)
-        .tracks
-        .into_iter()
-        .map(|track| (track.id.clone(), track))
-        .collect();
-
-    let wanted: Vec<Track> = track_ids
-        .iter()
-        .filter_map(|id| by_id.get(id).cloned())
-        .collect();
+    let wanted = library::songs(app, &catalog, track_ids);
     if wanted.is_empty() {
         return Err("there is nothing in that collection to look lyrics up for".to_string());
     }

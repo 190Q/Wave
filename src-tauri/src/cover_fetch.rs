@@ -41,7 +41,11 @@ struct Found {
     from_file: bool,
 }
 
-fn run(app: &AppHandle, track_ids: &[String]) -> Result<CoversOutcome, String> {
+pub fn fill(app: &AppHandle, track_ids: &[String]) -> Result<CoversOutcome, String> {
+    run_inner(app, track_ids, &mut Reporter::quiet())
+}
+
+pub fn run(app: &AppHandle, track_ids: &[String]) -> Result<CoversOutcome, String> {
     let mut report = Reporter::new(app, PROGRESS_EVENT);
     let outcome = run_inner(app, track_ids, &mut report);
 
@@ -61,16 +65,7 @@ fn run_inner(
     let root = library_root(app)?;
     let catalog = app.state::<Catalog>();
 
-    let by_id: std::collections::HashMap<String, Track> = library::scan(app, &catalog)
-        .tracks
-        .into_iter()
-        .map(|track| (track.id.clone(), track))
-        .collect();
-
-    let wanted: Vec<Track> = track_ids
-        .iter()
-        .filter_map(|id| by_id.get(id).cloned())
-        .collect();
+    let wanted = library::songs(app, &catalog, track_ids);
     if wanted.is_empty() {
         return Err("there is nothing in that collection to find covers for".to_string());
     }

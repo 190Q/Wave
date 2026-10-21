@@ -1,6 +1,8 @@
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+use crate::source::now_ms;
+
 /// One update from a long job, sent on the job's own event.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,11 +19,13 @@ pub struct Progress {
     pub failures: Vec<String>,
     /// Items left alone because the library already had them.
     pub reused: usize,
+    /// When the pass being counted began, so the readout can estimate the rest.
+    pub started_at: u64,
 }
 
 /// Collects progress so every update carries the whole picture.
 pub struct Reporter {
-    app: AppHandle,
+    app: Option<AppHandle>,
     event: &'static str,
     phase: String,
     total: usize,
@@ -30,13 +34,22 @@ pub struct Reporter {
     message: String,
     failures: Vec<String>,
     reused: usize,
+    started_at: u64,
 }
 
 impl Reporter {
     pub fn new(app: &AppHandle, event: &'static str) -> Self {
         Self {
-            app: app.clone(),
+            app: Some(app.clone()),
             event,
+            ..Self::quiet()
+        }
+    }
+
+    pub fn quiet() -> Self {
+        Self {
+            app: None,
+            event: "",
             phase: String::new(),
             total: 0,
             done: 0,
@@ -44,6 +57,7 @@ impl Reporter {
             message: String::new(),
             failures: Vec::new(),
             reused: 0,
+            started_at: now_ms(),
         }
     }
 
@@ -52,7 +66,11 @@ impl Reporter {
     }
 
     fn send(&self) {
-        let _ = self.app.emit(
+        let Some(app) = &self.app else {
+            return;
+        };
+
+        let _ = app.emit(
             self.event,
             Progress {
                 phase: self.phase.clone(),
@@ -62,6 +80,7 @@ impl Reporter {
                 message: self.message.clone(),
                 failures: self.failures.clone(),
                 reused: self.reused,
+                started_at: self.started_at,
             },
         );
     }
@@ -75,6 +94,7 @@ impl Reporter {
     pub fn count(&mut self, total: usize) {
         self.total = total;
         self.done = 0;
+        self.started_at = now_ms();
         self.send();
     }
 

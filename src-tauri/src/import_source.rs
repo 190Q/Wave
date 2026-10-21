@@ -7,13 +7,12 @@ use tauri::{AppHandle, Manager};
 
 use crate::catalog::Catalog;
 use crate::download;
-use crate::genre_fetch;
 use crate::import::{self, ImportOutcome};
 use crate::library;
 use crate::playlists;
 use crate::progress::Reporter;
 use crate::source::{read_env, TrackMeta};
-use crate::state::Store;
+use crate::state::{PersistedState, Store};
 
 /// Follows one import, track by track.
 pub const PROGRESS_EVENT: &str = "source-import";
@@ -63,32 +62,30 @@ fn run_inner(
 ) -> Result<ImportOutcome, String> {
     let tools = download::resolve_tools(&read_env(app))?;
     let link = resolve(report)?;
-    let mut tracks = link.tracks;
+    let tracks = link.tracks;
 
     // The ones the library already has, unless the user asked for them again.
     let existing = library_index(app);
-    let duplicates = tracks
+    let already = tracks
         .iter()
         .filter(|meta| held(&existing, meta).is_some())
         .count();
     let todo = if download_duplicates {
         tracks.len()
     } else {
-        tracks.len() - duplicates
+        tracks.len() - already
     };
 
-    let pending = to_look_up(&mut tracks, &existing, download_duplicates);
-    if !pending.is_empty() {
-        report.phase("genres", &genre_message(pending.len()));
-        genre_fetch::fill(Some(report), pending);
-    }
-
     let staging = staging_dir(app, source, &link.id)?;
-    report.phase("downloading", &download_message(todo, duplicates));
+    report.phase("downloading", &download_message(todo, already));
     report.count(todo);
 
-    // Kept in the order the source gave.
-    let mut entries: Vec<Entry> = Vec::new();
+    let mut ids: Vec<Option<String>> = vec![None; tracks.len()];
+    let mut songs = 0usize;
+    let mut images = 0usize;
+    let mut lyrics = 0usize;
+    let mut similar = 0usize;
+    let mut duplicates = if download_duplicates { 0 } else { already };
     let mut downloading = 0usize;
 
     for (index, meta) in tracks.iter().enumerate() {
@@ -101,7 +98,7 @@ fn run_inner(
             held(&existing, meta)
         };
         if let Some(id) = known {
-            entries.push(Entry::Known(id.clone()));
+            ids[index] = Some(id.clone());
             report.reuse(&label);
             continue;
         }
@@ -109,32 +106,48 @@ fn run_inner(
         downloading += 1;
         report.at(downloading, &label);
 
-        match download::download(&tools, meta, &staging.join(index.to_string()), None) {
-            Ok(_) => entries.push(Entry::Fetched(staged_key(index))),
+        let file = match download::download(&tools, meta, &staging.join(index.to_string()), None) {
+            Ok(file) => file,
+            Err(error) => {
+                report.fail(format!("{label}: {error}"));
+                continue;
+            }
+        };
+
+        match import::land(app, &file) {
+            Ok(song) => {
+                let done = import::complete(app, &song.id);
+
+                songs += usize::from(!song.duplicate);
+                duplicates += usize::from(song.duplicate);
+                images += usize::from(song.cover || done.cover);
+                lyrics += usize::from(song.lyrics || done.lyrics);
+                similar += usize::from(song.similar);
+                ids[index] = Some(song.id);
+            }
             Err(error) => report.fail(format!("{label}: {error}")),
         }
     }
 
-    report.phase("importing", "Adding the songs to your library.");
-    let imported = import::import_into_library(app, &staging, false, None)?;
-    let mut outcome = imported.outcome;
+    let chosen: Vec<String> = ids.into_iter().flatten().collect();
+    let playlist = if link.kind == Kind::Collection && !chosen.is_empty() {
+        Some(playlists::write(app, &link.name, &chosen)?)
+    } else {
+        None
+    };
 
-    if link.kind == Kind::Collection {
-        let chosen: Vec<String> = entries
-            .iter()
-            .filter_map(|entry| match entry {
-                Entry::Known(id) => Some(id.clone()),
-                Entry::Fetched(key) => imported.by_source.get(key).cloned(),
-            })
-            .collect();
-
-        outcome.playlist = Some(playlists::write(app, &link.name, &chosen)?);
-        let store = app.state::<Store>();
-        outcome.state = playlists::refresh(app, &store);
-    }
-
-    // The download failures belong in the same list as the import ones.
-    outcome.errors.extend(report.failures().to_vec());
+    let outcome = ImportOutcome {
+        songs,
+        images,
+        lyrics,
+        skipped: 0,
+        duplicates,
+        similar,
+        playlist,
+        // The download failures belong in the same list as the import ones.
+        errors: report.failures().to_vec(),
+        state: PersistedState::default(),
+    };
 
     let history = if link.kind == Kind::Collection {
         link.name.clone()
@@ -143,17 +156,9 @@ fn run_inner(
     };
     import::remember_import(app, source, &history, &outcome);
 
-    outcome.state = app.state::<Store>().snapshot();
+    let mut outcome = outcome;
+    outcome.state = playlists::refresh(app, &app.state::<Store>());
     Ok(outcome)
-}
-
-enum Entry {
-    Known(String),
-    Fetched(String),
-}
-
-fn staged_key(index: usize) -> String {
-    format!("{index}/{}.mp3", library::AUDIO_STEM)
 }
 
 fn download_message(todo: usize, duplicates: usize) -> String {
@@ -161,24 +166,6 @@ fn download_message(todo: usize, duplicates: usize) -> String {
         return format!("Downloading {todo} tracks.");
     }
     format!("Downloading {todo} tracks. {duplicates} already in your library.")
-}
-
-fn to_look_up<'a>(
-    tracks: &'a mut [TrackMeta],
-    existing: &HashMap<String, String>,
-    download_duplicates: bool,
-) -> Vec<&'a mut TrackMeta> {
-    tracks
-        .iter_mut()
-        .filter(|meta| download_duplicates || held(existing, meta).is_none())
-        .collect()
-}
-
-fn genre_message(todo: usize) -> String {
-    if todo == 1 {
-        return "Looking up the genre of 1 track.".to_string();
-    }
-    format!("Looking up the genre of {todo} tracks.")
 }
 
 /// Every library track, by the three fields a duplicate is judged on.
@@ -443,42 +430,6 @@ mod tests {
             download_message(28, 12),
             "Downloading 28 tracks. 12 already in your library."
         );
-    }
-
-    #[test]
-    fn says_how_many_genres_it_will_look_up() {
-        assert_eq!(genre_message(1), "Looking up the genre of 1 track.");
-        assert_eq!(genre_message(12), "Looking up the genre of 12 tracks.");
-    }
-
-    #[test]
-    fn looks_a_genre_up_only_for_the_songs_the_library_is_missing() {
-        let mut tracks = vec![
-            TrackMeta {
-                title: "Hey Jude".to_string(),
-                artists: vec!["The Beatles".to_string()],
-                album: "Past Masters".to_string(),
-                ..TrackMeta::default()
-            },
-            TrackMeta {
-                title: "Let It Be".to_string(),
-                artists: vec!["The Beatles".to_string()],
-                album: "Let It Be".to_string(),
-                ..TrackMeta::default()
-            },
-        ];
-
-        let existing = HashMap::from([(
-            track_key("Hey Jude", "The Beatles", "Past Masters"),
-            "id".to_string(),
-        )]);
-
-        let pending = to_look_up(&mut tracks, &existing, false);
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].title, "Let It Be");
-
-        // Asked for again, a song the library holds is looked up like any other.
-        assert_eq!(to_look_up(&mut tracks, &existing, true).len(), 2);
     }
 
     #[test]

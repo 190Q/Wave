@@ -473,7 +473,7 @@ fn write_cover(dir: &Path, data: &[u8], extension: &str) -> Option<PathBuf> {
     Some(target)
 }
 
-fn to_track(row: &TrackRow, root: &Path) -> Track {
+pub fn to_track(row: &TrackRow, root: &Path) -> Track {
     let path = root.join(&row.rel_path);
     Track {
         id: row.id.clone(),
@@ -497,6 +497,17 @@ fn to_track(row: &TrackRow, root: &Path) -> Track {
         lufs: row.lufs,
         peak: row.peak,
     }
+}
+
+pub fn songs<R: Runtime>(app: &AppHandle<R>, catalog: &Catalog, ids: &[String]) -> Vec<Track> {
+    let Ok(root) = library_root(app) else {
+        return Vec::new();
+    };
+
+    ids.iter()
+        .filter_map(|id| catalog.track(id).ok().flatten())
+        .map(|row| to_track(&row, &root))
+        .collect()
 }
 
 fn absolute(root: &Path, relative: Option<&str>) -> Option<String> {

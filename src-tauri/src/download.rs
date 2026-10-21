@@ -195,18 +195,22 @@ struct Found {
     verified: bool,
 }
 
-/// `false` means the file was already there, so a re-run picks up where the last
+/// The file it wrote, which is the one to file into the library. A file that was
+/// already there is left as it stands, so a re-run picks up where the last one
 /// left off.
 pub fn download(
     tools: &Tools,
     meta: &TrackMeta,
     out_dir: &Path,
     cover: Option<&Path>,
-) -> Result<bool, String> {
+) -> Result<PathBuf, String> {
     let target = out_dir.join(format!("{AUDIO_STEM}.mp3"));
 
     if target.is_file() {
-        return Ok(false);
+        if landed(&target, meta).is_ok() {
+            return Ok(target);
+        }
+        let _ = fs::remove_file(&target);
     }
 
     fs::create_dir_all(out_dir).map_err(|e| format!("could not create {}: {e}", out_dir.display()))?;
@@ -222,7 +226,7 @@ pub fn download(
     tag(&path, meta, cover_bytes(cover, meta.cover_url.as_deref()))
         .map_err(|e| format!("downloaded, but could not tag it: {e}"))?;
 
-    Ok(true)
+    Ok(path)
 }
 
 fn fetch(tools: &Tools, meta: &TrackMeta, out_dir: &Path, target: &Path) -> Result<PathBuf, String> {

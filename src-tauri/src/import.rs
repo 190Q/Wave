@@ -1,18 +1,21 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::catalog::Catalog;
+use crate::cover_fetch;
+use crate::genre_fetch;
 use crate::identity;
 use crate::library::{
     self, audio_path, cover_path, has_extension, library_root, lyrics_path, source_subdir,
     SidecarIndex, AUDIO_EXTENSIONS, CONFIG_DIR, IMAGE_EXTENSIONS, LYRICS_EXTENSIONS,
     SOURCE_ARTWORK_DIR, SOURCE_LYRICS_DIR,
 };
+use crate::lyrics_fetch;
 use crate::playlists;
 use crate::state::{PersistedState, Store};
 
@@ -38,14 +41,10 @@ pub struct ImportOutcome {
     pub state: PersistedState,
 }
 
-/// An import, plus which song each source file became. Only the callers that
-/// write their own playlist need the ids.
-pub struct Imported {
-    pub outcome: ImportOutcome,
-    pub by_source: HashMap<String, String>,
-}
+pub const LANDED_EVENT: &str = "library-landed";
 
-enum Placed {
+#[derive(Debug, Clone, Copy)]
+pub enum Placed {
     /// The library already held this audio, so nothing was written.
     Duplicate,
     Added {
@@ -53,6 +52,94 @@ enum Placed {
         cover: bool,
         lyrics: bool,
     },
+}
+
+/// What became of one song that was filed into the library.
+pub struct Landed {
+    pub id: String,
+    /// The library already held this audio, so nothing was written for it.
+    pub duplicate: bool,
+    /// Added even though something else shares its title, artist and album.
+    pub similar: bool,
+    pub cover: bool,
+    pub lyrics: bool,
+}
+
+pub fn land(app: &AppHandle, path: &Path) -> Result<Landed, String> {
+    let root = library_root(app)?;
+    let catalog = app.state::<Catalog>();
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("{} has no name", path.display()))?;
+
+    // A song that arrives on its own has no folder of sidecars to match against.
+    let (placed, id) = import_one(
+        &root,
+        &catalog,
+        path,
+        &file_name,
+        &SidecarIndex::default(),
+        &SidecarIndex::default(),
+    )?;
+
+    let landed = Landed {
+        id: id.clone(),
+        duplicate: matches!(placed, Placed::Duplicate),
+        similar: matches!(placed, Placed::Added { similar: true, .. }),
+        cover: matches!(placed, Placed::Added { cover: true, .. }),
+        lyrics: matches!(placed, Placed::Added { lyrics: true, .. }),
+    };
+
+    // The row is the one just written, so the UI can show the song at once.
+    if let Some(row) = catalog.track(&id)? {
+        let _ = app.emit(LANDED_EVENT, vec![library::to_track(&row, &root)]);
+    }
+
+    Ok(landed)
+}
+
+/// What a song was still missing when it landed.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Complete {
+    pub cover: bool,
+    pub genre: bool,
+    pub lyrics: bool,
+}
+
+pub fn complete(app: &AppHandle, id: &str) -> Complete {
+    let ids = [id.to_string()];
+    let mut done = Complete::default();
+
+    if let Ok(outcome) = cover_fetch::fill(app, &ids) {
+        done.cover = outcome.restored > 0;
+    }
+    if let Ok(outcome) = genre_fetch::fill(app, &ids) {
+        done.genre = outcome.tagged > 0;
+    }
+    if let Ok(outcome) = lyrics_fetch::fill(app, &ids) {
+        done.lyrics = outcome.fetched > 0;
+    }
+
+    let _ = refresh(app, id);
+    done
+}
+
+pub fn refresh(app: &AppHandle, id: &str) -> Result<(), String> {
+    let root = library_root(app)?;
+    let catalog = app.state::<Catalog>();
+    let Some(known) = catalog.track(id)? else {
+        return Ok(());
+    };
+
+    let audio = root.join(&known.rel_path);
+    let mut row = library::describe(&root, id, &audio, &known.original_name)?;
+    // A song is not newly added just because something was written into it.
+    row.added_at = known.added_at;
+    catalog.upsert_track(&row)?;
+
+    let _ = app.emit(LANDED_EVENT, vec![library::to_track(&row, &root)]);
+    Ok(())
 }
 
 #[tauri::command(async)]
@@ -67,18 +154,17 @@ pub fn import_folder(
         return Err(format!("{folder} is not a folder"));
     }
 
-    let mut imported = import_into_library(&app, &source, create_playlist, playlist_name.as_deref())?;
-    let outcome = &mut imported.outcome;
+    let mut outcome = import_into_library(&app, &source, create_playlist, playlist_name.as_deref())?;
 
     let name = outcome
         .playlist
         .clone()
         .or_else(|| source.file_name().map(|name| name.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "Imported folder".to_string());
-    remember_import(&app, "folder", &name, outcome);
+    remember_import(&app, "folder", &name, &outcome);
 
     outcome.state = app.state::<Store>().snapshot();
-    Ok(imported.outcome)
+    Ok(outcome)
 }
 
 pub fn import_into_library(
@@ -86,7 +172,7 @@ pub fn import_into_library(
     source: &Path,
     create_playlist: bool,
     playlist_name: Option<&str>,
-) -> Result<Imported, String> {
+) -> Result<ImportOutcome, String> {
     let store = app.state::<Store>();
     let catalog = app.state::<Catalog>();
     let root = library_root(app)?;
@@ -102,7 +188,6 @@ pub fn import_into_library(
 
     clear_staging(&root);
 
-    let mut by_source: HashMap<String, String> = HashMap::new();
     let mut playlist_tracks: Vec<String> = Vec::new();
     let mut songs = 0usize;
     let mut images = 0usize;
@@ -131,8 +216,7 @@ pub fn import_into_library(
         match outcome {
             Ok((Placed::Duplicate, id)) => {
                 duplicates += 1;
-                playlist_tracks.push(id.clone());
-                by_source.insert(key, id);
+                playlist_tracks.push(id);
             }
             Ok((
                 Placed::Added {
@@ -146,8 +230,7 @@ pub fn import_into_library(
                 images += usize::from(cover);
                 lyrics += usize::from(words);
                 similar += usize::from(near);
-                playlist_tracks.push(id.clone());
-                by_source.insert(key, id);
+                playlist_tracks.push(id);
             }
             Err(error) => errors.push(format!("{key}: {error}")),
         }
@@ -177,7 +260,7 @@ pub fn import_into_library(
         state: playlists::refresh(app, &store),
     };
 
-    Ok(Imported { outcome, by_source })
+    Ok(outcome)
 }
 
 /// The audio a folder holds, and how many of its files were not audio.

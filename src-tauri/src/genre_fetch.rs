@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::Path;
 use std::thread::sleep;
 use std::time::Duration;
@@ -9,9 +8,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::catalog::Catalog;
-use crate::library::{self, track_label, Track};
+use crate::library::{self, track_label};
 use crate::progress::Reporter;
-use crate::source::{client, retry_after, wait_phrase, TrackMeta};
+use crate::source::{client, retry_after, wait_phrase};
 
 /// Follows one genre pass, song by song.
 pub const PROGRESS_EVENT: &str = "genres-fetch";
@@ -248,55 +247,8 @@ impl Breaker {
     }
 }
 
-/// Looks up a genre for every track it is handed, and says how many landed.
-pub fn fill<'a>(
-    report: Option<&mut Reporter>,
-    tracks: impl IntoIterator<Item = &'a mut TrackMeta>,
-) -> usize {
-    let mut report = report;
-    let mut breaker = Breaker::default();
-    let mut pace = Pace::default();
-    let mut filled = 0;
-
-    for (position, meta) in tracks.into_iter().enumerate() {
-        if !meta.genres.is_empty() {
-            continue;
-        }
-
-        let artist = meta.artists.join(", ");
-        if artist.trim().is_empty() {
-            continue;
-        }
-
-        if let Some(report) = report.as_deref_mut() {
-            report.at(position + 1, &format!("{artist} - {}", meta.title));
-        }
-
-        let answer = look_up_patiently(&artist, &meta.title, &mut pace, |line| {
-            if let Some(report) = report.as_deref_mut() {
-                report.phase("genres", line);
-            }
-        });
-
-        match answer {
-            Ok(Some(genre)) => {
-                meta.genres = vec![genre];
-                filled += 1;
-                breaker.ok();
-            }
-            Ok(None) => breaker.ok(),
-            Err(Stop::Throttled) => break,
-            Err(Stop::Refused(_)) => {
-                if breaker.refused() {
-                    break;
-                }
-            }
-        }
-
-        pace.pause();
-    }
-
-    filled
+pub fn fill(app: &AppHandle, track_ids: &[String]) -> Result<GenresOutcome, String> {
+    run_inner(app, track_ids, &mut Reporter::quiet())
 }
 
 fn run(app: &AppHandle, track_ids: &[String]) -> Result<GenresOutcome, String> {
@@ -318,16 +270,7 @@ fn run_inner(
 ) -> Result<GenresOutcome, String> {
     let catalog = app.state::<Catalog>();
 
-    let by_id: HashMap<String, Track> = library::scan(app, &catalog)
-        .tracks
-        .into_iter()
-        .map(|track| (track.id.clone(), track))
-        .collect();
-
-    let wanted: Vec<Track> = track_ids
-        .iter()
-        .filter_map(|id| by_id.get(id).cloned())
-        .collect();
+    let wanted = library::songs(app, &catalog, track_ids);
     if wanted.is_empty() {
         return Err("there is nothing in that collection to look genres up for".to_string());
     }
@@ -489,27 +432,6 @@ mod tests {
         // A lookup that lands resets the run, so scattered refusals never add up.
         breaker.ok();
         assert!(!breaker.refused());
-    }
-
-    #[test]
-    fn fills_only_the_tracks_that_carry_no_genre() {
-        let mut tracks = vec![
-            TrackMeta {
-                title: "Already Tagged".to_string(),
-                artists: vec!["Someone".to_string()],
-                genres: vec!["Jazz".to_string()],
-                ..TrackMeta::default()
-            },
-            // No artist, so there is nothing to look up.
-            TrackMeta {
-                title: "Untagged".to_string(),
-                ..TrackMeta::default()
-            },
-        ];
-
-        assert_eq!(fill(None, &mut tracks), 0);
-        assert_eq!(tracks[0].genres, vec!["Jazz"]);
-        assert!(tracks[1].genres.is_empty());
     }
 
     #[test]

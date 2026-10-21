@@ -1,25 +1,26 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use lofty::config::WriteOptions;
-use lofty::picture::{MimeType, Picture, PictureType};
-use lofty::prelude::{ItemKey, TagExt, TaggedFileExt};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::catalog::Catalog;
 use crate::download;
 use crate::import::{self, ImportOutcome};
+use crate::import_source;
 use crate::library;
 use crate::playlists;
 use crate::progress::Reporter;
 use crate::source::{now_ms, read_env, TrackMeta};
-use crate::state::Store;
+use crate::state::{PersistedState, Store};
 
 const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024;
+
+const VERSION: u32 = 2;
+
 pub const PROGRESS_EVENT: &str = "wavelist-import";
 static NEXT_JOB: AtomicU64 = AtomicU64::new(0);
 
@@ -29,21 +30,12 @@ struct WaveList {
     format: String,
     version: u32,
     name: String,
-    tracks: Vec<Entry>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Entry {
-    meta: TrackMeta,
-    cover: Option<Vec<u8>>,
-    synced_lyrics: Option<String>,
-    plain_lyrics: Option<String>,
+    tracks: Vec<TrackMeta>,
 }
 
 impl WaveList {
     fn validate(&self) -> Result<(), String> {
-        if self.format != "wave-playlist" || self.version != 1 {
+        if self.format != "wave-playlist" || self.version != VERSION {
             return Err("This is not a supported Wave playlist export.".into());
         }
         if self.name.trim().is_empty() || self.name.len() > 1024
@@ -51,177 +43,126 @@ impl WaveList {
         {
             return Err("The export needs a name and between 1 and 10,000 songs.".into());
         }
-        for entry in &self.tracks {
-            if entry.meta.title.trim().is_empty() || entry.meta.title.len() > 4096
-                || entry.cover.as_ref().is_some_and(|bytes| bytes.len() > 8 * 1024 * 1024)
-                || [&entry.synced_lyrics, &entry.plain_lyrics].iter()
-                    .any(|text| text.as_ref().is_some_and(|text| text.len() > 2 * 1024 * 1024))
-            {
-                return Err("The export contains an invalid song or oversized asset.".into());
+        for meta in &self.tracks {
+            if meta.title.trim().is_empty() || meta.title.len() > 4096 {
+                return Err("The export contains a song with no title.".into());
             }
         }
         Ok(())
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyList {
+    format: String,
+    name: String,
+    tracks: Vec<LegacyEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyEntry {
+    meta: TrackMeta,
+}
+
 fn read(path: &Path) -> Result<WaveList, String> {
     let file = fs::File::open(path).map_err(|e| format!("Could not open the export: {e}"))?;
     let mut bytes = Vec::new();
-    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    file.take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
     if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err("The playlist export is too large (maximum 128 MB).".into());
+        return Err("The playlist export is too large to read.".into());
     }
-    let list: WaveList = serde_json::from_slice(&bytes)
+
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|e| format!("Could not read the Wave playlist export: {e}"))?;
+
+    let list = match value.get("version").and_then(serde_json::Value::as_u64) {
+        Some(version) if version == u64::from(VERSION) => serde_json::from_value(value)
+            .map_err(|e| format!("Could not read the Wave playlist export: {e}"))?,
+        Some(1) => {
+            let legacy: LegacyList = serde_json::from_value(value)
+                .map_err(|e| format!("Could not read the Wave playlist export: {e}"))?;
+            WaveList {
+                format: legacy.format,
+                version: VERSION,
+                name: legacy.name,
+                tracks: legacy.tracks.into_iter().map(|entry| entry.meta).collect(),
+            }
+        }
+        _ => return Err("This is not a supported Wave playlist export.".into()),
+    };
     list.validate()?;
     Ok(list)
 }
 
 fn export(app: &AppHandle, path: &Path, name: String, ids: &[String]) -> Result<usize, String> {
     let catalog = app.state::<Catalog>();
-    let tracks: HashMap<_, _> = library::scan(app, &catalog).tracks.into_iter()
-        .map(|track| (track.id.clone(), track)).collect();
-    let mut entries = Vec::new();
+    let tracks: HashMap<_, _> = library::scan(app, &catalog)
+        .tracks
+        .into_iter()
+        .map(|track| (track.id.clone(), track))
+        .collect();
+
+    let mut entries = Vec::with_capacity(ids.len());
     for id in ids {
-        let track = tracks.get(id).ok_or("A selected song is no longer in the library.")?;
-        let tagged = lofty::read_from_path(&track.path).map_err(|e| e.to_string())?;
-        let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
-        let cover = match &track.artwork_path {
-            Some(path) => Some(fs::read(path).map_err(|e| format!("Could not read a cover: {e}"))?),
-            None => tag.and_then(|tag| tag.pictures().first()).map(|pic| pic.data().to_vec()),
-        };
-        let synced_lyrics = match &track.lyrics_path {
-            Some(path) => Some(fs::read_to_string(path).map_err(|e| format!("Could not read lyrics: {e}"))?),
-            None => fs::read_to_string(Path::new(&track.path).with_extension("lrc")).ok(),
-        };
-        entries.push(Entry {
-            meta: TrackMeta {
-                title: track.title.clone(),
-                artists: track.artist.clone().into_iter().collect(),
-                album: track.album.clone().unwrap_or_default(),
-                album_artist: track.album_artist.clone().unwrap_or_default(),
-                release_date: track.year.map(|year| year.to_string()).unwrap_or_default(),
-                track_number: track.track_no,
-                disc_number: track.disc_no,
-                genres: track.genre.clone().into_iter().collect(),
-                isrc: tag.and_then(|tag| tag.get_string(ItemKey::Isrc)).unwrap_or_default().into(),
-                duration_ms: Some(track.duration_ms),
-                ..TrackMeta::default()
-            },
-            cover,
-            synced_lyrics,
-            plain_lyrics: tag.and_then(|tag| tag.get_string(ItemKey::UnsyncLyrics)).map(str::to_string),
+        let track = tracks
+            .get(id)
+            .ok_or("A selected song is no longer in the library.")?;
+        entries.push(TrackMeta {
+            title: track.title.clone(),
+            artists: track.artist.clone().into_iter().collect(),
+            album: track.album.clone().unwrap_or_default(),
+            album_artist: track.album_artist.clone().unwrap_or_default(),
+            release_date: track.year.map(|year| year.to_string()).unwrap_or_default(),
+            track_number: track.track_no,
+            disc_number: track.disc_no,
+            genres: track.genre.clone().into_iter().collect(),
+            duration_ms: Some(track.duration_ms),
+            ..TrackMeta::default()
         });
     }
-    let list = WaveList { format: "wave-playlist".into(), version: 1, name, tracks: entries };
+
+    let list = WaveList {
+        format: "wave-playlist".into(),
+        version: VERSION,
+        name,
+        tracks: entries,
+    };
     list.validate()?;
+
     let bytes = serde_json::to_vec(&list).map_err(|e| e.to_string())?;
     if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err("The playlist export exceeds 128 MB. Export a smaller collection.".into());
+        return Err("The playlist export is too large to save.".into());
     }
     fs::write(path, bytes).map_err(|e| format!("Could not save the export: {e}"))?;
     Ok(list.tracks.len())
 }
 
-fn key(title: &str, artist: &str, album: &str) -> String {
-    [title, artist, album].map(|part| part.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()).join("\u{1}")
-}
-
-fn staged_key(position: usize) -> String {
-    format!("{position}/{}.mp3", library::AUDIO_STEM)
-}
-
-fn key_of(track: &library::Track) -> String {
-    key(
-        &track.title,
-        track.artist.as_deref().unwrap_or_default(),
-        track.album.as_deref().unwrap_or_default(),
-    )
-}
-
-fn key_of_meta(meta: &TrackMeta) -> String {
-    key(&meta.title, &meta.artists.join(", "), &meta.album)
-}
-
-fn restore(
-    entry: &Entry,
-    root: &Path,
-    catalog: &Catalog,
-    id: &str,
-) -> Result<(usize, usize), String> {
-    let song = catalog
-        .track(id)?
-        .map(|row| root.join(&row.rel_path))
-        .ok_or("The restored song is not in the library.")?;
-
-    let mut images = 0;
-    let mut lyrics = 0;
-
-    if let Some(bytes) = &entry.cover {
-        let extension = if bytes.starts_with(b"\x89PNG") { "png" } else { "jpg" };
-        let cover = library::cover_path(root, id, extension);
-        fs::write(&cover, bytes).map_err(|e| e.to_string())?;
-        if let Some(relative) = library::relative(root, &cover) {
-            catalog.set_cover(id, Some(&relative))?;
-        }
-        images = 1;
-    }
-
-    if let Some(text) = &entry.synced_lyrics {
-        let words = library::lyrics_path(root, id);
-        fs::write(&words, text).map_err(|e| e.to_string())?;
-        if let Some(relative) = library::relative(root, &words) {
-            catalog.set_lyrics(id, Some(&relative))?;
-        }
-        lyrics = 1;
-    }
-
-    // The downloader already writes metadata and genres. Restore the tag assets
-    // that travel only in the export.
-    if entry.cover.is_some() || entry.plain_lyrics.is_some() {
-        let mut tag = {
-            let tagged = lofty::read_from_path(&song).map_err(|e| e.to_string())?;
-            tagged
-                .primary_tag()
-                .or_else(|| tagged.first_tag())
-                .cloned()
-                .ok_or("The downloaded song has no tags.")?
-        };
-        if let Some(text) = &entry.plain_lyrics {
-            tag.insert_text(ItemKey::UnsyncLyrics, text.clone());
-        }
-        if let Some(bytes) = &entry.cover {
-            let mime = if bytes.starts_with(b"\x89PNG") { MimeType::Png } else { MimeType::Jpeg };
-            tag.remove_picture_type(PictureType::CoverFront);
-            tag.push_picture(
-                Picture::unchecked(bytes.clone())
-                    .pic_type(PictureType::CoverFront)
-                    .mime_type(mime)
-                    .build(),
-            );
-        }
-        tag.save_to_path(&song, WriteOptions::default()).map_err(|e| e.to_string())?;
-    }
-
-    Ok((images, lyrics))
+fn staging_dir(app: &AppHandle, job: &str) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("transfer")
+        .join(job);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
 }
 
 fn run(app: &AppHandle, path: &Path, report: &mut Reporter) -> Result<ImportOutcome, String> {
     let list = read(path)?;
-    let root = library::library_root(app)?;
     let catalog = app.state::<Catalog>();
 
-    let mut existing: HashMap<String, String> = library::scan(app, &catalog)
-        .tracks
-        .into_iter()
-        .map(|track| (key_of(&track), track.id))
-        .collect();
+    let existing = import_source::catalog_index(&catalog)?;
 
-    // The download tools are only needed for the entries the library is missing.
+    // The download tools are only needed for the songs the library is missing.
     let wanted = list
         .tracks
         .iter()
-        .any(|entry| !existing.contains_key(&key_of_meta(&entry.meta)));
+        .any(|meta| import_source::held(&existing, meta).is_none());
     let tools = if wanted {
         Some(download::resolve_tools(&read_env(app))?)
     } else {
@@ -229,74 +170,76 @@ fn run(app: &AppHandle, path: &Path, report: &mut Reporter) -> Result<ImportOutc
     };
 
     let job = format!("{}-{}", now_ms(), NEXT_JOB.fetch_add(1, Ordering::Relaxed));
-    let staging = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("transfer").join(&job);
-    fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+    let staging = staging_dir(app, &job)?;
 
     let result = (|| {
-        report.phase("downloading", "Downloading audio directly. Spotify is not needed.");
+        report.phase("downloading", "Downloading the audio. Spotify is not needed.");
         report.count(list.tracks.len());
 
-        let mut reused = 0usize;
+        let mut ids: Vec<Option<String>> = vec![None; list.tracks.len()];
+        let mut songs = 0usize;
+        let mut images = 0usize;
+        let mut lyrics = 0usize;
+        let mut similar = 0usize;
+        let mut duplicates = 0usize;
 
-        for (position, entry) in list.tracks.iter().enumerate() {
-            let label = entry.meta.title.clone();
+        for (position, meta) in list.tracks.iter().enumerate() {
+            let label = import_source::track_label(meta);
             report.at(position + 1, &label);
 
-            if existing.contains_key(&key_of_meta(&entry.meta)) {
+            // A song the library already holds keeps its place without a download.
+            if let Some(id) = import_source::held(&existing, meta) {
+                ids[position] = Some(id.clone());
+                duplicates += 1;
                 report.reuse(&label);
-                reused += 1;
                 continue;
             }
-            let mut meta = entry.meta.clone();
-            meta.cover_url = None;
-            let dir = staging.join(position.to_string());
-            match download::download(
+
+            let file = match download::download(
                 tools.as_ref().ok_or("Download tools are unavailable.")?,
-                &meta,
-                &dir,
+                meta,
+                &staging.join(position.to_string()),
                 None,
             ) {
-                Ok(_) => {}
+                Ok(file) => file,
+                Err(error) => {
+                    report.fail(format!("{label}: {error}"));
+                    continue;
+                }
+            };
+
+            match import::land(app, &file) {
+                Ok(song) => {
+                    let done = import::complete(app, &song.id);
+
+                    songs += usize::from(!song.duplicate);
+                    duplicates += usize::from(song.duplicate);
+                    images += usize::from(song.cover || done.cover);
+                    lyrics += usize::from(song.lyrics || done.lyrics);
+                    similar += usize::from(song.similar);
+                    ids[position] = Some(song.id);
+                }
                 Err(error) => report.fail(format!("{label}: {error}")),
             }
         }
 
-        report.phase("importing", "Restoring the playlist, covers and lyrics.");
-        let imported = import::import_into_library(app, &staging, false, None)?;
-        let mut outcome = imported.outcome;
-        outcome.duplicates += reused;
+        let mut outcome = ImportOutcome {
+            songs,
+            images,
+            lyrics,
+            skipped: 0,
+            duplicates,
+            similar,
+            playlist: None,
+            errors: Vec::new(),
+            state: PersistedState::default(),
+        };
 
-        let mut playlist: Vec<String> = Vec::new();
-        let mut assets: Vec<(&Entry, String)> = Vec::new();
-        for (position, entry) in list.tracks.iter().enumerate() {
-            let track_key = key_of_meta(&entry.meta);
-            let id = existing.get(&track_key).cloned().or_else(|| {
-                let found = imported.by_source.get(&staged_key(position)).cloned();
-                if let Some(id) = &found {
-                    existing.insert(track_key.clone(), id.clone());
-                }
-                found
-            });
-
-            if let Some(id) = id {
-                playlist.push(id.clone());
-                assets.push((entry, id));
-            }
-        }
-
-        for (entry, id) in assets {
-            match restore(entry, &root, &catalog, &id) {
-                Ok((images, lyrics)) => {
-                    outcome.images += images;
-                    outcome.lyrics += lyrics;
-                }
-                Err(error) => report.fail(format!("{}: {error}", entry.meta.title)),
-            }
-        }
-
+        let playlist: Vec<String> = ids.into_iter().flatten().collect();
         if !playlist.is_empty() {
             outcome.playlist = Some(playlists::write(app, &list.name, &playlist)?);
         }
+
         outcome.errors.extend_from_slice(report.failures());
         import::remember_import(app, "wavelist", &list.name, &outcome);
         library::scan(app, &catalog);
@@ -331,45 +274,85 @@ pub async fn import_wavelist(app: AppHandle, path: String) -> Result<ImportOutco
 mod tests {
     use super::*;
 
-    fn fixture() -> WaveList {
+    fn list() -> WaveList {
         WaveList {
-            format: "wave-playlist".into(), version: 1, name: "A playlist".into(),
-            tracks: vec![Entry {
-                meta: TrackMeta { title: "Song".into(), genres: vec!["Rock".into()], ..TrackMeta::default() },
-                cover: Some(vec![1, 2, 3]), synced_lyrics: Some("[00:01]Words".into()), plain_lyrics: Some("Words".into()),
+            format: "wave-playlist".into(),
+            version: VERSION,
+            name: "A playlist".into(),
+            tracks: vec![TrackMeta {
+                title: "Song".into(),
+                artists: vec!["Artist".into()],
+                album: "Album".into(),
+                genres: vec!["Rock".into()],
+                ..TrackMeta::default()
             }],
         }
     }
 
+    fn write(name: &str, body: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("wave-transfer-{name}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("list.wavelist");
+        fs::write(&path, body).unwrap();
+        path
+    }
+
     #[test]
-    fn round_trip_keeps_metadata_and_assets() {
-        let list: WaveList = serde_json::from_slice(&serde_json::to_vec(&fixture()).unwrap()).unwrap();
+    fn round_trip_keeps_the_song_list() {
+        let list: WaveList = serde_json::from_slice(&serde_json::to_vec(&list()).unwrap()).unwrap();
         list.validate().unwrap();
-        assert_eq!(list.tracks[0].meta.genres, vec!["Rock"]);
-        assert_eq!(list.tracks[0].cover, Some(vec![1, 2, 3]));
-        assert_eq!(list.tracks[0].plain_lyrics.as_deref(), Some("Words"));
-        assert_eq!(list.tracks[0].synced_lyrics.as_deref(), Some("[00:01]Words"));
+        assert_eq!(list.tracks[0].title, "Song");
+        assert_eq!(list.tracks[0].artists, vec!["Artist"]);
+        assert_eq!(list.tracks[0].genres, vec!["Rock"]);
+    }
+
+    #[test]
+    fn a_song_costs_a_few_hundred_bytes_and_no_more() {
+        let bytes = serde_json::to_vec(&list()).unwrap();
+        assert!(bytes.len() < 1024, "a song took {} bytes", bytes.len());
     }
 
     #[test]
     fn rejects_unknown_versions_and_invalid_songs() {
-        let mut list = fixture();
-        list.version = 2;
+        let mut list = list();
+        list.version = 3;
         assert!(list.validate().is_err());
-        list.version = 1;
-        list.tracks[0].meta.title.clear();
+        list.version = VERSION;
+        list.tracks[0].title.clear();
         assert!(list.validate().is_err());
         list.tracks.clear();
         assert!(list.validate().is_err());
     }
 
     #[test]
-    fn a_downloaded_track_is_staged_under_its_own_directory() {
-        assert_eq!(staged_key(3), format!("3/{}.mp3", library::AUDIO_STEM));
+    fn reads_the_first_format_for_its_song_list_alone() {
+        let path = write(
+            "legacy",
+            r#"{
+                "format": "wave-playlist",
+                "version": 1,
+                "name": "Old",
+                "tracks": [
+                    {
+                        "meta": {"title": "Song", "artists": ["Artist"]},
+                        "cover": [137, 80, 78, 71],
+                        "syncedLyrics": "[00:01]Words"
+                    }
+                ]
+            }"#,
+        );
+
+        let list = read(&path).unwrap();
+        assert_eq!(list.version, VERSION);
+        assert_eq!(list.tracks.len(), 1);
+        assert_eq!(list.tracks[0].title, "Song");
     }
+
     #[test]
-    fn duplicate_matching_preserves_artist_and_album_identity() {
-        assert_eq!(key("  SONG ", "Artist", " Album"), key("song", "artist", "album"));
-        assert_ne!(key("Song", "A", "Album"), key("Song", "B", "Album"));
+    fn refuses_a_file_that_is_not_a_wave_playlist() {
+        let path = write("foreign", r#"{"format": "something-else", "version": 2}"#);
+        assert!(read(&path).is_err());
     }
+
 }

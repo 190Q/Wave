@@ -20,6 +20,7 @@ mod progress;
 mod recommend;
 mod source;
 mod spotify;
+mod youtube;
 mod spotify_import;
 mod state;
 mod tools;
@@ -185,6 +186,9 @@ pub fn run() {
             deezer_import::deezer_import,
             deezer_import::deezer_plan,
             deezer_import::deezer_status,
+            youtube::youtube_import,
+            youtube::youtube_plan,
+            youtube::youtube_status,
             lyrics_fetch::fetch_lyrics,
             cover_fetch::fetch_covers,
             genre_fetch::fetch_genres,

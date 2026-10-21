@@ -28,6 +28,8 @@ pub struct TrackMeta {
     pub isrc: String,
     pub cover_url: Option<String>,
     pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
 }
 
 /// The credentials and tool overrides read from the config `.env`. The file is

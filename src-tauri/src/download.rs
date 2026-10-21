@@ -10,7 +10,7 @@ use lofty::tag::{ItemKey, Tag, TagType};
 use serde_json::Value;
 
 use crate::import_source::fold;
-use crate::source::{client, encode, Env, TrackMeta};
+use crate::source::{client, Env, TrackMeta};
 use crate::tools::{find_yt_dlp, hide_console, tool_path, YtDlp};
 
 const AUDIO_STEM: &str = "audio";
@@ -32,9 +32,12 @@ const CLOSE_ENOUGH_MS: u64 = 1_500;
 /// What the mp3 encoder can add to the length of what it was given.
 const FILE_SLACK_MS: u64 = 1_000;
 
+/// How many hits that answer to the song but are not the artist's own upload
+/// are kept before the search is called off. Each one is a look-up of its own.
+const FALLBACKS: usize = 3;
+
 /// The fields a look-up asks for, in the order they are read back.
-const FIELDS: &str =
-    "%(duration)s\t%(title)s\t%(channel,uploader)s\t%(artist)s\t%(album)s\t%(is_live)s";
+const FIELDS: &str = "%(duration)s\t%(title)s\t%(channel,uploader)s\t%(artist)s\t%(album)s\t%(is_live)s\t%(channel_is_verified)s";
 
 /// The words that mark a hit as another recording of the song, or as something
 /// that is not the song at all. A song whose own title carries the word is not
@@ -80,6 +83,19 @@ const EDITIONS: [&str; 18] = [
     "single",
     "album",
     "reissue",
+];
+
+const EDITED: [&str; 10] = [
+    "clean",
+    "censored",
+    "bleeped",
+    "bleep",
+    "edited",
+    "swearing",
+    "profanity",
+    "family",
+    "friendly",
+    "kidz",
 ];
 
 const PARTS: [&str; 5] = ["part", "pt", "vol", "volume", "chapter"];
@@ -154,11 +170,16 @@ struct Candidate {
     id: String,
     title: String,
     channel: String,
+    duration_ms: Option<u64>,
+    url: Option<String>,
 }
 
 impl Candidate {
-    fn url(&self) -> String {
-        format!("https://www.youtube.com/watch?v={}", self.id)
+    fn target(&self) -> String {
+        match &self.url {
+            Some(url) => url.clone(),
+            None => format!("https://www.youtube.com/watch?v={}", self.id),
+        }
     }
 }
 
@@ -171,6 +192,7 @@ struct Found {
     artist: String,
     album: String,
     live: bool,
+    verified: bool,
 }
 
 /// `false` means the file was already there, so a re-run picks up where the last
@@ -206,7 +228,7 @@ pub fn download(
 fn fetch(tools: &Tools, meta: &TrackMeta, out_dir: &Path, target: &Path) -> Result<PathBuf, String> {
     let mut failures: Vec<String> = Vec::new();
 
-    for candidate in choose(tools, meta)? {
+    for candidate in candidates(tools, meta)? {
         clear(out_dir, target);
 
         match pull(tools, &candidate, target) {
@@ -227,15 +249,34 @@ fn fetch(tools: &Tools, meta: &TrackMeta, out_dir: &Path, target: &Path) -> Resu
         .unwrap_or_else(|| "the download produced nothing".to_string()))
 }
 
+fn candidates(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String> {
+    let Some(url) = &meta.source_url else {
+        return choose(tools, meta);
+    };
+
+    Ok(vec![Candidate {
+        id: url.clone(),
+        title: meta.title.clone(),
+        channel: meta.artists.join(", "),
+        duration_ms: meta.duration_ms,
+        url: Some(url.clone()),
+    }])
+}
+
 fn choose(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String> {
-    let mut passed: Vec<(u64, usize, Candidate)> = Vec::new();
+    let mut passed: Vec<(bool, bool, u64, usize, Candidate)> = Vec::new();
     let mut closest: Option<u64> = None;
     let mut wrong = 0usize;
 
     for (order, candidate) in search(tools, meta)?.into_iter().enumerate() {
-        if wrong >= LOOK_PAST {
+        if wrong >= LOOK_PAST || passed.len() >= FALLBACKS {
             break;
         }
+
+        if settled(meta, &candidate) {
+            return Ok(vec![candidate]);
+        }
+
         let Some(seen) = look_up(tools, &candidate) else {
             wrong += 1;
             continue;
@@ -245,6 +286,9 @@ fn choose(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String> {
             continue;
         }
 
+        let edited = edited_upload(meta, &candidate, &seen);
+        let own = own_upload(meta, &candidate, &seen);
+
         match gap_of(meta, &seen) {
             // Another take of the song, or another thing entirely.
             Some(gap) if gap > LENGTH_WINDOW_MS => {
@@ -252,8 +296,8 @@ fn choose(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String> {
                     closest = Some(closest.map_or(gap, |best| best.min(gap)));
                 }
             }
-            Some(gap) if gap <= CLOSE_ENOUGH_MS => return Ok(vec![candidate]),
-            gap => passed.push((gap.unwrap_or(0), order, candidate)),
+            Some(gap) if gap <= CLOSE_ENOUGH_MS && own && !edited => return Ok(vec![candidate]),
+            gap => passed.push((edited, !own, gap.unwrap_or(0), order, candidate)),
         }
     }
 
@@ -264,15 +308,15 @@ fn choose(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String> {
         });
     }
 
-    passed.sort_by_key(|(gap, order, _)| (*gap, *order));
-    Ok(passed.into_iter().map(|(_, _, candidate)| candidate).collect())
+    passed.sort_by_key(|(edited, theirs, gap, order, _)| (*edited, *theirs, *gap, *order));
+    Ok(passed
+        .into_iter()
+        .map(|(_, _, _, _, candidate)| candidate)
+        .collect())
 }
 
 fn search(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String> {
-    let mut hits = usable(music_hits(tools, meta).unwrap_or_default(), meta);
-    if hits.is_empty() {
-        hits = usable(youtube_hits(tools, meta)?, meta);
-    }
+    let mut hits = usable(youtube_hits(tools, meta)?, meta);
 
     let mut seen = HashSet::new();
     hits.retain(|hit| seen.insert(hit.id.clone()));
@@ -291,24 +335,12 @@ fn usable(hits: Vec<Candidate>, meta: &TrackMeta) -> Vec<Candidate> {
         .collect()
 }
 
-/// YouTube Music, restricted to its songs section: what comes back is the song
-/// as the catalogue lists it, not a video somebody made.
-fn music_hits(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String> {
-    let query = encode(&query_text(meta));
-    let target = format!("https://music.youtube.com/search?q={query}#songs");
-
-    Ok(parse_hits(&run_search(tools, &target)?))
-}
-
-/// A plain YouTube search, for the songs YouTube Music does not carry.
 fn youtube_hits(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String> {
     let target = format!("ytsearch{HITS}:{} (audio)", query_text(meta));
 
     Ok(parse_hits(&run_search(tools, &target)?))
 }
 
-/// What both sources are asked for. The artists come first, which is how a
-/// music catalogue expects a song to be named.
 fn query_text(meta: &TrackMeta) -> String {
     format!("{} - {}", meta.artists.join(", "), meta.title)
 }
@@ -345,12 +377,16 @@ fn run_search(tools: &Tools, target: &str) -> Result<Vec<u8>, String> {
 /// One hit per line of JSON. A line that is not a hit, or that carries no id or
 /// no name, is passed over rather than guessed at.
 fn parse_hits(stdout: &[u8]) -> Vec<Candidate> {
+    json_lines(stdout).iter().filter_map(candidate_of).collect()
+}
+
+/// yt-dlp prints one object per line, and anything that is not one is skipped.
+fn json_lines(stdout: &[u8]) -> Vec<Value> {
     String::from_utf8_lossy(stdout)
         .lines()
         .map(str::trim)
         .filter(|line| line.starts_with('{'))
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter_map(|entry| candidate_of(&entry))
         .collect()
 }
 
@@ -365,7 +401,126 @@ fn candidate_of(entry: &Value) -> Option<Candidate> {
         id: id.to_string(),
         title,
         channel: text_of(entry, &["channel", "uploader"]),
+        duration_ms: seconds_of(entry),
+        url: None,
     })
+}
+
+/// One song a link the user pasted points at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkEntry {
+    /// The upload itself, which is what gets downloaded.
+    pub url: String,
+    pub title: String,
+    pub artists: Vec<String>,
+    pub album: String,
+    pub duration_ms: Option<u64>,
+}
+
+/// Reads a link the user pasted: one video, or a playlist of them. The name is
+/// the playlist's when there is one, so an album keeps the name it was given.
+pub fn read_link(tools: &Tools, url: &str, limit: usize) -> Result<(String, Vec<LinkEntry>), String> {
+    let mut command = yt_dlp_command(&tools.yt_dlp);
+    command.args(cookie_args(tools));
+    command
+        .arg("--flat-playlist")
+        .arg("--dump-json")
+        .arg("--skip-download")
+        .arg("--no-warnings")
+        .arg("--ignore-errors")
+        .arg("--playlist-end")
+        .arg(limit.to_string())
+        .arg(url);
+    hide_console(&mut command);
+
+    let output = command
+        .output()
+        .map_err(|e| format!("could not run yt-dlp: {e}"))?;
+
+    let printed = json_lines(&output.stdout);
+    let songs: Vec<LinkEntry> = printed.iter().filter_map(link_entry).collect();
+    if songs.is_empty() {
+        let reason = failure_reason(&output.stderr, &output.stdout)
+            .map(|line| friendly(&line, tools))
+            .unwrap_or_else(|| "that link has nothing to download".to_string());
+        return Err(reason);
+    }
+
+    let name = playlist_name(&printed).unwrap_or_else(|| songs[0].title.clone());
+    Ok((name, songs))
+}
+
+/// The playlist a pasted link points at, when it points at one.
+fn playlist_name(printed: &[Value]) -> Option<String> {
+    printed
+        .iter()
+        .find_map(|entry| entry["playlist_title"].as_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+}
+
+fn link_entry(entry: &Value) -> Option<LinkEntry> {
+    let id = entry["id"].as_str().filter(|id| !id.is_empty())?;
+    let title = entry["title"].as_str().unwrap_or_default().trim().to_string();
+    if title.is_empty() {
+        return None;
+    }
+
+    let url = entry["webpage_url"]
+        .as_str()
+        .map(str::trim)
+        .filter(|url| url.starts_with("http"))
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("https://www.youtube.com/watch?v={id}"));
+
+    let (title, artists) = credit(
+        &title,
+        &text_of(entry, &["artist"]),
+        &text_of(entry, &["channel", "uploader"]),
+    );
+
+    Some(LinkEntry {
+        url,
+        title,
+        artists,
+        album: text_of(entry, &["album"]),
+        duration_ms: seconds_of(entry),
+    })
+}
+
+fn credit(title: &str, credited: &str, channel: &str) -> (String, Vec<String>) {
+    let credited = credited.trim();
+    if !credited.is_empty() {
+        return (title.to_string(), vec![credited.to_string()]);
+    }
+
+    match title.split_once(" - ") {
+        Some((artist, song)) if !artist.trim().is_empty() && !song.trim().is_empty() => {
+            (song.trim().to_string(), vec![artist.trim().to_string()])
+        }
+        _ => (title.to_string(), channel_artist(channel)),
+    }
+}
+
+fn channel_artist(channel: &str) -> Vec<String> {
+    let name = channel.trim();
+    let name = name.strip_suffix(" - Topic").unwrap_or(name).trim();
+    if name.is_empty() {
+        Vec::new()
+    } else {
+        vec![name.to_string()]
+    }
+}
+
+/// How long an entry runs, as yt-dlp reports it.
+fn seconds_of(entry: &Value) -> Option<u64> {
+    let seconds = entry["duration"].as_f64().or_else(|| {
+        entry["duration"]
+            .as_str()
+            .and_then(|value| value.trim().parse().ok())
+    })?;
+    Some((seconds * 1000.0) as u64)
 }
 
 /// The first of these fields the entry carries.
@@ -388,7 +543,7 @@ fn look_up(tools: &Tools, candidate: &Candidate) -> Option<Found> {
         .args(player_args())
         .arg("--print")
         .arg(FIELDS)
-        .arg(candidate.url());
+        .arg(candidate.target());
     hide_console(&mut command);
 
     let output = command.output().ok()?;
@@ -420,6 +575,7 @@ fn found_in(stdout: &str) -> Option<Found> {
         artist: field(3),
         album: field(4),
         live: field(5).eq_ignore_ascii_case("true"),
+        verified: field(6).eq_ignore_ascii_case("true"),
     })
 }
 
@@ -486,6 +642,78 @@ fn stray_name(text: &str) -> bool {
     words(text)
         .iter()
         .any(|word| STRAYS.contains(&word.as_str()))
+}
+
+fn edited_upload(meta: &TrackMeta, candidate: &Candidate, seen: &Found) -> bool {
+    let title = match seen.title.trim() {
+        "" => candidate.title.as_str(),
+        named => named,
+    };
+
+    edited_aside(title, &meta.title)
+        || edited_name(&seen.channel)
+        || edited_name(&seen.artist)
+        || edited_name(&candidate.channel)
+}
+
+fn edited_aside(title: &str, song: &str) -> bool {
+    let mine = edited_words(song);
+
+    edited_words(title)
+        .into_iter()
+        .any(|word| !mine.contains(&word))
+}
+
+fn edited_words(title: &str) -> HashSet<String> {
+    groups(title)
+        .into_iter()
+        .flat_map(|group| words(&group))
+        .filter(|word| EDITED.contains(&word.as_str()))
+        .collect()
+}
+
+fn edited_name(text: &str) -> bool {
+    words(text)
+        .iter()
+        .any(|word| EDITED.contains(&word.as_str()))
+}
+
+fn official_channel(meta: &TrackMeta, channel: &str) -> bool {
+    let name = channel.trim().to_lowercase();
+    if name.is_empty() {
+        return false;
+    }
+    if name.ends_with("- topic") {
+        return true;
+    }
+
+    meta.artists
+        .iter()
+        .any(|artist| !artist.trim().is_empty() && name == artist.trim().to_lowercase())
+}
+
+fn settled(meta: &TrackMeta, candidate: &Candidate) -> bool {
+    let Some(gap) = meta
+        .duration_ms
+        .zip(candidate.duration_ms)
+        .map(|(wanted, found)| found.abs_diff(wanted))
+    else {
+        return false;
+    };
+
+    gap <= CLOSE_ENOUGH_MS
+        && (artist_here(meta, &candidate.title) || artist_here(meta, &candidate.channel))
+        && official_channel(meta, &candidate.channel)
+        && !edited_aside(&candidate.title, &meta.title)
+        && !edited_name(&candidate.channel)
+}
+
+/// Whether the hit is the artist's own upload, or one YouTube itself vouches
+/// for, rather than somebody else's copy of the song.
+fn own_upload(meta: &TrackMeta, candidate: &Candidate, seen: &Found) -> bool {
+    seen.verified
+        || official_channel(meta, &seen.channel)
+        || official_channel(meta, &candidate.channel)
 }
 
 /// The words of the song's own name. The parts that name an edition or a credit
@@ -563,6 +791,14 @@ fn rank(meta: &TrackMeta, candidate: &Candidate) -> i32 {
     if artist_here(meta, &candidate.title) || artist_here(meta, &candidate.channel) {
         score += 1;
     }
+    // The artist's own upload is the album version rather than a re-upload.
+    if official_channel(meta, &candidate.channel) {
+        score += 2;
+    }
+    // A hit that says it is the edited version waits behind the rest.
+    if edited_aside(&candidate.title, &meta.title) || edited_name(&candidate.channel) {
+        score -= 4;
+    }
 
     score
 }
@@ -610,6 +846,8 @@ fn pull(tools: &Tools, candidate: &Candidate, target: &Path) -> Result<PathBuf, 
         .arg("5")
         .arg("--fragment-retries")
         .arg("5")
+        .arg("--concurrent-fragments")
+        .arg("4")
         .args(player_args())
         .arg("--print")
         .arg("after_move:filepath")
@@ -620,7 +858,7 @@ fn pull(tools: &Tools, candidate: &Candidate, target: &Path) -> Result<PathBuf, 
         command.arg("--ffmpeg-location").arg(dir);
     }
 
-    command.arg(candidate.url());
+    command.arg(candidate.target());
     hide_console(&mut command);
 
     let output = command
@@ -856,6 +1094,8 @@ mod tests {
             id: id.to_string(),
             title: title.to_string(),
             channel: String::new(),
+            duration_ms: None,
+            url: None,
         }
     }
 
@@ -1050,6 +1290,173 @@ mod tests {
         let mine = hit("one", "The Beatles - Hey Jude");
         let theirs = hit("two", "Hey Jude (Official Audio)");
         assert!(rank(&song, &mine) > rank(&song, &theirs));
+    }
+
+    #[test]
+    fn an_edited_upload_is_recognised_by_its_title() {
+        assert!(edited_aside("Hey Jude (Clean)", "Hey Jude"));
+        assert!(edited_aside("Hey Jude [Clean Version]", "Hey Jude"));
+        assert!(edited_aside("Hey Jude - Censored", "Hey Jude"));
+        assert!(edited_aside("Hey Jude (No Swearing)", "Hey Jude"));
+
+        // A song that says it of itself is not held to it.
+        assert!(!edited_aside("Hey Jude (Clean)", "Hey Jude (Clean)"));
+        // And an ordinary title says nothing of the sort.
+        assert!(!edited_aside("The Beatles - Hey Jude (Remastered)", "Hey Jude"));
+    }
+
+    #[test]
+    fn a_channel_that_only_posts_clean_audio_is_recognised() {
+        assert!(edited_name("Kidz Bop Kids"));
+        assert!(edited_name("Clean Radio Hits"));
+        assert!(!edited_name("The Beatles"));
+        assert!(!edited_name("Radiohead - Topic"));
+    }
+
+    #[test]
+    fn the_artists_own_upload_is_recognised() {
+        let song = meta("Duality", &["Slipknot"], 252);
+
+        assert!(official_channel(&song, "Slipknot - Topic"));
+        assert!(official_channel(&song, "Slipknot"));
+        assert!(!official_channel(&song, "Some Lyric Channel"));
+        assert!(!official_channel(&TrackMeta::default(), "Slipknot"));
+    }
+
+    #[test]
+    fn an_edited_upload_ranks_below_the_song_itself() {
+        let song = meta("Duality", &["Slipknot"], 252);
+
+        let edited = hit("one", "Slipknot - Duality (Clean)");
+        let song_hit = hit("two", "Slipknot - Duality");
+        assert!(rank(&song, &song_hit) > rank(&song, &edited));
+
+        // Even when the edited one names the artist and the other does not.
+        let plain = hit("three", "Duality (Official Audio)");
+        assert!(rank(&song, &plain) > rank(&song, &edited));
+    }
+
+    #[test]
+    fn the_artists_own_upload_is_told_from_somebody_elses() {
+        let song = meta("Duality", &["Slipknot"], 252);
+
+        let own = Found {
+            channel: "Slipknot - Topic".to_string(),
+            ..seen(252, "Slipknot")
+        };
+        assert!(own_upload(&song, &hit("one", "Duality"), &own));
+
+        // YouTube vouching for the channel is enough on its own.
+        let vouched = Found {
+            channel: "Some Channel".to_string(),
+            verified: true,
+            ..seen(252, "Slipknot")
+        };
+        assert!(own_upload(&song, &hit("two", "Duality"), &vouched));
+
+        let theirs = Found {
+            channel: "Lyrics Videos".to_string(),
+            ..seen(252, "Slipknot")
+        };
+        assert!(!own_upload(&song, &hit("three", "Duality"), &theirs));
+    }
+
+    #[test]
+    fn the_search_alone_can_settle_a_hit() {
+        let song = meta("Duality", &["Slipknot"], 252);
+
+        let own = Candidate {
+            id: "one".to_string(),
+            title: "Duality".to_string(),
+            channel: "Slipknot - Topic".to_string(),
+            duration_ms: Some(252_000),
+            url: None,
+        };
+        assert!(settled(&song, &own));
+
+        // Somebody else's upload is not settled, however close it runs.
+        let theirs = Candidate {
+            channel: "Lyrics Videos".to_string(),
+            ..own.clone()
+        };
+        assert!(!settled(&song, &theirs));
+
+        // Nor is one that runs to another length.
+        let off = Candidate {
+            duration_ms: Some(270_000),
+            ..own.clone()
+        };
+        assert!(!settled(&song, &off));
+
+        // Nor an edited one, and a length alone is not enough either.
+        let edited = Candidate {
+            title: "Duality (Clean)".to_string(),
+            ..own.clone()
+        };
+        assert!(!settled(&song, &edited));
+
+        let unmeasured = Candidate {
+            duration_ms: None,
+            ..own.clone()
+        };
+        assert!(!settled(&song, &unmeasured));
+    }
+
+    #[test]
+    fn a_pasted_link_is_downloaded_as_it_stands() {
+        let song = TrackMeta {
+            title: "Song".to_string(),
+            artists: vec!["Artist".to_string()],
+            source_url: Some("https://www.youtube.com/watch?v=abc".to_string()),
+            ..TrackMeta::default()
+        };
+
+        let chosen = candidates(&tools(None, None), &song).unwrap();
+        assert_eq!(chosen.len(), 1);
+        assert_eq!(chosen[0].target(), "https://www.youtube.com/watch?v=abc");
+    }
+
+    #[test]
+    fn reads_the_songs_a_pasted_link_points_at() {
+        let printed = br#"
+            {"id": "one", "title": "Artist - Song (Official Video)", "channel": "Artist", "duration": 252.5, "webpage_url": "https://www.youtube.com/watch?v=one", "playlist_title": "An album"}
+            {"id": "two", "title": "Other", "uploader": "Other", "duration": 100}
+        "#;
+
+        let entries = json_lines(printed);
+        assert_eq!(playlist_name(&entries).as_deref(), Some("An album"));
+
+        let songs: Vec<LinkEntry> = entries.iter().filter_map(link_entry).collect();
+        assert_eq!(songs.len(), 2);
+        // The artist comes off the title when the video carries none of its own.
+        assert_eq!(songs[0].title, "Song (Official Video)");
+        assert_eq!(songs[0].artists, vec!["Artist"]);
+        assert_eq!(songs[0].duration_ms, Some(252_500));
+        // A line with no link of its own is still the video it names.
+        assert_eq!(songs[1].url, "https://www.youtube.com/watch?v=two");
+        assert_eq!(songs[1].artists, vec!["Other"]);
+    }
+
+    #[test]
+    fn takes_the_catalogues_own_credit_when_a_video_carries_one() {
+        let entry = serde_json::json!({
+            "id": "one",
+            "title": "Freak On a Leash",
+            "channel": "KoRn - Topic",
+            "artist": "Korn",
+            "album": "Follow The Leader",
+            "duration": 256
+        });
+
+        let song = link_entry(&entry).unwrap();
+        assert_eq!(song.title, "Freak On a Leash");
+        assert_eq!(song.artists, vec!["Korn"]);
+        assert_eq!(song.album, "Follow The Leader");
+
+        // A topic channel names the artist behind it.
+        assert_eq!(channel_artist("KoRn - Topic"), vec!["KoRn"]);
+        assert_eq!(channel_artist(" KoRn "), vec!["KoRn"]);
+        assert!(channel_artist("   ").is_empty());
     }
 
     #[test]

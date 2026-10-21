@@ -559,6 +559,7 @@ fn normalise_item(item: &Value) -> Option<TrackMeta> {
             .and_then(|images| images.first())
             .and_then(|image| image["url"].as_str())
             .map(str::to_string),
+        source_url: None,
     })
 }
 

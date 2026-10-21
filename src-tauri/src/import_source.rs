@@ -64,57 +64,53 @@ fn run_inner(
     let link = resolve(report)?;
     let tracks = link.tracks;
 
-    // The ones the library already has, unless the user asked for them again.
-    let existing = library_index(app);
-    let already = tracks
-        .iter()
-        .filter(|meta| held(&existing, meta).is_some())
-        .count();
-    let todo = if download_duplicates {
-        tracks.len()
-    } else {
-        tracks.len() - already
-    };
-
     let staging = staging_dir(app, source, &link.id)?;
-    report.phase("downloading", &download_message(todo, already));
-    report.count(todo);
 
+    let existing = library_index(app);
     let mut ids: Vec<Option<String>> = vec![None; tracks.len()];
-    let mut songs = 0usize;
-    let mut images = 0usize;
-    let mut lyrics = 0usize;
-    let mut similar = 0usize;
-    let mut duplicates = if download_duplicates { 0 } else { already };
-    let mut downloading = 0usize;
+    let mut jobs: Vec<download::Job> = Vec::new();
+    let mut reused: Vec<String> = Vec::new();
 
     for (index, meta) in tracks.iter().enumerate() {
         let label = track_label(meta);
-
-        // A song the library already holds keeps its place without a download.
         let known = if download_duplicates {
             None
         } else {
             held(&existing, meta)
         };
-        if let Some(id) = known {
-            ids[index] = Some(id.clone());
-            report.reuse(&label);
-            continue;
-        }
 
-        downloading += 1;
-        report.at(downloading, &label);
-
-        let file = match download::download(&tools, meta, &staging.join(index.to_string()), None) {
-            Ok(file) => file,
-            Err(error) => {
-                report.fail(format!("{label}: {error}"));
-                continue;
+        match known {
+            Some(id) => {
+                ids[index] = Some(id.clone());
+                reused.push(label);
             }
-        };
+            None => jobs.push(download::Job {
+                key: index,
+                meta,
+                dir: staging.join(index.to_string()),
+                cover: None,
+            }),
+        }
+    }
 
-        match import::land(app, &file) {
+    report.phase("downloading", &download_message(jobs.len(), reused.len()));
+    report.count(jobs.len());
+    for label in &reused {
+        report.reuse(label);
+    }
+
+    let mut songs = 0usize;
+    let mut images = 0usize;
+    let mut lyrics = 0usize;
+    let mut similar = 0usize;
+    let mut duplicates = reused.len();
+    let mut handled = 0usize;
+
+    download::fetch_all(&tools, &jobs, |fetched| {
+        let label = track_label(&tracks[fetched.key]);
+        handled += 1;
+
+        match fetched.file.and_then(|file| import::land(app, &file)) {
             Ok(song) => {
                 let done = import::complete(app, &song.id);
 
@@ -123,11 +119,13 @@ fn run_inner(
                 images += usize::from(song.cover || done.cover);
                 lyrics += usize::from(song.lyrics || done.lyrics);
                 similar += usize::from(song.similar);
-                ids[index] = Some(song.id);
+                ids[fetched.key] = Some(song.id);
             }
             Err(error) => report.fail(format!("{label}: {error}")),
         }
-    }
+
+        report.at(handled, &label);
+    });
 
     let chosen: Vec<String> = ids.into_iter().flatten().collect();
     let playlist = if link.kind == Kind::Collection && !chosen.is_empty() {

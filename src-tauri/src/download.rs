@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 
 use lofty::config::WriteOptions;
 use lofty::picture::{MimeType, Picture, PictureType};
@@ -227,6 +229,68 @@ pub fn download(
         .map_err(|e| format!("downloaded, but could not tag it: {e}"))?;
 
     Ok(path)
+}
+
+const CONCURRENCY: usize = 4;
+
+/// One song waiting to be fetched.
+pub struct Job<'a> {
+    /// Handed back with the result, so the caller knows which song it was.
+    pub key: usize,
+    pub meta: &'a TrackMeta,
+    /// The folder the audio is put in, which is the song's own staging folder.
+    pub dir: PathBuf,
+    pub cover: Option<PathBuf>,
+}
+
+/// What one job produced, and the key it was given.
+pub struct Fetched {
+    pub key: usize,
+    pub file: Result<PathBuf, String>,
+}
+
+fn in_parallel<T: Send>(total: usize, work: impl Fn(usize) -> T + Sync, mut keep: impl FnMut(T)) {
+    let next = AtomicUsize::new(0);
+    let workers = CONCURRENCY.min(total).max(1);
+    let (sender, results) = mpsc::channel();
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let sender = sender.clone();
+            let next = &next;
+            let work = &work;
+            scope.spawn(move || {
+                loop {
+                    let position = next.fetch_add(1, Ordering::Relaxed);
+                    if position >= total {
+                        break;
+                    }
+
+                    if sender.send(work(position)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        // This thread's own handle has to go, or the loop below never ends.
+        drop(sender);
+
+        while let Ok(outcome) = results.recv() {
+            keep(outcome);
+        }
+    });
+}
+
+pub fn fetch_all(tools: &Tools, jobs: &[Job<'_>], keep: impl FnMut(Fetched)) {
+    in_parallel(
+        jobs.len(),
+        |position| {
+            let job = &jobs[position];
+            let file = download(tools, job.meta, &job.dir, job.cover.as_deref());
+            Fetched { key: job.key, file }
+        },
+        keep,
+    );
 }
 
 fn fetch(tools: &Tools, meta: &TrackMeta, out_dir: &Path, target: &Path) -> Result<PathBuf, String> {
@@ -1082,6 +1146,8 @@ fn tag(path: &Path, meta: &TrackMeta, cover: Option<Vec<u8>>) -> Result<(), Stri
 mod tests {
     use super::*;
 
+    use std::sync::Mutex;
+
     use lofty::prelude::TaggedFileExt;
 
     fn meta(title: &str, artists: &[&str], length: u64) -> TrackMeta {
@@ -1109,6 +1175,27 @@ mod tests {
             artist: artist.to_string(),
             ..Found::default()
         }
+    }
+
+    #[test]
+    fn every_job_is_handed_back_once() {
+        let done = Mutex::new(Vec::new());
+        in_parallel(
+            20,
+            |position| position * 2,
+            |value| done.lock().unwrap().push(value),
+        );
+
+        let mut done = done.into_inner().unwrap();
+        done.sort();
+        assert_eq!(done, (0..20).map(|position| position * 2).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn nothing_to_fetch_does_not_hang() {
+        let mut ran = 0;
+        in_parallel(0, |position| position, |_| ran += 1);
+        assert_eq!(ran, 0);
     }
 
     #[test]

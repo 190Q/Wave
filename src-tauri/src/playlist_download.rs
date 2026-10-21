@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager};
 
@@ -10,12 +10,19 @@ use crate::import::{self, ImportOutcome};
 use crate::import_source::{self, PROGRESS_EVENT};
 use crate::playlists;
 use crate::progress::Reporter;
-use crate::source::read_env;
+use crate::source::{read_env, TrackMeta};
 use crate::state::{PendingTrack, PersistedState, Store};
 
 /// Where the downloads wait while they are being fetched, so nothing lands in
 /// the library until it is known what it is.
 const STAGING: &str = "playlist";
+
+struct Wanted {
+    place: usize,
+    id: String,
+    meta: TrackMeta,
+    cover: Option<PathBuf>,
+}
 
 pub fn run(
     app: &AppHandle,
@@ -61,40 +68,60 @@ fn run_inner(
     let known = import_source::catalog_index(&catalog)?;
     let staging = staging_dir(app, playlist_id)?;
 
-    report.phase("downloading", &download_message(chosen.len()));
-    report.count(chosen.len());
-
     // The waiting id -> the library track it became.
     let mut landed: HashMap<String, String> = HashMap::new();
+
+    let mut wanted: Vec<Wanted> = Vec::new();
+    let mut reused: Vec<String> = Vec::new();
+
+    for (place, track) in chosen.iter().enumerate() {
+        let meta = track.meta();
+        let label = import_source::track_label(&meta);
+
+        match import_source::held(&known, &meta) {
+            Some(id) => {
+                landed.insert(track.id.clone(), id.clone());
+                reused.push(label);
+            }
+            None => wanted.push(Wanted {
+                place,
+                id: track.id.clone(),
+                cover: track.cover_path.as_deref().map(PathBuf::from),
+                meta,
+            }),
+        }
+    }
+
+    let jobs: Vec<download::Job> = wanted
+        .iter()
+        .enumerate()
+        .map(|(position, want)| download::Job {
+            key: position,
+            meta: &want.meta,
+            dir: staging.join(want.place.to_string()),
+            cover: want.cover.clone(),
+        })
+        .collect();
+
+    report.phase("downloading", &download_message(jobs.len()));
+    report.count(jobs.len());
+    for label in &reused {
+        report.reuse(label);
+    }
+
     let mut songs = 0usize;
     let mut images = 0usize;
     let mut lyrics = 0usize;
     let mut similar = 0usize;
-    let mut duplicates = 0usize;
+    let mut duplicates = reused.len();
+    let mut handled = 0usize;
 
-    for (index, track) in chosen.iter().enumerate() {
-        let meta = track.meta();
-        let label = import_source::track_label(&meta);
+    download::fetch_all(&tools, &jobs, |fetched| {
+        let want = &wanted[fetched.key];
+        let label = import_source::track_label(&want.meta);
+        handled += 1;
 
-        // A song the library already holds is used as it stands.
-        if let Some(id) = import_source::held(&known, &meta) {
-            landed.insert(track.id.clone(), id.clone());
-            duplicates += 1;
-            report.reuse(&label);
-            continue;
-        }
-
-        report.at(index + 1, &label);
-        let cover = track.cover_path.as_deref().map(Path::new);
-        let file = match download::download(&tools, &meta, &staging.join(index.to_string()), cover) {
-            Ok(file) => file,
-            Err(error) => {
-                report.fail(format!("{label}: {error}"));
-                continue;
-            }
-        };
-
-        match import::land(app, &file) {
+        match fetched.file.and_then(|file| import::land(app, &file)) {
             Ok(song) => {
                 let done = import::complete(app, &song.id);
 
@@ -103,11 +130,13 @@ fn run_inner(
                 images += usize::from(song.cover || done.cover);
                 lyrics += usize::from(song.lyrics || done.lyrics);
                 similar += usize::from(song.similar);
-                landed.insert(track.id.clone(), song.id);
+                landed.insert(want.id.clone(), song.id);
             }
             Err(error) => report.fail(format!("{label}: {error}")),
         }
-    }
+
+        report.at(handled, &label);
+    });
 
     let outcome = ImportOutcome {
         songs,

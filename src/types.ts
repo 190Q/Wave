@@ -347,7 +347,7 @@ export interface PersistedState {
 /** One entry in the import history. */
 export interface ImportRecord {
   /** Where it came from. */
-  source: "spotify" | "deezer" | "folder" | "wavelist";
+  source: "spotify" | "deezer" | "youtube" | "folder" | "wavelist";
   /** The playlist or folder it brought in. */
   name: string;
   /** A short summary, such as `12 songs`. */
@@ -384,6 +384,18 @@ export interface DeezerStatus {
   message: string;
 }
 
+/** What the backend reports about the tools a pasted link needs. */
+export interface YoutubeStatus {
+  /** Where the config `.env` has to live, for the tool overrides. */
+  envPath: string;
+  ytDlp: boolean;
+  /** How yt-dlp was found, empty when it was not. */
+  ytDlpSource: string;
+  ffmpeg: boolean;
+  /** What to tell the user, in one line. */
+  message: string;
+}
+
 /** How far along a link import is. */
 export interface ImportProgress {
   phase:
@@ -408,6 +420,8 @@ export interface ImportProgress {
   failures: string[];
   /** Tracks left alone because the library already had them. */
   reused: number;
+  /** When the pass being counted began, so the rest can be estimated. */
+  startedAt: number;
 }
 
 /** How a lyrics fetch went. */

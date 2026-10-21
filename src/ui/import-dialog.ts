@@ -1,5 +1,5 @@
 import type { IconName } from "../assets/icons/index";
-import { escapeHtml } from "../lib/format";
+import { escapeHtml, formatTotalDuration } from "../lib/format";
 import { scoreItems, type FieldsOf } from "../lib/search";
 import {
   collectionById,
@@ -15,6 +15,7 @@ import {
   planLink,
   refreshDeezerStatus,
   refreshSpotifyStatus,
+  refreshYoutubeStatus,
   serviceOf,
   setNotice,
   subscribe,
@@ -99,10 +100,11 @@ export function mountImportDialog(): void {
 
     const status = body.querySelector<HTMLElement>("#import-link-state");
     if (status) {
+      const service = serviceOf(linkValue());
       status.innerHTML =
-        serviceOf(linkValue()) === "deezer"
-          ? deezerStateHtml(state)
-          : spotifyStateHtml(state, setupOpen);
+        service === "spotify"
+          ? spotifyStateHtml(state, setupOpen)
+          : toolsStateHtml(state, service);
     }
 
     const history = body.querySelector<HTMLElement>("#import-history");
@@ -349,13 +351,17 @@ export function mountImportDialog(): void {
       case "config":
         void openSpotifyConfig();
         return;
-      case "recheck":
-        if (serviceOf(linkValue()) === "deezer") {
+      case "recheck": {
+        const service = serviceOf(linkValue());
+        if (service === "spotify") {
+          void refreshSpotifyStatus();
+        } else if (service === "deezer") {
           void refreshDeezerStatus();
         } else {
-          void refreshSpotifyStatus();
+          void refreshYoutubeStatus();
         }
         return;
+      }
       case "lyrics":
       case "covers":
       case "genres": {
@@ -523,14 +529,14 @@ function localSection(): string {
 function linkSection(): string {
   return section(
     "Import from a link",
-    `<p class="import-hint">Paste a Spotify or Deezer link: a track, a playlist, or a Deezer album. Spotify needs the credentials below; Deezer needs none.</p>
+    `<p class="import-hint">Paste a Spotify, Deezer or YouTube link: a track, a playlist, or a Deezer album. A YouTube link is downloaded exactly as it is, so nothing is guessed at. Spotify needs the credentials below; Deezer and YouTube need only the download tools.</p>
     <div class="import-field">
       <input
         class="import-input"
         id="import-link-url"
         type="text"
-        placeholder="https://open.spotify.com/... or https://www.deezer.com/..."
-        aria-label="Spotify or Deezer link"
+        placeholder="https://open.spotify.com/... or https://www.youtube.com/..."
+        aria-label="Spotify, Deezer or YouTube link"
         spellcheck="false"
         autocomplete="off"
       />
@@ -602,23 +608,24 @@ function setupHtml(status: SpotifyStatus | null): string {
     </div>`;
 }
 
-/** The status line for a Deezer link, which needs the tools and nothing else. */
-function deezerStateHtml(state: AppState): string {
+/** The status line for a link that needs the tools and nothing else. */
+function toolsStateHtml(state: AppState, service: "deezer" | "youtube"): string {
   const progress = state.importing;
-  const body = jobRunning(progress) ? "" : deezerStatusHtml(state);
+  const body = jobRunning(progress) ? "" : toolsStatusHtml(state, service);
 
   return `${body}${progress ? progressHtml(progress) : ""}`;
 }
 
-function deezerStatusHtml(state: AppState): string {
-  const status = state.deezer;
+function toolsStatusHtml(state: AppState, service: "deezer" | "youtube"): string {
+  const status = service === "youtube" ? state.youtube : state.deezer;
   const ready = status?.ytDlp === true && status.ffmpeg;
+  const name = service === "youtube" ? "YouTube" : "Deezer";
 
   const message = status
     ? status.message
-    : state.deezerChecking
-      ? "Checking the Deezer setup..."
-      : "Deezer has not been checked yet.";
+    : (service === "youtube" ? state.youtubeChecking : state.deezerChecking)
+      ? `Checking the ${name} setup...`
+      : `${name} has not been checked yet.`;
   const dot = status === null ? "" : ready ? " is-ok" : " is-warn";
 
   return `
@@ -651,15 +658,40 @@ function progressHtml(progress: ImportProgress): string {
   const line = [counted, progress.label].filter(Boolean).join(" - ");
   const reused =
     progress.reused > 0 ? `${progress.reused} already in your library.` : "";
+  const left = jobRunning(progress) ? remainingLabel(progress) : "";
   const failed = progress.phase === "failed";
 
   return `
     <div class="import-progress${failed ? " is-failed" : ""}">
       ${line ? `<p class="import-progress-line">${escapeHtml(line)}</p>` : ""}
       <p class="import-hint">${escapeHtml(progress.message)}</p>
+      ${left ? `<p class="import-hint">${escapeHtml(left)}</p>` : ""}
       ${reused ? `<p class="import-hint">${escapeHtml(reused)}</p>` : ""}
       ${failuresHtml(progress.failures)}
     </div>`;
+}
+
+/** How much longer the job has, from the pace so far. Empty until it can tell. */
+function remainingLabel(progress: ImportProgress): string {
+  const { done, total, startedAt } = progress;
+  if (done <= 0 || done >= total || startedAt <= 0) {
+    return "";
+  }
+
+  const elapsed = Date.now() - startedAt;
+  // A few songs in, the pace means something; before that it is guesswork.
+  if (elapsed < 5_000) {
+    return "";
+  }
+
+  const left = (elapsed / done) * (total - done);
+  if (left < 45_000) {
+    return "Less than a minute left.";
+  }
+
+  const perMinute = done / (elapsed / 60_000);
+  const rate = perMinute >= 1 ? `, about ${Math.round(perMinute)} a minute` : "";
+  return `About ${formatTotalDuration(left)} left${rate}.`;
 }
 
 /** The question asked when a link overlaps with what is already in the library. */
@@ -713,6 +745,8 @@ function sourceLabel(source: string): string {
       return "Spotify";
     case "deezer":
       return "Deezer";
+    case "youtube":
+      return "YouTube";
     case "wavelist":
       return "Wave";
     default:

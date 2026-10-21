@@ -25,6 +25,7 @@ import type {
   SpotifyStatus,
   Track,
   WindowGeometry,
+  YoutubeStatus,
 } from "../types";
 import { flushAnalytics, mountAnalytics, notePlaybackError, noteTrackEnded, recordEvent, rememberTracks } from "./analytics";
 import { AudioEngine } from "./audio";
@@ -59,6 +60,9 @@ const COVERS_PROGRESS_EVENT = "covers-fetch";
 
 /** Follows one genre pass, song by song. */
 const GENRES_PROGRESS_EVENT = "genres-fetch";
+
+/** Sent as each song is filed into the library, so a download shows up live. */
+const LANDED_EVENT = "library-landed";
 
 /** Follows one loudness pass, song by song. */
 const LOUDNESS_EVENT = "loudness-scan";
@@ -113,6 +117,9 @@ export interface AppState {
   /** What it shows about Deezer, which needs the tools and nothing else. */
   deezer: DeezerStatus | null;
   deezerChecking: boolean;
+  /** What it shows about a pasted link, which needs the same tools. */
+  youtube: YoutubeStatus | null;
+  youtubeChecking: boolean;
   /** The link import in flight, `null` when nothing is running. */
   importing: ImportProgress | null;
   transferProgress: ImportProgress | null;
@@ -178,6 +185,8 @@ const state: AppState = {
   spotifyChecking: false,
   deezer: null,
   deezerChecking: false,
+  youtube: null,
+  youtubeChecking: false,
   importing: null,
   transferProgress: null,
   generateProgress: null,
@@ -607,6 +616,7 @@ export async function init(): Promise<void> {
     state.ready = true;
   }
   void refreshDeezerStatus();
+  void refreshYoutubeStatus();
   void refreshRecommendStatus();
   emit();
 }
@@ -744,6 +754,7 @@ export async function importWaveList(): Promise<void> {
     state.transferProgress = {
       phase: "resolving", done: 0, total: 0, label: "",
       message: "Reading the Wave playlist...", failures: [], reused: 0,
+      startedAt: Date.now(),
     };
     emit();
     const outcome = await ipc.importWaveList(path);
@@ -757,6 +768,7 @@ export async function importWaveList(): Promise<void> {
       total: state.transferProgress?.total ?? 0,
       label: "", message, failures: outcome.errors,
       reused: state.transferProgress?.reused ?? 0,
+      startedAt: state.transferProgress?.startedAt ?? Date.now(),
     };
   } catch (error) {
     state.transferProgress = failedProgress(describe(error));
@@ -778,7 +790,7 @@ export async function exportCollection(collectionId: string): Promise<void> {
   try {
     const count = await ipc.exportWaveList(collection.name, collection.trackIds);
     if (count !== null) {
-      setNotice(`Exported ${plural(count, "song")} with available covers, lyrics and metadata.`);
+      setNotice(`Exported ${plural(count, "song")} to a Wave playlist.`);
     }
   } catch (error) {
     setNotice(describe(error));
@@ -832,11 +844,38 @@ export async function refreshDeezerStatus(): Promise<void> {
   emit();
 }
 
-export type LinkService = "spotify" | "deezer";
+/** Re-reads the config and reports what a pasted link needs. */
+export async function refreshYoutubeStatus(): Promise<void> {
+  state.youtubeChecking = true;
+  emit();
+
+  try {
+    state.youtube = await ipc.youtubeStatus();
+  } catch (error) {
+    state.youtube = {
+      envPath: "",
+      ytDlp: false,
+      ytDlpSource: "",
+      ffmpeg: false,
+      message: describe(error),
+    };
+  }
+
+  state.youtubeChecking = false;
+  emit();
+}
+
+export type LinkService = "spotify" | "deezer" | "youtube";
 
 export function serviceOf(link: string): LinkService {
   const value = link.trim().toLowerCase();
-  return value.includes("deezer.") || value.startsWith("deezer:") ? "deezer" : "spotify";
+  if (value.includes("deezer.") || value.startsWith("deezer:")) {
+    return "deezer";
+  }
+  if (value.includes("youtube.") || value.includes("youtu.be")) {
+    return "youtube";
+  }
+  return "spotify";
 }
 
 /** A background job is only in the way while it is actually running. */
@@ -883,6 +922,7 @@ export async function fetchCovers(collectionId: string): Promise<void> {
     message: "Starting...",
     failures: [],
     reused: 0,
+    startedAt: Date.now(),
   };
   emit();
 
@@ -901,6 +941,7 @@ export async function fetchCovers(collectionId: string): Promise<void> {
       message,
       failures: outcome.errors,
       reused: 0,
+      startedAt: Date.now(),
     };
   } catch (error) {
     const message = describe(error);
@@ -953,6 +994,7 @@ export async function fetchGenres(collectionId: string): Promise<void> {
     message: "Starting...",
     failures: [],
     reused: 0,
+    startedAt: Date.now(),
   };
   emit();
 
@@ -973,6 +1015,7 @@ export async function fetchGenres(collectionId: string): Promise<void> {
       message,
       failures: outcome.errors,
       reused: 0,
+      startedAt: Date.now(),
     };
   } catch (error) {
     const message = describe(error);
@@ -1041,6 +1084,7 @@ export async function fetchLyrics(collectionId: string): Promise<void> {
     message: "Starting...",
     failures: [],
     reused: 0,
+    startedAt: Date.now(),
   };
   emit();
 
@@ -1059,6 +1103,7 @@ export async function fetchLyrics(collectionId: string): Promise<void> {
       message,
       failures: outcome.errors,
       reused: 0,
+      startedAt: Date.now(),
     };
   } catch (error) {
     const message = describe(error);
@@ -1082,7 +1127,16 @@ function finishedProgress(
   message: string,
   failures: string[] = [],
 ): ImportProgress {
-  return { phase, done: 0, total: 0, label: "", message, failures, reused: 0 };
+  return {
+    phase,
+    done: 0,
+    total: 0,
+    label: "",
+    message,
+    failures,
+    reused: 0,
+    startedAt: Date.now(),
+  };
 }
 
 /** A failure that stays on screen, rather than a notice that times out. */
@@ -1105,11 +1159,18 @@ export async function planLink(url: string): Promise<ImportPlan | null> {
     message: "Checking your library...",
     failures: [],
     reused: 0,
+    startedAt: Date.now(),
   };
   emit();
 
   try {
-    const plan = serviceOf(link) === "deezer" ? await ipc.deezerPlan(link) : await ipc.spotifyPlan(link);
+    const service = serviceOf(link);
+    const plan =
+      service === "spotify"
+        ? await ipc.spotifyPlan(link)
+        : service === "deezer"
+          ? await ipc.deezerPlan(link)
+          : await ipc.youtubePlan(link);
     state.importing = null;
     emit();
     return plan;
@@ -1122,7 +1183,7 @@ export async function planLink(url: string): Promise<ImportPlan | null> {
   }
 }
 
-/** Downloads a playlist, album or track from a Spotify or Deezer link. */
+/** Downloads a playlist, album or track from a Spotify, Deezer or YouTube link. */
 export async function importLink(url: string, downloadDuplicates: boolean): Promise<void> {
   const link = url.trim();
   if (!link || jobRunning(state.importing)) {
@@ -1138,14 +1199,18 @@ export async function importLink(url: string, downloadDuplicates: boolean): Prom
     message: "Starting...",
     failures: [],
     reused: 0,
+    startedAt: Date.now(),
   };
   emit();
 
   try {
+    const service = serviceOf(link);
     const outcome =
-      serviceOf(link) === "deezer"
-        ? await ipc.importDeezer(link, downloadDuplicates)
-        : await ipc.importSpotify(link, downloadDuplicates);
+      service === "spotify"
+        ? await ipc.importSpotify(link, downloadDuplicates)
+        : service === "deezer"
+          ? await ipc.importDeezer(link, downloadDuplicates)
+          : await ipc.importYoutube(link, downloadDuplicates);
     applyPersisted(outcome.state);
     await rescan();
     const message = importSummary(outcome);
@@ -1403,6 +1468,7 @@ export async function generatePlaylist(mode: PlaylistMode, genre: string | null)
     message: "Starting...",
     failures: [],
     reused: 0,
+    startedAt: Date.now(),
   };
   emit();
 
@@ -1454,6 +1520,7 @@ export async function downloadPending(playlistId: string, entryIds: string[]): P
     message: "Starting...",
     failures: [],
     reused: 0,
+    startedAt: Date.now(),
   };
   downloading = true;
   emit();
@@ -1584,6 +1651,12 @@ function watchSources(): void {
     // Same as above.
   });
 
+  void listen<Track[]>(LANDED_EVENT, (event) => {
+    mergeLanded(event.payload ?? []);
+  }).catch(() => {
+    // Same as above.
+  });
+
   void listen(CONFIG_EVENT, () => {
     // One save can arrive as several events, so wait for the dust to settle.
     if (configTimer !== null) {
@@ -1593,10 +1666,31 @@ function watchSources(): void {
       configTimer = null;
       void refreshSpotifyStatus();
       void refreshDeezerStatus();
+      void refreshYoutubeStatus();
     }, CONFIG_SETTLE_MS);
   }).catch(() => {
     // Same as above: the browser has no config watcher.
   });
+}
+
+/** Adds the songs a running download has just filed into the library. */
+function mergeLanded(landed: Track[]): void {
+  if (landed.length === 0) {
+    return;
+  }
+
+  const arrived = new Set(landed.map((track) => track.id));
+  for (const track of landed) {
+    state.tracksById.set(track.id, track);
+  }
+
+  // Kept in the order a scan leaves the library in.
+  state.tracks = [...state.tracks.filter((track) => !arrived.has(track.id)), ...landed].sort(
+    (a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()),
+  );
+
+  recomputeCollections();
+  emit();
 }
 
 /** Follows a loudness pass, so each reading lands as soon as it is measured. */

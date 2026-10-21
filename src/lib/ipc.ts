@@ -27,6 +27,7 @@ import type {
   SwellSummary,
   TopSong,
   TrackSnapshot,
+  YoutubeStatus,
 } from "../types";
 
 
@@ -192,6 +193,23 @@ export function deezerPlan(url: string): Promise<ImportPlan> {
 /** Downloads a Deezer playlist, album or track into the library. */
 export function importDeezer(url: string, downloadDuplicates: boolean): Promise<ImportOutcome> {
   return invoke("deezer_import", { url, downloadDuplicates });
+}
+
+/**
+ * Reads a YouTube link and reports which of its videos the library already has.
+ */
+export function youtubePlan(url: string): Promise<ImportPlan> {
+  return invoke("youtube_plan", { url });
+}
+
+/** Downloads the exact videos a pasted YouTube link points at. */
+export function importYoutube(url: string, downloadDuplicates: boolean): Promise<ImportOutcome> {
+  return invoke("youtube_import", { url, downloadDuplicates });
+}
+
+/** Reads the config and reports what a pasted link needs: the download tools. */
+export function youtubeStatus(): Promise<YoutubeStatus> {
+  return invoke("youtube_status");
 }
 
 export async function pickWaveList(): Promise<string | null> {

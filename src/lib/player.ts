@@ -155,6 +155,34 @@ export class Player {
     this.emitProgress();
   }
 
+  adoptSource(trackIds: string[]): void {
+    const held = new Set(this.sourceOrder);
+    const arrived = trackIds.filter((id) => !held.has(id));
+    if (arrived.length === 0) {
+      return;
+    }
+
+    // Anything queued by hand that the collection does not hold stays on the end.
+    const extra = this.sourceOrder.filter((id) => !trackIds.includes(id));
+    this.sourceOrder = [...trackIds, ...extra];
+
+    const current = this.currentId;
+    if (this.shuffle) {
+      // Songs already queued keep the places they were shuffled into.
+      const fresh = [...arrived];
+      shuffleInPlace(fresh);
+      this.order = [...this.order, ...fresh];
+    } else {
+      this.order = [...this.sourceOrder];
+    }
+
+    const found = current ? this.order.indexOf(current) : -1;
+    this.cursor = found >= 0 ? found : 0;
+
+    this.emitChange();
+    this.emitProgress();
+  }
+
   restore(playback: Playback): void {
     const order = playback.order.length > 0 ? playback.order : playback.sourceOrder;
     if (order.length === 0) {

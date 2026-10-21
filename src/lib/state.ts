@@ -647,6 +647,7 @@ export async function rescan(): Promise<void> {
     repairQueue();
     rememberTracks(summary.tracks);
     applyPersisted(await ipc.loadState());
+    adoptSource();
   } catch (error) {
     state.scanErrors = [describe(error)];
   }
@@ -1277,15 +1278,17 @@ export function openCollection(id: string, startTrackId?: string): void {
     return;
   }
 
-  const ids =
-    collection.kind === "album"
-      ? sortAlbumTracks(collection.trackIds, state.tracksById)
-      : collection.trackIds;
-
-  player.setQueue(collection.id, collection.name, ids, startTrackId);
+  player.setQueue(collection.id, collection.name, queueOrder(collection), startTrackId);
   state.recents = [id, ...state.recents.filter((entry) => entry !== id)].slice(0, 3);
   schedulePersist();
   emit();
+}
+
+/** The order a collection's songs are queued in. */
+function queueOrder(collection: Collection): string[] {
+  return collection.kind === "album"
+    ? sortAlbumTracks(collection.trackIds, state.tracksById)
+    : collection.trackIds;
 }
 
 /** Used by search results and card clicks: load the collection and start there. */
@@ -1690,6 +1693,7 @@ function mergeLanded(landed: Track[]): void {
   );
 
   recomputeCollections();
+  adoptSource();
   emit();
 }
 
@@ -1879,6 +1883,15 @@ function repairQueue(): void {
 
   if (findCollection(state.collections, "all")?.trackIds.length) {
     openCollection("all");
+  }
+}
+
+/** Adds songs the collection a queue came from has gained, without interrupting it. */
+function adoptSource(): void {
+  const { sourceId } = player.snapshot();
+  const source = sourceId ? findCollection(state.collections, sourceId) : undefined;
+  if (source) {
+    player.adoptSource(queueOrder(source));
   }
 }
 

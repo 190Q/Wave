@@ -859,7 +859,9 @@ fn fetch_covers(root: &Path, pending: &mut [PendingTrack], report: &mut Reporter
         let label = format!("{} - {}", track.artists.join(", "), track.title);
         report.at(position + 1, &label);
 
-        let Some(bytes) = cover_fetch::look_up(&track.artists.join(", "), &track.title) else {
+        let Some(bytes) =
+            cover_fetch::look_up(&track.artists.join(", "), &track.title, &track.album)
+        else {
             continue;
         };
         let extension = if cover_fetch::is_png(&bytes) { "png" } else { "jpg" };

@@ -500,8 +500,21 @@ pub fn signed_in<R: Runtime>(app: &AppHandle<R>) -> bool {
     read_tokens(app).is_some_and(|tokens| !tokens.refresh_token.is_empty())
 }
 
-pub fn cover_url(token: &str, artist: &str, title: &str) -> Result<Option<String>, String> {
-    let query = encode(&format!("artist:\"{artist}\" track:\"{title}\""));
+pub fn cover_url(
+    token: &str,
+    artist: &str,
+    title: &str,
+    album: &str,
+) -> Result<Option<String>, String> {
+    let mut terms = format!("artist:\"{artist}\"");
+    if !title.trim().is_empty() {
+        terms.push_str(&format!(" track:\"{title}\""));
+    }
+    if !album.trim().is_empty() {
+        terms.push_str(&format!(" album:\"{}\"", album.trim()));
+    }
+
+    let query = encode(&terms);
     let found = get(token, &format!("{API}/search?q={query}&type=track&limit=1"))?;
 
     Ok(found["tracks"]["items"]

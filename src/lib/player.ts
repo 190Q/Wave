@@ -32,7 +32,7 @@ type ProgressListener = (positionMs: number, durationMs: number) => void;
 
 export const MIN_VOLUME = 0;
 export const MAX_VOLUME = 100;
-export const MAX_GAIN = 0.9;
+export const MAX_GAIN = 0.7;
 
 /** How close to the end counts as the end, for restarting a finished track. */
 const END_SLACK_MS = 200;

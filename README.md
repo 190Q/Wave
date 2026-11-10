@@ -212,7 +212,7 @@ Downloading needs three programs, and every release ships all three:
   player challenges in. Since yt-dlp 2025.11.12 this is required for YouTube,
   and Deno is the only runtime yt-dlp enables by default. Without it yt-dlp
   warns and quietly drops formats, which would affect every import, because
-  Spotify and Deezer tracks are matched by searching YouTube too.
+  Spotify and Deezer tracks are matched by searching YouTube Music and YouTube.
 
 `npm run tools` fetches them for the current platform into `src-tauri/tools`,
 which the bundle takes as resources, and the release build runs that for you.

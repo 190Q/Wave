@@ -12,7 +12,7 @@ use lofty::tag::{ItemKey, Tag, TagType};
 use serde_json::Value;
 
 use crate::import_source::fold;
-use crate::source::{client, Env, TrackMeta};
+use crate::source::{client, encode, Env, TrackMeta};
 use crate::tools::{find_yt_dlp, hide_console, tool_path, YtDlp};
 
 const AUDIO_STEM: &str = "audio";
@@ -21,22 +21,29 @@ const AUDIO_STEM: &str = "audio";
 /// not to be the song are looked past before it is given up on. A look-up is a
 /// request of its own, so a search full of wrong answers stops early.
 const HITS: usize = 12;
-const LOOK_PAST: usize = 4;
+const LOOK_PAST: usize = 5;
 
 /// How far a hit's length may sit from the source's and still be the same
-/// recording. LRCLIB, which the lyrics come from, allows two seconds.
-const LENGTH_WINDOW_MS: u64 = 5_000;
+/// recording. Two services rarely agree to the second, and an upload can carry
+/// silence at either end, so the window has to be wider than the two seconds
+/// the lyrics are matched in.
+const LENGTH_WINDOW_MS: u64 = 10_000;
 
 /// A hit this close to the source's length is the recording, so there is
 /// nothing to gain by looking at any more of them.
-const CLOSE_ENOUGH_MS: u64 = 1_500;
+const CLOSE_ENOUGH_MS: u64 = 2_000;
 
 /// What the mp3 encoder can add to the length of what it was given.
 const FILE_SLACK_MS: u64 = 1_000;
 
-/// How many hits that answer to the song but are not the artist's own upload
-/// are kept before the search is called off. Each one is a look-up of its own.
-const FALLBACKS: usize = 3;
+/// How many hits that answer to the song are kept as fallbacks before the
+/// search is called off. Each one is a look-up of its own.
+const FALLBACKS: usize = 4;
+
+/// The points a hit needs before it is taken without looking at any more of
+/// them. It takes the artist's own upload, or a catalogue song, to reach this
+/// on the name and the length alone.
+const GOOD_ENOUGH: i32 = 17;
 
 /// The fields a look-up asks for, in the order they are read back.
 const FIELDS: &str = "%(duration)s\t%(title)s\t%(channel,uploader)s\t%(artist)s\t%(album)s\t%(is_live)s\t%(channel_is_verified)s";
@@ -101,6 +108,22 @@ const EDITED: [&str; 10] = [
 ];
 
 const PARTS: [&str; 5] = ["part", "pt", "vol", "volume", "chapter"];
+
+/// The words that say where a song was taken from. They sit in brackets or
+/// after a dash without saying anything about the song itself, so a hit is
+/// free to leave them out.
+const DESCRIPTORS: [&str; 9] = [
+    "from",
+    "ost",
+    "soundtrack",
+    "theme",
+    "movie",
+    "film",
+    "show",
+    "series",
+    "game",
+];
+
 pub struct Tools {
     pub yt_dlp: YtDlp,
     pub ffmpeg: Option<PathBuf>,
@@ -186,6 +209,8 @@ struct Candidate {
     channel: String,
     duration_ms: Option<u64>,
     url: Option<String>,
+    /// A catalogue song rather than a video somebody made.
+    song: bool,
 }
 
 impl Candidate {
@@ -340,11 +365,12 @@ fn candidates(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String>
         channel: meta.artists.join(", "),
         duration_ms: meta.duration_ms,
         url: Some(url.clone()),
+        song: false,
     }])
 }
 
 fn choose(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String> {
-    let mut passed: Vec<(bool, bool, u64, usize, Candidate)> = Vec::new();
+    let mut passed: Vec<(i32, usize, Candidate)> = Vec::new();
     let mut closest: Option<u64> = None;
     let mut wrong = 0usize;
 
@@ -366,19 +392,20 @@ fn choose(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String> {
             continue;
         }
 
-        let edited = edited_upload(meta, &candidate, &seen);
-        let own = own_upload(meta, &candidate, &seen);
-
-        match gap_of(meta, &seen) {
-            // Another take of the song, or another thing entirely.
-            Some(gap) if gap > LENGTH_WINDOW_MS => {
-                if seen.duration_ms > 0 {
-                    closest = Some(closest.map_or(gap, |best| best.min(gap)));
-                }
+        let gap = gap_of(meta, &seen);
+        // Another take of the song, or another thing entirely.
+        if let Some(gap) = gap.filter(|gap| *gap > LENGTH_WINDOW_MS) {
+            if seen.duration_ms > 0 {
+                closest = Some(closest.map_or(gap, |best| best.min(gap)));
             }
-            Some(gap) if gap <= CLOSE_ENOUGH_MS && own && !edited => return Ok(vec![candidate]),
-            gap => passed.push((edited, !own, gap.unwrap_or(0), order, candidate)),
+            continue;
         }
+
+        let points = points(meta, &candidate, &seen);
+        if gap.is_some_and(|gap| gap <= CLOSE_ENOUGH_MS) && points >= GOOD_ENOUGH {
+            return Ok(vec![candidate]);
+        }
+        passed.push((points, order, candidate));
     }
 
     if passed.is_empty() {
@@ -388,15 +415,33 @@ fn choose(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String> {
         });
     }
 
-    passed.sort_by_key(|(edited, theirs, gap, order, _)| (*edited, *theirs, *gap, *order));
-    Ok(passed
-        .into_iter()
-        .map(|(_, _, _, _, candidate)| candidate)
-        .collect())
+    passed.sort_by_key(|(points, order, _)| (std::cmp::Reverse(*points), *order));
+    Ok(passed.into_iter().map(|(_, _, candidate)| candidate).collect())
 }
 
+/// What both searches are read for. YouTube Music first, because what it
+/// answers with is the song as the catalogue lists it rather than a video
+/// somebody made of it, and the plain search for what the catalogue does not
+/// carry.
 fn search(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String> {
-    let mut hits = usable(youtube_hits(tools, meta)?, meta);
+    let catalogue = song_hits(tools, meta);
+    let videos = youtube_hits(tools, meta);
+
+    let mut hits = Vec::new();
+    if let Ok(found) = &catalogue {
+        hits.extend(usable(found.clone(), meta));
+    }
+    if let Ok(found) = &videos {
+        hits.extend(usable(found.clone(), meta));
+    }
+
+    if hits.is_empty() {
+        return Err(match (catalogue, videos) {
+            (_, Err(error)) => error,
+            (Err(error), _) => error,
+            _ => "no YouTube match".to_string(),
+        });
+    }
 
     let mut seen = HashSet::new();
     hits.retain(|hit| seen.insert(hit.id.clone()));
@@ -405,23 +450,54 @@ fn search(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String> {
     Ok(hits)
 }
 
+/// The hits that could be the song: a video, named the way the song is, that
+/// does not say of itself that it is another take.
 fn usable(hits: Vec<Candidate>, meta: &TrackMeta) -> Vec<Candidate> {
     hits.into_iter()
         .filter(|hit| {
-            carries(&meta.title, &hit.title)
+            video_id(&hit.id)
+                && carries(&meta.title, &hit.title)
                 && !stray_aside(&hit.title, &meta.title)
                 && !stray_name(&hit.channel)
         })
         .collect()
 }
 
-fn youtube_hits(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String> {
-    let target = format!("ytsearch{HITS}:{} (audio)", query_text(meta));
+/// Whether an id names a video. A search can also answer with a channel or a
+/// playlist, which is not something a song can be downloaded from.
+fn video_id(id: &str) -> bool {
+    let usable = |character: char| {
+        character.is_ascii_alphanumeric() || character == '-' || character == '_'
+    };
 
-    Ok(parse_hits(&run_search(tools, &target)?))
+    id.len() == 11 && id.chars().all(usable)
 }
 
-fn query_text(meta: &TrackMeta) -> String {
+/// YouTube Music, restricted to its songs section: what comes back is the song
+/// as the catalogue lists it, not a video somebody made.
+fn song_hits(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String> {
+    let query = encode(&music_query(meta));
+    let target = format!("https://music.youtube.com/search?q={query}#songs");
+
+    Ok(parse_hits(&run_search(tools, &target)?, true))
+}
+
+/// A plain YouTube search, for the songs the catalogue does not carry.
+fn youtube_hits(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String> {
+    let target = format!("ytsearch{HITS}:{} (audio)", video_query(meta));
+
+    Ok(parse_hits(&run_search(tools, &target)?, false))
+}
+
+/// The name comes first, which is the order a music catalogue answers best in.
+/// The other way round buries a song under whatever else the artist is known
+/// for, which is how a cover of the right name wins over the right song.
+fn music_query(meta: &TrackMeta) -> String {
+    format!("{} - {}", meta.title, meta.artists.join(", "))
+}
+
+/// The artist comes first, which is the order a video search answers best in.
+fn video_query(meta: &TrackMeta) -> String {
     format!("{} - {}", meta.artists.join(", "), meta.title)
 }
 
@@ -457,8 +533,11 @@ fn run_search(tools: &Tools, target: &str) -> Result<Vec<u8>, String> {
 
 /// One hit per line of JSON. A line that is not a hit, or that carries no id or
 /// no name, is passed over rather than guessed at.
-fn parse_hits(stdout: &[u8]) -> Vec<Candidate> {
-    json_lines(stdout).iter().filter_map(candidate_of).collect()
+fn parse_hits(stdout: &[u8], song: bool) -> Vec<Candidate> {
+    json_lines(stdout)
+        .iter()
+        .filter_map(|entry| candidate_of(entry, song))
+        .collect()
 }
 
 /// yt-dlp prints one object per line, and anything that is not one is skipped.
@@ -471,7 +550,7 @@ fn json_lines(stdout: &[u8]) -> Vec<Value> {
         .collect()
 }
 
-fn candidate_of(entry: &Value) -> Option<Candidate> {
+fn candidate_of(entry: &Value, song: bool) -> Option<Candidate> {
     let id = entry["id"].as_str().filter(|id| !id.is_empty())?;
     let title = entry["title"].as_str().unwrap_or_default().trim().to_string();
     if title.is_empty() {
@@ -484,6 +563,7 @@ fn candidate_of(entry: &Value) -> Option<Candidate> {
         channel: text_of(entry, &["channel", "uploader"]),
         duration_ms: seconds_of(entry),
         url: None,
+        song,
     })
 }
 
@@ -662,13 +742,19 @@ fn found_in(stdout: &str) -> Option<Found> {
     })
 }
 
+/// What a hit calls itself: the name the look-up found, and the one the search
+/// gave when the look-up has none.
+fn title_of<'a>(candidate: &'a Candidate, seen: &'a Found) -> &'a str {
+    match seen.title.trim() {
+        "" => candidate.title.as_str(),
+        named => named,
+    }
+}
+
 /// Whether a hit answers to the song: the same name, the artist named
 /// somewhere, and nothing about it that says it is another take.
 fn answers(meta: &TrackMeta, candidate: &Candidate, seen: &Found) -> bool {
-    let title = match seen.title.trim() {
-        "" => candidate.title.as_str(),
-        named => named,
-    };
+    let title = title_of(candidate, seen);
     if !carries(&meta.title, title)
         || stray_aside(title, &meta.title)
         || stray_name(&seen.channel)
@@ -678,11 +764,73 @@ fn answers(meta: &TrackMeta, candidate: &Candidate, seen: &Found) -> bool {
         return false;
     }
 
+    artist_named(meta, candidate, seen)
+}
+
+/// Whether one of the song's artists is named by the hit, in its title, its
+/// channel, or the artist the catalogue credits it to.
+fn artist_named(meta: &TrackMeta, candidate: &Candidate, seen: &Found) -> bool {
     meta.artists.is_empty()
         || artist_here(meta, &seen.artist)
         || artist_here(meta, &seen.channel)
         || artist_here(meta, &candidate.channel)
-        || artist_here(meta, title)
+        || artist_here(meta, title_of(candidate, seen))
+}
+
+/// How well a hit answers to the song, from everything the look-up found. The
+/// name and the artist are what it has to agree on; the rest decides between
+/// the hits that do.
+fn points(meta: &TrackMeta, candidate: &Candidate, seen: &Found) -> i32 {
+    let mut score = 0;
+
+    if in_one_piece(&meta.title, title_of(candidate, seen)) {
+        score += 4;
+    } else if carries(&meta.title, title_of(candidate, seen)) {
+        score += 2;
+    }
+    if artist_named(meta, candidate, seen) {
+        score += 4;
+    }
+    if own_upload(meta, candidate, seen) {
+        score += 4;
+    }
+    if album_here(meta, &seen.album) {
+        score += 2;
+    }
+    // A catalogue song is the recording itself rather than a video made of it.
+    if candidate.song {
+        score += 1;
+    }
+    // An upload that says it is the edited version comes last of all.
+    if edited_upload(meta, candidate, seen) {
+        score -= 10;
+    }
+    // And one that leaves out the take the song names waits behind the rest.
+    if other_take(title_of(candidate, seen), &meta.title) {
+        score -= 6;
+    }
+
+    score + length_points(gap_of(meta, seen))
+}
+
+/// The points a hit earns for running to the song's length.
+fn length_points(gap: Option<u64>) -> i32 {
+    match gap {
+        // Nothing to judge it by, so it neither gains nor loses much.
+        None => 2,
+        Some(gap) if gap <= CLOSE_ENOUGH_MS => 6,
+        Some(gap) => (6 - (gap / 2_500) as i32).max(1),
+    }
+}
+
+/// Whether the album the hit sits on is the one the song came out on.
+fn album_here(meta: &TrackMeta, album: &str) -> bool {
+    let wanted = words(&meta.album).join(" ");
+    let found = words(album).join(" ");
+
+    !wanted.is_empty()
+        && !found.is_empty()
+        && (wanted == found || wanted.contains(&found) || found.contains(&wanted))
 }
 
 /// How far a hit's length sits from the source's. `None` when the source does
@@ -710,13 +858,31 @@ fn part_of_something(name: &[String], hit: &[String]) -> bool {
 }
 
 /// Whether a title says it is another take of the song, when the song's own
-/// title does not say the same of itself.
+/// title does not say the same of itself. A song called "Cover Me" keeps the
+/// word in its own name, so the name is what the aside is weighed against.
 fn stray_aside(title: &str, song: &str) -> bool {
-    let mine = asides(song);
+    let mine = words(song);
 
     asides(title)
         .into_iter()
         .any(|word| STRAYS.contains(&word.as_str()) && !mine.contains(&word))
+}
+
+/// The take the song's own name names: a live album names a live take.
+fn take_words(song: &str) -> HashSet<String> {
+    asides(song)
+        .into_iter()
+        .filter(|word| STRAYS.contains(&word.as_str()))
+        .collect()
+}
+
+/// Whether a title leaves out the take the song's own name names, which is
+/// how the studio recording of a live album's song gives itself away.
+fn other_take(title: &str, song: &str) -> bool {
+    let mine = take_words(song);
+    let hit = words(title);
+
+    mine.iter().any(|word| !hit.contains(word))
 }
 
 /// Whether a name that only says who made the upload, a channel or an artist,
@@ -728,10 +894,7 @@ fn stray_name(text: &str) -> bool {
 }
 
 fn edited_upload(meta: &TrackMeta, candidate: &Candidate, seen: &Found) -> bool {
-    let title = match seen.title.trim() {
-        "" => candidate.title.as_str(),
-        named => named,
-    };
+    let title = title_of(candidate, seen);
 
     edited_aside(title, &meta.title)
         || edited_name(&seen.channel)
@@ -761,18 +924,33 @@ fn edited_name(text: &str) -> bool {
         .any(|word| EDITED.contains(&word.as_str()))
 }
 
-fn official_channel(meta: &TrackMeta, channel: &str) -> bool {
-    let name = channel.trim().to_lowercase();
-    if name.is_empty() {
-        return false;
-    }
-    if name.ends_with("- topic") {
-        return true;
-    }
+/// The artist a topic channel is named after, when it is one.
+fn topic_channel(channel: &str) -> Option<&str> {
+    const TOPIC: &str = " - topic";
+    let name = channel.trim();
 
-    meta.artists
-        .iter()
-        .any(|artist| !artist.trim().is_empty() && name == artist.trim().to_lowercase())
+    if name.len() > TOPIC.len() && name.to_lowercase().ends_with(TOPIC) {
+        Some(&name[..name.len() - TOPIC.len()])
+    } else {
+        None
+    }
+}
+
+/// Whether a channel is the artist's own, or the one YouTube makes for them.
+/// A topic channel is only theirs when it is named after them, which is how a
+/// tribute album filed under somebody else's name is told apart.
+fn official_channel(meta: &TrackMeta, channel: &str) -> bool {
+    match topic_channel(channel) {
+        Some(artist) => same_artist(meta, artist),
+        None => same_artist(meta, channel.trim()),
+    }
+}
+
+/// Whether a name is one of the song's artists.
+fn same_artist(meta: &TrackMeta, name: &str) -> bool {
+    let name = fold(name.trim());
+
+    !name.is_empty() && meta.artists.iter().any(|artist| fold(artist.trim()) == name)
 }
 
 fn settled(meta: &TrackMeta, candidate: &Candidate) -> bool {
@@ -792,11 +970,13 @@ fn settled(meta: &TrackMeta, candidate: &Candidate) -> bool {
 }
 
 /// Whether the hit is the artist's own upload, or one YouTube itself vouches
-/// for, rather than somebody else's copy of the song.
+/// for, rather than somebody else's copy of the song. A topic channel named
+/// after somebody else is that somebody's, however well YouTube thinks of it,
+/// so an eight-bit emulation filed under its own name is not the artist's.
 fn own_upload(meta: &TrackMeta, candidate: &Candidate, seen: &Found) -> bool {
-    seen.verified
-        || official_channel(meta, &seen.channel)
+    official_channel(meta, &seen.channel)
         || official_channel(meta, &candidate.channel)
+        || (seen.verified && topic_channel(&seen.channel).is_none())
 }
 
 /// The words of the song's own name. The parts that name an edition or a credit
@@ -811,13 +991,21 @@ fn name_words(title: &str) -> Vec<String> {
 }
 
 /// The words in the parts of a title that name an edition of the song: what
-/// sits in brackets, and a trailing part after a dash.
+/// sits in brackets, and a trailing part after a dash. A group that runs on
+/// like a description of where the song came from is set aside too, which is
+/// how "Song - From the Film" is still "Song".
 fn asides(title: &str) -> HashSet<String> {
     let mut found = HashSet::new();
 
     for group in groups(title) {
         let inside = words(&group);
-        if inside.iter().any(|word| is_edition(word) || is_year(word)) {
+        // A group that runs on this long, or that names an edition, a year or
+        // where the song came from, is a description rather than the name.
+        let described = inside.len() > 3
+            || inside.iter().any(|word| {
+                is_edition(word) || is_year(word) || DESCRIPTORS.contains(&word.as_str())
+            });
+        if described {
             found.extend(inside);
         }
     }
@@ -869,18 +1057,29 @@ fn rank(meta: &TrackMeta, candidate: &Candidate) -> i32 {
     let mut score = 0;
 
     if in_one_piece(&meta.title, &candidate.title) {
-        score += 2;
-    }
-    if artist_here(meta, &candidate.title) || artist_here(meta, &candidate.channel) {
+        score += 3;
+    } else if carries(&meta.title, &candidate.title) {
         score += 1;
+    }
+    if artist_here(meta, &candidate.title) {
+        score += 2;
     }
     // The artist's own upload is the album version rather than a re-upload.
     if official_channel(meta, &candidate.channel) {
-        score += 2;
+        score += 3;
+    }
+    // A hit that leaves out the take the song names waits behind the rest.
+    if other_take(&candidate.title, &meta.title) {
+        score -= 6;
+    }
+    // A catalogue song is the recording itself, and the catalogue is the
+    // better judge of which recording a name points at than a video is.
+    if candidate.song {
+        score += 3;
     }
     // A hit that says it is the edited version waits behind the rest.
     if edited_aside(&candidate.title, &meta.title) || edited_name(&candidate.channel) {
-        score -= 4;
+        score -= 6;
     }
 
     score
@@ -896,9 +1095,11 @@ fn in_one_piece(title: &str, hit: &str) -> bool {
 }
 
 /// The words of a name, folded so two spellings of it agree, with everything
-/// that is not a letter or a digit between them.
+/// that is not a letter or a digit between them. An apostrophe is dropped
+/// rather than split on, so a title that leaves one out still agrees.
 fn words(text: &str) -> Vec<String> {
     fold(text)
+        .replace(['\'', '\u{2019}'], "")
         .split(|character: char| !character.is_alphanumeric())
         .filter(|word| !word.is_empty())
         .map(str::to_string)
@@ -1182,6 +1383,7 @@ mod tests {
             channel: String::new(),
             duration_ms: None,
             url: None,
+            song: false,
         }
     }
 
@@ -1229,11 +1431,15 @@ mod tests {
         let song = meta("Hey Jude", &["The Beatles"], 431);
         // Without the `ytsearch` prefix yt-dlp reads it as a URL and refuses.
         assert_eq!(
-            format!("ytsearch{HITS}:{} (audio)", query_text(&song)),
+            format!("ytsearch{HITS}:{} (audio)", video_query(&song)),
             "ytsearch12:The Beatles - Hey Jude (audio)"
         );
-        // The music search is handed a link, which is how its own shelf is read.
-        assert_eq!(query_text(&song), "The Beatles - Hey Jude");
+        assert_eq!(video_query(&song), "The Beatles - Hey Jude");
+
+        // The music search is handed a link, which is how its own shelf is
+        // read, and the name goes first because that is the order the
+        // catalogue answers best in.
+        assert_eq!(music_query(&song), "Hey Jude - The Beatles");
     }
 
     #[test]
@@ -1244,19 +1450,23 @@ mod tests {
             not json at all
         "#;
 
-        let hits = parse_hits(stdout);
+        let hits = parse_hits(stdout, false);
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].id, "one");
         assert_eq!(hits[0].channel, "The Beatles");
         // The uploader stands in for the channel when there is none.
         assert_eq!(hits[1].channel, "Someone");
+        assert!(!hits[0].song);
+
+        // What the catalogue answered with is a song rather than a video.
+        assert!(parse_hits(stdout, true).iter().all(|hit| hit.song));
     }
 
     #[test]
     fn passes_over_a_hit_with_nothing_to_go_on() {
         // A hit with no id, or no name, is not one that can be downloaded.
-        assert!(parse_hits(br#"{"title": "Hey Jude"}"#).is_empty());
-        assert!(parse_hits(br#"{"id": "one"}"#).is_empty());
+        assert!(parse_hits(br#"{"title": "Hey Jude"}"#, false).is_empty());
+        assert!(parse_hits(br#"{"id": "one"}"#, false).is_empty());
         // A look-up that printed nothing said nothing.
         assert!(found_in("").is_none());
     }
@@ -1312,20 +1522,83 @@ mod tests {
     }
 
     #[test]
+    fn a_live_song_prefers_a_live_take() {
+        // The name says which take the song is, so a hit that leaves the word
+        // out is another take of it.
+        assert!(other_take("Duality", "Duality (Live)"));
+        assert!(!other_take("Duality (Live)", "Duality (Live)"));
+        assert!(!other_take("Slipknot - Duality LIVE (Audio)", "Duality (Live)"));
+
+        // A song that names no take is not held to one.
+        assert!(!other_take("Duality", "Duality"));
+        assert!(!other_take("Duality (Remastered 2011)", "Duality"));
+    }
+
+    #[test]
+    fn a_song_is_named_the_way_the_catalogue_names_it() {
+        // A soundtrack title says where the song was taken from, which a hit
+        // is free to leave out. Only the song's own name has to be there.
+        let song = "Sunflower - Spider-Man: Into the Spider-Verse";
+        assert_eq!(name_words(song), vec!["sunflower".to_string()]);
+        assert!(carries(song, "Post Malone, Swae Lee - Sunflower"));
+        assert!(carries(song, "Sunflower (Spider-Man: Into the Spider-Verse)"));
+
+        assert!(carries("Song - From the Film Barbie", "Artist - Song"));
+        assert!(carries("Song (From the Film Barbie)", "Artist - Song"));
+
+        // The name itself is still required.
+        assert!(!carries("Song - From the Film Barbie", "Artist - Something Else"));
+    }
+
+    #[test]
+    fn a_word_the_song_is_named_after_is_not_a_stray() {
+        // The song's own name carries the word, so a hit that repeats it is
+        // not another take of the song.
+        assert!(!stray_aside("Artist - Cover Me", "Cover Me"));
+        assert!(!stray_aside("Artist - Live and Let Die", "Live and Let Die"));
+        // A word the name does not carry still gives it away.
+        assert!(stray_aside("Artist - Cover Me (Live)", "Cover Me"));
+    }
+
+    #[test]
+    fn an_apostrophe_does_not_stand_in_for_a_different_word() {
+        assert_eq!(words("God's Plan"), vec!["gods".to_string(), "plan".to_string()]);
+        assert!(carries("God's Plan", "Drake - Gods Plan"));
+        assert!(carries("God's Plan", "Drake - God's Plan"));
+    }
+
+    #[test]
+    fn a_length_that_agrees_is_worth_more_than_one_that_does_not() {
+        assert!(length_points(Some(0)) > length_points(Some(4_000)));
+        assert!(length_points(Some(4_000)) > length_points(Some(9_000)));
+        // Nothing to judge it by is neither a gain nor a loss.
+        assert_eq!(length_points(None), 2);
+    }
+
+    #[test]
     fn keeps_only_the_hits_that_could_be_the_song() {
         let song = meta("Duality", &["Slipknot"], 252);
 
         let hits = usable(
             vec![
-                hit("one", "Duality"),
-                hit("two", "Toxicity"),
-                hit("three", "Duality (Nightcore)"),
+                hit("3GWwohI5h1w", "Duality"),
+                hit("mexXOdAF50g", "Toxicity"),
+                hit("XleS8FUQnuw", "Duality (Nightcore)"),
+                // A search can answer with a channel or a playlist, which is
+                // not something a song can be downloaded from.
+                hit("UClYV6hHlupm_S_ObS1W-DYw", "Duality"),
             ],
             &song,
         );
 
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id, "one");
+        assert_eq!(hits[0].id, "3GWwohI5h1w");
+
+        assert!(video_id("3GWwohI5h1w"));
+        assert!(video_id("kPa7bsKwL-c"));
+        assert!(!video_id("UClYV6hHlupm_S_ObS1W-DYw"));
+        assert!(!video_id("PL123"));
+        assert!(!video_id(""));
     }
 
     #[test]
@@ -1428,6 +1701,16 @@ mod tests {
         assert!(official_channel(&song, "Slipknot"));
         assert!(!official_channel(&song, "Some Lyric Channel"));
         assert!(!official_channel(&TrackMeta::default(), "Slipknot"));
+
+        // A topic channel is only the artist's when it is named after them,
+        // or a tribute album filed under another name would count as theirs.
+        assert!(!official_channel(&song, "Release - Topic"));
+        assert!(!official_channel(&song, "Frank Rivers - Topic"));
+        assert!(official_channel(&song, "Slipknot - topic"));
+
+        // The spelling a catalogue decorates a name with is not another name.
+        let korn = meta("Freak On a Leash", &["Ko\u{042f}n"], 256);
+        assert!(official_channel(&korn, "Korn - Topic"));
     }
 
     #[test]
@@ -1478,6 +1761,7 @@ mod tests {
             channel: "Slipknot - Topic".to_string(),
             duration_ms: Some(252_000),
             url: None,
+            song: false,
         };
         assert!(settled(&song, &own));
 

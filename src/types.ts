@@ -368,6 +368,9 @@ export interface SpotifyStatus {
   /** How yt-dlp was found, empty when it was not. */
   ytDlpSource: string;
   ffmpeg: boolean;
+  deno: boolean;
+  /** How Deno was found, empty when it was not. */
+  denoSource: string;
   /** What to tell the user, in one line. */
   message: string;
 }
@@ -380,6 +383,9 @@ export interface DeezerStatus {
   /** How yt-dlp was found, empty when it was not. */
   ytDlpSource: string;
   ffmpeg: boolean;
+  deno: boolean;
+  /** How Deno was found, empty when it was not. */
+  denoSource: string;
   /** What to tell the user, in one line. */
   message: string;
 }
@@ -392,6 +398,9 @@ export interface YoutubeStatus {
   /** How yt-dlp was found, empty when it was not. */
   ytDlpSource: string;
   ffmpeg: boolean;
+  deno: boolean;
+  /** How Deno was found, empty when it was not. */
+  denoSource: string;
   /** What to tell the user, in one line. */
   message: string;
 }

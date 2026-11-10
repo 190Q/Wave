@@ -1,9 +1,15 @@
-//! The external programs a download needs. Neither is a Rust library, so both
-//! are looked for on PATH unless the config `.env` points at one.
+//! The external programs a download needs. None of them is a Rust library, so
+//! each is looked for in the config `.env`, then in the copy Wave ships beside
+//! it, then on PATH.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use tauri::{AppHandle, Manager, Runtime};
 
 use crate::source::Env;
+
+/// The folder the bundled tools are unpacked into, beside the other resources.
+const BUNDLE_DIR: &str = "tools";
 
 /// Looks for an executable on PATH, which is where an installer puts it.
 pub fn find_tool(name: &str) -> Option<PathBuf> {
@@ -25,15 +31,62 @@ pub fn find_tool(name: &str) -> Option<PathBuf> {
     None
 }
 
-pub(crate) fn tool_path(override_path: Option<&String>, name: &str) -> Option<PathBuf> {
-    if let Some(explicit) = override_path {
-        let trimmed = explicit.trim();
-        if !trimmed.is_empty() {
-            let path = PathBuf::from(trimmed);
-            return path.is_file().then_some(path);
-        }
+pub fn bundled_dir<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+    let installed = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|dir| dir.join(BUNDLE_DIR));
+
+    #[cfg(debug_assertions)]
+    let candidates = [
+        installed,
+        Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(BUNDLE_DIR)),
+    ];
+    #[cfg(not(debug_assertions))]
+    let candidates = [installed];
+
+    candidates.into_iter().flatten().find(|dir| dir.is_dir())
+}
+
+/// The name a tool has in the folder Wave ships.
+fn bundled_name(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
     }
-    find_tool(name)
+}
+
+/// A tool from the folder Wave ships, when it is there.
+fn in_bundle(bundled: Option<&Path>, name: &str) -> Option<PathBuf> {
+    let candidate = bundled?.join(bundled_name(name));
+    candidate.is_file().then_some(candidate)
+}
+
+/// Whether a tool is one of the copies Wave shipped.
+fn is_bundled(path: &Path, bundled: Option<&Path>) -> bool {
+    match (path.parent(), bundled) {
+        (Some(dir), Some(bundled)) => dir == bundled,
+        _ => false,
+    }
+}
+
+/// The file an override points at, which has to be there to count.
+fn override_file(override_path: Option<&String>) -> Option<PathBuf> {
+    let path = PathBuf::from(override_path?.trim());
+    path.is_file().then_some(path)
+}
+
+/// The override, then the copy Wave ships, then PATH.
+pub(crate) fn tool_path(
+    override_path: Option<&String>,
+    name: &str,
+    bundled: Option<&Path>,
+) -> Option<PathBuf> {
+    override_file(override_path)
+        .or_else(|| in_bundle(bundled, name))
+        .or_else(|| find_tool(name))
 }
 
 /// How yt-dlp will be run.
@@ -60,16 +113,8 @@ impl YtDlp {
 }
 
 /// The executable if there is one, otherwise the Python module.
-pub fn find_yt_dlp(override_path: Option<&String>) -> Option<YtDlp> {
-    if let Some(explicit) = override_path {
-        let trimmed = explicit.trim();
-        if !trimmed.is_empty() {
-            let path = PathBuf::from(trimmed);
-            return path.is_file().then_some(YtDlp::Exe(path));
-        }
-    }
-
-    if let Some(path) = find_tool("yt-dlp") {
+pub fn find_yt_dlp(override_path: Option<&String>, bundled: Option<&Path>) -> Option<YtDlp> {
+    if let Some(path) = tool_path(override_path, "yt-dlp", bundled) {
         return Some(YtDlp::Exe(path));
     }
 
@@ -120,10 +165,13 @@ pub struct ToolsStatus {
     /// How yt-dlp was found, so the user is not left guessing where it is.
     pub yt_dlp_source: String,
     pub ffmpeg: bool,
+    pub deno: bool,
+    /// How Deno was found, which is worth saying when Wave shipped it.
+    pub deno_source: String,
 }
 
 impl ToolsStatus {
-    /// What to tell the user about the tools, or `None` when both are there.
+    /// What to tell the user about the tools, or `None` when all three are there.
     pub fn problem(&self) -> Option<String> {
         if !self.yt_dlp {
             return Some("yt-dlp was not found. Install it, or set YTDLP_PATH.".to_string());
@@ -131,17 +179,45 @@ impl ToolsStatus {
         if !self.ffmpeg {
             return Some("ffmpeg was not found. Install it, or set FFMPEG_PATH.".to_string());
         }
+        if !self.deno {
+            return Some(
+                "Deno was not found. YouTube now needs it to solve the player's challenges, \
+                 so install it, or set DENO_PATH."
+                    .to_string(),
+            );
+        }
         None
     }
 }
 
-/// Looks for both programs, and describes how yt-dlp was found.
-pub fn status(env: &Env) -> ToolsStatus {
-    let yt_dlp = find_yt_dlp(env.yt_dlp.as_ref());
+/// How a tool was found, for the line the dialog shows.
+fn describe_tool(path: Option<&Path>, bundled: Option<&Path>) -> String {
+    match path {
+        Some(path) if is_bundled(path, bundled) => "bundled with Wave".to_string(),
+        Some(path) => path.to_string_lossy().into_owned(),
+        None => String::new(),
+    }
+}
+
+/// Looks for all three programs, and says how each was found.
+pub fn status(env: &Env, bundled: Option<&Path>) -> ToolsStatus {
+    let yt_dlp = find_yt_dlp(env.yt_dlp.as_ref(), bundled);
+    let deno = tool_path(env.deno.as_ref(), "deno", bundled);
+
     ToolsStatus {
         yt_dlp: yt_dlp.is_some(),
-        yt_dlp_source: yt_dlp.map(|found| found.describe()).unwrap_or_default(),
-        ffmpeg: tool_path(env.ffmpeg.as_ref(), "ffmpeg").is_some(),
+        yt_dlp_source: yt_dlp
+            .as_ref()
+            .map(|found| match found {
+                YtDlp::Exe(path) if is_bundled(path, bundled) => {
+                    "yt-dlp (bundled with Wave)".to_string()
+                }
+                other => other.describe(),
+            })
+            .unwrap_or_default(),
+        ffmpeg: tool_path(env.ffmpeg.as_ref(), "ffmpeg", bundled).is_some(),
+        deno: deno.is_some(),
+        deno_source: describe_tool(deno.as_deref(), bundled),
     }
 }
 
@@ -149,23 +225,95 @@ pub fn status(env: &Env) -> ToolsStatus {
 mod tests {
     use super::*;
 
+    /// An empty folder to stand in for the tools Wave ships.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("wave-tools-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A folder holding one copy of ffmpeg.
+    fn shipped(name: &str) -> PathBuf {
+        let dir = scratch(name);
+        std::fs::write(dir.join(bundled_name("ffmpeg")), b"a copy Wave shipped").unwrap();
+        dir
+    }
+
     #[test]
     fn says_which_tool_is_missing() {
-        let missing_both = ToolsStatus::default();
-        assert!(missing_both.problem().unwrap().contains("yt-dlp"));
+        assert!(ToolsStatus::default().problem().unwrap().contains("yt-dlp"));
 
         let no_ffmpeg = ToolsStatus {
             yt_dlp: true,
             yt_dlp_source: "yt-dlp.exe".to_string(),
-            ffmpeg: false,
+            ..ToolsStatus::default()
         };
         assert!(no_ffmpeg.problem().unwrap().contains("ffmpeg"));
+
+        let no_deno = ToolsStatus {
+            yt_dlp: true,
+            yt_dlp_source: "yt-dlp.exe".to_string(),
+            ffmpeg: true,
+            ..ToolsStatus::default()
+        };
+        assert!(no_deno.problem().unwrap().contains("Deno"));
 
         let ready = ToolsStatus {
             yt_dlp: true,
             yt_dlp_source: "yt-dlp.exe".to_string(),
             ffmpeg: true,
+            deno: true,
+            deno_source: "deno.exe".to_string(),
         };
         assert!(ready.problem().is_none());
+    }
+
+    #[test]
+    fn takes_the_copy_that_shipped_ahead_of_path() {
+        let dir = shipped("prefers");
+        let found = tool_path(None, "ffmpeg", Some(&dir)).unwrap();
+
+        assert_eq!(found, dir.join(bundled_name("ffmpeg")));
+        assert!(is_bundled(&found, Some(&dir)));
+        assert!(!is_bundled(&found, Some(Path::new("/somewhere/else"))));
+    }
+
+    #[test]
+    fn an_override_that_is_not_there_is_passed_over() {
+        let dir = shipped("override");
+        let gone = dir.join("moved-away.exe").to_string_lossy().into_owned();
+
+        // A path the user pointed at that has since gone falls back to the copy
+        // Wave ships, rather than leaving the tools unusable.
+        assert_eq!(
+            tool_path(Some(&gone), "ffmpeg", Some(&dir)).unwrap(),
+            dir.join(bundled_name("ffmpeg"))
+        );
+
+        let present = dir.join(bundled_name("ffmpeg")).to_string_lossy().into_owned();
+        assert_eq!(
+            tool_path(Some(&present), "ffmpeg", None).unwrap(),
+            PathBuf::from(&present)
+        );
+    }
+
+    #[test]
+    fn a_folder_that_is_not_there_holds_no_tools() {
+        assert!(in_bundle(Some(Path::new("/no/such/folder")), "ffmpeg").is_none());
+        assert!(in_bundle(None, "ffmpeg").is_none());
+    }
+
+    #[test]
+    fn says_when_a_tool_came_with_the_app() {
+        let dir = shipped("describes");
+        let found = dir.join(bundled_name("ffmpeg"));
+
+        assert_eq!(describe_tool(Some(&found), Some(&dir)), "bundled with Wave");
+        assert_eq!(
+            describe_tool(Some(Path::new("/usr/bin/ffmpeg")), Some(&dir)),
+            "/usr/bin/ffmpeg"
+        );
+        assert_eq!(describe_tool(None, Some(&dir)), "");
     }
 }

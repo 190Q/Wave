@@ -517,7 +517,7 @@ function sectionsHtml(state: AppState, picked: Map<string, string>): string {
 function localSection(): string {
   return section(
     "Local import",
-    `<p class="import-hint">Bring in a music folder, or import a Wave playlist to download its songs without Spotify. Playlist downloads need yt-dlp and ffmpeg.</p>
+    `<p class="import-hint">Bring in a music folder, or import a Wave playlist to download its songs without Spotify. Playlist downloads use the yt-dlp, ffmpeg and Deno that ship with Wave.</p>
     <div class="import-actions">
       <button class="pill" type="button" data-import="folder">Import folder</button>
       <button class="pill" type="button" data-import="wavelist">Import Wave playlist</button>
@@ -529,7 +529,7 @@ function localSection(): string {
 function linkSection(): string {
   return section(
     "Import from a link",
-    `<p class="import-hint">Paste a Spotify, Deezer or YouTube link: a track, a playlist, or a Deezer album. A YouTube link is downloaded exactly as it is, so nothing is guessed at. Spotify needs the credentials below; Deezer and YouTube need only the download tools.</p>
+    `<p class="import-hint">Paste a Spotify, Deezer or YouTube link: a track, a playlist, or a Deezer album. A YouTube link is downloaded exactly as it is, so nothing is guessed at. Spotify needs the credentials below; Deezer and YouTube need nothing else.</p>
     <div class="import-field">
       <input
         class="import-input"
@@ -567,7 +567,8 @@ function statusHtml(state: AppState, setupOpen: boolean): string {
     status?.configured === true &&
     status.accepted &&
     status.ytDlp &&
-    status.ffmpeg;
+    status.ffmpeg &&
+    status.deno;
 
   const message = status
     ? status.message
@@ -618,7 +619,7 @@ function toolsStateHtml(state: AppState, service: "deezer" | "youtube"): string 
 
 function toolsStatusHtml(state: AppState, service: "deezer" | "youtube"): string {
   const status = service === "youtube" ? state.youtube : state.deezer;
-  const ready = status?.ytDlp === true && status.ffmpeg;
+  const ready = status?.ytDlp === true && status.ffmpeg && status.deno;
   const name = service === "youtube" ? "YouTube" : "Deezer";
 
   const message = status
@@ -642,7 +643,13 @@ function toolsStatusHtml(state: AppState, service: "deezer" | "youtube"): string
 
 /** Says which downloader was found, so its location is never a mystery. */
 function downloadHint(
-  status: { ytDlp: boolean; ytDlpSource: string; ffmpeg: boolean } | null,
+  status: {
+    ytDlp: boolean;
+    ytDlpSource: string;
+    ffmpeg: boolean;
+    deno: boolean;
+    denoSource: string;
+  } | null,
 ): string {
   const ytDlp = status?.ytDlp
     ? `yt-dlp found: ${status.ytDlpSource}`
@@ -650,7 +657,10 @@ function downloadHint(
   const ffmpeg = status?.ffmpeg
     ? "ffmpeg found."
     : "ffmpeg not found. Install it, or set FFMPEG_PATH.";
-  return `${ytDlp} ${ffmpeg}`;
+  const deno = status?.deno
+    ? `Deno found: ${status.denoSource}`
+    : "Deno not found. YouTube needs it, so install it or set DENO_PATH.";
+  return `${ytDlp} ${ffmpeg} ${deno}`;
 }
 
 function progressHtml(progress: ImportProgress): string {

@@ -9,6 +9,9 @@ dist-ssr/
 src-tauri/target/
 src-tauri/gen/
 
+# the download tools, fetched by `npm run tools`
+src-tauri/tools/
+
 # logs
 *.log
 npm-debug.log*

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "tools/yt-dlp.exe": "tools/yt-dlp.exe",
+      "tools/ffmpeg.exe": "tools/ffmpeg.exe",
+      "tools/ffprobe.exe": "tools/ffprobe.exe",
+      "tools/deno.exe": "tools/deno.exe"
+    }
+  }
+}

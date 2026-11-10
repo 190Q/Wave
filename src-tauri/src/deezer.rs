@@ -70,12 +70,15 @@ pub struct DeezerStatus {
     pub yt_dlp: bool,
     pub yt_dlp_source: String,
     pub ffmpeg: bool,
+    pub deno: bool,
+    pub deno_source: String,
     pub message: String,
 }
 
 pub fn status<R: Runtime>(app: &AppHandle<R>) -> DeezerStatus {
-    let tools = tools::status(&read_env(app));
-    let message = tools.problem().unwrap_or_else(|| {
+    let bundled = tools::bundled_dir(app);
+    let found = tools::status(&read_env(app), bundled.as_deref());
+    let message = found.problem().unwrap_or_else(|| {
         "Deezer is ready. No sign-in is needed: a public playlist, album or track is read \
          straight from Deezer's catalogue."
             .to_string()
@@ -85,9 +88,11 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> DeezerStatus {
         env_path: env_path(app)
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_default(),
-        yt_dlp: tools.yt_dlp,
-        yt_dlp_source: tools.yt_dlp_source,
-        ffmpeg: tools.ffmpeg,
+        yt_dlp: found.yt_dlp,
+        yt_dlp_source: found.yt_dlp_source,
+        ffmpeg: found.ffmpeg,
+        deno: found.deno,
+        deno_source: found.deno_source,
         message,
     }
 }
@@ -699,6 +704,8 @@ mod tests {
             yt_dlp: true,
             yt_dlp_source: "yt-dlp.exe".to_string(),
             ffmpeg: true,
+            deno: true,
+            deno_source: "deno.exe".to_string(),
             message: "Deezer is ready.".to_string(),
         };
 

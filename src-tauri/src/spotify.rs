@@ -52,6 +52,9 @@ pub struct SpotifyStatus {
     /// How yt-dlp was found, so the user is not left guessing where it is.
     pub yt_dlp_source: String,
     pub ffmpeg: bool,
+    pub deno: bool,
+    /// How Deno was found, empty when it was not.
+    pub deno_source: String,
     pub message: String,
 }
 
@@ -102,7 +105,8 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> SpotifyStatus {
     let env_path = env_path(app)
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let tools = tools::status(&env);
+    let bundled = tools::bundled_dir(app);
+    let found = tools::status(&env, bundled.as_deref());
     let configured = env.complete();
     let pair = credentials(&env);
 
@@ -126,7 +130,7 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> SpotifyStatus {
     }
 
     if problem.is_none() {
-        problem = tools.problem();
+        problem = found.problem();
     }
 
     SpotifyStatus {
@@ -134,9 +138,11 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> SpotifyStatus {
         redirect_uri: redirect_uri(),
         configured,
         accepted,
-        yt_dlp: tools.yt_dlp,
-        yt_dlp_source: tools.yt_dlp_source,
-        ffmpeg: tools.ffmpeg,
+        yt_dlp: found.yt_dlp,
+        yt_dlp_source: found.yt_dlp_source,
+        ffmpeg: found.ffmpeg,
+        deno: found.deno,
+        deno_source: found.deno_source,
         message: problem.unwrap_or_else(|| "Spotify is set up.".to_string()),
     }
 }
@@ -695,6 +701,8 @@ mod tests {
             yt_dlp: true,
             yt_dlp_source: "yt-dlp.exe".to_string(),
             ffmpeg: true,
+            deno: true,
+            deno_source: "bundled with Wave".to_string(),
             message: "Spotify is set up.".to_string(),
         };
 
@@ -704,7 +712,8 @@ mod tests {
         let back: SpotifyStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(back.message, "Spotify is set up.");
         assert_eq!(back.yt_dlp_source, "yt-dlp.exe");
-        assert!(back.configured && back.accepted && back.yt_dlp && back.ffmpeg);
+        assert_eq!(back.deno_source, "bundled with Wave");
+        assert!(back.configured && back.accepted && back.yt_dlp && back.ffmpeg && back.deno);
         assert_eq!(back.env_path, status.env_path);
     }
 

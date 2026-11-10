@@ -113,15 +113,15 @@ newer (Ubuntu 22.04+, Debian 12+, Fedora 36+ and so on) and are x86_64 only.
 - **Window memory.** Remembers its size, position, and monitor between launches,
   with nine `Ctrl+Shift+1..9` slots for saved window frames and actions.
 - **Spotify and Deezer import.** Paste a link from either and Wave downloads a
-  playlist, album or track via `yt-dlp` + `ffmpeg`, tags the files, and skips
+  playlist, album or track with the tools it ships, tags the files, and skips
   anything you already have. Spotify needs a developer app of your own; Deezer
-  needs nothing but the two download tools.
+  needs nothing else.
 - **Generated playlists.** Ask for a playlist and Wave fills it for you: 50 songs
   picked from Deezer's public catalogue to match what you have been listening
   to, or to match one genre. The picks stay undownloaded until you ask for them,
   and land in their places in the playlist when they do. It reads the same local
   listening record as Wave Swell, so it needs a record to work from, and it
-  needs `yt-dlp` and `ffmpeg` to download anything.
+  downloads them with the tools it ships.
 - **Wave Swell.** A pinned entry in the library that opens a reading of your
   listening: minutes listened, split by music, audiobooks and podcasts; top
   songs, artists, genres and albums; and how your top five artists moved across
@@ -191,15 +191,49 @@ TLS, which links OpenSSL. For other distributions, see the
 The Spotify import additionally needs, but only if you use it:
 
 - A **Spotify developer app** (free) for its Client ID and Secret.
-- **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** on your `PATH`.
-- **[ffmpeg](https://ffmpeg.org/)** on your `PATH`.
-
-The Deezer import needs only the last two.
 
 Nothing else is required. The library, the scanner, and the loudness analysis
 work offline with no extra packages. Playback on Linux runs through WebKitGTK's
-GStreamer stack, which desktop installs almost always already have — see
+GStreamer stack, which the packages and the AppImage already account for; see
 [Troubleshooting](#troubleshooting) if a particular format will not play.
+
+## Bundled tools
+
+Downloading needs three programs, and every release ships all three:
+
+- **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** reads a link and fetches the
+  audio. It is the PyInstaller build, which carries the `yt-dlp-ejs` scripts, so
+  nothing has to be fetched at run time.
+- **ffmpeg** and **ffprobe**, from
+  [yt-dlp's own build fork](https://github.com/yt-dlp/FFmpeg-Builds). Static, so
+  neither platform needs shared libraries beside them. `ffmpeg` writes the mp3;
+  `ffprobe` is what yt-dlp asks about a stream.
+- **[Deno](https://deno.com/)**, the JavaScript runtime yt-dlp solves YouTube's
+  player challenges in. Since yt-dlp 2025.11.12 this is required for YouTube,
+  and Deno is the only runtime yt-dlp enables by default. Without it yt-dlp
+  warns and quietly drops formats, which would affect every import, because
+  Spotify and Deezer tracks are matched by searching YouTube too.
+
+`npm run tools` fetches them for the current platform into `src-tauri/tools`,
+which the bundle takes as resources, and the release build runs that for you.
+Nothing is committed, and each fetch asks for the newest release, because
+yt-dlp's own guidance is to always run the latest: YouTube breaks older
+extractors. `node scripts/tools.mjs --help` lists the flags, including the tags
+for pinning a version.
+
+The first fetch downloads about 256 MB, and the four programs come to about
+440 MB once unpacked, which is most of what an installed Wave now weighs.
+Taking `ffprobe` out of `scripts/tools.mjs` saves 162 MB of that, at the cost of
+yt-dlp warning about it.
+
+They are resolved in this order: a path in the config `.env`, then the copy
+Wave shipped, then `PATH`. So `YTDLP_PATH`, `FFMPEG_PATH` and `DENO_PATH` are
+overrides for using a copy of your own, rather than something that has to be
+set.
+
+Wave is MIT, but the tools it ships are not: yt-dlp is Unlicense, Deno is MIT,
+and the FFmpeg builds are GPL. They are run as separate programs rather than
+linked into Wave.
 
 ## Getting started
 
@@ -226,8 +260,9 @@ The first Rust build takes a few minutes; later ones are fast.
 npm run tauri build
 ```
 
-This produces installers and a standalone binary under
-`src-tauri/target/release/bundle/`:
+The build fetches the download tools first, if they are not already there (see
+[Bundled tools](#bundled-tools)), then produces installers and a standalone
+binary under `src-tauri/target/release/bundle/`:
 
 - **Windows** — an `.msi` and an NSIS `-setup.exe`.
 - **Linux** — a `.deb`, an `.rpm`, and an `.AppImage`, when it is run on Linux.
@@ -282,12 +317,14 @@ things set up once.
    SPOTIFY_CLIENT_SECRET=your_client_secret
    # YTDLP_PATH=C:\path\to\yt-dlp.exe
    # FFMPEG_PATH=C:\path\to\ffmpeg.exe
+   # DENO_PATH=C:\path\to\deno.exe
    ```
 
-4. **Install the download tools.** Put `yt-dlp` and `ffmpeg` on your `PATH`, or
-   point `YTDLP_PATH` / `FFMPEG_PATH` at the executables — on Windows the
-   overrides look like `C:\tools\yt-dlp.exe`, on Linux they are plain paths such
-   as `/usr/bin/yt-dlp`. `yt-dlp` is also found as the Python module
+4. **Nothing else.** The download tools ship with the app, so there is nothing
+   to install. To use a copy of your own instead, set `YTDLP_PATH`,
+   `FFMPEG_PATH` or `DENO_PATH` in the same file; on Windows those look like
+   `C:\tools\yt-dlp.exe`, on Linux they are plain paths such as
+   `/usr/bin/yt-dlp`. `yt-dlp` is also found as the Python module
    (`python -m yt_dlp`) if that is how you installed it.
 
 The dialog shows a status line telling you exactly what is missing. When
@@ -302,8 +339,8 @@ browser window to sign in; the token is cached afterwards.
 
 Deezer needs no setup of its own. Paste a playlist, album or track link into the
 same field in the import dialog and Wave reads it from Deezer's public
-catalogue, then downloads the audio exactly as it does for Spotify. `yt-dlp`
-and `ffmpeg` are the only things it needs, as described above.
+catalogue, then downloads the audio exactly as it does for Spotify. The tools it
+needs are the ones Wave ships, as described above.
 
 Deezer's own editorial playlists work here, which is the opposite of Spotify,
 where the API refuses to hand them over. A playlist its owner marked **Private**
@@ -325,15 +362,18 @@ as it stands.
 - **Deezer says the playlist is Private.** The API reads public playlists only.
   Open the playlist on Deezer, switch the **Private** toggle off, and paste the
   link again.
-- **Spotify says yt-dlp or ffmpeg was not found.** Install them and make sure
-  they are on `PATH`, or set `YTDLP_PATH` / `FFMPEG_PATH` in the config `.env`.
+- **Wave says yt-dlp, ffmpeg or Deno was not found.** A release carries all
+  three, so this means the copy beside the app has gone missing. Reinstall, or
+  point `YTDLP_PATH` / `FFMPEG_PATH` / `DENO_PATH` at copies of your own in the
+  config `.env`.
 - **A song will not play.** Wave never guesses tags — a file with no artist tag
   is shown without one. Corrupt or unsupported files are reported in the status
   strip and skipped.
-- **A format will not play on Linux.** WebKitGTK decodes through GStreamer, so
-  the plugin for that format has to be installed.
-  `gstreamer1.0-plugins-good` covers `mp3` and `flac`, and `gstreamer1.0-libav`
-  covers the rest, including `wma` and `aac`.
+- **A format will not play on Linux.** WebKitGTK decodes through GStreamer. The
+  `.deb` and `.rpm` depend on `gstreamer1.0-plugins-good` and
+  `gstreamer1.0-libav`, and the AppImage carries its own GStreamer, so a normal
+  install covers `mp3`, `flac`, `wma` and `aac`. On a copy built by hand, the
+  plugins for the formats you need are the ones to install.
 - **The Linux build fails to link OpenSSL or WebKitGTK.** The development
   packages are missing. Install them as shown in [Requirements](#requirements);
   the usual culprits are `libwebkit2gtk-4.1-dev` and `libssl-dev`

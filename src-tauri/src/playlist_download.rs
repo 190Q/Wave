@@ -12,6 +12,7 @@ use crate::playlists;
 use crate::progress::Reporter;
 use crate::source::{read_env, TrackMeta};
 use crate::state::{PendingTrack, PersistedState, Store};
+use crate::tools;
 
 /// Where the downloads wait while they are being fetched, so nothing lands in
 /// the library until it is known what it is.
@@ -64,7 +65,8 @@ fn run_inner(
     }
 
     let name = playlist_name(&catalog, playlist_id);
-    let tools = download::resolve_tools(&read_env(app))?;
+    let bundled = tools::bundled_dir(app);
+    let tools = download::resolve_tools(&read_env(app), bundled.as_deref())?;
     let known = import_source::catalog_index(&catalog)?;
     let staging = staging_dir(app, playlist_id)?;
 

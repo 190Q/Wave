@@ -40,6 +40,7 @@ pub struct Env {
     pub client_secret: String,
     pub yt_dlp: Option<String>,
     pub ffmpeg: Option<String>,
+    pub deno: Option<String>,
     pub cookies: Option<String>,
     pub browser: Option<String>,
 }
@@ -65,11 +66,13 @@ fn env_template() -> String {
 # 3. Paste the app's Client ID and Client Secret below.
 #
 # Deezer needs no credentials at all: a Deezer link is read from the public
-# catalogue. The two paths below are what a download needs.
+# catalogue. yt-dlp, ffmpeg and Deno all ship with Wave, so the three paths
+# below are only for pointing at a copy of your own.
 SPOTIFY_CLIENT_ID=
 SPOTIFY_CLIENT_SECRET=
 # YTDLP_PATH=
 # FFMPEG_PATH=
+# DENO_PATH=
 #
 # A video that asks for a sign-in (age-restricted, or YouTube's bot check) only
 # downloads with cookies from an account that can watch it. Set one of these and
@@ -170,6 +173,7 @@ fn parse_env(raw: &str) -> Env {
             "SPOTIFY_CLIENT_SECRET" => env.client_secret = value,
             "YTDLP_PATH" => env.yt_dlp = Some(value),
             "FFMPEG_PATH" => env.ffmpeg = Some(value),
+            "DENO_PATH" => env.deno = Some(value),
             "YTDLP_COOKIES" => env.cookies = Some(value),
             "YTDLP_COOKIES_FROM_BROWSER" => env.browser = Some(value),
             _ => {}
@@ -254,6 +258,7 @@ mod tests {
 SPOTIFY_CLIENT_ID=abc
 SPOTIFY_CLIENT_SECRET='shh'
 YTDLP_PATH=\"C:\\tools\\yt-dlp.exe\"
+DENO_PATH=/usr/bin/deno
 YTDLP_COOKIES_FROM_BROWSER=firefox
 not a pair
 ",
@@ -262,6 +267,7 @@ not a pair
         assert_eq!(env.client_id, "abc");
         assert_eq!(env.client_secret, "shh");
         assert_eq!(env.yt_dlp.as_deref(), Some("C:\\tools\\yt-dlp.exe"));
+        assert_eq!(env.deno.as_deref(), Some("/usr/bin/deno"));
         assert_eq!(env.browser.as_deref(), Some("firefox"));
         assert!(env.cookies.is_none());
         assert!(env.complete());

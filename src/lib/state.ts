@@ -816,6 +816,8 @@ export async function refreshSpotifyStatus(): Promise<void> {
       ytDlp: false,
       ytDlpSource: "",
       ffmpeg: false,
+      deno: false,
+      denoSource: "",
       message: describe(error),
     };
   }
@@ -837,6 +839,8 @@ export async function refreshDeezerStatus(): Promise<void> {
       ytDlp: false,
       ytDlpSource: "",
       ffmpeg: false,
+      deno: false,
+      denoSource: "",
       message: describe(error),
     };
   }
@@ -858,6 +862,8 @@ export async function refreshYoutubeStatus(): Promise<void> {
       ytDlp: false,
       ytDlpSource: "",
       ffmpeg: false,
+      deno: false,
+      denoSource: "",
       message: describe(error),
     };
   }

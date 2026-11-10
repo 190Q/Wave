@@ -104,6 +104,7 @@ const PARTS: [&str; 5] = ["part", "pt", "vol", "volume", "chapter"];
 pub struct Tools {
     pub yt_dlp: YtDlp,
     pub ffmpeg: Option<PathBuf>,
+    pub deno: Option<PathBuf>,
     pub cookies: Option<PathBuf>,
     pub browser: Option<String>,
 }
@@ -117,14 +118,15 @@ impl Tools {
     }
 }
 
-pub fn resolve_tools(env: &Env) -> Result<Tools, String> {
-    let yt_dlp = find_yt_dlp(env.yt_dlp.as_ref()).ok_or_else(|| {
+pub fn resolve_tools(env: &Env, bundled: Option<&Path>) -> Result<Tools, String> {
+    let yt_dlp = find_yt_dlp(env.yt_dlp.as_ref(), bundled).ok_or_else(|| {
         "yt-dlp was not found. Install it, or set YTDLP_PATH in the config .env.".to_string()
     })?;
 
     Ok(Tools {
         yt_dlp,
-        ffmpeg: tool_path(env.ffmpeg.as_ref(), "ffmpeg"),
+        ffmpeg: tool_path(env.ffmpeg.as_ref(), "ffmpeg", bundled),
+        deno: tool_path(env.deno.as_ref(), "deno", bundled),
         // A cookies path that is not there is ignored, like the tool overrides.
         cookies: env
             .cookies
@@ -157,6 +159,16 @@ fn cookie_args(tools: &Tools) -> Vec<String> {
         (Some(path), _) => vec!["--cookies".to_string(), path.to_string_lossy().into_owned()],
         (None, Some(browser)) => vec!["--cookies-from-browser".to_string(), browser.clone()],
         (None, None) => Vec::new(),
+    }
+}
+
+fn js_args(tools: &Tools) -> Vec<String> {
+    match &tools.deno {
+        Some(path) => vec![
+            "--js-runtimes".to_string(),
+            format!("deno:{}", path.display()),
+        ],
+        None => Vec::new(),
     }
 }
 
@@ -417,6 +429,7 @@ fn query_text(meta: &TrackMeta) -> String {
 fn run_search(tools: &Tools, target: &str) -> Result<Vec<u8>, String> {
     let mut command = yt_dlp_command(&tools.yt_dlp);
     command.args(cookie_args(tools));
+    command.args(js_args(tools));
     command
         .arg("--flat-playlist")
         .arg("--dump-json")
@@ -490,6 +503,7 @@ pub struct LinkEntry {
 pub fn read_link(tools: &Tools, url: &str, limit: usize) -> Result<(String, Vec<LinkEntry>), String> {
     let mut command = yt_dlp_command(&tools.yt_dlp);
     command.args(cookie_args(tools));
+    command.args(js_args(tools));
     command
         .arg("--flat-playlist")
         .arg("--dump-json")
@@ -605,6 +619,7 @@ fn text_of(entry: &Value, keys: &[&str]) -> String {
 fn look_up(tools: &Tools, candidate: &Candidate) -> Option<Found> {
     let mut command = yt_dlp_command(&tools.yt_dlp);
     command.args(cookie_args(tools));
+    command.args(js_args(tools));
     command
         .arg("--skip-download")
         .arg("--no-warnings")
@@ -900,6 +915,7 @@ fn pull(tools: &Tools, candidate: &Candidate, target: &Path) -> Result<PathBuf, 
 
     let mut command = yt_dlp_command(&tools.yt_dlp);
     command.args(cookie_args(tools));
+    command.args(js_args(tools));
     command
         .arg("-x")
         .arg("--audio-format")
@@ -1582,9 +1598,23 @@ mod tests {
         Tools {
             yt_dlp: YtDlp::Exe(PathBuf::from("yt-dlp")),
             ffmpeg: None,
+            deno: None,
             cookies: cookies.map(PathBuf::from),
             browser: browser.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn points_yt_dlp_at_the_runtime_that_shipped() {
+        // Without one, yt-dlp is left to find a runtime of its own.
+        assert!(js_args(&tools(None, None)).is_empty());
+
+        let mut shipped = tools(None, None);
+        shipped.deno = Some(PathBuf::from("/opt/wave/tools/deno"));
+        assert_eq!(
+            js_args(&shipped),
+            vec!["--js-runtimes", "deno:/opt/wave/tools/deno"]
+        );
     }
 
     #[test]

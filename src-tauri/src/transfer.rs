@@ -16,6 +16,7 @@ use crate::playlists;
 use crate::progress::Reporter;
 use crate::source::{now_ms, read_env, TrackMeta};
 use crate::state::{PersistedState, Store};
+use crate::tools;
 
 const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -164,7 +165,8 @@ fn run(app: &AppHandle, path: &Path, report: &mut Reporter) -> Result<ImportOutc
         .iter()
         .any(|meta| import_source::held(&existing, meta).is_none());
     let tools = if wanted {
-        Some(download::resolve_tools(&read_env(app))?)
+        let bundled = tools::bundled_dir(app);
+        Some(download::resolve_tools(&read_env(app), bundled.as_deref())?)
     } else {
         None
     };

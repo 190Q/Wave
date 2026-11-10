@@ -13,6 +13,7 @@ use crate::playlists;
 use crate::progress::Reporter;
 use crate::source::{read_env, TrackMeta};
 use crate::state::{PersistedState, Store};
+use crate::tools;
 
 /// Follows one import, track by track.
 pub const PROGRESS_EVENT: &str = "source-import";
@@ -60,7 +61,8 @@ fn run_inner(
     download_duplicates: bool,
     resolve: impl FnOnce(&mut Reporter) -> Result<Link, String>,
 ) -> Result<ImportOutcome, String> {
-    let tools = download::resolve_tools(&read_env(app))?;
+    let bundled = tools::bundled_dir(app);
+    let tools = download::resolve_tools(&read_env(app), bundled.as_deref())?;
     let link = resolve(report)?;
     let tracks = link.tracks;
 

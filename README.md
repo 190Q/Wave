@@ -21,8 +21,9 @@ Wayland). macOS is not supported.
 - The interface is plain TypeScript and the DOM. One file is platform-aware:
   `src/lib/platform.ts` reports whether the webview is WebKitGTK, which is how an
   effect that WebKitGTK renders badly gets skipped.
-- The Rust side has two small platform-specific pieces, both behind `cfg`:
-  `#[cfg(windows)]` turns off WebView2's browser accelerator keys, and
+- The Rust side has a few small platform-specific pieces, all behind `cfg`:
+  `#[cfg(windows)]` turns off WebView2's browser accelerator keys and gives the
+  system media controls the window handle they are claimed by, and
   `#[cfg(target_os = "linux")]` turns off WebKitGTK's DMA-BUF renderer, which
   flickers on a lot of Linux setups. `webview2-com` and `windows` are
   Windows-only dependencies.
@@ -95,6 +96,15 @@ newer (Ubuntu 22.04+, Debian 12+, Fedora 36+ and so on) and are x86_64 only.
   `lrc`.
 - **Playback.** Queue with shuffle and repeat (off/all), volume, mute, seek, and
   resume of the last session (queue, cursor, and position) on launch.
+- **Now playing.** The song shows up in the system's own media controls while it
+  plays: the media flyout, the lock screen and the volume overlay on Windows,
+  along with the keyboard's media keys, and the media widget of a Linux desktop
+  through MPRIS. The title, artist, album and cover are all there, the timeline
+  follows a seek, and the controls play, pause, skip, seek and set the volume.
+  Wave can also report it to **Discord**, as a profile activity reading
+  **Listening to Wave** with the song and artist and a progress bar, the way
+  Spotify does. The system controls are on by default, and Discord presence is
+  off until it is switched on in **Settings → Now playing**.
 - **Level volume.** Every song is measured once (ITU-R BS.1770 loudness) and
   played at a gain that lands it on the same target, so a quiet track is not
   lost next to a loud one. `.wma` and `.opus` cannot be measured, and play at
@@ -251,8 +261,9 @@ plain SSH connection.
 Wave builds on **Windows 10/11** and **Linux**. Both need:
 
 - **Node.js** 20.19+ or 22.12+ (Vite 8) and **npm**.
-- **Rust** stable, 1.85 or newer — the MSVC toolchain on Windows, the GNU
-  toolchain on Linux. The backend uses the Rust 2024 edition.
+- **Rust** stable, 1.87 or newer — the MSVC toolchain on Windows, the GNU
+  toolchain on Linux. The backend uses the Rust 2024 edition, and the system
+  media controls are built on `souvlaki`, which needs 1.87.
 
 ### Windows 10/11
 
@@ -481,6 +492,45 @@ Every download writes to a log, so a song that will not come down says why
 rather than only that it failed. **Open the download log** in the import dialog
 shows it.
 
+## Discord presence
+
+Discord presence is off until it is switched on in **Settings → Now playing**,
+and there is nothing to set up first: the application Wave reports to is built
+into the app, so the switch is the only thing to touch. The card reads
+**Listening to Wave**, with the song as its title, the artist beneath it, and a
+progress bar that stops when the music does. The activity is cleared when Wave
+is closed, and when nothing is loaded.
+
+The image beside it is Wave's own logo rather than the album cover. Discord
+draws only images uploaded to the application, or images at an address it can
+fetch for itself, and a song in your library is a file on your disk with no
+address to give it.
+
+Discord has to be running for any of this to reach it. If it is started
+afterwards, Wave tries again every fifteen seconds.
+
+A fork that wants its own name on Discord makes an application of its own:
+
+1. Open the [Discord developer
+   portal](https://discord.com/developers/applications) and create an
+   application. Name it after the fork: that is the name Discord puts in
+   "Listening to ...".
+2. In that application, open **Rich Presence → Art Assets** and upload a logo
+   with the asset name `wave`. That is the image beside the song.
+3. Copy the **Application ID** from **General Information**.
+
+Then either paste it into `DEFAULT_DISCORD_CLIENT_ID` in
+`src-tauri/src/presence.rs` before building, so every copy of the build carries
+it, or leave that and set it per machine in the config `.env`:
+
+```dotenv
+DISCORD_CLIENT_ID=your_application_id
+```
+
+The template there names the key as well. **Open the config folder** is in the
+import dialog, under **Spotify**. A new id is picked up as the file is saved,
+with no restart.
+
 ## Troubleshooting
 
 - **The window never appears.** Wave keeps the window hidden until the theme and
@@ -510,6 +560,19 @@ shows it.
 - **A song will not play.** Wave never guesses tags — a file with no artist tag
   is shown without one. Corrupt or unsupported files are reported in the status
   strip and skipped.
+- **The song does not show in the system's media controls.** Check **Settings →
+  Now playing**, and look at the terminal Wave was started from: a failure to
+  claim the controls is reported there and nowhere else. The media keys go with
+  them, so with that switch off they do nothing.
+- **The media flyout says "Unknown app" and shows no icon.** Windows matches the
+  id the running process reports against a Start Menu shortcut, and a build run
+  straight from `target\debug` has no shortcut, so there is nothing to match. An
+  installed copy carries both. If an installed copy still says it, sign out and
+  back in, or restart Explorer, to clear the shell's cached name.
+- **Discord shows nothing.** Check **Settings → Now playing**: Discord presence
+  is off until it is switched on. Discord also has to be running for Wave to
+  reach it, and the two are retried every fifteen seconds, so starting it
+  afterwards is enough.
 - **A format will not play on Linux.** WebKitGTK decodes through GStreamer. The
   `.deb` and `.rpm` depend on `gstreamer1.0-plugins-good` and
   `gstreamer1.0-libav`, and the AppImage carries its own GStreamer, so a normal

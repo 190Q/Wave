@@ -42,11 +42,23 @@ rusqlite = { version = "0.40.2", features = ["bundled"], default-features = fals
 uuid = { version = "1", features = ["v4", "v5"] }
 blake3 = "1"
 
-# Used to turn off WebView2's own browser shortcuts (Ctrl+R, F5, F12, ...), and
-# to give a command the console it was run from.
+# The system's own media controls: the Windows media flyout and the media keys,
+# or MPRIS on Linux. The zbus backend is pure Rust, so Linux needs no libdbus
+# development package to build.
+souvlaki = { version = "0.9.3", default-features = false, features = ["use_zbus"] }
+discord-rich-presence = "1.1.0"
+
+# Used to turn off WebView2's own browser shortcuts (Ctrl+R, F5, F12, ...), to
+# give a command the console it was run from, and to put the media controls
+# worker in an apartment of its own.
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console"] }
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_System_Console",
+  "Win32_UI_Shell",
+] }
 
 [profile.dev.package."*"]
 opt-level = 3

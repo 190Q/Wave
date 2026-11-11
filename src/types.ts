@@ -93,6 +93,41 @@ export interface Settings {
   /** Nine `Ctrl+Shift+1..9` slots, an action id each. Saved, not yet wired. */
   shortcutSlots: string[];
   analyticsEnabled: boolean;
+  /** Shows the song in the system's own controls: the Windows media flyout and the media keys, or MPRIS on Linux. */
+  systemMediaControls: boolean;
+  /** Shows the song on the Discord profile. Off until it is asked for. */
+  discordPresence: boolean;
+}
+
+/** What the system's own controls and Discord are told about the song playing. */
+export interface NowPlaying {
+  title: string;
+  artist: string;
+  album: string;
+  durationMs: number;
+  positionMs: number;
+  playing: boolean;
+  /** Where the cover sits on disk, empty when the song has none. */
+  artwork: string;
+}
+
+/**
+ * Something the system's own controls asked for. `seekBy` and `seekTo` carry
+ * milliseconds, `volume` carries `0` to `100`, and the rest carry nothing.
+ */
+export interface MediaControl {
+  action:
+    | "play"
+    | "pause"
+    | "toggle"
+    | "next"
+    | "previous"
+    | "stop"
+    | "seekBy"
+    | "seekTo"
+    | "volume"
+    | "raise";
+  value: number | null;
 }
 
 /** How far a listen got, and how it ended. */

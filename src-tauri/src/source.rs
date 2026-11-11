@@ -33,7 +33,8 @@ pub struct TrackMeta {
 }
 
 /// The credentials and tool overrides read from the config `.env`. The file is
-/// shared: the credentials belong to Spotify, the tool paths serve every import.
+/// shared: the credentials belong to Spotify, the tool paths serve every import,
+/// and the Discord application is what the presence reports to.
 #[derive(Debug, Clone, Default)]
 pub struct Env {
     pub client_id: String,
@@ -43,6 +44,7 @@ pub struct Env {
     pub deno: Option<String>,
     pub cookies: Option<String>,
     pub browser: Option<String>,
+    pub discord_client_id: Option<String>,
 }
 
 impl Env {
@@ -54,8 +56,8 @@ impl Env {
 fn env_template() -> String {
     format!(
         "\
-# Spotify credentials for the Import dialog, and the download tools every
-# import uses.
+# Spotify credentials for the Import dialog, the download tools every import
+# uses, and the Discord application the presence reports to.
 #
 # 1. Create an app at https://developer.spotify.com/dashboard
 # 2. In that app, add this to Redirect URIs, exactly as written:
@@ -81,6 +83,13 @@ SPOTIFY_CLIENT_SECRET=
 # encrypt their cookies, so export a cookies.txt for those.
 # YTDLP_COOKIES_FROM_BROWSER=firefox
 # YTDLP_COOKIES=
+#
+# Discord presence shows the song on your Discord profile. It needs an
+# application of its own: create one at
+# https://discord.com/developers/applications, call it Wave, and upload the
+# logo under Rich Presence -> Art Assets as \"wave\". Paste its Application ID
+# below, or leave this out to use the id the build carries.
+# DISCORD_CLIENT_ID=
 ",
         crate::spotify::redirect_uri()
     )
@@ -177,6 +186,7 @@ fn parse_env(raw: &str) -> Env {
             "DENO_PATH" => env.deno = Some(value),
             "YTDLP_COOKIES" => env.cookies = Some(value),
             "YTDLP_COOKIES_FROM_BROWSER" => env.browser = Some(value),
+            "DISCORD_CLIENT_ID" => env.discord_client_id = Some(value),
             _ => {}
         }
     }
@@ -261,11 +271,13 @@ SPOTIFY_CLIENT_SECRET='shh'
 YTDLP_PATH=\"C:\\tools\\yt-dlp.exe\"
 DENO_PATH=/usr/bin/deno
 YTDLP_COOKIES_FROM_BROWSER=firefox
+DISCORD_CLIENT_ID=1234567890
 not a pair
 ",
         );
 
         assert_eq!(env.client_id, "abc");
+        assert_eq!(env.discord_client_id.as_deref(), Some("1234567890"));
         assert_eq!(env.client_secret, "shh");
         assert_eq!(env.yt_dlp.as_deref(), Some("C:\\tools\\yt-dlp.exe"));
         assert_eq!(env.deno.as_deref(), Some("/usr/bin/deno"));

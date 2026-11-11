@@ -18,6 +18,7 @@ mod lyrics_fetch;
 mod migrate;
 mod playlist_download;
 mod playlists;
+mod presence;
 mod progress;
 mod recommend;
 mod source;
@@ -58,6 +59,21 @@ fn disable_browser_shortcuts(app: &tauri::AppHandle) {
 
         let _ = unsafe { settings3.SetAreBrowserAcceleratorKeysEnabled(false) };
     });
+}
+
+/// Gives the process an AppUserModelID, which is the bundle id the installer
+/// stamps onto the Start Menu shortcut.
+///
+/// Windows names a media session by matching the id the process reports to a
+/// shortcut, so without this the media flyout says "Unknown app" and shows no
+/// icon. It has to be set before the window exists.
+#[cfg(windows)]
+fn name_the_process(identifier: &str) {
+    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+    use windows::core::PCWSTR;
+
+    let wide: Vec<u16> = identifier.encode_utf16().chain(std::iter::once(0)).collect();
+    let _ = unsafe { SetCurrentProcessExplicitAppUserModelID(PCWSTR(wide.as_ptr())) };
 }
 
 fn reveal_main_window(app: &tauri::AppHandle) {
@@ -136,7 +152,10 @@ pub fn run() {
         std::process::exit(cli::run(context, &args));
     }
 
-    tauri::Builder::default()
+    #[cfg(windows)]
+    name_the_process(&context.config().identifier);
+
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -148,6 +167,8 @@ pub fn run() {
             }
             state::watch_window(app.handle());
             source::watch_config(app.handle());
+            app.manage(presence::Presence::start(app.handle()));
+            presence::watch_config(app.handle());
 
             #[cfg(windows)]
             disable_browser_shortcuts(app.handle());
@@ -171,6 +192,7 @@ pub fn run() {
             state::place_mini_player,
             state::toggle_like,
             state::set_likes,
+            presence::set_now_playing,
             library::scan_library,
             library::library_info,
             library::open_library_folder,
@@ -216,6 +238,16 @@ pub fn run() {
             analytics::analytics_stats,
             analytics::analytics_clear,
         ])
-        .run(context)
+        .build(context)
         .expect("error while running tauri application");
+
+    app.run(|handle, event| {
+        // The media controls have to be let go of while the app is still here,
+        // or the song stays in the system's own controls after it has closed.
+        if let tauri::RunEvent::Exit = event {
+            if let Some(presence) = handle.try_state::<presence::Presence>() {
+                presence.shutdown();
+            }
+        }
+    });
 }

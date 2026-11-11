@@ -42,7 +42,9 @@ type ToggleKey =
   | "resumeOnLaunch"
   | "rememberWindow"
   | "normalizeVolume"
-  | "analyticsEnabled";
+  | "analyticsEnabled"
+  | "systemMediaControls"
+  | "discordPresence";
 
 const MOTION_OPTIONS: { value: ReduceMotionMode; label: string }[] = [
   { value: "system", label: "System" },
@@ -171,6 +173,7 @@ export function mountSettings(): void {
     const state = getState();
     body.innerHTML = [
       playbackHtml(draft),
+      nowPlayingHtml(draft),
       appearanceHtml(draft),
       windowHtml(draft),
       libraryHtml(state, selectedExport()?.id ?? ""),
@@ -461,6 +464,24 @@ function playbackHtml(settings: Settings): string {
       "Normalize volume",
       "Measure each song once and play it at a level gain, so a quiet track is not lost next to a loud one.",
       settings.normalizeVolume,
+    )}`,
+  );
+}
+
+function nowPlayingHtml(settings: Settings): string {
+  return section(
+    "Now playing",
+    `${toggleRow(
+      "systemMediaControls",
+      "System media controls",
+      "Show the song in the system's own controls: the Windows media flyout, the lock screen and the media keys, or the media widget of a Linux desktop. The controls there play, pause, skip, seek and set the volume.",
+      settings.systemMediaControls,
+    )}
+    ${toggleRow(
+      "discordPresence",
+      "Discord presence",
+      "Show the song on your Discord profile, the way Spotify does, with the title, artist and a progress bar. Off until this is switched on.",
+      settings.discordPresence,
     )}`,
   );
 }

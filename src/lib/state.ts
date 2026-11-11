@@ -170,6 +170,8 @@ const state: AppState = {
     searchAlgorithm: "substring",
     shortcutSlots: [],
     analyticsEnabled: true,
+    systemMediaControls: true,
+    discordPresence: false,
   },
   filter: "all",
   query: "",

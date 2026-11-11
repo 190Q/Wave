@@ -13,6 +13,7 @@ import type {
   LibraryInfo,
   LoudnessOutcome,
   LyricsOutcome,
+  NowPlaying,
   PersistedState,
   PlayRecord,
   PlaylistMode,
@@ -33,6 +34,11 @@ import type {
 
 export function loadState(): Promise<PersistedState> {
   return invoke("get_state");
+}
+
+/** Tells the system's own controls and Discord what is playing, or that nothing is. */
+export function setNowPlaying(song: NowPlaying | null): Promise<void> {
+  return invoke("set_now_playing", { song });
 }
 
 export function saveSettings(settings: Settings): Promise<PersistedState> {

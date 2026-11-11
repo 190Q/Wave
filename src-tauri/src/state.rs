@@ -51,6 +51,11 @@ pub struct Settings {
     pub search_algorithm: String,
     pub shortcut_slots: Vec<String>,
     pub analytics_enabled: bool,
+    /// Shows the song in the system's own controls: the Windows media flyout
+    /// and the media keys, or MPRIS on Linux.
+    pub system_media_controls: bool,
+    /// Shows the song on the Discord profile. Off until it is asked for.
+    pub discord_presence: bool,
 }
 
 impl Default for Settings {
@@ -69,6 +74,8 @@ impl Default for Settings {
             search_algorithm: "substring".to_string(),
             shortcut_slots: Vec::new(),
             analytics_enabled: true,
+            system_media_controls: true,
+            discord_presence: false,
         }
     }
 }
@@ -436,6 +443,18 @@ pub fn set_settings(
                 .set_always_on_top(committed.settings.mini_player || committed.settings.always_on_top);
         }
     }
+
+    if before.system_media_controls != committed.settings.system_media_controls
+        || before.discord_presence != committed.settings.discord_presence
+    {
+        if let Some(presence) = app.try_state::<crate::presence::Presence>() {
+            presence.set_enabled(
+                committed.settings.system_media_controls,
+                committed.settings.discord_presence,
+            );
+        }
+    }
+
     Ok(committed)
 }
 

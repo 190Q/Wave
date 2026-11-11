@@ -1,6 +1,7 @@
 import "./assets/icons/icons.css";
 import { showMainWindow } from "./lib/ipc";
 import { mountMotion } from "./lib/motion";
+import { mountPresence } from "./lib/presence";
 import {
   getState,
   init,
@@ -44,6 +45,7 @@ function mount(): void {
   mountConfirm();
   mountTheme();
   mountSettings();
+  mountPresence();
   mountStatus();
   mountShortcuts();
   revealWhenReady();

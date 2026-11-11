@@ -65,9 +65,10 @@ fn env_template() -> String {
 #    Spotify refuses the sign-in if it does not match character for character.
 # 3. Paste the app's Client ID and Client Secret below.
 #
-# Deezer needs no credentials at all: a Deezer link is read from the public
-# catalogue. yt-dlp, ffmpeg and Deno all ship with Wave, so the three paths
-# below are only for pointing at a copy of your own.
+# Deezer and YouTube need no credentials at all: a Deezer link is read from the
+# public catalogue, and a YouTube link is downloaded exactly as it is. yt-dlp,
+# ffmpeg and Deno all ship with Wave, so the three paths below are only for
+# pointing at a copy of your own.
 SPOTIFY_CLIENT_ID=
 SPOTIFY_CLIENT_SECRET=
 # YTDLP_PATH=

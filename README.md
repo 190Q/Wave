@@ -9,8 +9,9 @@ It is a [Tauri](https://tauri.app) 2 app: a Rust backend for everything that
 touches the disk or the network, and a small TypeScript front end (no framework,
 just the DOM) for the interface.
 
-Wave also imports from Spotify and Deezer: paste a playlist, album or track link
-and it downloads the audio, tags the files, and drops them into your library.
+Wave also imports from Spotify, Deezer and YouTube: paste a playlist, album or
+track link and it downloads the audio, tags the files, and drops them into your
+library.
 
 ## Platform support
 
@@ -112,10 +113,10 @@ newer (Ubuntu 22.04+, Debian 12+, Fedora 36+ and so on) and are x86_64 only.
   screen corners.
 - **Window memory.** Remembers its size, position, and monitor between launches,
   with nine `Ctrl+Shift+1..9` slots for saved window frames and actions.
-- **Spotify and Deezer import.** Paste a link from either and Wave downloads a
-  playlist, album or track with the tools it ships, tags the files, and skips
-  anything you already have. Spotify needs a developer app of your own; Deezer
-  needs nothing else.
+- **Spotify, Deezer and YouTube import.** Paste a link from any of the three and
+  Wave downloads a playlist, album or track with the tools it ships, tags the
+  files, and skips anything you already have. Spotify needs a developer app of
+  your own; Deezer and YouTube need nothing else.
 - **Generated playlists.** Ask for a playlist and Wave fills it for you: 50 songs
   picked from Deezer's public catalogue to match what you have been listening
   to, or to match one genre. The picks stay undownloaded until you ask for them,
@@ -349,6 +350,22 @@ switching the Private toggle off on Deezer makes that link work. Deezer's
 playlists are public by default, so a playlist of your own is normally readable
 as it stands.
 
+## YouTube import
+
+YouTube needs no setup of its own either. Paste a video, playlist, album or
+channel link from `youtube.com`, `youtu.be` or `music.youtube.com` into the same
+field, and Wave downloads the uploads that link points at. Nothing is searched
+for or guessed at: the link is the song.
+
+A single video becomes one song. A playlist, album or channel becomes a Wave
+playlist named after it, and the tags come from what the upload carries. Songs
+the library already holds are skipped unless you ask for them again.
+
+Age-restricted videos, and the sign-in check YouTube sometimes puts in front of
+a download, are the one thing that stops it. Set `YTDLP_COOKIES_FROM_BROWSER`
+or `YTDLP_COOKIES` in the config `.env`, as the template there describes, and
+try again.
+
 ## Troubleshooting
 
 - **The window never appears.** Wave keeps the window hidden until the theme and
@@ -362,6 +379,10 @@ as it stands.
 - **Deezer says the playlist is Private.** The API reads public playlists only.
   Open the playlist on Deezer, switch the **Private** toggle off, and paste the
   link again.
+- **A YouTube link says it needs a sign-in.** That is YouTube's bot check, or an
+  age-restricted video. Set `YTDLP_COOKIES_FROM_BROWSER=firefox`, or
+  `YTDLP_COOKIES` with a cookies.txt, in the config `.env` and download it
+  again.
 - **Wave says yt-dlp, ffmpeg or Deno was not found.** A release carries all
   three, so this means the copy beside the app has gone missing. Reinstall, or
   point `YTDLP_PATH` / `FFMPEG_PATH` / `DENO_PATH` at copies of your own in the

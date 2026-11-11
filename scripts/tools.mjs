@@ -28,6 +28,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { inflateRawSync } from "node:zlib";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT_DIR = join(root, "src-tauri", "tools");
@@ -242,13 +243,84 @@ async function verify(source, release, assetName, digest) {
   if (expected !== digest) fail(`${assetName} does not match ${wanted}`);
 }
 
-/** Unpacks an archive with tar, which reads zip and tar.xz on both platforms. */
+/**
+ * Where a zip's central directory starts and how many entries it holds, read
+ * from the end-of-central-directory record at the end of the file.
+ */
+function zipDirectory(zip) {
+  const lowest = Math.max(0, zip.length - 22 - 0xffff);
+
+  for (let at = zip.length - 22; at >= lowest; at -= 1) {
+    if (zip.readUInt32LE(at) === 0x06054b50) {
+      const offset = zip.readUInt32LE(at + 16);
+      if (offset === 0xffffffff) fail("the zip is zip64, which is not supported");
+      return { offset, count: zip.readUInt16LE(at + 10) };
+    }
+  }
+
+  fail("the zip has no end-of-central-directory record");
+}
+
+/**
+ * Unpacks a zip here rather than handing it to a tool, so a build never depends
+ * on unzip being installed. The tar on Linux is GNU tar, which cannot read zip
+ * at all, and that is what broke the Linux release.
+ *
+ * Entries are read from the central directory, which keeps the real sizes even
+ * when a streamed zip wrote zeroes into its local headers.
+ */
+function unzip(archive, dest) {
+  const zip = readFileSync(archive);
+  const directory = zipDirectory(zip);
+  let at = directory.offset;
+
+  for (let index = 0; index < directory.count; index += 1) {
+    if (zip.readUInt32LE(at) !== 0x02014b50) fail(`${archive} has a broken central directory`);
+
+    const method = zip.readUInt16LE(at + 10);
+    const size = zip.readUInt32LE(at + 20);
+    const nameLength = zip.readUInt16LE(at + 28);
+    const extraLength = zip.readUInt16LE(at + 30);
+    const commentLength = zip.readUInt16LE(at + 32);
+    const mode = zip.readUInt32LE(at + 38) >>> 16;
+    const name = zip.toString("utf8", at + 46, at + 46 + nameLength);
+
+    // The local header repeats the name and the extra field, at its own lengths.
+    const local = zip.readUInt32LE(at + 42);
+    const start = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
+    const raw = zip.subarray(start, start + size);
+
+    const target = join(dest, name);
+    if (!target.startsWith(dest)) fail(`${archive} holds ${name}, which escapes the archive`);
+
+    if (name.endsWith("/")) {
+      mkdirSync(target, { recursive: true });
+    } else {
+      mkdirSync(dirname(target), { recursive: true });
+      if (method === 0) writeFileSync(target, raw);
+      else if (method === 8) writeFileSync(target, inflateRawSync(raw));
+      else fail(`${archive} holds ${name}, compressed in a way that is not supported`);
+      // The bundle keeps the mode, and Linux will not run them without it.
+      if (mode & 0o111) chmodSync(target, 0o755);
+    }
+
+    at += 46 + nameLength + extraLength + commentLength;
+  }
+}
+
+/** Unpacks an archive: a zip is read here, and a tar.xz goes through tar. */
 function unpack(archive, dest) {
   mkdirSync(dest, { recursive: true });
+
+  if (archive.endsWith(".zip")) {
+    unzip(archive, dest);
+    return;
+  }
+
   try {
     execFileSync("tar", ["-xf", archive, "-C", dest], { stdio: "ignore" });
   } catch {
-    fail(`could not unpack ${archive}; a tar that reads it has to be on PATH`);
+    fail(`could not unpack ${archive}; tar has to be on PATH`);
   }
 }
 

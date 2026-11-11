@@ -1,6 +1,6 @@
 [package]
 name = "wave"
-version = "0.1.3"
+version = "0.1.4"
 description = "Wave - a local-first music player"
 authors = ["you"]
 license = "MIT"

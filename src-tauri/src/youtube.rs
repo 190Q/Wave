@@ -3,8 +3,8 @@ use tauri::AppHandle;
 
 use crate::download;
 use crate::import::ImportOutcome;
-use crate::import_source::{self, ImportPlan, Kind, Link};
-use crate::progress::Reporter;
+use crate::import_source::{self, ImportPlan, Kind, Link, Service};
+use crate::progress::{Output, Reporter};
 use crate::source::{env_path, ensure_env_file, read_env, TrackMeta};
 use crate::tools;
 
@@ -26,7 +26,7 @@ pub struct YoutubeStatus {
 
 /// Reads a link the user pasted and turns it into the songs it points at. The
 /// audio comes from the very upload they linked, so nothing is guessed at.
-fn resolve(app: &AppHandle, url: &str, report: &mut Reporter) -> Result<Link, String> {
+pub(crate) fn resolve(app: &AppHandle, url: &str, report: &mut Reporter) -> Result<Link, String> {
     let bundled = tools::bundled_dir(app);
     let tools = download::resolve_tools(&read_env(app), bundled.as_deref())?;
 
@@ -85,9 +85,13 @@ pub async fn youtube_import(
 ) -> Result<ImportOutcome, String> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        import_source::run(&handle, "youtube", download_duplicates, |report| {
-            resolve(&handle, &url, report)
-        })
+        import_source::run_link(
+            &handle,
+            Service::Youtube,
+            &url,
+            download_duplicates,
+            Output::Events,
+        )
     })
     .await
     .map_err(|e| format!("the import stopped unexpectedly: {e}"))?
@@ -97,7 +101,7 @@ pub async fn youtube_import(
 pub async fn youtube_plan(app: AppHandle, url: String) -> Result<ImportPlan, String> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        import_source::plan(&handle, "youtube", |report| resolve(&handle, &url, report))
+        import_source::plan_link(&handle, Service::Youtube, &url, Output::Events)
     })
     .await
     .map_err(|e| format!("could not read the link: {e}"))?

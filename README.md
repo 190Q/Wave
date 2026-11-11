@@ -135,6 +135,117 @@ newer (Ubuntu 22.04+, Debian 12+, Fedora 36+ and so on) and are x86_64 only.
   database beside the library folder. It is on by default, it never leaves your
   machine, and it can be switched off or cleared in **Settings → Wave Swell**.
 
+## Command line
+
+The same executable takes commands, so a link can be downloaded, and the library
+read, without opening the window:
+
+```text
+wave import <link|folder|file>   download a link, import a folder, or import a
+                                 .wavelist file
+wave list [--limit N]            list the library
+wave search <text>               find songs by title, artist or album
+wave scan                        re-read the library folder
+wave info                        where the library is and what it holds
+wave playlists                   list the playlists
+wave playlist <name>             show one playlist and its songs
+wave download <playlist>         download a playlist's waiting songs
+wave export <playlist> <file>    write a playlist out as a .wavelist
+wave lyrics [<text>]             fetch missing lyrics
+wave covers [<text>]             fetch missing cover art
+wave genres [<text>]             fetch missing genres
+wave level [<text>]              measure loudness, for level volume
+wave like <text>                 like the songs a search finds
+wave unlike <text>               remove them from Liked Songs
+wave delete <text>               delete songs, with their files
+wave tools                       report the download tools and the config
+wave help [command]              the list, or one command in detail
+wave version                     the version
+```
+
+The commands work on the same library, the same config `.env` and the same
+download log the window does, so a song downloaded here is in the library the
+next time the app opens, and the two can be used side by side. `wave help
+<command>` says what one command takes.
+
+A link is read as Deezer if it names Deezer, as YouTube if it names YouTube, and
+as Spotify otherwise, exactly as the import dialog reads it. Reading it first
+costs nothing and says what is in it:
+
+```sh
+wave import --plan https://open.spotify.com/playlist/...
+```
+
+Then import it. Songs the library already has are skipped, and `--duplicates`
+fetches them again anyway:
+
+```sh
+wave import https://open.spotify.com/playlist/...
+wave import https://www.youtube.com/watch?v=...
+```
+
+A folder is imported by pointing at it, and becomes a playlist named after it
+unless `--no-playlist` is given. A `.wavelist` file is imported the same way,
+and needs no Spotify credentials, because the songs are downloaded from the tags
+it holds:
+
+```sh
+wave import "D:\Music\Hindsight" --playlist Hindsight
+wave import "D:\Music\Hindsight" --no-playlist
+wave import playlist.wavelist
+```
+
+The commands that act on songs take a search rather than an id. Case, accents and
+stray spacing do not matter, and a track id works too. Where acting on the wrong
+song would be a nuisance, text that matches more than one song is refused and the
+matches are listed, so `--all` is needed to mean every one of them:
+
+```sh
+wave like "freak on a leash"
+wave delete "live at" --all
+```
+
+The read commands (`list`, `search`, `playlists`, `playlist`, `info`, `tools`)
+take `--json`, so a script can read them. Everything else prints for a person,
+and a command that fails says why on stderr and exits non-zero.
+
+### Where the executable is
+
+The commands are the app's own executable, so it has to be on `PATH` to be run as
+`wave`. Without that, the full path works just as well.
+
+- **Windows** — `wave.exe` is in the install folder, which is
+  `%LOCALAPPDATA%\Wave` for a normal install. The installer does not add it to
+  `PATH`; this adds it for your user once, and a new terminal will pick it up:
+
+  ```powershell
+  [Environment]::SetEnvironmentVariable("Path", "$env:Path;$env:LOCALAPPDATA\Wave", "User")
+  ```
+
+- **Linux** — the `.deb` and `.rpm` install `wave` into `/usr/bin`, and the
+  installer script puts the AppImage in `~/.local/bin/wave`, so it is normally on
+  `PATH` already.
+
+The commands are in the binary `npm run tauri build` produces, which is the same
+one the installers carry. `cargo build --release` on its own leaves the front end
+out of the binary, so its window looks for `npm run dev`; its commands work all
+the same, since a command never opens the window.
+
+A command prints to the terminal it was run from. On Windows the app is a
+windowed program, so the shell does not wait for it: the output arrives just
+after the prompt comes back, and `>` redirection does not carry it, because
+Windows gives a windowed program no stream to redirect. To read a command's
+output in a script on Windows, start it and wait for it:
+
+```powershell
+Start-Process wave -ArgumentList "list", "--json" `
+  -RedirectStandardOutput songs.json -NoNewWindow -Wait
+```
+
+Commands start the same runtime the window does, so they need a desktop session
+to run in: on Linux, run them from a terminal in your session rather than over a
+plain SSH connection.
+
 ## Requirements
 
 Wave builds on **Windows 10/11** and **Linux**. Both need:

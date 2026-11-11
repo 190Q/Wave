@@ -14,7 +14,7 @@ use crate::import::{self, ImportOutcome};
 use crate::import_source;
 use crate::library;
 use crate::playlists;
-use crate::progress::Reporter;
+use crate::progress::{Output, Reporter};
 use crate::source::{now_ms, read_env, TrackMeta};
 use crate::state::{PersistedState, Store};
 use crate::tools;
@@ -100,7 +100,12 @@ fn read(path: &Path) -> Result<WaveList, String> {
     Ok(list)
 }
 
-fn export(app: &AppHandle, path: &Path, name: String, ids: &[String]) -> Result<usize, String> {
+pub(crate) fn export(
+    app: &AppHandle,
+    path: &Path,
+    name: String,
+    ids: &[String],
+) -> Result<usize, String> {
     let catalog = app.state::<Catalog>();
     let tracks: HashMap<_, _> = library::scan(app, &catalog)
         .tracks
@@ -154,7 +159,11 @@ fn staging_dir(app: &AppHandle, job: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-fn run(app: &AppHandle, path: &Path, report: &mut Reporter) -> Result<ImportOutcome, String> {
+pub(crate) fn run(
+    app: &AppHandle,
+    path: &Path,
+    report: &mut Reporter,
+) -> Result<ImportOutcome, String> {
     let list = read(path)?;
     let catalog = app.state::<Catalog>();
 
@@ -269,7 +278,7 @@ pub async fn export_wavelist(app: AppHandle, path: String, name: String, track_i
 #[tauri::command]
 pub async fn import_wavelist(app: AppHandle, path: String) -> Result<ImportOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut report = Reporter::new(&app, PROGRESS_EVENT);
+        let mut report = Reporter::new(&app, PROGRESS_EVENT, Output::Events);
         let result = run(&app, Path::new(&path), &mut report);
         match &result {
             Ok(_) => report.phase("done", "Finished."),

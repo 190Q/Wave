@@ -23,10 +23,20 @@ pub struct Progress {
     pub started_at: u64,
 }
 
+/// Where a long job's updates go: the app's own event, or the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Output {
+    /// Emitted on the job's event, for the window to draw.
+    Events,
+    /// Printed as the job runs, for the command line.
+    Console,
+}
+
 /// Collects progress so every update carries the whole picture.
 pub struct Reporter {
     app: Option<AppHandle>,
     event: &'static str,
+    output: Output,
     phase: String,
     total: usize,
     done: usize,
@@ -38,10 +48,11 @@ pub struct Reporter {
 }
 
 impl Reporter {
-    pub fn new(app: &AppHandle, event: &'static str) -> Self {
+    pub fn new(app: &AppHandle, event: &'static str, output: Output) -> Self {
         Self {
             app: Some(app.clone()),
             event,
+            output,
             ..Self::quiet()
         }
     }
@@ -50,6 +61,7 @@ impl Reporter {
         Self {
             app: None,
             event: "",
+            output: Output::Events,
             phase: String::new(),
             total: 0,
             done: 0,
@@ -65,7 +77,7 @@ impl Reporter {
         &self.failures
     }
 
-    fn send(&self) {
+    fn emit(&self) {
         let Some(app) = &self.app else {
             return;
         };
@@ -85,29 +97,63 @@ impl Reporter {
         );
     }
 
+    /// Whether the updates are going to the terminal instead of the window.
+    fn console(&self) -> bool {
+        self.output == Output::Console
+    }
+
+    /// One song, as it is handled.
+    fn print_line(&self, position: usize, label: &str) {
+        if self.total > 0 {
+            println!("[{position}/{}] {label}", self.total);
+        } else {
+            println!("[{position}] {label}");
+        }
+    }
+
     pub fn phase(&mut self, phase: &str, message: &str) {
         self.phase = phase.to_string();
         self.message = message.to_string();
-        self.send();
+        if self.console() {
+            // A failure is not printed here: the job returns it as an error, and
+            // the caller is the one that says it, once.
+            if phase != "failed" {
+                println!("{message}");
+            }
+            return;
+        }
+        self.emit();
     }
 
     pub fn count(&mut self, total: usize) {
         self.total = total;
         self.done = 0;
         self.started_at = now_ms();
-        self.send();
+        if self.console() {
+            return;
+        }
+        self.emit();
     }
 
     /// The item now underway, counted as done so the readout never lags.
     pub fn at(&mut self, position: usize, label: &str) {
         self.done = position;
         self.label = label.to_string();
-        self.send();
+        if self.console() {
+            self.print_line(position, label);
+            return;
+        }
+        self.emit();
     }
 
     pub fn fail(&mut self, message: String) {
+        if self.console() {
+            eprintln!("failed: {message}");
+            self.failures.push(message);
+            return;
+        }
         self.failures.push(message);
-        self.send();
+        self.emit();
     }
 
     /// An item the library already had, so nothing was done for it. The label
@@ -115,6 +161,10 @@ impl Reporter {
     pub fn reuse(&mut self, label: &str) {
         self.label = label.to_string();
         self.reused += 1;
-        self.send();
+        if self.console() {
+            println!("already in your library: {label}");
+            return;
+        }
+        self.emit();
     }
 }

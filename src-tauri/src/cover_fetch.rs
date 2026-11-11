@@ -10,7 +10,7 @@ use tauri::{AppHandle, Manager};
 use crate::catalog::Catalog;
 use crate::import_source::fold;
 use crate::library::{self, library_root, track_label, Track};
-use crate::progress::Reporter;
+use crate::progress::{Output, Reporter};
 use crate::source::{client, read_env};
 use crate::spotify;
 
@@ -46,8 +46,8 @@ pub fn fill(app: &AppHandle, track_ids: &[String]) -> Result<CoversOutcome, Stri
     run_inner(app, track_ids, &mut Reporter::quiet())
 }
 
-pub fn run(app: &AppHandle, track_ids: &[String]) -> Result<CoversOutcome, String> {
-    let mut report = Reporter::new(app, PROGRESS_EVENT);
+pub fn run(app: &AppHandle, track_ids: &[String], output: Output) -> Result<CoversOutcome, String> {
+    let mut report = Reporter::new(app, PROGRESS_EVENT, output);
     let outcome = run_inner(app, track_ids, &mut report);
 
     match &outcome {
@@ -506,7 +506,7 @@ fn summary(outcome: &CoversOutcome) -> String {
 #[tauri::command]
 pub async fn fetch_covers(app: AppHandle, track_ids: Vec<String>) -> Result<CoversOutcome, String> {
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || run(&handle, &track_ids))
+    tauri::async_runtime::spawn_blocking(move || run(&handle, &track_ids, Output::Events))
         .await
         .map_err(|e| format!("the cover fetch stopped unexpectedly: {e}"))?
 }

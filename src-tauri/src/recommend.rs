@@ -14,7 +14,7 @@ use crate::deezer;
 use crate::import_source;
 use crate::library;
 use crate::playlists;
-use crate::progress::Reporter;
+use crate::progress::{Output, Reporter};
 use crate::source::TrackMeta;
 use crate::state::{PendingTrack, PersistedState, Store};
 
@@ -412,7 +412,7 @@ pub async fn generate_playlist(
 }
 
 fn generate(app: &AppHandle, mode: Mode, genre: Option<String>) -> Result<GenerateOutcome, String> {
-    let mut report = Reporter::new(app, PROGRESS_EVENT);
+    let mut report = Reporter::new(app, PROGRESS_EVENT, Output::Events);
 
     match generate_inner(app, mode, genre.as_deref(), &mut report) {
         Ok(outcome) => Ok(outcome),

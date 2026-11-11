@@ -11,7 +11,7 @@ use tauri::{AppHandle, Manager};
 use crate::catalog::Catalog;
 use crate::import_source::fold;
 use crate::library::{self, library_root, lyrics_path, track_label, Track};
-use crate::progress::Reporter;
+use crate::progress::{Output, Reporter};
 use crate::source::{client, encode};
 
 const LRCLIB: &str = "https://lrclib.net/api";
@@ -68,8 +68,8 @@ pub fn fill(app: &AppHandle, track_ids: &[String]) -> Result<LyricsOutcome, Stri
     run_inner(app, track_ids, &mut Reporter::quiet())
 }
 
-pub fn run(app: &AppHandle, track_ids: &[String]) -> Result<LyricsOutcome, String> {
-    let mut report = Reporter::new(app, PROGRESS_EVENT);
+pub fn run(app: &AppHandle, track_ids: &[String], output: Output) -> Result<LyricsOutcome, String> {
+    let mut report = Reporter::new(app, PROGRESS_EVENT, output);
     let outcome = run_inner(app, track_ids, &mut report);
 
     match &outcome {
@@ -574,7 +574,7 @@ fn summary(outcome: &LyricsOutcome) -> String {
 #[tauri::command]
 pub async fn fetch_lyrics(app: AppHandle, track_ids: Vec<String>) -> Result<LyricsOutcome, String> {
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || run(&handle, &track_ids))
+    tauri::async_runtime::spawn_blocking(move || run(&handle, &track_ids, Output::Events))
         .await
         .map_err(|e| format!("the lyrics fetch stopped unexpectedly: {e}"))?
 }

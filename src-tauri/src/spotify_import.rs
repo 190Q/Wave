@@ -1,13 +1,13 @@
 use tauri::AppHandle;
 
 use crate::import::ImportOutcome;
-use crate::import_source::{self, ImportPlan, Kind, Link};
-use crate::progress::Reporter;
+use crate::import_source::{self, ImportPlan, Kind, Link, Service};
+use crate::progress::{Output, Reporter};
 use crate::source::read_env;
 use crate::spotify::{self, RefKind};
 
 /// Reads the link and asks Spotify what it holds.
-fn resolve(app: &AppHandle, url: &str, report: &mut Reporter) -> Result<Link, String> {
+pub(crate) fn resolve(app: &AppHandle, url: &str, report: &mut Reporter) -> Result<Link, String> {
     let env = read_env(app);
     let reference = spotify::resolve_ref(url)?;
 
@@ -49,9 +49,13 @@ pub async fn spotify_import(
 ) -> Result<ImportOutcome, String> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        import_source::run(&handle, "spotify", download_duplicates, |report| {
-            resolve(&handle, &url, report)
-        })
+        import_source::run_link(
+            &handle,
+            Service::Spotify,
+            &url,
+            download_duplicates,
+            Output::Events,
+        )
     })
     .await
     .map_err(|e| format!("the import stopped unexpectedly: {e}"))?
@@ -63,7 +67,7 @@ pub async fn spotify_import(
 pub async fn spotify_plan(app: AppHandle, url: String) -> Result<ImportPlan, String> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        import_source::plan(&handle, "spotify", |report| resolve(&handle, &url, report))
+        import_source::plan_link(&handle, Service::Spotify, &url, Output::Events)
     })
     .await
     .map_err(|e| format!("could not read the link: {e}"))?

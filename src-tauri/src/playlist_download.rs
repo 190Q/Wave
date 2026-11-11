@@ -10,7 +10,7 @@ use crate::download_log;
 use crate::import::{self, ImportOutcome};
 use crate::import_source::{self, PROGRESS_EVENT};
 use crate::playlists;
-use crate::progress::Reporter;
+use crate::progress::{Output, Reporter};
 use crate::source::{read_env, TrackMeta};
 use crate::state::{PendingTrack, PersistedState, Store};
 use crate::tools;
@@ -30,8 +30,9 @@ pub fn run(
     app: &AppHandle,
     playlist_id: &str,
     entry_ids: &[String],
+    output: Output,
 ) -> Result<ImportOutcome, String> {
-    let mut report = Reporter::new(app, PROGRESS_EVENT);
+    let mut report = Reporter::new(app, PROGRESS_EVENT, output);
     let outcome = run_inner(app, playlist_id, entry_ids, &mut report);
 
     match &outcome {
@@ -218,9 +219,11 @@ pub async fn download_playlist(
     entry_ids: Vec<String>,
 ) -> Result<ImportOutcome, String> {
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || run(&handle, &playlist_id, &entry_ids))
-        .await
-        .map_err(|e| format!("the download stopped unexpectedly: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        run(&handle, &playlist_id, &entry_ids, Output::Events)
+    })
+    .await
+    .map_err(|e| format!("the download stopped unexpectedly: {e}"))?
 }
 
 #[cfg(test)]

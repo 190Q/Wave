@@ -685,10 +685,20 @@ pub fn delete_tracks(
     catalog: State<'_, Catalog>,
     track_ids: Vec<String>,
 ) -> Result<PersistedState, String> {
-    let root = library_root(&app)?;
+    delete(&app, &catalog, &store, &track_ids)
+}
+
+/// Removes the given songs, with their files and their playlist entries.
+pub fn delete(
+    app: &AppHandle,
+    catalog: &Catalog,
+    store: &Store,
+    track_ids: &[String],
+) -> Result<PersistedState, String> {
+    let root = library_root(app)?;
     let mut removed: Vec<String> = Vec::new();
 
-    for id in &track_ids {
+    for id in track_ids {
         let Some(row) = catalog.track(id)? else {
             continue;
         };
@@ -720,7 +730,7 @@ pub fn delete_tracks(
             state.artwork_colours.remove(id);
         }
     });
-    save(&app, &next)?;
+    save(app, &next)?;
 
-    Ok(crate::playlists::refresh(&app, &store))
+    Ok(crate::playlists::refresh(app, store))
 }

@@ -2,11 +2,11 @@ use tauri::AppHandle;
 
 use crate::deezer::{self, DeezerStatus, RefKind};
 use crate::import::ImportOutcome;
-use crate::import_source::{self, ImportPlan, Kind, Link};
-use crate::progress::Reporter;
+use crate::import_source::{self, ImportPlan, Kind, Link, Service};
+use crate::progress::{Output, Reporter};
 
 /// Reads the link and asks Deezer what it holds.
-fn resolve(url: &str, report: &mut Reporter, enrich: bool) -> Result<Link, String> {
+pub(crate) fn resolve(url: &str, report: &mut Reporter, enrich: bool) -> Result<Link, String> {
     let reference = deezer::resolve_ref(url)?;
 
     report.phase("resolving", "Reading the link from Deezer.");
@@ -59,9 +59,13 @@ pub async fn deezer_import(
 ) -> Result<ImportOutcome, String> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        import_source::run(&handle, "deezer", download_duplicates, |report| {
-            resolve(&url, report, true)
-        })
+        import_source::run_link(
+            &handle,
+            Service::Deezer,
+            &url,
+            download_duplicates,
+            Output::Events,
+        )
     })
     .await
     .map_err(|e| format!("the import stopped unexpectedly: {e}"))?
@@ -71,7 +75,7 @@ pub async fn deezer_import(
 pub async fn deezer_plan(app: AppHandle, url: String) -> Result<ImportPlan, String> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        import_source::plan(&handle, "deezer", |report| resolve(&url, report, false))
+        import_source::plan_link(&handle, Service::Deezer, &url, Output::Events)
     })
     .await
     .map_err(|e| format!("could not read the link: {e}"))?

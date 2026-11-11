@@ -11,13 +11,54 @@ use crate::download_log;
 use crate::import::{self, ImportOutcome};
 use crate::library;
 use crate::playlists;
-use crate::progress::Reporter;
+use crate::progress::{Output, Reporter};
 use crate::source::{read_env, TrackMeta};
 use crate::state::{PersistedState, Store};
 use crate::tools;
 
 /// Follows one import, track by track.
 pub const PROGRESS_EVENT: &str = "source-import";
+
+/// The services a pasted link can belong to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Service {
+    Spotify,
+    Deezer,
+    Youtube,
+}
+
+impl Service {
+    /// The name the import history and the log use.
+    pub fn name(self) -> &'static str {
+        match self {
+            Service::Spotify => "spotify",
+            Service::Deezer => "deezer",
+            Service::Youtube => "youtube",
+        }
+    }
+
+    /// The service a link belongs to, read the way the import dialog reads it.
+    pub fn of(link: &str) -> Self {
+        let value = link.trim().to_lowercase();
+        if value.contains("deezer.") || value.starts_with("deezer:") {
+            return Service::Deezer;
+        }
+        if value.contains("youtube.") || value.contains("youtu.be") {
+            return Service::Youtube;
+        }
+        Service::Spotify
+    }
+
+    /// The service a name asks for, for a caller that says so outright.
+    pub fn parse(name: &str) -> Result<Self, String> {
+        match name.trim().to_lowercase().as_str() {
+            "spotify" => Ok(Service::Spotify),
+            "deezer" => Ok(Service::Deezer),
+            "youtube" => Ok(Service::Youtube),
+            other => Err(format!("{other} is not a service; use spotify, deezer or youtube")),
+        }
+    }
+}
 
 /// What a link points at, as far as the runner is concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,13 +79,58 @@ pub struct Link {
     pub tracks: Vec<TrackMeta>,
 }
 
+/// Downloads a link of the given service, which is what the app's own import
+/// commands and the command line both go through.
+pub fn run_link(
+    app: &AppHandle,
+    service: Service,
+    url: &str,
+    download_duplicates: bool,
+    output: Output,
+) -> Result<ImportOutcome, String> {
+    run(app, service.name(), download_duplicates, output, |report| {
+        resolve_link(app, service, url, true, report)
+    })
+}
+
+/// Reads a link of the given service and reports what it holds, so a caller can
+/// ask about the duplicates before downloading anything.
+pub fn plan_link(
+    app: &AppHandle,
+    service: Service,
+    url: &str,
+    output: Output,
+) -> Result<ImportPlan, String> {
+    plan(app, service.name(), output, |report| {
+        resolve_link(app, service, url, false, report)
+    })
+}
+
+/// Asks the service what its link points at. A Deezer playlist is filled in
+/// from its albums only for an import, where the extra detail is worth the
+/// requests; a plan takes the listing as it stands.
+pub fn resolve_link(
+    app: &AppHandle,
+    service: Service,
+    url: &str,
+    enrich: bool,
+    report: &mut Reporter,
+) -> Result<Link, String> {
+    match service {
+        Service::Spotify => crate::spotify_import::resolve(app, url, report),
+        Service::Deezer => crate::deezer_import::resolve(url, report, enrich),
+        Service::Youtube => crate::youtube::resolve(app, url, report),
+    }
+}
+
 pub fn run(
     app: &AppHandle,
     source: &str,
     download_duplicates: bool,
+    output: Output,
     resolve: impl FnOnce(&mut Reporter) -> Result<Link, String>,
 ) -> Result<ImportOutcome, String> {
-    let mut report = Reporter::new(app, PROGRESS_EVENT);
+    let mut report = Reporter::new(app, PROGRESS_EVENT, output);
     let outcome = run_inner(app, source, &mut report, download_duplicates, resolve);
 
     match &outcome {
@@ -331,9 +417,10 @@ pub struct ImportPlan {
 pub fn plan(
     app: &AppHandle,
     source: &str,
+    output: Output,
     resolve: impl FnOnce(&mut Reporter) -> Result<Link, String>,
 ) -> Result<ImportPlan, String> {
-    let mut report = Reporter::new(app, PROGRESS_EVENT);
+    let mut report = Reporter::new(app, PROGRESS_EVENT, output);
     // Reading the link runs yt-dlp for a pasted YouTube one, so it is logged
     // too; the import that follows rewrites the log from the start.
     download_log::begin(app, source);

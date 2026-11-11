@@ -175,7 +175,7 @@ fn pending<'a>(rows: &[&'a TrackRow]) -> Vec<&'a TrackRow> {
         .collect()
 }
 
-fn analyse(app: &AppHandle, track_ids: &[String]) -> LoudnessOutcome {
+pub(crate) fn analyse(app: &AppHandle, track_ids: &[String]) -> LoudnessOutcome {
     let Ok(root) = library::library_root(app) else {
         return LoudnessOutcome::default();
     };

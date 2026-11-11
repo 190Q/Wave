@@ -9,7 +9,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::catalog::Catalog;
 use crate::library::{self, track_label};
-use crate::progress::Reporter;
+use crate::progress::{Output, Reporter};
 use crate::source::{client, retry_after, wait_phrase};
 
 /// Follows one genre pass, song by song.
@@ -251,8 +251,8 @@ pub fn fill(app: &AppHandle, track_ids: &[String]) -> Result<GenresOutcome, Stri
     run_inner(app, track_ids, &mut Reporter::quiet())
 }
 
-fn run(app: &AppHandle, track_ids: &[String]) -> Result<GenresOutcome, String> {
-    let mut report = Reporter::new(app, PROGRESS_EVENT);
+pub fn run(app: &AppHandle, track_ids: &[String], output: Output) -> Result<GenresOutcome, String> {
+    let mut report = Reporter::new(app, PROGRESS_EVENT, output);
     let outcome = run_inner(app, track_ids, &mut report);
 
     match &outcome {
@@ -383,7 +383,7 @@ pub async fn fetch_genres(
     track_ids: Vec<String>,
 ) -> Result<GenresOutcome, String> {
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || run(&handle, &track_ids))
+    tauri::async_runtime::spawn_blocking(move || run(&handle, &track_ids, Output::Events))
         .await
         .map_err(|e| format!("the genre lookup stopped unexpectedly: {e}"))?
 }

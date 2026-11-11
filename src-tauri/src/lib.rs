@@ -1,6 +1,7 @@
 mod analytics;
 mod artwork;
 mod catalog;
+mod cli;
 mod cover_fetch;
 mod deezer;
 mod deezer_import;
@@ -73,6 +74,24 @@ fn reveal_main_window(app: &tauri::AppHandle) {
     let _ = window.show();
 }
 
+/// The store, the listening record and the catalog, which the window and the
+/// command line both work from.
+fn prepare(app: &tauri::AppHandle) {
+    app.manage(state::Store::load(app));
+
+    let analytics = match analytics::Analytics::open(app) {
+        Ok(analytics) => analytics,
+        Err(error) => {
+            eprintln!("the listening history will not be kept: {error}");
+            analytics::Analytics::in_memory()
+        }
+    };
+    app.manage(analytics);
+
+    // Last, because the upgrade renumbers both of the above.
+    app.manage(open_catalog(app));
+}
+
 fn open_catalog(app: &tauri::AppHandle) -> catalog::Catalog {
     let opened = library::library_root(app).and_then(|root| catalog::Catalog::open(&root));
 
@@ -111,24 +130,17 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     tune_webkit();
 
+    let context: tauri::Context = tauri::generate_context!();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if !args.is_empty() {
+        std::process::exit(cli::run(context, &args));
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let store = state::Store::load(app.handle());
-            app.manage(store);
-
-            let analytics = match analytics::Analytics::open(app.handle()) {
-                Ok(analytics) => analytics,
-                Err(error) => {
-                    eprintln!("the listening history will not be kept: {error}");
-                    analytics::Analytics::in_memory()
-                }
-            };
-            app.manage(analytics);
-
-            // Last, because the upgrade renumbers both of the above.
-            app.manage(open_catalog(app.handle()));
+            prepare(app.handle());
             if let Ok(root) = library::library_root(app.handle()) {
                 if let Err(error) = app.asset_protocol_scope().allow_directory(&root, true) {
                     eprintln!("could not allow the library on the asset protocol: {error}");
@@ -204,6 +216,6 @@ pub fn run() {
             analytics::analytics_stats,
             analytics::analytics_clear,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }

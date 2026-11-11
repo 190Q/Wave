@@ -42,10 +42,11 @@ rusqlite = { version = "0.40.2", features = ["bundled"], default-features = fals
 uuid = { version = "1", features = ["v4", "v5"] }
 blake3 = "1"
 
-# Used to turn off WebView2's own browser shortcuts (Ctrl+R, F5, F12, ...).
+# Used to turn off WebView2's own browser shortcuts (Ctrl+R, F5, F12, ...), and
+# to give a command the console it was run from.
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
-windows = "0.62"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console"] }
 
 [profile.dev.package."*"]
 opt-level = 3

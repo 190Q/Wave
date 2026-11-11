@@ -27,9 +27,10 @@ if ($Version) {
 }
 $tag = $release.tag_name
 
-# The installer name is read from the release.
+# The installer name is read from the release. The slim build is passed over,
+# so this installs the one that carries the download tools.
 $asset = $release.assets |
-  Where-Object { $_.name -like "*-setup.exe" } |
+  Where-Object { $_.name -like "*-setup.exe" -and $_.name -notlike "*slim*" } |
   Select-Object -First 1
 if (-not $asset) { throw "the $tag release has no Windows installer" }
 

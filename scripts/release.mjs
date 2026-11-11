@@ -8,8 +8,15 @@
 // version number. Every other file that carries a copy is written from it by
 // `sync`, so VERSION is the only one to edit by hand.
 import { execFileSync, execSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -49,6 +56,13 @@ const TARGETS = [
 
 const BUNDLE_DIR = join(root, "src-tauri", "target", "release", "bundle");
 const WORKFLOW = join(root, ".github", "workflows", "release.yml");
+
+// Passed to the CLI, which reads it from the repo root.
+const SLIM_CONFIG = "src-tauri/tauri.slim.conf.json";
+
+// What a slim installer is called, so the two builds of a version cannot be
+// mistaken for one another.
+const SLIM_SUFFIX = "-slim";
 
 // ---------------------------------------------------------------- output ----
 
@@ -273,8 +287,8 @@ function commandEdit(tag, options) {
   gh(args);
 }
 
-/** Every installer the local build produced. */
-function localAssets() {
+/** Every installer the local build produced for `version`. */
+function localAssets(version) {
   if (!existsSync(BUNDLE_DIR)) return [];
   const found = [];
   const wanted = [".exe", ".msi", ".deb", ".rpm", ".AppImage"];
@@ -283,11 +297,68 @@ function localAssets() {
     for (const entry of readdirSync(dir)) {
       const path = join(dir, entry);
       if (statSync(path).isDirectory()) walk(path);
-      else if (wanted.some((extension) => entry.endsWith(extension))) found.push(path);
+      else if (wanted.some((extension) => entry.endsWith(extension))) {
+        // A folder holding several versions keeps the installers of each, and
+        // only this version's are the ones being published.
+        if (entry.includes(version)) found.push(path);
+      }
     }
   };
   walk(BUNDLE_DIR);
   return found;
+}
+
+/** Where a slim installer lands, beside the full one it matches. */
+function slimName(path) {
+  const name = basename(path);
+  const dot = name.lastIndexOf(".");
+  return join(dirname(path), `${name.slice(0, dot)}${SLIM_SUFFIX}${name.slice(dot)}`);
+}
+
+/** The installers a build rewrote, which is what that build just produced. */
+function freshAssets(version, build) {
+  const before = new Map(
+    localAssets(version).map((path) => [path, statSync(path).mtimeMs]),
+  );
+
+  build();
+
+  return localAssets(version).filter(
+    (path) => before.get(path) !== statSync(path).mtimeMs,
+  );
+}
+
+/** The slim installers a local build produced. */
+function slimAssets() {
+  return localAssets(readVersion()).filter((path) =>
+    basename(path).includes(SLIM_SUFFIX),
+  );
+}
+
+/**
+ * Builds the slim installers, which leave out the download tools, and renames
+ * them so they sit beside the full ones rather than over the top of them.
+ */
+function commandSlim() {
+  const version = readVersion();
+  const produced = freshAssets(version, () =>
+    shell(`npx tauri build --config ${SLIM_CONFIG}`),
+  );
+
+  if (produced.length === 0) fail("the slim build produced no installers");
+
+  for (const path of produced) renameSync(path, slimName(path));
+  say(`\nRenamed ${produced.length} slim installer(s).`);
+}
+
+function commandUploadSlim(tag) {
+  if (!tag) fail("upload-slim needs a tag");
+
+  const files = slimAssets();
+  if (files.length === 0) fail("there are no slim installers built for this version");
+
+  requireGh();
+  gh(["release", "upload", tag, ...files, "--clobber"]);
 }
 
 function releaseExists(tag) {
@@ -308,8 +379,8 @@ function commandPublish(options) {
   plan.push(`commit any outstanding changes as "Release ${tag}"`);
   plan.push(`tag ${tag} and push it with the branch`);
   if (options.noPublish) plan.push("stop there");
-  else if (options.local || !existsSync(WORKFLOW)) plan.push("build the installers here and publish the release from them");
-  else plan.push("let CI build both platforms and publish the release");
+  else if (options.local || !existsSync(WORKFLOW)) plan.push("build the full and the slim installers here and publish the release from them");
+  else plan.push("let CI build both platforms and publish both builds");
 
   say(`Publishing ${tag}\n`);
   for (const step of plan) say(`  - ${step}`);
@@ -348,9 +419,12 @@ function commandPublish(options) {
     return;
   }
 
-  shell("npx tauri build --bundles all");
+  // The slim build is renamed as it goes, so it comes first: the full build
+  // writes the names the slim one has just been renamed away from.
+  commandSlim();
+  shell("npx tauri build");
 
-  const assets = localAssets();
+  const assets = localAssets(version);
   if (assets.length === 0) fail("the build produced no installers to upload");
   say(`\nUploading ${assets.length} installer(s).`);
 
@@ -411,7 +485,9 @@ Releases
   view <tag>                      Show one release
   assets <tag>                    List a release's assets
   publish [options]               Sync, commit, tag, push, and publish
+  slim                            Build the slim installers and rename them
   upload <tag> <file...>          Add assets to a release
+  upload-slim <tag>               Add the slim installers to a release
   rm-asset <tag> <name...>        Remove assets from a release
   edit <tag> [options]            Change a release's title, notes or draft state
   delete <tag> --yes [--tag]      Delete a release, and its git tag with --tag
@@ -442,7 +518,9 @@ function main() {
     case "view": return commandView(first);
     case "open": return commandOpen(first);
     case "assets": return commandAssets(first);
+    case "slim": return commandSlim();
     case "upload": return commandUpload(first, more);
+    case "upload-slim": return commandUploadSlim(first);
     case "rm-asset": return commandRemoveAsset(first, more);
     case "delete": return commandDelete(first, options);
     case "edit": return commandEdit(first, options);

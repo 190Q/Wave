@@ -43,6 +43,12 @@ Every release is built for Windows and Linux by CI. Take what you need from the
 [latest release](https://github.com/190Q/Wave/releases/latest), or use one of the
 one-line installers below.
 
+Every installer comes in two builds. The plain one carries the download tools,
+so it downloads out of the box. The `-slim` one leaves them out and weighs a few
+megabytes instead of a hundred and fifty, for when yt-dlp, ffmpeg and Deno are
+already on the machine. See [Bundled tools](#bundled-tools) for what each build
+expects. The one-line installers take the plain one.
+
 ### Windows
 
 The NSIS `-setup.exe` is the one to take; the `.msi` is there for managed
@@ -322,7 +328,8 @@ GStreamer stack, which the packages and the AppImage already account for; see
 
 ## Bundled tools
 
-Downloading needs three programs, and every release ships all three:
+Downloading needs three programs. The plain build of every release carries all
+of them:
 
 - **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** reads a link and fetches the
   audio. It is the PyInstaller build, which carries the `yt-dlp-ejs` scripts, so
@@ -353,6 +360,14 @@ They are resolved in this order: a path in the config `.env`, then the copy
 Wave shipped, then `PATH`. So `YTDLP_PATH`, `FFMPEG_PATH` and `DENO_PATH` are
 overrides for using a copy of your own, rather than something that has to be
 set.
+
+That last step is what the second build of every release is for. The slim
+installers are the same build with the four programs left out, named with a
+`-slim` suffix: a few megabytes rather than the hundred and fifty the plain one
+weighs, for a machine that already has them. Nothing else about the build
+changes, so a slim install finds the copies on `PATH` and downloads exactly as
+the plain one does. Either way the status line in the import dialog names
+whatever is still missing.
 
 Wave is MIT, but the tools it ships are not: yt-dlp is Unlicense, Deno is MIT,
 and the FFmpeg builds are GPL. They are run as separate programs rather than
@@ -390,9 +405,20 @@ binary under `src-tauri/target/release/bundle/`:
 - **Windows** — an `.msi` and an NSIS `-setup.exe`.
 - **Linux** — a `.deb`, an `.rpm`, and an `.AppImage`, when it is run on Linux.
 
-Pushing a `v*` tag hands the same job to CI, which builds both platforms and
-attaches everything to the release. That is how the Linux packages get built
-from a Windows checkout. See `.github/workflows/release.yml`.
+The slim build is the same thing with the download tools left out, and is made
+by naming the config that leaves them out:
+
+```bash
+node scripts/release.mjs slim
+```
+
+That builds through `src-tauri/tauri.slim.conf.json` and renames each installer
+with the `-slim` suffix, so it lands beside the plain one rather than over the
+top of it. The same command is what CI runs.
+
+Pushing a `v*` tag hands the job to CI, which builds both platforms and attaches
+both builds to the release. That is how the Linux packages get built from a
+Windows checkout. See `.github/workflows/release.yml`.
 
 The release profile in `src-tauri/Cargo.toml` is tuned for size (`lto`,
 `opt-level = 3`, `strip`, `panic = "abort"`).
@@ -444,10 +470,10 @@ things set up once.
    ```
 
 4. **Nothing else.** The download tools ship with the app, so there is nothing
-   to install. To use a copy of your own instead, set `YTDLP_PATH`,
-   `FFMPEG_PATH` or `DENO_PATH` in the same file; on Windows those look like
-   `C:\tools\yt-dlp.exe`, on Linux they are plain paths such as
-   `/usr/bin/yt-dlp`. `yt-dlp` is also found as the Python module
+   to install, unless you took the `-slim` build. To use a copy of your own
+   instead, set `YTDLP_PATH`, `FFMPEG_PATH` or `DENO_PATH` in the same file; on
+   Windows those look like `C:\tools\yt-dlp.exe`, on Linux they are plain paths
+   such as `/usr/bin/yt-dlp`. `yt-dlp` is also found as the Python module
    (`python -m yt_dlp`) if that is how you installed it.
 
 The dialog shows a status line telling you exactly what is missing. When
@@ -548,10 +574,11 @@ with no restart.
   age-restricted video. Set `YTDLP_COOKIES_FROM_BROWSER=firefox`, or
   `YTDLP_COOKIES` with a cookies.txt, in the config `.env` and download it
   again.
-- **Wave says yt-dlp, ffmpeg or Deno was not found.** A release carries all
-  three, so this means the copy beside the app has gone missing. Reinstall, or
+- **Wave says yt-dlp, ffmpeg or Deno was not found.** The plain build carries
+  them beside the app, so this means that copy has gone missing. Reinstall, or
   point `YTDLP_PATH` / `FFMPEG_PATH` / `DENO_PATH` at copies of your own in the
-  config `.env`.
+  config `.env`. On the `-slim` build it is expected until they are on `PATH`,
+  which is the trade that build makes.
 - **A song will not download.** Every import writes what yt-dlp said to a log,
   which holds the last import only. **Open the download log** in the import
   dialog opens it, and the line under the button names it: `import.log`, in a

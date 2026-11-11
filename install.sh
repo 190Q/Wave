@@ -84,7 +84,8 @@ VERSION="${VERSION#v}"
 say "Installing Wave $VERSION"
 
 # The asset names are read from the release rather than guessed, so a change in
-# how the bundles are named cannot quietly break this script.
+# how the bundles are named cannot quietly break this script. The slim build is
+# passed over, so this installs the one that carries the download tools.
 json=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/tags/v$VERSION") \
   || die "could not read the v$VERSION release"
 
@@ -94,6 +95,7 @@ asset() { # $1: suffix to match, $2: architecture token
     | sed -e 's/.*"\(https[^"]*\)".*/\1/' \
     | grep -E "$1" \
     | grep -F "$2" \
+    | grep -v -F -e "-slim" \
     | head -n 1
 }
 

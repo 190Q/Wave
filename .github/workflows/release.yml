@@ -62,6 +62,11 @@ jobs:
           releaseBody: |
             Installers for Windows and Linux.
 
+            Every installer comes in two builds. The plain one ships yt-dlp,
+            ffmpeg, ffprobe and Deno, so downloading a link works on a fresh
+            install. The `-slim` one leaves all four out and weighs a few
+            megabytes, for when you already have your own copies on PATH.
+
             **Linux, one line:**
 
             ```sh
@@ -78,3 +83,13 @@ jobs:
             Fedora 36+) and are x86_64 only.
           releaseDraft: false
           prerelease: false
+
+      # The slim build reuses the target directory the step above filled, so it
+      # only recompiles the app, and the release it attaches to already exists.
+      - name: Build the slim installers
+        run: node scripts/release.mjs slim
+
+      - name: Attach the slim installers
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/release.mjs upload-slim ${{ inputs.tag || github.ref_name }}

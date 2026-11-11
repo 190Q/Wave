@@ -7,6 +7,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::catalog::Catalog;
 use crate::download;
+use crate::download_log;
 use crate::import::{self, ImportOutcome};
 use crate::library;
 use crate::playlists;
@@ -62,8 +63,14 @@ fn run_inner(
     resolve: impl FnOnce(&mut Reporter) -> Result<Link, String>,
 ) -> Result<ImportOutcome, String> {
     let bundled = tools::bundled_dir(app);
+    // Everything yt-dlp says while this import runs is written to the log, so a
+    // download that goes wrong can be read back afterwards.
+    download_log::begin(app, source);
     let tools = download::resolve_tools(&read_env(app), bundled.as_deref())?;
     let link = resolve(report)?;
+    if let Some(log) = &tools.log {
+        log.link(&link.name, link.tracks.len());
+    }
     let tracks = link.tracks;
 
     let staging = staging_dir(app, source, &link.id)?;
@@ -323,9 +330,13 @@ pub struct ImportPlan {
 
 pub fn plan(
     app: &AppHandle,
+    source: &str,
     resolve: impl FnOnce(&mut Reporter) -> Result<Link, String>,
 ) -> Result<ImportPlan, String> {
     let mut report = Reporter::new(app, PROGRESS_EVENT);
+    // Reading the link runs yt-dlp for a pasted YouTube one, so it is logged
+    // too; the import that follows rewrites the log from the start.
+    download_log::begin(app, source);
     let link = resolve(&mut report)?;
     let existing = library_index(app);
 

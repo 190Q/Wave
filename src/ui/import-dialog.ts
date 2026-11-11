@@ -8,9 +8,11 @@ import {
   fetchLyrics,
   getState,
   importFolder,
+  importLogPath,
   importWaveList,
   importLink,
   jobRunning,
+  openImportLog,
   openSpotifyConfig,
   planLink,
   refreshDeezerStatus,
@@ -41,6 +43,9 @@ const PROPOSAL_LIMIT = 5;
 
 /** Set while the dialog is mounted, so the topbar and the sheet can open it. */
 let openPanel: ((anchor?: HTMLElement) => void) | null = null;
+
+/** Where the download log is, once the backend has said. Empty until then. */
+let logPath = "";
 
 /** Opens the import dialog, anchored on the button that asked for it. */
 export function openImport(anchor?: HTMLElement): void {
@@ -131,6 +136,19 @@ export function mountImportDialog(): void {
       genres.innerHTML = state.genresProgress ? progressHtml(state.genresProgress) : "";
     }
   };
+
+  /** Puts the log's path in the hint, once the backend has said where it is. */
+  const paintLogPath = (): void => {
+    const hint = body.querySelector<HTMLElement>("#import-log-hint");
+    if (hint) {
+      hint.textContent = logHint();
+    }
+  };
+
+  void importLogPath().then((path) => {
+    logPath = path;
+    paintLogPath();
+  });
 
   /** Puts the field back to the collection it is actually pointed at. */
   const revert = (input: HTMLInputElement): void => {
@@ -351,6 +369,9 @@ export function mountImportDialog(): void {
       case "config":
         void openSpotifyConfig();
         return;
+      case "log":
+        void openImportLog();
+        return;
       case "recheck": {
         const service = serviceOf(linkValue());
         if (service === "spotify") {
@@ -521,7 +542,9 @@ function localSection(): string {
     <div class="import-actions">
       <button class="pill" type="button" data-import="folder">Import folder</button>
       <button class="pill" type="button" data-import="wavelist">Import Wave playlist</button>
+      <button class="pill" type="button" data-import="log">Open the download log</button>
     </div>
+    <p class="import-hint" id="import-log-hint">${escapeHtml(logHint())}</p>
     <div id="import-transfer-state" aria-live="polite"></div>`,
   );
 }
@@ -724,7 +747,14 @@ function failuresHtml(failures: string[]): string {
   return `<ul class="import-failures">
     ${shown.map((failure) => `<li>${escapeHtml(failure)}</li>`).join("")}
     ${rest > 0 ? `<li>and ${rest} more</li>` : ""}
-  </ul>`;
+  </ul>
+  <button class="pill import-log-open" type="button" data-import="log">Open the download log</button>`;
+}
+
+/** What the Local import section says about the log a download writes. */
+function logHint(): string {
+  const where = logPath ? ` It is kept at ${logPath}.` : "";
+  return `Every download writes a log, which holds the last import's yt-dlp output. A song that would not download says why there.${where}`;
 }
 
 function historySection(): string {

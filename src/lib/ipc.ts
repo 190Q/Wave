@@ -165,6 +165,19 @@ export function openSpotifyConfig(): Promise<void> {
 }
 
 /**
+ * Opens the log every download writes. It holds the last import's yt-dlp
+ * output, which is where a song that would not download says why.
+ */
+export function openImportLog(): Promise<void> {
+  return invoke("open_import_log");
+}
+
+/** Where that log lives, so the dialog can say. */
+export function importLogPath(): Promise<string> {
+  return invoke("import_log_path");
+}
+
+/**
  * Reads a Spotify link and reports which of its tracks the library already has,
  * so the dialog can ask about them before anything is downloaded.
  */

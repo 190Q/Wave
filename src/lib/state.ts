@@ -1129,6 +1129,24 @@ export async function openSpotifyConfig(): Promise<void> {
   }
 }
 
+/** Opens the log every download writes, so a failed one can be read back. */
+export async function openImportLog(): Promise<void> {
+  try {
+    await ipc.openImportLog();
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
+/** Where that log lives. Empty when it cannot be placed. */
+export async function importLogPath(): Promise<string> {
+  try {
+    return await ipc.importLogPath();
+  } catch {
+    return "";
+  }
+}
+
 function finishedProgress(
   phase: "done" | "failed",
   message: string,

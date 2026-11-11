@@ -6,6 +6,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::catalog::Catalog;
 use crate::download;
+use crate::download_log;
 use crate::import::{self, ImportOutcome};
 use crate::import_source::{self, PROGRESS_EVENT};
 use crate::playlists;
@@ -65,8 +66,12 @@ fn run_inner(
     }
 
     let name = playlist_name(&catalog, playlist_id);
+    download_log::begin(app, "playlist");
     let bundled = tools::bundled_dir(app);
     let tools = download::resolve_tools(&read_env(app), bundled.as_deref())?;
+    if let Some(log) = &tools.log {
+        log.link(&name, chosen.len());
+    }
     let known = import_source::catalog_index(&catalog)?;
     let staging = staging_dir(app, playlist_id)?;
 

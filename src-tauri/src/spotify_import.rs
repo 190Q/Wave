@@ -63,7 +63,7 @@ pub async fn spotify_import(
 pub async fn spotify_plan(app: AppHandle, url: String) -> Result<ImportPlan, String> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        import_source::plan(&handle, |report| resolve(&handle, &url, report))
+        import_source::plan(&handle, "spotify", |report| resolve(&handle, &url, report))
     })
     .await
     .map_err(|e| format!("could not read the link: {e}"))?

@@ -254,6 +254,11 @@
   overflow-wrap: anywhere;
 }
 
+/* Sits under the failures, which is where it is wanted. */
+.import-log-open {
+  margin-top: 0.5rem;
+}
+
 .import-history {
   display: flex;
   flex-direction: column;

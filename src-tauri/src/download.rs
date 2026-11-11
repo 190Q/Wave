@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 
@@ -11,7 +12,8 @@ use lofty::prelude::{Accessor, AudioFile, TagExt};
 use lofty::tag::{ItemKey, Tag, TagType};
 use serde_json::Value;
 
-use crate::import_source::fold;
+use crate::download_log::{self, Log, Ran};
+use crate::import_source::{fold, track_label};
 use crate::source::{client, encode, Env, TrackMeta};
 use crate::tools::{find_yt_dlp, hide_console, tool_path, YtDlp};
 
@@ -130,6 +132,8 @@ pub struct Tools {
     pub deno: Option<PathBuf>,
     pub cookies: Option<PathBuf>,
     pub browser: Option<String>,
+    /// Where every yt-dlp run is written, when an import asked for a log.
+    pub log: Option<Arc<Log>>,
 }
 
 impl Tools {
@@ -162,7 +166,23 @@ pub fn resolve_tools(env: &Env, bundled: Option<&Path>) -> Result<Tools, String>
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .map(str::to_string),
+        // The import underway owns the log, whichever service it came from.
+        log: download_log::current(),
     })
+}
+
+/// Records one yt-dlp run, when the import asked for a log.
+fn note(tools: &Tools, kind: &str, label: &str, command: &Command, output: &Output) {
+    if let Some(log) = &tools.log {
+        log.run(kind, label, command, &Ran::of(output));
+    }
+}
+
+/// The line the import will report, so the log ends on what the user was shown.
+fn fail(tools: &Tools, meta: &TrackMeta, reason: &str) {
+    if let Some(log) = &tools.log {
+        log.failure(&format!("{} - {reason}", track_label(meta)));
+    }
 }
 
 /// The downloader, whether that is the executable or the Python module.
@@ -258,12 +278,16 @@ pub fn download(
         Ok(path) => path,
         Err(error) => {
             let _ = fs::remove_dir_all(out_dir);
+            fail(tools, meta, &error);
             return Err(error);
         }
     };
 
-    tag(&path, meta, cover_bytes(cover, meta.cover_url.as_deref()))
-        .map_err(|e| format!("downloaded, but could not tag it: {e}"))?;
+    tag(&path, meta, cover_bytes(cover, meta.cover_url.as_deref())).map_err(|e| {
+        let message = format!("downloaded, but could not tag it: {e}");
+        fail(tools, meta, &message);
+        message
+    })?;
 
     Ok(path)
 }
@@ -520,6 +544,7 @@ fn run_search(tools: &Tools, target: &str) -> Result<Vec<u8>, String> {
     let output = command
         .output()
         .map_err(|e| format!("could not run yt-dlp: {e}"))?;
+    note(tools, "search", "", &command, &output);
 
     if output.stdout.iter().all(u8::is_ascii_whitespace) {
         let reason = failure_reason(&output.stderr, &output.stdout)
@@ -598,6 +623,7 @@ pub fn read_link(tools: &Tools, url: &str, limit: usize) -> Result<(String, Vec<
     let output = command
         .output()
         .map_err(|e| format!("could not run yt-dlp: {e}"))?;
+    note(tools, "link", "", &command, &output);
 
     let printed = json_lines(&output.stdout);
     let songs: Vec<LinkEntry> = printed.iter().filter_map(link_entry).collect();
@@ -710,6 +736,7 @@ fn look_up(tools: &Tools, candidate: &Candidate) -> Option<Found> {
     hide_console(&mut command);
 
     let output = command.output().ok()?;
+    note(tools, "lookup", &candidate.title, &command, &output);
     found_in(&String::from_utf8_lossy(&output.stdout))
 }
 
@@ -1149,6 +1176,7 @@ fn pull(tools: &Tools, candidate: &Candidate, target: &Path) -> Result<PathBuf, 
     let output = command
         .output()
         .map_err(|e| format!("could not run yt-dlp: {e}"))?;
+    note(tools, "download", &candidate.title, &command, &output);
 
     let produced = produced_path(&output.stdout).filter(|path| path.is_file());
     let path = match produced {
@@ -1885,6 +1913,7 @@ mod tests {
             deno: None,
             cookies: cookies.map(PathBuf::from),
             browser: browser.map(str::to_string),
+            log: None,
         }
     }
 

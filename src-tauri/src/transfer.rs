@@ -9,6 +9,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::catalog::Catalog;
 use crate::download;
+use crate::download_log;
 use crate::import::{self, ImportOutcome};
 use crate::import_source;
 use crate::library;
@@ -166,10 +167,16 @@ fn run(app: &AppHandle, path: &Path, report: &mut Reporter) -> Result<ImportOutc
         .any(|meta| import_source::held(&existing, meta).is_none());
     let tools = if wanted {
         let bundled = tools::bundled_dir(app);
+        // A song the library already holds is never downloaded, so an import
+        // with nothing left to fetch leaves the last log standing.
+        download_log::begin(app, "wavelist");
         Some(download::resolve_tools(&read_env(app), bundled.as_deref())?)
     } else {
         None
     };
+    if let Some(log) = tools.as_ref().and_then(|tools| tools.log.as_ref()) {
+        log.link(&list.name, list.tracks.len());
+    }
 
     let job = format!("{}-{}", now_ms(), NEXT_JOB.fetch_add(1, Ordering::Relaxed));
     let staging = staging_dir(app, &job)?;

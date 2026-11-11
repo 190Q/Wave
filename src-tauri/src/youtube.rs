@@ -97,7 +97,7 @@ pub async fn youtube_import(
 pub async fn youtube_plan(app: AppHandle, url: String) -> Result<ImportPlan, String> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        import_source::plan(&handle, |report| resolve(&handle, &url, report))
+        import_source::plan(&handle, "youtube", |report| resolve(&handle, &url, report))
     })
     .await
     .map_err(|e| format!("could not read the link: {e}"))?

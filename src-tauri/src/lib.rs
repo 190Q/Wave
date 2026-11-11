@@ -5,6 +5,7 @@ mod cover_fetch;
 mod deezer;
 mod deezer_import;
 mod download;
+mod download_log;
 mod genre_fetch;
 mod identity;
 mod import;
@@ -175,6 +176,8 @@ pub fn run() {
             recommend::recommend_status,
             recommend::generate_playlist,
             playlist_download::download_playlist,
+            download_log::import_log_path,
+            download_log::open_import_log,
             artwork::artwork_colour,
             artwork::artwork_bytes,
             artwork::cover_bytes,

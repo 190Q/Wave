@@ -366,6 +366,10 @@ a download, are the one thing that stops it. Set `YTDLP_COOKIES_FROM_BROWSER`
 or `YTDLP_COOKIES` in the config `.env`, as the template there describes, and
 try again.
 
+Every download writes to a log, so a song that will not come down says why
+rather than only that it failed. **Open the download log** in the import dialog
+shows it.
+
 ## Troubleshooting
 
 - **The window never appears.** Wave keeps the window hidden until the theme and
@@ -387,6 +391,11 @@ try again.
   three, so this means the copy beside the app has gone missing. Reinstall, or
   point `YTDLP_PATH` / `FFMPEG_PATH` / `DENO_PATH` at copies of your own in the
   config `.env`.
+- **A song will not download.** Every import writes what yt-dlp said to a log,
+  which holds the last import only. **Open the download log** in the import
+  dialog opens it, and the line under the button names it: `import.log`, in a
+  `logs` folder beside the library's own. The whole of yt-dlp's output is in
+  there, not just the last line the dialog shows.
 - **A song will not play.** Wave never guesses tags — a file with no artist tag
   is shown without one. Corrupt or unsupported files are reported in the status
   strip and skipped.

@@ -71,7 +71,7 @@ pub async fn deezer_import(
 pub async fn deezer_plan(app: AppHandle, url: String) -> Result<ImportPlan, String> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        import_source::plan(&handle, |report| resolve(&url, report, false))
+        import_source::plan(&handle, "deezer", |report| resolve(&url, report, false))
     })
     .await
     .map_err(|e| format!("could not read the link: {e}"))?

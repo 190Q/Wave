@@ -1,14 +1,16 @@
 name: release
 
+# Dispatched by `scripts/release.mjs publish`, which carries the feature list
+# with it. A tag pushed on its own builds nothing.
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to build and publish (e.g. v0.1.1)"
+        description: "Existing tag to build and publish (e.g. v0.1.5)"
         required: true
+      features:
+        description: "One new feature per line, left out when there are none"
+        required: false
 
 permissions:
   contents: write
@@ -27,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.tag }}
 
       - name: Linux system dependencies
         if: startsWith(matrix.platform, 'ubuntu')
@@ -53,34 +55,28 @@ jobs:
 
       - run: node scripts/release.mjs status
 
+      # The body is written by the release tool, so this build and a build made
+      # on a machine read the same. The default shell on windows-latest is
+      # PowerShell, which cannot write a heredoc into GITHUB_OUTPUT.
+      - name: Compose the release body
+        id: body
+        shell: bash
+        env:
+          WAVE_RELEASE_FEATURES: ${{ inputs.features }}
+        run: |
+          {
+            echo 'body<<WAVE_BODY'
+            node scripts/release.mjs body
+            echo 'WAVE_BODY'
+          } >> "$GITHUB_OUTPUT"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ inputs.tag || github.ref_name }}
-          releaseName: "Wave ${{ inputs.tag || github.ref_name }}"
-          releaseBody: |
-            Installers for Windows and Linux.
-
-            Every installer comes in two builds. The plain one ships yt-dlp,
-            ffmpeg, ffprobe and Deno, so downloading a link works on a fresh
-            install. The `-slim` one leaves all four out and weighs a few
-            megabytes, for when you already have your own copies on PATH.
-
-            **Linux, one line:**
-
-            ```sh
-            curl -fsSL https://raw.githubusercontent.com/190Q/Wave/main/install.sh | sh
-            ```
-
-            **Windows, from PowerShell:**
-
-            ```powershell
-            irm https://raw.githubusercontent.com/190Q/Wave/main/install.ps1 | iex
-            ```
-
-            Linux builds target glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+,
-            Fedora 36+) and are x86_64 only.
+          tagName: ${{ inputs.tag }}
+          releaseName: "Wave ${{ inputs.tag }}"
+          releaseBody: ${{ steps.body.outputs.body }}
           releaseDraft: false
           prerelease: false
 
@@ -92,4 +88,4 @@ jobs:
       - name: Attach the slim installers
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/release.mjs upload-slim ${{ inputs.tag || github.ref_name }}
+        run: node scripts/release.mjs upload-slim ${{ inputs.tag }}

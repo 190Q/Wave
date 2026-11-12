@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // Wave's release tool.
 //
-//   npm run release -- <command> [options]
 //   node scripts/release.mjs <command> [options]
 //
 // The VERSION file at the repo root is the single source of truth for the
@@ -75,12 +74,20 @@ const fail = (message) => {
 
 // ----------------------------------------------------------------- shell ----
 
-function run(file, args, { capture = false } = {}) {
+function run(file, args, { capture = false, input } = {}) {
+  // A command that reads stdin has to be handed a pipe for it.
+  const stdio = capture
+    ? ["ignore", "pipe", "pipe"]
+    : input === undefined
+      ? "inherit"
+      : ["pipe", "inherit", "inherit"];
+
   try {
     return execFileSync(file, args, {
       cwd: root,
       encoding: "utf8",
-      stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
+      input,
+      stdio,
     });
   } catch (error) {
     if (capture) fail(error.stderr?.trim() || `${file} ${args.join(" ")} failed`);
@@ -109,13 +116,19 @@ function haveGh() {
   }
 }
 
-// --------------------------------------------------------------- version ----
-
 function readVersion() {
   if (!existsSync(VERSION_FILE)) fail("there is no VERSION file");
   const version = readFileSync(VERSION_FILE, "utf8").trim();
   if (!/^\d+\.\d+\.\d+/.test(version)) fail(`VERSION holds "${version}", which is not a version`);
   return version;
+}
+
+/** The version that follows `current` when `part` is bumped. */
+function bumped(current, part) {
+  const [major, minor, patch] = current.split(".").map(Number);
+  if (part === "major") return `${major + 1}.0.0`;
+  if (part === "minor") return `${major}.${minor + 1}.0`;
+  return `${major}.${minor}.${patch + 1}`;
 }
 
 /** Every version found in one target, in file order. */
@@ -162,7 +175,68 @@ function drift(version) {
   return wrong;
 }
 
-// -------------------------------------------------------------- commands ----
+/**
+ * The body every release carries, under the feature list. It lives here rather
+ * than in the workflow so a build made on this machine and one made by CI read
+ * the same.
+ */
+const BODY = [
+  "Installers for Windows and Linux.",
+  "",
+  "Every installer comes in two builds. The plain one ships yt-dlp, ffmpeg,",
+  "ffprobe and Deno, so downloading a link works on a fresh install. The",
+  "`-slim` one leaves all four out and weighs a few megabytes, for when you",
+  "already have your own copies on PATH.",
+  "",
+  "**Linux, one line:**",
+  "",
+  "```sh",
+  "curl -fsSL https://raw.githubusercontent.com/190Q/Wave/main/install.sh | sh",
+  "```",
+  "",
+  "**Windows, from PowerShell:**",
+  "",
+  "```powershell",
+  "irm https://raw.githubusercontent.com/190Q/Wave/main/install.ps1 | iex",
+  "```",
+  "",
+  "Linux builds target glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+,",
+  "Fedora 36+) and are x86_64 only.",
+].join("\n");
+
+/**
+ * The heading the feature list is written under, and the section it owns. An
+ * edit replaces the whole section, so listing again corrects the list rather
+ * than stacking a second copy on top of the first.
+ */
+const FEATURES_SECTION = /^## New features[^\n]*\n\n?(?:- [^\n]*\n?)*/m;
+
+/** One line per feature; a value holding newlines gives one line each. */
+function featureLines(features) {
+  return features
+    .flatMap((feature) => feature.split(/\r?\n/))
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/** The `## New features` section, or nothing when there is nothing to list. */
+function featuresBlock(features) {
+  const lines = featureLines(features);
+  if (lines.length === 0) return "";
+  return `## New features\n\n${lines.map((line) => `- ${line}`).join("\n")}\n`;
+}
+
+/** A body with the feature list above it, replacing any list already there. */
+function withFeatures(body, features) {
+  if (features.length === 0) return body;
+  const rest = body.replace(FEATURES_SECTION, "").replace(/^\n+/, "");
+  return `${featuresBlock(features)}\n${rest}`;
+}
+
+/** The body a release is given: the feature list, then the installers blurb. */
+function releaseBody(features) {
+  return withFeatures(BODY, features);
+}
 
 function commandStatus() {
   const version = readVersion();
@@ -200,13 +274,7 @@ function commandBump(part) {
   if (/^\d+\.\d+\.\d+/.test(part)) {
     next = part;
   } else if (["major", "minor", "patch"].includes(part)) {
-    const [major, minor, patch] = current.split(".").map(Number);
-    next =
-      part === "major"
-        ? `${major + 1}.0.0`
-        : part === "minor"
-          ? `${major}.${minor + 1}.0`
-          : `${major}.${minor}.${patch + 1}`;
+    next = bumped(current, part);
   } else {
     fail(`"${part}" is not a part or a version`);
   }
@@ -214,6 +282,68 @@ function commandBump(part) {
   writeFileSync(VERSION_FILE, `${next}\n`);
   say(`${current} -> ${next}\n`);
   commandSync();
+}
+
+/** Prints the body a release is given, which is what the workflow hands CI. */
+function commandBody(options) {
+  say(releaseBody(options.features));
+}
+
+/**
+ * The steps for cutting a release, worked out from the tree as it stands. It
+ * reads VERSION and git only, so it needs no network and no gh.
+ */
+function commandGuide() {
+  const version = readVersion();
+  const next = bumped(version, "minor");
+  const tag = `v${version}`;
+  const nextTag = `v${next}`;
+  const taken = git(["tag", "--list", tag], { capture: true }).trim() !== "";
+  const dirty = git(["status", "--porcelain"], { capture: true }).trim() !== "";
+  const wrong = drift(version);
+  const ci = existsSync(WORKFLOW);
+
+  say("Wave release guide");
+  say("");
+  say(`  VERSION  ${version}`);
+  say(`  copies   ${wrong.length === 0 ? "every copy agrees" : `${wrong.length} out of step, and the bump in step 1 writes them all`}`);
+  say(`  tag      ${taken ? `${tag} is taken, so bump the version before publishing` : `${tag} is free`}`);
+  say(`  tree     ${dirty ? "has uncommitted changes, which publish commits as the release" : "is clean"}`);
+  say("");
+  say("Steps");
+  say("");
+  say("  1. Bump the version, which writes it into every file that carries a copy");
+  say(`       node scripts/release.mjs bump minor        ${version} -> ${next}`);
+  say(`       node scripts/release.mjs bump ${next}        to name the version yourself`);
+  say("");
+  say("  2. Check that nothing drifted");
+  say("       node scripts/release.mjs status");
+  say("");
+  say("  3. Publish, naming what is new");
+  say('       node scripts/release.mjs publish --feature "Added a queue" --feature "Fixed a bug"');
+  if (ci) {
+    say(`     Syncs VERSION, commits "Release ${nextTag}", tags it, pushes it, and hands the`);
+    say("     build to CI. Every --feature becomes one line in a New features list at the top");
+    say("     of the release, and the flag repeats. Leave it off when nothing is new.");
+  } else {
+    say(`     Syncs VERSION, commits "Release ${nextTag}", tags it, pushes it, then builds both`);
+    say("     installers here and publishes the release from them. Every --feature becomes one");
+    say("     line in a New features list at the top of the release, and the flag repeats.");
+  }
+  say("");
+  if (ci) {
+    say("  4. Watch the build");
+    say("       gh run list");
+    say("       gh run watch --exit-status");
+    say("");
+  }
+  say("Other things worth knowing, all in the same form");
+  say("  publish --dry-run      print the plan and change nothing");
+  say("  publish --no-publish   stop after pushing the tag");
+  say("  publish --local        build both installers here instead of in CI");
+  say("  edit <tag> --feature   change the list on a release already out");
+  say("  assets <tag>           list what a release carries");
+  say("  help                   every command the tool takes");
 }
 
 function requireGh() {
@@ -278,13 +408,27 @@ function commandDelete(tag, options) {
 function commandEdit(tag, options) {
   if (!tag) fail("edit needs a tag");
   requireGh();
+
   const args = ["release", "edit", tag];
   if (options.title) args.push("--title", options.title);
-  if (options.notes) args.push("--notes", options.notes);
   if (options.draft) args.push("--draft");
   if (options.publish) args.push("--draft=false");
-  if (args.length === 3) fail("edit needs at least one of --title, --notes, --draft or --publish");
-  gh(args);
+
+  let body = null;
+  if (options.features.length > 0) {
+    // The list goes above whatever the release already says, so the installers
+    // blurb the build wrote is kept.
+    body = withFeatures(options.notes ?? releaseBodyOf(tag), options.features);
+  } else if (options.notes) {
+    body = options.notes;
+  }
+
+  if (args.length === 3 && body === null) {
+    fail("edit needs at least one of --title, --notes, --feature, --draft or --publish");
+  }
+
+  if (body !== null) args.push("--notes-file", "-");
+  gh(args, body === null ? undefined : { input: body });
 }
 
 /** Every installer the local build produced for `version`. */
@@ -370,26 +514,49 @@ function releaseExists(tag) {
   }
 }
 
+/** What a release's body says now. */
+function releaseBodyOf(tag) {
+  const release = JSON.parse(gh(["release", "view", tag, "--json", "body"], { capture: true }));
+  return release.body ?? "";
+}
+
+/** Rewrites a release's body with the feature list above it. */
+function setBody(tag, body, features) {
+  gh(["release", "edit", tag, "--notes-file", "-"], { input: withFeatures(body, features) });
+}
+
 function commandPublish(options) {
   const version = readVersion();
   const tag = `v${version}`;
+  const features = options.features;
+  const ci = !options.local && existsSync(WORKFLOW);
   const plan = [];
 
   plan.push(`sync VERSION (${version}) into ${TARGETS.length} files`);
   plan.push(`commit any outstanding changes as "Release ${tag}"`);
   plan.push(`tag ${tag} and push it with the branch`);
   if (options.noPublish) plan.push("stop there");
-  else if (options.local || !existsSync(WORKFLOW)) plan.push("build the full and the slim installers here and publish the release from them");
-  else plan.push("let CI build both platforms and publish both builds");
+  else if (ci) plan.push("dispatch the release workflow, which builds both platforms and publishes both builds");
+  else plan.push("build the full and the slim installers here and publish the release from them");
 
   say(`Publishing ${tag}\n`);
   for (const step of plan) say(`  - ${step}`);
+
+  const lines = featureLines(features);
+  if (lines.length > 0) {
+    say("");
+    say(`Features (${lines.length}):`);
+    for (const line of lines) say(`  - ${line}`);
+  }
   say("");
 
   if (options.dryRun) {
     say("Dry run, so nothing was changed.");
     return;
   }
+
+  // CI is driven through gh, so it has to be there before anything is pushed.
+  if (ci) requireGh();
 
   // The tag must be free before anything is committed.
   const existing = git(["tag", "--list", tag], { capture: true }).trim();
@@ -413,8 +580,14 @@ function commandPublish(options) {
 
   if (options.noPublish) return;
 
-  if (!options.local && existsSync(WORKFLOW)) {
-    say("CI is building the installers; watch it with `gh run list`.");
+  if (ci) {
+    const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], { capture: true }).trim();
+    const args = ["workflow", "run", "release.yml", "--ref", branch, "-f", `tag=${tag}`];
+    // The list travels with the dispatch, because the body is written by the
+    // build rather than here.
+    if (lines.length > 0) args.push("-f", `features=${lines.join("\n")}`);
+    gh(args);
+    say("\nCI is building the installers; watch it with `gh run list`.");
     say("The release appears when the build finishes.");
     return;
   }
@@ -429,11 +602,15 @@ function commandPublish(options) {
   say(`\nUploading ${assets.length} installer(s).`);
 
   requireGh();
-  const notes = options.notes ? ["--notes", options.notes] : ["--generate-notes"];
 
   if (releaseExists(tag)) {
     gh(["release", "upload", tag, ...assets, "--clobber"]);
+    if (lines.length > 0) setBody(tag, releaseBodyOf(tag), features);
   } else {
+    // gh puts the generated commit list after the notes rather than replacing
+    // them, so the blurb and the list both survive.
+    const body = options.notes ? withFeatures(options.notes, features) : releaseBody(features);
+    const notes = options.notes ? ["--notes", body] : ["--notes", body, "--generate-notes"];
     const draft = options.draft ? ["--draft"] : [];
     gh(["release", "create", tag, ...assets, "--title", `Wave ${version}`, ...notes, ...draft]);
   }
@@ -441,10 +618,15 @@ function commandPublish(options) {
   say(`\n${tag} is published.`);
 }
 
-// ------------------------------------------------------------------ args ----
-
 function parse(argv) {
-  const options = { rest: [], files: [] };
+  // The release workflow passes the list through the environment, where a
+  // multi-line value needs no quoting.
+  const options = {
+    rest: [],
+    files: [],
+    features: (process.env.WAVE_RELEASE_FEATURES ?? "").split("\n").filter((line) => line.trim()),
+  };
+
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     const value = (name) => {
@@ -462,6 +644,7 @@ function parse(argv) {
       case "--tag": options.tag = true; break;
       case "--title": options.title = value("--title"); break;
       case "--notes": options.notes = value("--notes"); break;
+      case "--feature": options.features.push(value("--feature")); break;
       default:
         if (arg.startsWith("--")) fail(`unknown option ${arg}`);
         options.rest.push(arg);
@@ -473,7 +656,11 @@ function parse(argv) {
 const USAGE = `
 Wave's release tool. VERSION at the repo root is the single source of truth.
 
-  npm run release -- <command> [options]
+  node scripts/release.mjs <command> [options]
+  npm run release -- <command>
+
+npm keeps any option for itself and drops it, so a command with options has to
+be run through node directly.
 
 Version
   status                          Show VERSION and whether every copy agrees
@@ -481,9 +668,11 @@ Version
   bump <major|minor|patch|x.y.z>  Change VERSION, then sync
 
 Releases
+  guide                           Print the steps for cutting a release
   list                            List every release
   view <tag>                      Show one release
   assets <tag>                    List a release's assets
+  body [--feature <text>...]      Print the body a release is given
   publish [options]               Sync, commit, tag, push, and publish
   slim                            Build the slim installers and rename them
   upload <tag> <file...>          Add assets to a release
@@ -494,14 +683,15 @@ Releases
   open <tag>                      Open a release in the browser
 
 publish options
-  --draft        Create it as a draft
-  --notes <text> Release notes (default: generated from the commits)
-  --local        Build the installers here instead of waiting for CI
-  --no-publish   Stop after pushing the tag
-  --dry-run      Print the plan and change nothing
+  --feature <text>  One line of the release's feature list (repeatable)
+  --draft           Create it as a draft
+  --notes <text>    Release notes (default: the installers blurb, then the commits)
+  --local           Build the installers here instead of waiting for CI
+  --no-publish      Stop after pushing the tag
+  --dry-run         Print the plan and change nothing
 
 edit options
-  --title <text>   --notes <text>   --draft   --publish
+  --title <text>   --notes <text>   --feature <text>   --draft   --publish
 `.trim();
 
 function main() {
@@ -514,6 +704,8 @@ function main() {
     case "check": return commandStatus();
     case "sync": return commandSync();
     case "bump": return commandBump(first);
+    case "guide": return commandGuide();
+    case "body": return commandBody(options);
     case "list": return commandList();
     case "view": return commandView(first);
     case "open": return commandOpen(first);

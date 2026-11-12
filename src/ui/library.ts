@@ -96,6 +96,8 @@ export function openSwell(): void {
 export function mountLibrary(): void {
   const sheet = element("sheet");
   const list = element("library");
+  const listRows = element("library-rows");
+  const listPane = element("library-pane");
   const count = element("sheet-count");
   const chips = element("chips");
   const filterInput = element<HTMLInputElement>("sheet-search");
@@ -105,7 +107,7 @@ export function mountLibrary(): void {
   const back = element<HTMLButtonElement>("sheet-back");
   const newPlaylist = element("new-playlist");
 
-  if (!sheet || !list || !count || !chips || !filterInput || !sortButton || !sortLabel || !folders || !back) {
+  if (!sheet || !list || !listRows || !listPane || !count || !chips || !filterInput || !sortButton || !sortLabel || !folders || !back) {
     return;
   }
 
@@ -123,6 +125,13 @@ export function mountLibrary(): void {
   let listToTop = false;
   const selection = new Set<string>();
   let selectAnchor: string | null = null;
+
+  /** What the rows were drawn from, so a list that has not changed is left alone. */
+  let listPainted = "";
+  let listCount = "";
+  let listFrom: Collection[] | null = null;
+  let listTracks: Map<string, Track> | null = null;
+  let listPlays: Map<string, number> | null = null;
 
   const entryRows = (): HTMLElement[] =>
     Array.from(list.querySelectorAll<HTMLElement>("[data-collection]"));
@@ -699,31 +708,50 @@ export function mountLibrary(): void {
     }
 
     if (openCollectionId) {
+      listRows.hidden = true;
+      listPane.hidden = false;
       count.textContent = "";
       folders.innerHTML = "";
       if (openCollectionId === SWELL_ID) {
-        paintSwell(list, state, swellLoad, swellPeriod, swellReading, swellError);
+        paintSwell(listPane, state, swellLoad, swellPeriod, swellReading, swellError);
       } else {
-        paintDetail(list, state, collectionById(openCollectionId));
+        paintDetail(listPane, state, collectionById(openCollectionId));
         syncSelection();
       }
     } else {
-      const collections = filterCollections(
-        state.collections,
-        state.filter,
-        state.query,
-        state.sort,
-        state.settings.searchAlgorithm,
-        { tracksById: state.tracksById, plays: state.playCounts },
-      );
-      count.textContent = plural(collections.length, "collection");
-      delete list.dataset.detail;
-      delete list.dataset.swell;
-      list.innerHTML = renderList(state, collections, creating, renaming);
+      listRows.hidden = false;
+      listPane.hidden = true;
+      delete listPane.dataset.detail;
+      delete listPane.dataset.swell;
+
+      // Coming back from a pane leaves the rows that are already drawn alone.
+      const key = listKey(state, creating, renaming);
+      if (
+        key !== listPainted ||
+        state.collections !== listFrom ||
+        state.tracksById !== listTracks ||
+        state.playCounts !== listPlays
+      ) {
+        const collections = filterCollections(
+          state.collections,
+          state.filter,
+          state.query,
+          state.sort,
+          state.settings.searchAlgorithm,
+          { tracksById: state.tracksById, plays: state.playCounts },
+        );
+        listPainted = key;
+        listCount = plural(collections.length, "collection");
+        listFrom = state.collections;
+        listTracks = state.tracksById;
+        listPlays = state.playCounts;
+        listRows.innerHTML = renderList(state, collections, creating, renaming);
+        fillIcons(listRows);
+        hydrateCovers(listRows);
+        restoreEntry();
+      }
+      count.textContent = listCount;
       folders.innerHTML = renderLibrary(state);
-      fillIcons(list);
-      hydrateCovers(list);
-      restoreEntry();
       list.scrollTop = listScroll;
     }
 
@@ -742,6 +770,18 @@ function viewKey(filter: CollectionFilter, collectionId: string | null): string 
 
 function viewCollection(key: string): string {
   return key.split("\u0000")[1];
+}
+
+/** Everything the rows are drawn from that is not the state itself. */
+function listKey(state: AppState, creating: boolean, renaming: string | null): string {
+  return [
+    state.filter,
+    state.query,
+    state.sort,
+    state.settings.searchAlgorithm,
+    creating ? "new" : "",
+    renaming ?? "",
+  ].join("\u0000");
 }
 
 function swipeDirection(from: string, to: string): 1 | -1 | 0 {

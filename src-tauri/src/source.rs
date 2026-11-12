@@ -45,6 +45,8 @@ pub struct Env {
     pub cookies: Option<String>,
     pub browser: Option<String>,
     pub discord_client_id: Option<String>,
+    pub api: Option<String>,
+    pub api_port: Option<String>,
 }
 
 impl Env {
@@ -90,6 +92,13 @@ SPOTIFY_CLIENT_SECRET=
 # logo under Rich Presence -> Art Assets as \"wave\". Paste its Application ID
 # below, or leave this out to use the id the build carries.
 # DISCORD_CLIENT_ID=
+#
+# The local API lets a script or a dev tool drive the copy of Wave that is
+# already open. It is on by default and answers on 127.0.0.1 only, so nothing
+# outside this machine can reach it. WAVE_API=0 switches it off, and
+# WAVE_API_PORT moves it off 45679.
+# WAVE_API=0
+# WAVE_API_PORT=45679
 ",
         crate::spotify::redirect_uri()
     )
@@ -187,6 +196,8 @@ fn parse_env(raw: &str) -> Env {
             "YTDLP_COOKIES" => env.cookies = Some(value),
             "YTDLP_COOKIES_FROM_BROWSER" => env.browser = Some(value),
             "DISCORD_CLIENT_ID" => env.discord_client_id = Some(value),
+            "WAVE_API" => env.api = Some(value),
+            "WAVE_API_PORT" => env.api_port = Some(value),
             _ => {}
         }
     }
@@ -291,6 +302,27 @@ not a pair
         let template = env_template();
         assert!(template.contains("YTDLP_COOKIES_FROM_BROWSER="));
         assert!(template.contains("YTDLP_COOKIES="));
+    }
+
+    #[test]
+    fn reads_the_api_switches() {
+        let env = parse_env("WAVE_API=0\nWAVE_API_PORT=45680\n");
+        assert_eq!(env.api.as_deref(), Some("0"));
+        assert_eq!(env.api_port.as_deref(), Some("45680"));
+
+        // Both are absent unless the file names them, which is what leaves the
+        // API on and on its default port.
+        let absent = parse_env("SPOTIFY_CLIENT_ID=abc\n");
+        assert!(absent.api.is_none());
+        assert!(absent.api_port.is_none());
+    }
+
+    #[test]
+    fn the_template_documents_the_api() {
+        let template = env_template();
+        assert!(template.contains("WAVE_API=0"));
+        assert!(template.contains("WAVE_API_PORT="));
+        assert!(template.contains("127.0.0.1"));
     }
 
     #[test]

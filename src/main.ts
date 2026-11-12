@@ -1,4 +1,5 @@
 import "./assets/icons/icons.css";
+import { mountApi } from "./lib/api";
 import { showMainWindow } from "./lib/ipc";
 import { mountMotion } from "./lib/motion";
 import { mountPresence } from "./lib/presence";
@@ -47,6 +48,7 @@ function mount(): void {
   mountTheme();
   mountSettings();
   mountUpdate();
+  mountApi();
   mountPresence();
   mountStatus();
   mountShortcuts();

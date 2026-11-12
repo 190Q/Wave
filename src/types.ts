@@ -132,6 +132,63 @@ export interface MediaControl {
   value: number | null;
 }
 
+/**
+ * Something the local API asked for. Which fields an action reads depends on the
+ * action: `value` carries milliseconds or a volume, `text` a repeat mode, `flag`
+ * a switch, and the rest name tracks or a collection.
+ */
+export interface ApiCommand {
+  /** Matched to the report that answers it. */
+  id: string;
+  action:
+    | "play"
+    | "pause"
+    | "toggle"
+    | "next"
+    | "previous"
+    | "stop"
+    | "seek"
+    | "seekBy"
+    | "volume"
+    | "mute"
+    | "shuffle"
+    | "repeat"
+    | "playTrack"
+    | "playCollection"
+    | "openCollection"
+    | "queue"
+    | "queueAppend"
+    | "queueNext"
+    | "queueRemove";
+  value: number | null;
+  trackId: string | null;
+  trackIds: string[];
+  sourceId: string | null;
+  sourceName: string | null;
+  startTrackId: string | null;
+  text: string | null;
+  flag: boolean | null;
+}
+
+/** What the window tells the local API about the player. */
+export interface PlayerReport {
+  /** The id of the command just applied, `null` for a plain update. */
+  command: string | null;
+  currentId: string | null;
+  sourceId: string | null;
+  sourceName: string;
+  order: string[];
+  sourceOrder: string[];
+  cursor: number;
+  positionMs: number;
+  durationMs: number;
+  playing: boolean;
+  shuffle: boolean;
+  repeat: RepeatMode;
+  volume: number;
+  muted: boolean;
+}
+
 /** How far a listen got, and how it ended. */
 export type PlayReason = "open" | "ended" | "skipped" | "stopped" | "error";
 

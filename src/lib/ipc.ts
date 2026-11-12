@@ -16,6 +16,7 @@ import type {
   NowPlaying,
   PersistedState,
   PlayRecord,
+  PlayerReport,
   PlaylistMode,
   RecommendationSeeds,
   RecommendStatus,
@@ -40,6 +41,14 @@ export function loadState(): Promise<PersistedState> {
 /** Tells the system's own controls and Discord what is playing, or that nothing is. */
 export function setNowPlaying(song: NowPlaying | null): Promise<void> {
   return invoke("set_now_playing", { song });
+}
+
+/**
+ * Tells the local API what the player is showing. The report carries the id of
+ * the command it answers, or `null` when nothing was asked for.
+ */
+export function reportApiState(report: PlayerReport): Promise<void> {
+  return invoke("api_report", { report });
 }
 
 export function saveSettings(settings: Settings): Promise<PersistedState> {

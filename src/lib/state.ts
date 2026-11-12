@@ -21,6 +21,7 @@ import type {
   Playlist,
   PlaylistMode,
   RecommendStatus,
+  ScanSummary,
   Session,
   Settings,
   SpotifyStatus,
@@ -75,6 +76,12 @@ const GENERATE_PROGRESS_EVENT = "playlist-generate";
 
 /** Follows one update download, so the popup can show how far it has got. */
 const UPDATE_PROGRESS_EVENT = "update-progress";
+
+/** Sent when the local API scans or deletes, so the window follows the change. */
+const LIBRARY_CHANGED_EVENT = "library-changed";
+
+/** Sent when the local API writes likes, playlists or settings. */
+const STATE_CHANGED_EVENT = "state-changed";
 
 /** How long a burst of saves is left to settle before re-checking. */
 const CONFIG_SETTLE_MS = 400;
@@ -622,6 +629,7 @@ export async function init(): Promise<void> {
   watchSources();
   watchLoudness();
   watchUpdate();
+  watchApi();
   mountAnalytics({
     player,
     trackById,
@@ -673,20 +681,7 @@ export async function rescan(): Promise<void> {
   emit();
 
   try {
-    const summary = await ipc.scanLibrary();
-    state.tracks = summary.tracks;
-    state.tracksById = new Map(summary.tracks.map((track) => [track.id, track]));
-    artworkFailed.clear();
-    retainArtwork();
-    state.root = summary.root;
-    state.skipped = summary.skipped;
-    state.scanErrors = summary.errors;
-    await readLibraryInfo();
-    recomputeCollections();
-    repairQueue();
-    rememberTracks(summary.tracks);
-    applyPersisted(await ipc.loadState());
-    adoptSource();
+    await applyScan(await ipc.scanLibrary());
   } catch (error) {
     state.scanErrors = [describe(error)];
   }
@@ -696,6 +691,26 @@ export async function rescan(): Promise<void> {
 
   // Measuring runs behind the scan, so a long pass never holds up the library.
   void analyseLoudness();
+}
+
+/**
+ * Applies a scan's summary, whether the window ran the scan or the local API
+ * did. Shared so the two paths can never drift apart.
+ */
+async function applyScan(summary: ScanSummary): Promise<void> {
+  state.tracks = summary.tracks;
+  state.tracksById = new Map(summary.tracks.map((track) => [track.id, track]));
+  artworkFailed.clear();
+  retainArtwork();
+  state.root = summary.root;
+  state.skipped = summary.skipped;
+  state.scanErrors = summary.errors;
+  await readLibraryInfo();
+  recomputeCollections();
+  repairQueue();
+  rememberTracks(summary.tracks);
+  applyPersisted(await ipc.loadState());
+  adoptSource();
 }
 
 /** Rescans, then fills in the genre of any song that has none. */
@@ -1784,9 +1799,31 @@ function watchLoudness(): void {
 function watchSettings(): void {
   void listen<Settings>(SETTINGS_EVENT, (event) => {
     state.settings = event.payload;
+    if (event.payload.volume !== player.snapshot().volume) {
+      player.setVolume(event.payload.volume);
+    }
     emit();
   }).catch(() => {
     // Not running inside Tauri, for example `npm run dev` in a browser.
+  });
+}
+
+function watchApi(): void {
+  void listen<ScanSummary>(LIBRARY_CHANGED_EVENT, (event) => {
+    void applyScan(event.payload)
+      .then(() => emit())
+      .catch(() => {
+        // The window keeps what it holds; the API's own reply says what happened.
+      });
+  }).catch(() => {
+    // Not running inside Tauri, for example `npm run dev` in a browser.
+  });
+
+  void listen<PersistedState>(STATE_CHANGED_EVENT, (event) => {
+    applyPersisted(event.payload);
+    emit();
+  }).catch(() => {
+    // Same as above.
   });
 }
 

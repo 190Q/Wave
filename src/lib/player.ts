@@ -320,9 +320,17 @@ export class Player {
     this.emitChange();
   }
 
-  cycleRepeat(): void {
-    this.repeat = this.repeat === "off" ? "all" : "off";
+  /** Sets repeat to an exact mode, which is what the API asks for. */
+  setRepeat(mode: RepeatMode): void {
+    if (this.repeat === mode) {
+      return;
+    }
+    this.repeat = mode;
     this.emitChange();
+  }
+
+  cycleRepeat(): void {
+    this.setRepeat(this.repeat === "off" ? "all" : "off");
   }
 
   setVolume(volume: number): void {

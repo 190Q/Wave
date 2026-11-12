@@ -1,4 +1,5 @@
 mod analytics;
+mod api;
 mod artwork;
 mod catalog;
 mod cli;
@@ -162,6 +163,14 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             prepare(app.handle());
+
+            // The bridge is managed whether or not the port can be taken, so
+            // the report command has somewhere to put what the window sends.
+            app.manage(api::player::Bridge::default());
+            if let Some(server) = api::start(app.handle()) {
+                app.manage(server);
+            }
+
             if let Ok(root) = library::library_root(app.handle()) {
                 if let Err(error) = app.asset_protocol_scope().allow_directory(&root, true) {
                     eprintln!("could not allow the library on the asset protocol: {error}");
@@ -195,6 +204,7 @@ pub fn run() {
             state::toggle_like,
             state::set_likes,
             presence::set_now_playing,
+            api::player::api_report,
             update::check_update,
             update::update_status,
             update::install_update,
@@ -252,6 +262,9 @@ pub fn run() {
         if let tauri::RunEvent::Exit = event {
             if let Some(presence) = handle.try_state::<presence::Presence>() {
                 presence.shutdown();
+            }
+            if let Some(server) = handle.try_state::<api::Api>() {
+                server.shutdown();
             }
         }
     });

@@ -14,7 +14,7 @@ use crate::tools;
 mod fetch;
 mod import;
 mod playlists;
-mod songs;
+pub(crate) mod songs;
 
 /// One command, as the words on the command line asked for it.
 enum Command {
@@ -52,14 +52,14 @@ struct Import {
 }
 
 /// A search that only reads.
-struct Find {
+pub(crate) struct Find {
     text: String,
     limit: Option<usize>,
     json: bool,
 }
 
 /// A search that acts on what it finds.
-struct Pick {
+pub(crate) struct Pick {
     text: String,
     /// Take every match rather than refusing an ambiguous one.
     all: bool,

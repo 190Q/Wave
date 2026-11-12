@@ -42,6 +42,9 @@ symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "alac", "aiff
 rusqlite = { version = "0.40.2", features = ["bundled"], default-features = false }
 uuid = { version = "1", features = ["v4", "v5"] }
 blake3 = "1"
+# The local API. Blocking and thread-per-request, which is what the rest of the
+# crate already is: no async runtime is pulled in for it.
+tiny_http = "0.12"
 
 # The system's own media controls: the Windows media flyout and the media keys,
 # or MPRIS on Linux. The zbus backend is pure Rust, so Linux needs no libdbus

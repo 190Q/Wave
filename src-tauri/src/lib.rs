@@ -30,6 +30,7 @@ mod state;
 mod tools;
 mod transfer;
 mod update;
+mod window_frame;
 
 use tauri::Manager;
 
@@ -183,6 +184,11 @@ pub fn run() {
 
             #[cfg(windows)]
             disable_browser_shortcuts(app.handle());
+
+            #[cfg(windows)]
+            if let Some(window) = app.get_webview_window("main") {
+                window_frame::fill_maximized_window(&window);
+            }
 
             let handle = app.handle().clone();
             std::thread::spawn(move || {

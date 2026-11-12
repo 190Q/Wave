@@ -28,6 +28,7 @@ import type {
   SwellSummary,
   TopSong,
   TrackSnapshot,
+  UpdateInfo,
   YoutubeStatus,
 } from "../types";
 
@@ -344,4 +345,22 @@ export function analyticsStats(): Promise<AnalyticsStats> {
 /** Drops every row of the listening record. */
 export function clearAnalytics(): Promise<void> {
   return invoke("analytics_clear");
+}
+
+/**
+ * Looks the releases up and returns a newer one, or `null` when this build is
+ * the newest. What it finds is kept, so it is not looked up twice.
+ */
+export function checkUpdate(): Promise<UpdateInfo | null> {
+  return invoke("check_update");
+}
+
+/** The update the last check found, without going near the network. */
+export function updateStatus(): Promise<UpdateInfo | null> {
+  return invoke("update_status");
+}
+
+/** Downloads the newer release and installs it, then Wave restarts. */
+export function installUpdate(): Promise<void> {
+  return invoke("install_update");
 }

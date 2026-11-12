@@ -1,0 +1,157 @@
+/* The in-app notice, sat under the topbar on the right. */
+.update-toast {
+  position: absolute;
+  top: 3.6rem;
+  right: 1rem;
+  z-index: 800;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: min(26rem, calc(100vw - 2rem));
+  padding: 0.4rem 0.45rem 0.4rem 0.9rem;
+  border: 0.0625rem solid rgb(255 255 255 / 0.12);
+  border-radius: 62rem;
+  background: rgb(0 0 0 / 0.75);
+  backdrop-filter: blur(0.75rem);
+  box-shadow: 0 0.75rem 2rem rgb(0 0 0 / 0.5);
+  animation: update-toast-in 0.3s var(--ease) both;
+}
+
+@keyframes update-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.5rem);
+  }
+}
+
+.update-toast-text {
+  overflow: hidden;
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-toast-close {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 1.7rem;
+  height: 1.7rem;
+  padding: 0;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-radius: 50%;
+  transition: color 0.2s, background 0.2s;
+}
+
+.update-toast-close:hover {
+  color: var(--text);
+  background: var(--raise);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .update-toast {
+    animation: none;
+  }
+}
+
+:root.is-reduced-motion .update-toast {
+  animation: none;
+}
+
+.update-dialog {
+  width: min(26rem, 94vw);
+  padding: 0;
+  max-height: min(calc(100vh - 2rem), 34rem);
+}
+
+.update-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.update-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+  padding: 1.25rem 1.25rem 0.75rem;
+}
+
+.update-head h2 {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.update-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 1.25rem 0.5rem;
+}
+
+.update-foot {
+  display: flex;
+  justify-content: flex-end;
+  flex: none;
+  gap: 0.5rem;
+  padding: 0.85rem 1.25rem 1.25rem;
+  border-top: 0.0625rem solid rgb(255 255 255 / 0.08);
+}
+
+.update-versions {
+  font-size: 0.85rem;
+}
+
+.update-label {
+  margin: 1rem 0 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.update-features {
+  margin: 0;
+  padding-left: 1rem;
+  font-size: 0.8125rem;
+}
+
+.update-features li + li {
+  margin-top: 0.3rem;
+}
+
+.update-hint {
+  font-size: 0.75rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.update-hint.is-error {
+  margin-top: 0.75rem;
+  color: var(--danger);
+}
+
+.update-progress {
+  height: 0.35rem;
+  margin: 1rem 0 0.5rem;
+  border-radius: 62rem;
+  background: var(--raise);
+  overflow: hidden;
+}
+
+.update-progress-bar {
+  display: block;
+  height: 100%;
+  border-radius: 62rem;
+  background: var(--accent);
+  transition: width 0.2s linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .update-progress-bar {
+    transition: none;
+  }
+}

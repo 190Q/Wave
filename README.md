@@ -150,6 +150,13 @@ newer (Ubuntu 22.04+, Debian 12+, Fedora 36+ and so on) and are x86_64 only.
   actually heard, what you skipped, and what you liked — kept in a SQLite
   database beside the library folder. It is on by default, it never leaves your
   machine, and it can be switched off or cleared in **Settings → Wave Swell**.
+- **Updates.** Wave looks for a newer release once, when it opens, and says so in
+  the window and through the system's own notifications. The notice opens a popup
+  with the version, the release link and whatever the release lists as new, and a
+  button that downloads the slim installer and runs it, so an update needs no trip
+  to the browser. The check is one request to GitHub, and nothing about you or your
+  library goes with it. It can be switched off, and a check can be asked for by
+  hand, in **Settings → Updates**.
 
 ## Command line
 

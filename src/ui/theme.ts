@@ -20,6 +20,7 @@ import {
 } from "../lib/state";
 import { createPanel } from "./drop";
 import { fillIcons } from "./icons";
+import { claimPopup, releasePopup } from "./popups";
 import { themeWipe } from "./wipe";
 
 /** Matches the dialog's open/close transition in the stylesheet. */
@@ -131,6 +132,7 @@ export function mountTheme(): void {
       window.clearTimeout(closeTimer);
       closeTimer = null;
     }
+    claimPopup(closeDialog);
     // Start collapsed, then let the stylesheet play it in.
     dialog.classList.add("is-closed");
     if (!dialog.open) {
@@ -150,6 +152,7 @@ export function mountTheme(): void {
     closeTimer = window.setTimeout(() => {
       closeTimer = null;
       dialog.close();
+      releasePopup(closeDialog);
     }, DIALOG_MS);
   };
 

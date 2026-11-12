@@ -28,6 +28,7 @@ import { mountSettings, openSettings } from "./ui/settings";
 import { mountTheme } from "./ui/theme";
 import { mountTitlebar } from "./ui/titlebar";
 import { focusSearch, mountTopbar } from "./ui/topbar";
+import { mountUpdate } from "./ui/update";
 
 const NOTICE_TIMEOUT_MS = 6000;
 
@@ -45,6 +46,7 @@ function mount(): void {
   mountConfirm();
   mountTheme();
   mountSettings();
+  mountUpdate();
   mountPresence();
   mountStatus();
   mountShortcuts();

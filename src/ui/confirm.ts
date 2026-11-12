@@ -1,3 +1,5 @@
+import { claimPopup, releasePopup } from "./popups";
+
 const DIALOG_MS = 220;
 
 export interface ConfirmOptions {
@@ -45,6 +47,7 @@ export function mountConfirm(): void {
       window.clearTimeout(closeTimer);
       closeTimer = null;
     }
+    claimPopup(dismissed);
     // Start collapsed, then let the stylesheet play it in.
     dialog.classList.add("is-closed");
     if (!dialog.open) {
@@ -65,8 +68,12 @@ export function mountConfirm(): void {
       const resolve = settle;
       settle = null;
       resolve?.(answer);
+      releasePopup(dismissed);
     }, DIALOG_MS);
   };
+
+  /** Another popup took the screen, so the question goes unanswered. */
+  const dismissed = (): void => closeDialog(dismissibleChoice ? null : false);
 
   cancel.addEventListener("click", () => closeDialog(false));
   accept.addEventListener("click", () => closeDialog(true));

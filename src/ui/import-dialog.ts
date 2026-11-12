@@ -35,6 +35,7 @@ import { createPanel } from "./drop";
 import { highlightHtml } from "./highlight";
 import { fillIcons } from "./icons";
 import { placePicker, windowFrame } from "./picker";
+import { claimPopup, releasePopup } from "./popups";
 
 const DIALOG_MS = 220;
 
@@ -264,6 +265,7 @@ export function mountImportDialog(): void {
       closeTimer = null;
     }
     anchor = from ?? fallback;
+    claimPopup(close);
     closeCombo(true);
     render();
     // Start collapsed, then let the stylesheet play it in.
@@ -286,6 +288,7 @@ export function mountImportDialog(): void {
     closeTimer = window.setTimeout(() => {
       closeTimer = null;
       dialog.close();
+      releasePopup(close);
     }, DIALOG_MS);
   };
 

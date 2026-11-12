@@ -1,7 +1,8 @@
 .theme-dialog,
 .settings-dialog,
 .import-dialog,
-.confirm-dialog {
+.confirm-dialog,
+.update-dialog {
   margin: auto;
   width: min(22rem, 92vw);
   max-height: calc(100vh - 2rem);
@@ -19,7 +20,8 @@
 .theme-dialog.is-closed,
 .settings-dialog.is-closed,
 .import-dialog.is-closed,
-.confirm-dialog.is-closed {
+.confirm-dialog.is-closed,
+.update-dialog.is-closed {
   transform: scale(0.12);
   opacity: 0;
 }
@@ -27,7 +29,8 @@
 .theme-dialog::backdrop,
 .settings-dialog::backdrop,
 .import-dialog::backdrop,
-.confirm-dialog::backdrop {
+.confirm-dialog::backdrop,
+.update-dialog::backdrop {
   background: rgb(0 0 0 / 0.6);
   backdrop-filter: blur(0.25rem);
   transition: opacity 0.22s ease;
@@ -36,7 +39,8 @@
 .theme-dialog.is-closed::backdrop,
 .settings-dialog.is-closed::backdrop,
 .import-dialog.is-closed::backdrop,
-.confirm-dialog.is-closed::backdrop {
+.confirm-dialog.is-closed::backdrop,
+.update-dialog.is-closed::backdrop {
   opacity: 0;
 }
 

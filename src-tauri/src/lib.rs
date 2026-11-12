@@ -28,6 +28,7 @@ mod spotify_import;
 mod state;
 mod tools;
 mod transfer;
+mod update;
 
 use tauri::Manager;
 
@@ -158,6 +159,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             prepare(app.handle());
             if let Ok(root) = library::library_root(app.handle()) {
@@ -193,6 +195,9 @@ pub fn run() {
             state::toggle_like,
             state::set_likes,
             presence::set_now_playing,
+            update::check_update,
+            update::update_status,
+            update::install_update,
             library::scan_library,
             library::library_info,
             library::open_library_folder,

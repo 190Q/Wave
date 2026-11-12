@@ -97,6 +97,8 @@ export interface Settings {
   systemMediaControls: boolean;
   /** Shows the song on the Discord profile. Off until it is asked for. */
   discordPresence: boolean;
+  /** Looks for a newer release on launch, and says so when it finds one. */
+  autoUpdate: boolean;
 }
 
 /** What the system's own controls and Discord are told about the song playing. */
@@ -364,6 +366,29 @@ export interface WindowGeometry {
   maximized: boolean;
 }
 
+/** A newer release than the one running, as the last check found it. */
+export interface UpdateInfo {
+  /** The release version, without the leading `v`. */
+  version: string;
+  /** The release page. */
+  url: string;
+  /** The lines under `## New features`, empty when the release lists none. */
+  features: string[];
+  /** When it was published, RFC 3339. */
+  publishedAt: string;
+  /** The slim installer for this platform, empty when the release has none. */
+  assetName: string;
+  assetUrl: string;
+  /** Whether this build can install it by itself. */
+  automatic: boolean;
+}
+
+/** How far an update download has got, in bytes. `total` is `0` when unknown. */
+export interface UpdateProgress {
+  received: number;
+  total: number;
+}
+
 export interface PersistedState {
   settings: Settings;
   playlists: Playlist[];
@@ -377,6 +402,8 @@ export interface PersistedState {
   recentImports: ImportRecord[];
   /** The last Spotify setup answer, so a restart does not start from nothing. */
   spotify: SpotifyStatus | null;
+  /** The newer release the last check found, so it is not looked up twice. */
+  update: UpdateInfo | null;
 }
 
 /** One entry in the import history. */

@@ -11,6 +11,7 @@ use crate::identity;
 use crate::playlists;
 use crate::source::TrackMeta;
 use crate::spotify::SpotifyStatus;
+use crate::update::UpdateInfo;
 
 const STATE_FILE: &str = "state.json";
 
@@ -56,6 +57,8 @@ pub struct Settings {
     pub system_media_controls: bool,
     /// Shows the song on the Discord profile. Off until it is asked for.
     pub discord_presence: bool,
+    /// Looks for a newer release and offers to install it. On by default.
+    pub auto_update: bool,
 }
 
 impl Default for Settings {
@@ -76,6 +79,7 @@ impl Default for Settings {
             analytics_enabled: true,
             system_media_controls: true,
             discord_presence: false,
+            auto_update: true,
         }
     }
 }
@@ -275,6 +279,8 @@ pub struct PersistedState {
     pub recent_imports: Vec<ImportRecord>,
     /// The last Spotify setup answer, so a restart does not start from nothing.
     pub spotify: Option<SpotifyStatus>,
+    /// The newer release last found, offered again without another check.
+    pub update: Option<UpdateInfo>,
 }
 
 /// In-memory copy of [`PersistedState`], guarded for the command handlers.

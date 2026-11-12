@@ -12,6 +12,7 @@ import { KEYBIND_GROUPS, SLOT_ACTIONS, SLOT_COUNT, slotLabel } from "../lib/keyb
 import { SEARCH_ALGORITHMS } from "../lib/search";
 import {
   captureWindowSlot,
+  checkForUpdates,
   exportCollection,
   getState,
   jobRunning,
@@ -34,6 +35,8 @@ import { createPanel } from "./drop";
 import { mountCollectionPicker } from "./collection-picker";
 import { fillIcons } from "./icons";
 import { placePicker } from "./picker";
+import { claimPopup, releasePopup } from "./popups";
+import { openUpdate } from "./update";
 
 const DIALOG_MS = 220;
 
@@ -44,7 +47,8 @@ type ToggleKey =
   | "normalizeVolume"
   | "analyticsEnabled"
   | "systemMediaControls"
-  | "discordPresence";
+  | "discordPresence"
+  | "autoUpdate";
 
 const MOTION_OPTIONS: { value: ReduceMotionMode; label: string }[] = [
   { value: "system", label: "System" },
@@ -113,6 +117,7 @@ export function mountSettings(): void {
     draft = { ...getState().settings };
     openSlot = null;
     render();
+    claimPopup(closeDialog);
     // Start collapsed, then let the stylesheet play it in.
     dialog.classList.add("is-closed");
     trigger.classList.add("is-open");
@@ -138,6 +143,7 @@ export function mountSettings(): void {
     closeTimer = window.setTimeout(() => {
       closeTimer = null;
       dialog.close();
+      releasePopup(closeDialog);
     }, DIALOG_MS);
   };
 
@@ -180,6 +186,7 @@ export function mountSettings(): void {
       analyticsHtml(draft, listeningStats, listeningSwell),
       searchHtml(draft),
       shortcutsHtml(draft, state.windowSlots, openSlot),
+      updatesHtml(state, draft),
     ].join("");
     placeSlotPicker();
     placeThumb(false);
@@ -324,6 +331,15 @@ export function mountSettings(): void {
           setNotice("Could not forget the saved window.");
         }
         return;
+      case "check-update": {
+        // A version already found is offered rather than looked up again.
+        if (getState().update) {
+          openUpdate();
+          return;
+        }
+        await checkForUpdates();
+        return;
+      }
       case "clear-analytics":
         try {
           forgetCaptured();
@@ -683,6 +699,62 @@ function formatSize(bytes: number): string {
     return `${Math.round(kilobytes)} KB`;
   }
   return `${(kilobytes / 1024).toFixed(1)} MB`;
+}
+
+/** The updater: the switch, what is waiting, and the button that acts on it. */
+function updatesHtml(state: AppState, settings: Settings): string {
+  const { update, updateChecking, updateProgress, updateError, appVersion } = state;
+
+  const installing = updateProgress !== null;
+  const label = installing
+    ? "Updating..."
+    : updateChecking
+      ? "Checking..."
+      : update
+        ? `Update to ${update.version}`
+        : "Check for updates";
+
+  const notes: string[] = [];
+  if (appVersion) {
+    notes.push(`Wave ${appVersion}`);
+  }
+  if (installing) {
+    notes.push("downloading the newer release; Wave restarts when it is ready");
+  } else if (update) {
+    notes.push(`Wave ${update.version} is available`);
+  } else if (updateChecking) {
+    notes.push("looking for a newer release");
+  } else if (updateError) {
+    notes.push("the last check did not go through");
+  } else if (settings.autoUpdate) {
+    notes.push("up to date");
+  } else {
+    notes.push("automatic checks are off");
+  }
+
+  const errors = updateError
+    ? `<ul class="settings-errors"><li>${escapeHtml(updateError)}</li></ul>`
+    : "";
+
+  return section(
+    "Updates",
+    `${toggleRow(
+      "autoUpdate",
+      "Automatic updates",
+      "Look for a newer release when Wave opens, and say so when there is one. The check is a single request to the releases page; nothing about you or your library is sent.",
+      settings.autoUpdate,
+    )}
+    <div class="settings-row is-stacked">
+      <span class="settings-label">Version</span>
+      <p class="settings-hint">${escapeHtml(notes.join(", "))}.</p>
+      <div class="settings-actions">
+        <button class="pill" type="button" data-command="check-update"${
+          updateChecking || installing ? " disabled" : ""
+        }>${escapeHtml(label)}</button>
+      </div>
+      ${errors}
+    </div>`,
+  );
 }
 
 function searchHtml(settings: Settings): string {

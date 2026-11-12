@@ -1,3 +1,4 @@
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 
 import type {
@@ -24,6 +25,8 @@ import type {
   Settings,
   SpotifyStatus,
   Track,
+  UpdateInfo,
+  UpdateProgress,
   WindowGeometry,
   YoutubeStatus,
 } from "../types";
@@ -70,6 +73,9 @@ const LOUDNESS_EVENT = "loudness-scan";
 /** Follows one playlist generation, phase by phase. */
 const GENERATE_PROGRESS_EVENT = "playlist-generate";
 
+/** Follows one update download, so the popup can show how far it has got. */
+const UPDATE_PROGRESS_EVENT = "update-progress";
+
 /** How long a burst of saves is left to settle before re-checking. */
 const CONFIG_SETTLE_MS = 400;
 
@@ -78,6 +84,8 @@ const MINI_CORNER = 4;
 
 export interface AppState {
   ready: boolean;
+  /** The version this build is running, empty until the backend has said. */
+  appVersion: string;
   scanning: boolean;
   tracks: Track[];
   tracksById: Map<string, Track>;
@@ -137,10 +145,21 @@ export interface AppState {
   genresProgress: ImportProgress | null;
   /** How far the loudness pass has got, `null` when nothing is being measured. */
   analysing: { done: number; total: number } | null;
+  /** The newer release the last check found, `null` when there is none. */
+  update: UpdateInfo | null;
+  /** True while a check is in flight. */
+  updateChecking: boolean;
+  /** When a launch check turned up a version the store did not already hold. */
+  updateFoundAt: number;
+  /** How far an update download has got, `null` when nothing is being installed. */
+  updateProgress: UpdateProgress | null;
+  /** What a check or an install said when it went wrong. */
+  updateError: string | null;
 }
 
 const state: AppState = {
   ready: false,
+  appVersion: "",
   scanning: false,
   tracks: [],
   tracksById: new Map(),
@@ -172,6 +191,7 @@ const state: AppState = {
     analyticsEnabled: true,
     systemMediaControls: true,
     discordPresence: false,
+    autoUpdate: true,
   },
   filter: "all",
   query: "",
@@ -198,6 +218,11 @@ const state: AppState = {
   coversProgress: null,
   genresProgress: null,
   analysing: null,
+  update: null,
+  updateChecking: false,
+  updateFoundAt: 0,
+  updateProgress: null,
+  updateError: null,
 };
 
 const listeners = new Set<() => void>();
@@ -596,12 +621,14 @@ export async function init(): Promise<void> {
   watchSettings();
   watchSources();
   watchLoudness();
+  watchUpdate();
   mountAnalytics({
     player,
     trackById,
     collectionById,
     enabled: () => state.settings.analyticsEnabled,
   });
+  await readAppVersion();
   try {
     const persisted = await ipc.loadState();
     applyPersisted(persisted);
@@ -620,7 +647,17 @@ export async function init(): Promise<void> {
   void refreshDeezerStatus();
   void refreshYoutubeStatus();
   void refreshRecommendStatus();
+  void startUpdater();
   emit();
+}
+
+/** The version the binary reports, which is what a release is compared against. */
+async function readAppVersion(): Promise<void> {
+  try {
+    state.appVersion = await getVersion();
+  } catch {
+    // Not running inside Tauri, for example `npm run dev` in a browser.
+  }
 }
 
 async function readLibraryInfo(): Promise<void> {
@@ -1776,6 +1813,81 @@ export async function updateSettings(patch: Partial<Settings>): Promise<boolean>
   }
 }
 
+/**
+ * Looks the releases up and keeps whatever it finds. `announce` marks a version
+ * the store did not already hold, which is what earns it a notification.
+ */
+export async function checkForUpdates(announce = false): Promise<void> {
+  if (state.updateChecking) {
+    return;
+  }
+
+  const known = state.update?.version ?? null;
+  state.updateChecking = true;
+  state.updateError = null;
+  emit();
+
+  try {
+    const found = await ipc.checkUpdate();
+    state.update = found;
+    if (announce && found && found.version !== known) {
+      state.updateFoundAt = Date.now();
+    }
+  } catch (error) {
+    state.updateError = describe(error);
+  }
+
+  state.updateChecking = false;
+  emit();
+}
+
+/** Downloads the newer release and installs it. Wave restarts itself. */
+export async function installUpdate(): Promise<void> {
+  if (state.updateProgress !== null) {
+    return;
+  }
+
+  state.updateProgress = { received: 0, total: 0 };
+  state.updateError = null;
+  emit();
+
+  try {
+    await ipc.installUpdate();
+  } catch (error) {
+    state.updateProgress = null;
+    state.updateError = describe(error);
+    emit();
+  }
+}
+
+/**
+ * The one check the app makes on its own, on the way in. What the last session
+ * left is read first, so the panel can offer it without the network and so a
+ * version already found is not announced all over again.
+ */
+async function startUpdater(): Promise<void> {
+  try {
+    state.update = await ipc.updateStatus();
+  } catch {
+    // Nothing stored reads as nothing found.
+  }
+  emit();
+
+  if (state.settings.autoUpdate) {
+    await checkForUpdates(true);
+  }
+}
+
+/** Follows an update download, so the popup can show how far it has got. */
+function watchUpdate(): void {
+  void listen<UpdateProgress>(UPDATE_PROGRESS_EVENT, (event) => {
+    state.updateProgress = event.payload;
+    emit();
+  }).catch(() => {
+    // Not running inside Tauri, for example `npm run dev` in a browser.
+  });
+}
+
 export function setVolume(volume: number): void {
   player.setVolume(volume);
   scheduleVolumeSave();
@@ -1880,6 +1992,7 @@ function applyPersisted(next: PersistedState): void {
   state.windowSlots = next.windowSlots ?? [];
   state.recentImports = next.recentImports ?? [];
   state.spotify = next.spotify ?? null;
+  state.update = next.update ?? null;
   state.colours = new Map(
     Object.entries(next.artworkColours ?? {}).filter(([, hex]) => isUsableAccent(hex)),
   );

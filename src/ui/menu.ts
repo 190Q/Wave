@@ -1,4 +1,5 @@
 import { escapeHtml } from "../lib/format";
+import { claimPopup, releasePopup } from "./popups";
 
 export interface MenuItem {
   label: string;
@@ -25,6 +26,8 @@ export function openMenu(anchor: HTMLElement, items: MenuItem[], at?: MenuPoint)
   if (items.length === 0) {
     return;
   }
+
+  claimPopup(closeMenu);
 
   const menu = document.createElement("div");
   menu.className = "menu";
@@ -130,6 +133,7 @@ export function closeMenu(): void {
   dismiss = null;
   open?.remove();
   open = null;
+  releasePopup(closeMenu);
 }
 
 function position(menu: HTMLElement, anchor: HTMLElement, at?: MenuPoint): void {

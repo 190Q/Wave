@@ -249,6 +249,7 @@ pub fn run() {
             analytics::analytics_record_events,
             analytics::analytics_swell,
             analytics::analytics_top_songs,
+            analytics::analytics_play_counts,
             analytics::analytics_recommendation_seeds,
             analytics::analytics_stats,
             analytics::analytics_clear,

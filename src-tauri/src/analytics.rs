@@ -522,6 +522,12 @@ impl Analytics {
         top_songs(&conn, from, to, limit).map_err(db_error)
     }
 
+    /// How often each song has been streamed, over the whole record.
+    pub fn play_counts(&self) -> Result<HashMap<String, i64>, String> {
+        let conn = self.guard();
+        play_counts(&conn).map_err(db_error)
+    }
+
     /// Every Wave Swell metric for one window, in a single read.
     pub fn swell(&self, from: i64, to: i64, bucket: &str) -> Result<SwellSummary, String> {
         let conn = self.guard();
@@ -656,6 +662,19 @@ fn top_songs(
         })
     })?
     .collect()
+}
+
+/// Every song that has been streamed, with how many times. A song that was only
+/// ever skipped is left out, the same way the rankings leave it out.
+fn play_counts(conn: &Connection) -> rusqlite::Result<HashMap<String, i64>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT p.track_id, COUNT(*) FROM plays p \
+         WHERE {STREAM_COND} \
+         GROUP BY p.track_id"
+    ))?;
+
+    stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect()
 }
 
 fn swell(conn: &Connection, from: i64, to: i64, bucket: &str) -> rusqlite::Result<SwellSummary> {
@@ -1061,6 +1080,13 @@ pub fn analytics_top_songs(
 }
 
 #[tauri::command(async)]
+pub fn analytics_play_counts(
+    analytics: State<'_, Analytics>,
+) -> Result<HashMap<String, i64>, String> {
+    analytics.play_counts()
+}
+
+#[tauri::command(async)]
 pub fn analytics_recommendation_seeds(
     analytics: State<'_, Analytics>,
     limit: Option<usize>,
@@ -1333,6 +1359,32 @@ mod tests {
 
         let (from, to) = span(at);
         assert!(store.swell(from, to, "month").unwrap().top_songs.is_empty());
+    }
+
+    #[test]
+    fn a_count_leaves_out_a_song_that_was_only_skipped() {
+        let store = store();
+        store
+            .remember_tracks(&[
+                track("a", "Artist", "Album", "Pop", "music"),
+                track("b", "Artist", "Album", "Pop", "music"),
+            ])
+            .unwrap();
+
+        let at = now_ms();
+        store
+            .record_play(&play("one", "a", at, 180_000, true, "ended"))
+            .unwrap();
+        store
+            .record_play(&play("two", "a", at + 1_000, 180_000, true, "ended"))
+            .unwrap();
+        store
+            .record_play(&play("three", "b", at + 2_000, 10_000, false, "skipped"))
+            .unwrap();
+
+        let counts = store.play_counts().unwrap();
+        assert_eq!(counts.get("a"), Some(&2));
+        assert_eq!(counts.get("b"), None);
     }
 
     #[test]

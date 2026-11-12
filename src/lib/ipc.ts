@@ -341,6 +341,11 @@ export function analyticsTopSongs(
   return invoke("analytics_top_songs", { from, to, limit });
 }
 
+/** How often each song has been streamed, over the whole record. */
+export function analyticsPlayCounts(): Promise<Record<string, number>> {
+  return invoke("analytics_play_counts");
+}
+
 /** The affinity data a recommender would start from. */
 export function analyticsRecommendationSeeds(limit?: number): Promise<RecommendationSeeds> {
   return invoke("analytics_recommendation_seeds", { limit });

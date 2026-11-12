@@ -282,6 +282,7 @@ mod tests {
             has_embedded_art: false,
             lufs: None,
             peak: None,
+            added_at: 0,
         }
     }
 

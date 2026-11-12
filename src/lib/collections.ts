@@ -1,4 +1,11 @@
-import type { Collection, CollectionFilter, Playlist, SearchAlgorithm, Track } from "../types";
+import type {
+  Collection,
+  CollectionFilter,
+  CollectionSort,
+  Playlist,
+  SearchAlgorithm,
+  Track,
+} from "../types";
 import { songCount } from "./format";
 import { scoreItems, type FieldsOf } from "./search";
 
@@ -135,14 +142,24 @@ export function sortAlbumTracks(trackIds: string[], tracksById: Map<string, Trac
 
 const collectionFields: FieldsOf<Collection> = (collection) => [collection.name];
 
+/** What the orders that look past a collection's name have to read. */
+export interface CollectionOrdering {
+  /** Track id -> the song, for the order by when it was filed. */
+  tracksById: ReadonlyMap<string, Track>;
+  /** Track id -> how often it was streamed, for the order by plays. */
+  plays: ReadonlyMap<string, number>;
+}
+
 export function filterCollections(
   collections: Collection[],
   filter: CollectionFilter,
   query: string,
-  sort: "name" | "size",
+  sort: CollectionSort,
   algorithm: SearchAlgorithm = "substring",
+  ordering: CollectionOrdering = { tracksById: new Map(), plays: new Map() },
 ): Collection[] {
   const candidates = collections.filter((collection) => matchesFilter(collection, filter));
+  const order = collectionOrder(sort, candidates, ordering);
 
   // Relevance outranks the chosen order, but the pinned rows still come first.
   return scoreItems(candidates, query, algorithm, collectionFields, collections)
@@ -150,11 +167,59 @@ export function filterCollections(
       (a, b) =>
         Number(isPinned(b.item)) - Number(isPinned(a.item)) ||
         b.score - a.score ||
-        (sort === "size"
-          ? b.item.entries.length - a.item.entries.length
-          : a.item.name.localeCompare(b.item.name)),
+        order(a.item, b.item),
     )
     .map((entry) => entry.item);
+}
+
+/**
+ * The comparator for the chosen order. What each collection is ranked by is
+ * worked out once, up front, because a collection can hold hundreds of songs.
+ */
+function collectionOrder(
+  sort: CollectionSort,
+  collections: Collection[],
+  ordering: CollectionOrdering,
+): (a: Collection, b: Collection) => number {
+  const byName = (a: Collection, b: Collection): number => a.name.localeCompare(b.name);
+
+  switch (sort) {
+    case "size":
+      return (a, b) => b.entries.length - a.entries.length || byName(a, b);
+    case "plays":
+    case "recent": {
+      const rank = new Map<string, number>();
+      for (const collection of collections) {
+        rank.set(
+          collection.id,
+          sort === "plays"
+            ? totalPlays(collection, ordering.plays)
+            : newestAdded(collection, ordering.tracksById),
+        );
+      }
+      return (a, b) => (rank.get(b.id) ?? 0) - (rank.get(a.id) ?? 0) || byName(a, b);
+    }
+    default:
+      return byName;
+  }
+}
+
+/** The streams a collection's songs have between them. */
+function totalPlays(collection: Collection, plays: ReadonlyMap<string, number>): number {
+  let total = 0;
+  for (const id of collection.entries) {
+    total += plays.get(id) ?? 0;
+  }
+  return total;
+}
+
+/** When the newest song in a collection was filed into the library. */
+function newestAdded(collection: Collection, tracksById: ReadonlyMap<string, Track>): number {
+  let newest = 0;
+  for (const id of collection.entries) {
+    newest = Math.max(newest, tracksById.get(id)?.addedAt ?? 0);
+  }
+  return newest;
 }
 
 export function isPinned(collection: Collection): boolean {

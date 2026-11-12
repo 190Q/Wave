@@ -106,6 +106,7 @@ pub struct Track {
     pub lufs: Option<f32>,
     /// True peak, linear. `None` until the song has been measured.
     pub peak: Option<f32>,
+    pub added_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -496,6 +497,7 @@ pub fn to_track(row: &TrackRow, root: &Path) -> Track {
         has_embedded_art: row.has_embedded_art,
         lufs: row.lufs,
         peak: row.peak,
+        added_at: row.added_at,
     }
 }
 

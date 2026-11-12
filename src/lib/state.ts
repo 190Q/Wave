@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   Collection,
   CollectionFilter,
+  CollectionSort,
   CoversOutcome,
   DeezerStatus,
   GenresOutcome,
@@ -117,7 +118,9 @@ export interface AppState {
   settings: Settings;
   filter: CollectionFilter;
   query: string;
-  sort: "name" | "size";
+  sort: CollectionSort;
+  /** Track id -> how often it has been streamed, for the orders that need it. */
+  playCounts: Map<string, number>;
   libraryOpen: boolean;
   queueOpen: boolean;
   recents: string[];
@@ -203,6 +206,7 @@ const state: AppState = {
   filter: "all",
   query: "",
   sort: "name",
+  playCounts: new Map(),
   libraryOpen: false,
   queueOpen: false,
   recents: [],
@@ -655,6 +659,7 @@ export async function init(): Promise<void> {
   void refreshDeezerStatus();
   void refreshYoutubeStatus();
   void refreshRecommendStatus();
+  void loadPlayCounts();
   void startUpdater();
   emit();
 }
@@ -1322,8 +1327,33 @@ export function setQuery(query: string): void {
   emit();
 }
 
-export function setSort(sort: "name" | "size"): void {
+/** Set while the play counts are being read, so a second read waits its turn. */
+let countsReading = false;
+
+/** Reads how often each song has been streamed, for the orders that need it. */
+async function loadPlayCounts(): Promise<void> {
+  if (countsReading) {
+    return;
+  }
+  countsReading = true;
+
+  try {
+    const counts = await ipc.analyticsPlayCounts();
+    state.playCounts = new Map(Object.entries(counts));
+    emit();
+  } catch {
+    // Left as it stands; every song simply counts as unplayed.
+  } finally {
+    countsReading = false;
+  }
+}
+
+export function setSort(sort: CollectionSort): void {
   state.sort = sort;
+  if (sort === "plays") {
+    // The counts move as songs are listened to, so they are read again here.
+    void loadPlayCounts();
+  }
   schedulePersist();
   emit();
 }
@@ -2078,12 +2108,24 @@ function applySession(session: Session | undefined): void {
   }
   state.recents = session.recents ?? [];
   state.filter = knownFilter(session.filter);
-  state.sort = session.sort ?? "name";
+  state.sort = knownSort(session.sort);
   state.queueOpen = session.queueOpen ?? false;
 }
 
 function knownFilter(value: string | undefined): CollectionFilter {
   return COLLECTION_FILTERS.find((filter) => filter === value) ?? "all";
+}
+
+/** A saved order, kept only when this build still knows it. */
+function knownSort(value: string | undefined): CollectionSort {
+  switch (value) {
+    case "size":
+    case "plays":
+    case "recent":
+      return value;
+    default:
+      return "name";
+  }
 }
 
 function restorePlayback(playback: Playback | undefined): void {

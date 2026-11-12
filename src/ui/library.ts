@@ -47,6 +47,7 @@ import type {
   Collection,
   CollectionFilter,
   CollectionKind,
+  CollectionSort,
   ImportProgress,
   PendingTrack,
   SwellBucket,
@@ -66,6 +67,14 @@ import { openMenu, type MenuItem, type MenuPoint } from "./menu";
 const SWIPE_TRAVEL = 1.75;
 const SWIPE_MS = 260;
 const SWIPE_EASE = "cubic-bezier(0.22, 0.8, 0.28, 1)";
+
+/** What the sort button calls each order. */
+const SORT_LABELS: Record<CollectionSort, string> = {
+  name: "A to Z",
+  size: "Most songs",
+  plays: "Most played",
+  recent: "Recently downloaded",
+};
 
 /** The pseudo-collection the Wave Swell pane is filed under. */
 const SWELL_ID = "swell";
@@ -340,6 +349,12 @@ export function mountLibrary(): void {
     openMenu(sortButton, [
       { label: "A to Z", active: current === "name", action: () => setSort("name") },
       { label: "Most songs", active: current === "size", action: () => setSort("size") },
+      { label: "Most played", active: current === "plays", action: () => setSort("plays") },
+      {
+        label: "Recently downloaded",
+        active: current === "recent",
+        action: () => setSort("recent"),
+      },
     ]);
   });
 
@@ -673,7 +688,7 @@ export function mountLibrary(): void {
     for (const chip of chips.querySelectorAll<HTMLElement>("[data-filter]")) {
       chip.classList.toggle("is-on", chip.dataset.filter === state.filter);
     }
-    sortLabel.textContent = state.sort === "size" ? "Most songs" : "A to Z";
+    sortLabel.textContent = SORT_LABELS[state.sort];
 
     if (!state.libraryOpen || openCollectionId === null) {
       closeAddToPlaylist();
@@ -699,6 +714,7 @@ export function mountLibrary(): void {
         state.query,
         state.sort,
         state.settings.searchAlgorithm,
+        { tracksById: state.tracksById, plays: state.playCounts },
       );
       count.textContent = plural(collections.length, "collection");
       delete list.dataset.detail;

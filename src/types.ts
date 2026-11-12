@@ -24,6 +24,8 @@ export interface Track {
   lufs: number | null;
   /** True peak, linear: `1` is full scale. */
   peak: number | null;
+  /** When the library first filed the song, epoch milliseconds. */
+  addedAt: number;
 }
 
 export type PlaylistKind = "custom" | "generated";
@@ -406,7 +408,7 @@ export interface Session {
   playback: Playback;
   recents: string[];
   filter: CollectionFilter;
-  sort: "name" | "size";
+  sort: CollectionSort;
   queueOpen: boolean;
 }
 
@@ -689,6 +691,9 @@ export interface LyricLine {
 
 /** Which slice of the library the sheet is showing. */
 export type CollectionFilter = "all" | "playlists" | "artists" | "albums" | "genres";
+
+/** Which order the sheet lists collections in. */
+export type CollectionSort = "name" | "size" | "plays" | "recent";
 
 export interface ThemeDefinition {
   id: string;

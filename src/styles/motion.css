@@ -39,6 +39,11 @@
     transition: none;
   }
 
+  .eq-panel,
+  .eq-picker {
+    transition: none;
+  }
+
   .settings-dialog,
   .settings-dialog *,
   .confirm-dialog,
@@ -72,6 +77,11 @@
 :root.is-reduced-motion .search-modal,
 :root.is-reduced-motion .search-modal-panel,
 :root.is-reduced-motion .results {
+  transition: none;
+}
+
+:root.is-reduced-motion .eq-panel,
+:root.is-reduced-motion .eq-picker {
   transition: none;
 }
 

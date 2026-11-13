@@ -20,6 +20,7 @@ import { runSlotAction } from "./ui/actions";
 import { mountConfirm } from "./ui/confirm";
 import { mountDock, stepVolumeFromKey } from "./ui/dock";
 import { mountDockTitle } from "./ui/dock-title";
+import { mountEq } from "./ui/eq";
 import { mountHero } from "./ui/hero";
 import { mountIcons } from "./ui/icons";
 import { mountImportDialog, openImport } from "./ui/import-dialog";
@@ -47,6 +48,7 @@ function mount(): void {
   mountConfirm();
   mountTheme();
   mountSettings();
+  mountEq();
   mountUpdate();
   mountApi();
   mountPresence();

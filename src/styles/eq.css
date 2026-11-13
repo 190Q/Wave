@@ -1,0 +1,470 @@
+.eq-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+}
+
+/* The panel is full size from the start, and the animation scales it up from
+   the middle of the window, so it grows out to fill the screen. */
+.eq-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--stage-background);
+  transform-origin: center;
+  transition: transform 0.28s var(--ease), opacity 0.22s ease;
+}
+
+.eq-modal.is-closed .eq-panel {
+  transform: scale(0.12);
+  opacity: 0;
+}
+
+.eq-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex: none;
+  gap: 1rem;
+  padding: 1.1rem 1.5rem 0.85rem;
+  border-bottom: 0.0625rem solid rgb(255 255 255 / 0.08);
+}
+
+.eq-head-text {
+  min-width: 0;
+}
+
+.eq-head h2 {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.eq-head-actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 0.5rem;
+}
+
+.eq-body {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  gap: 1rem;
+  padding: 1rem 1.5rem 1.25rem;
+  grid-template-columns: minmax(0, 1fr) 19rem;
+  grid-template-rows: minmax(9rem, 1fr) minmax(0, auto);
+  grid-template-areas:
+    "graph side"
+    "bands side";
+}
+
+.eq-graph {
+  grid-area: graph;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  gap: 0.4rem;
+}
+
+.eq-canvas {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  cursor: default;
+  border: 0.0625rem solid rgb(255 255 255 / 0.1);
+  border-radius: 0.75rem;
+  background: rgb(0 0 0 / 0.32);
+  touch-action: none;
+}
+
+.eq-readout {
+  flex: none;
+}
+
+.eq-bands-wrap {
+  grid-area: bands;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 0.4rem;
+}
+
+.eq-bands {
+  min-height: 0;
+  max-height: 14rem;
+  overflow-y: auto;
+}
+
+.eq-band {
+  display: grid;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.35rem;
+  border-radius: 0.5rem;
+  grid-template-columns: 1.4rem 5.6rem minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 2rem;
+}
+
+.eq-band:hover {
+  background: var(--raise);
+  box-shadow: inset 0 0 0 0.0625rem var(--eq-band-colour, var(--accent));
+}
+
+.eq-band.is-on {
+  background: var(--accent-soft);
+}
+
+/* The dot doubles as the select target and as the band's on/off state. */
+.eq-band-mark {
+  width: 0.7rem;
+  height: 0.7rem;
+  margin: 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--eq-band-colour, var(--muted));
+  transition: background 0.2s, transform 0.2s var(--ease);
+}
+
+.eq-band.is-on .eq-band-mark {
+  transform: scale(1.25);
+}
+
+.eq-band.is-off .eq-band-mark {
+  background: transparent;
+  box-shadow: inset 0 0 0 0.0625rem var(--eq-band-colour, var(--muted));
+}
+
+.eq-band-input {
+  min-width: 0;
+  width: 100%;
+  padding: 0.3rem 0.45rem;
+  font-size: 0.75rem;
+  background-color: rgb(0 0 0 / 0.3);
+  border: 0.0625rem solid transparent;
+  border-radius: 0.45rem;
+  outline: none;
+}
+
+.eq-band-input:focus {
+  border-color: var(--accent);
+}
+
+/* The system spinner cannot be told what to look like, so it goes and the
+   arrow keys do the stepping instead. */
+.eq-input[type="number"],
+.eq-band-input[type="number"] {
+  appearance: textfield;
+}
+
+.eq-input[type="number"]::-webkit-outer-spin-button,
+.eq-input[type="number"]::-webkit-inner-spin-button,
+.eq-band-input[type="number"]::-webkit-outer-spin-button,
+.eq-band-input[type="number"]::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+/* The list a select opens cannot be themed, so the dropdowns are buttons and
+   the list is drawn here. */
+.eq-drop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+  gap: 0.4rem;
+  max-width: 11rem;
+  min-width: 0;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.75rem;
+  text-align: left;
+  background-color: var(--raise);
+  border: 0.0625rem solid transparent;
+  border-radius: 0.45rem;
+}
+
+.eq-drop:hover:not([aria-expanded="true"]) {
+  background-color: var(--raise-strong);
+}
+
+.eq-drop[aria-expanded="true"] {
+  border-color: var(--accent);
+}
+
+.eq-drop-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.eq-drop .sort-chevron {
+  flex: none;
+}
+
+.eq-picker {
+  position: fixed;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0.3rem;
+  border: 0.0625rem solid rgb(255 255 255 / 0.12);
+  border-radius: 0.75rem;
+  background: var(--surface);
+  box-shadow: 0 0.75rem 2rem rgb(0 0 0 / 0.5);
+  --eq-drop-shift: -0.4rem;
+  transform-origin: top left;
+  transition: opacity 0.15s ease, transform 0.18s var(--ease);
+}
+
+.eq-picker.is-closed {
+  opacity: 0;
+  transform: translateY(var(--eq-drop-shift)) scale(0.98);
+}
+
+.eq-option {
+  display: block;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  overflow: hidden;
+  font-size: 0.78rem;
+  text-align: left;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: none;
+  border: 0;
+  border-radius: 0.5rem;
+}
+
+.eq-option:hover {
+  background: var(--raise-strong);
+}
+
+.eq-option.is-on {
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 700;
+}
+
+/* The shape sits in a fixed column of the band row, so it fills it. */
+.eq-band-shape {
+  width: 100%;
+  max-width: none;
+  background-color: rgb(0 0 0 / 0.3);
+}
+
+.eq-band-field {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 0.3rem;
+}
+
+.eq-band-unit {
+  flex: none;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.eq-band-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.eq-side {
+  grid-area: side;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 0.75rem;
+  padding-left: 1rem;
+  overflow-y: auto;
+  border-left: 0.0625rem solid rgb(255 255 255 / 0.08);
+}
+
+.eq-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-bottom: 0.7rem;
+  border-bottom: 0.0625rem solid rgb(255 255 255 / 0.08);
+}
+
+.eq-group:last-child {
+  border-bottom: 0;
+}
+
+.eq-group-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.eq-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  font-size: 0.78rem;
+}
+
+.eq-input {
+  width: 5rem;
+  padding: 0.3rem 0.45rem;
+  font-size: 0.75rem;
+  text-align: right;
+  background: rgb(0 0 0 / 0.3);
+  border: 0.0625rem solid transparent;
+  border-radius: 0.45rem;
+  outline: none;
+}
+
+.eq-input:focus {
+  border-color: var(--accent);
+}
+
+.eq-input.is-wide {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+  text-align: left;
+}
+
+.eq-field > .eq-note {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.eq-preset {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.eq-preset-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.78rem;
+  text-align: left;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: none;
+  border: 0;
+  padding: 0.3rem 0;
+}
+
+.eq-preset-name:hover {
+  color: var(--accent);
+}
+
+.eq-preset.is-on .eq-preset-name {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.eq-preset-tag {
+  flex: none;
+  font-size: 0.68rem;
+  color: var(--muted);
+}
+
+.eq-note {
+  font-size: 0.72rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.eq-warning {
+  font-size: 0.72rem;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 56rem) {
+  .eq-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(8rem, 1fr) auto minmax(0, auto);
+    grid-template-areas:
+      "graph"
+      "bands"
+      "side";
+    overflow-y: auto;
+  }
+
+  .eq-side {
+    padding-left: 0;
+    padding-top: 0.75rem;
+    overflow: visible;
+    border-left: 0;
+    border-top: 0.0625rem solid rgb(255 255 255 / 0.08);
+  }
+
+  .eq-bands {
+    max-height: 11rem;
+  }
+}
+
+@media (max-height: 30rem) {
+  .eq-head {
+    padding: 0.6rem 1rem 0.5rem;
+  }
+
+  .eq-body {
+    gap: 0.6rem;
+    padding: 0.6rem 1rem 0.8rem;
+    grid-template-rows: minmax(6rem, 1fr) auto minmax(0, auto);
+  }
+
+  .eq-bands {
+    max-height: 7rem;
+  }
+}
+
+@media (max-width: 34rem) {
+  .eq-band {
+    grid-template-columns: 1.4rem minmax(0, 1fr) minmax(0, 1fr) 2rem;
+    grid-template-areas:
+      "mark shape shape remove"
+      "mark freq gain q";
+    row-gap: 0.25rem;
+  }
+
+  .eq-band-mark {
+    grid-area: mark;
+    align-self: start;
+  }
+
+  .eq-band-shape {
+    grid-area: shape;
+  }
+
+  .eq-band-remove {
+    grid-area: remove;
+  }
+
+  .eq-band-field.is-freq {
+    grid-area: freq;
+  }
+
+  .eq-band-field.is-gain {
+    grid-area: gain;
+  }
+
+  .eq-band-field.is-q {
+    grid-area: q;
+  }
+}

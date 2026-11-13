@@ -7,6 +7,12 @@ import type {
   CollectionSort,
   CoversOutcome,
   DeezerStatus,
+  EqBand,
+  EqContextKind,
+  EqContextRule,
+  EqOutput,
+  EqPreset,
+  EqPresetSource,
   GenresOutcome,
   ImportOutcome,
   ImportPlan,
@@ -33,9 +39,11 @@ import type {
   YoutubeStatus,
 } from "../types";
 import { flushAnalytics, mountAnalytics, notePlaybackError, noteTrackEnded, recordEvent, rememberTracks } from "./analytics";
-import { AudioEngine } from "./audio";
+import { AudioEngine, assetUrl } from "./audio";
+import type { EqProfile } from "./autoeq";
 import { COLLECTION_FILTERS, buildCollections, findCollection, sortAlbumTracks } from "./collections";
 import { FALLBACK_COLOUR, colourFromId, isUsableAccent } from "./colour";
+import { DEFAULT_EQ_BANDS, EqChain } from "./eq";
 import * as ipc from "./ipc";
 import { plural } from "./format";
 import { gainFor } from "./loudness";
@@ -205,6 +213,16 @@ const state: AppState = {
     systemMediaControls: true,
     discordPresence: false,
     autoUpdate: true,
+    eqEnabled: false,
+    eqBands: [],
+    eqAutoPreamp: true,
+    eqPreampDb: 0,
+    eqLimiter: true,
+    eqPresets: [],
+    eqActivePresetId: null,
+    eqDeviceRules: {},
+    eqContextRules: [],
+    eqOutputId: "",
   },
   filter: "all",
   query: "",
@@ -260,6 +278,12 @@ const artworkFailed = new Set<string>();
 
 let emitScheduled = false;
 
+/** The filter chain every element the engine makes is fed through. */
+const eq = new EqChain();
+
+/** The chain itself, so the overlay can read the curve and the spectrum. */
+export const eqChain = eq;
+
 const engine = new AudioEngine({
   onEnded: () => {
     noteTrackEnded();
@@ -272,7 +296,116 @@ const engine = new AudioEngine({
     notePlaybackError();
     player.handleError();
   },
+  onCorsRefused: handleCorsRefused,
+  onElement: (element, phase) => {
+    if (phase === "created") {
+      eq.attach(element);
+    } else {
+      eq.detach(element);
+    }
+  },
 });
+
+/** Set while the engine is asking for files in a way Web Audio can read. */
+let engineCors = false;
+
+/** Set while the check below is running, so only one is ever in flight. */
+let corsChecking = false;
+
+/**
+ * A file that will not be handed to Web Audio is loaded again without it, so
+ * the equaliser steps aside rather than costing plain playback.
+ */
+function handleCorsRefused(): void {
+  engineCors = false;
+  engine.disableCors();
+  eq.block("cors");
+  player.reloadCurrent();
+  setNotice("This system will not let Wave read the audio, so the equaliser is off.");
+}
+
+/**
+ * Whether the protocol will hand a file over in a way Web Audio can read. It is
+ * asked of a throwaway element, which is the exact request the engine would
+ * make, so nothing about the track being played is disturbed.
+ */
+function readableWithCors(path: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = new Audio();
+    let settled = false;
+
+    const finish = (readable: boolean): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      window.clearTimeout(timer);
+      probe.removeEventListener("loadedmetadata", loaded);
+      probe.removeEventListener("error", failed);
+      probe.removeAttribute("src");
+      probe.load();
+      resolve(readable);
+    };
+
+    const loaded = (): void => finish(true);
+    const failed = (): void => finish(false);
+    // A probe that never answers is treated as a refusal, which only ever costs
+    // the curve rather than the sound.
+    const timer = window.setTimeout(() => finish(false), CORS_PROBE_MS);
+
+    probe.crossOrigin = "anonymous";
+    probe.preload = "metadata";
+    probe.addEventListener("loadedmetadata", loaded);
+    probe.addEventListener("error", failed);
+    probe.src = assetUrl(path);
+  });
+}
+
+/** How long a CORS check is given before it is read as a refusal. */
+const CORS_PROBE_MS = 5000;
+
+async function syncEqReading(): Promise<void> {
+  const wanted = state.settings.eqEnabled && eq.blockedReason === null;
+
+  if (!wanted) {
+    if (engineCors) {
+      engineCors = false;
+      engine.disableCors();
+    }
+    return;
+  }
+
+  if (engineCors || corsChecking) {
+    return;
+  }
+
+  const path = currentTrack()?.path;
+  if (path === undefined) {
+    return;
+  }
+
+  corsChecking = true;
+  const readable = await readableWithCors(path);
+  corsChecking = false;
+
+  // The curve may have been switched off while the check was running.
+  if (!state.settings.eqEnabled || eq.blockedReason !== null) {
+    return;
+  }
+
+  if (!readable) {
+    eq.block("cors");
+    setNotice("This system will not let Wave read the audio, so the equaliser is off.");
+    emit();
+    return;
+  }
+
+  engineCors = true;
+  engine.enableCors();
+  if (engine.hasFile) {
+    player.reloadCurrent();
+  }
+}
 
 export const player = new Player(engine, (trackId) => {
   const track = state.tracksById.get(trackId);
@@ -637,6 +770,7 @@ export async function init(): Promise<void> {
   watchLoudness();
   watchUpdate();
   watchApi();
+  wireEq();
   mountAnalytics({
     player,
     trackById,
@@ -647,6 +781,7 @@ export async function init(): Promise<void> {
   try {
     const persisted = await ipc.loadState();
     applyPersisted(persisted);
+    seedEqOrigin();
     applySession(persisted.session);
     player.setVolume(state.settings.volume);
     await rescan();
@@ -1855,6 +1990,8 @@ function watchSettings(): void {
     if (event.payload.volume !== player.snapshot().volume) {
       player.setVolume(event.payload.volume);
     }
+    eq.apply(state.settings);
+    void syncEqReading();
     emit();
   }).catch(() => {
     // Not running inside Tauri, for example `npm run dev` in a browser.
@@ -2096,6 +2233,8 @@ function applyPersisted(next: PersistedState): void {
   state.update = next.update ?? null;
   applyColours(next.artworkColours ?? {});
   refreshCollections();
+  eq.apply(state.settings);
+  void syncEqReading();
 }
 
 /** True when two sets of likes hold the same songs. */
@@ -2345,8 +2484,440 @@ export async function flushSession(): Promise<void> {
   }
   await saveVolume();
   await persistSession();
+  await flushEq();
   // The listen still running is written down before the window goes.
   await flushAnalytics();
+}
+
+/** A preset picked by hand, which holds until what is playing moves on. */
+let eqManual: { presetId: string; key: string } | null = null;
+
+/** The origin that last set the bands, so the same one is not applied twice. */
+let eqApplied: string | null = null;
+
+/** The outputs the engine last admitted to, so a rule can be named. */
+let eqOutputsKnown: EqOutput[] = [];
+
+/** How long a burst of changes is left to settle before the curve is written. */
+const EQ_SAVE_MS = 400;
+let eqTimer: number | null = null;
+let eqUnsaved: Partial<Settings> | null = null;
+let eqWired = false;
+
+/** Where the curve in force came from, so the overlay can say what picked it. */
+export interface EqOrigin {
+  kind: EqContextKind | "device" | "preset" | "manual";
+  /** The album, artist, playlist, genre or output the rule matched. */
+  label: string;
+  presetId: string;
+}
+
+/** Everything the overlay reads about the chain and the rules. */
+export interface EqStatus {
+  blocked: "unsupported" | "cors" | null;
+  live: boolean;
+  preampDb: number;
+  autoPreampDb: number;
+  canChooseOutput: boolean;
+  outputs: EqOutput[];
+  origin: EqOrigin | null;
+}
+
+export function eqStatus(): EqStatus {
+  return {
+    blocked: eq.blockedReason,
+    live: eq.live,
+    preampDb: eq.preampDb,
+    autoPreampDb: eq.autoPreampDb(),
+    canChooseOutput: eq.canChooseOutput,
+    outputs: eqOutputsKnown,
+    origin: eqOrigin(),
+  };
+}
+
+/** Changes the curve, applies it at once and writes it a moment later. */
+function applyEqPatch(patch: Partial<Settings>): void {
+  state.settings = { ...state.settings, ...patch };
+  eq.apply(state.settings);
+  void syncEqReading();
+  scheduleEqSave(patch);
+  emit();
+}
+
+function scheduleEqSave(patch: Partial<Settings>): void {
+  eqUnsaved = { ...eqUnsaved, ...patch };
+  if (eqTimer !== null) {
+    window.clearTimeout(eqTimer);
+  }
+  eqTimer = window.setTimeout(() => {
+    eqTimer = null;
+    void saveEq();
+  }, EQ_SAVE_MS);
+}
+
+async function saveEq(): Promise<void> {
+  const patch = eqUnsaved;
+  eqUnsaved = null;
+  if (!patch) {
+    return;
+  }
+  try {
+    applyPersisted(await ipc.saveSettings({ ...state.settings, ...patch }));
+    emit();
+  } catch {
+    // The curve matters less than playback, so a failed write is not announced.
+  }
+}
+
+/** Writes anything the equaliser still owes, for a window that is going away. */
+async function flushEq(): Promise<void> {
+  if (eqTimer !== null) {
+    window.clearTimeout(eqTimer);
+    eqTimer = null;
+  }
+  await saveEq();
+}
+
+/** Follows what is playing and what is plugged in, so a rule can pick a curve. */
+function wireEq(): void {
+  if (eqWired) {
+    return;
+  }
+  eqWired = true;
+  player.onChange(syncEqOrigin);
+  player.onChange(() => void syncEqReading());
+  player.onChange(() => eq.resume());
+  window.addEventListener("pointerdown", () => eq.resume(), true);
+  window.addEventListener("keydown", () => eq.resume(), true);
+  void refreshEqOutputs();
+  navigator.mediaDevices?.addEventListener("devicechange", () => {
+    void refreshEqOutputs().then(() => syncEqOrigin());
+  });
+}
+
+/** The output devices the engine will admit to without a microphone grant. */
+export async function refreshEqOutputs(): Promise<void> {
+  const devices = navigator.mediaDevices;
+  if (!devices?.enumerateDevices) {
+    eqOutputsKnown = [];
+    return;
+  }
+  try {
+    const found = await devices.enumerateDevices();
+    eqOutputsKnown = found
+      .filter((device) => device.kind === "audiooutput")
+      .map((device, index) => ({
+        id: device.deviceId,
+        label: device.label || `Output ${index + 1}`,
+      }));
+  } catch {
+    eqOutputsKnown = [];
+  }
+  emit();
+}
+
+export function setEqEnabled(on: boolean): void {
+  applyEqPatch({ eqEnabled: on });
+}
+
+export function setEqAutoPreamp(on: boolean): void {
+  applyEqPatch({ eqAutoPreamp: on });
+}
+
+export function setEqPreampDb(db: number): void {
+  applyEqPatch({ eqPreampDb: Math.min(Math.max(db, -24), 24) });
+}
+
+export function setEqLimiter(on: boolean): void {
+  applyEqPatch({ eqLimiter: on });
+}
+
+export function setEqOutput(id: string): void {
+  applyEqPatch({ eqOutputId: id });
+  syncEqOrigin();
+}
+
+/** Fills an empty curve with the bands a flat one starts from. */
+export function seedEqBands(): void {
+  if (state.settings.eqBands.length > 0) {
+    return;
+  }
+  applyEqPatch({ eqBands: DEFAULT_EQ_BANDS.map((band) => ({ ...band })) });
+}
+
+export function addEqBand(): void {
+  applyEqPatch({
+    eqBands: [
+      ...state.settings.eqBands,
+      { id: newEqId(), kind: "peaking", freq: 1000, gain: 0, q: 1, enabled: true },
+    ],
+  });
+}
+
+export function removeEqBand(id: string): void {
+  applyEqPatch({ eqBands: state.settings.eqBands.filter((band) => band.id !== id) });
+}
+
+export function updateEqBand(id: string, patch: Partial<EqBand>): void {
+  applyEqPatch({
+    eqBands: state.settings.eqBands.map((band) =>
+      band.id === id ? { ...band, ...patch } : band,
+    ),
+  });
+}
+
+/** Puts the bands back to a flat line, without touching the saved curves. */
+export function flattenEq(): void {
+  applyEqPatch({
+    eqBands: state.settings.eqBands.map((band) => ({ ...band, gain: 0 })),
+    eqPreampDb: 0,
+  });
+}
+
+/** How many curves are kept. Saving one more than this replaces the oldest. */
+export const EQ_PRESET_LIMIT = 10;
+
+function filePreset(
+  name: string,
+  source: EqPresetSource,
+  bands: EqBand[],
+  autoPreamp: boolean,
+  preampDb: number,
+  limiter: boolean,
+): { presets: EqPreset[]; preset: EqPreset } {
+  const trimmed = name.trim() || "Untitled curve";
+  const existing = state.settings.eqPresets.find(
+    (entry) => entry.name.toLowerCase() === trimmed.toLowerCase(),
+  );
+
+  const preset: EqPreset = {
+    id: existing?.id ?? newEqId(),
+    name: trimmed,
+    // An edit keeps the provenance the curve was filed under.
+    source: existing?.source ?? source,
+    bands,
+    autoPreamp,
+    preampDb,
+    limiter,
+  };
+
+  const presets = existing
+    ? state.settings.eqPresets.map((entry) => (entry.id === existing.id ? preset : entry))
+    : [...state.settings.eqPresets.slice(1 - EQ_PRESET_LIMIT), preset];
+
+  return { presets, preset };
+}
+
+export function saveEqPreset(name: string): void {
+  const filed = filePreset(
+    name,
+    "manual",
+    state.settings.eqBands.map((band) => ({ ...band })),
+    state.settings.eqAutoPreamp,
+    state.settings.eqPreampDb,
+    state.settings.eqLimiter,
+  );
+  markManual(filed.preset.id);
+  applyEqPatch({ eqPresets: filed.presets, eqActivePresetId: filed.preset.id });
+}
+
+/** Files an imported profile as a curve and puts it in force. */
+export function importEqProfile(profile: EqProfile, name: string): void {
+  const filed = filePreset(
+    name,
+    "autoeq",
+    profile.bands.map((band) => ({ ...band })),
+    true,
+    0,
+    true,
+  );
+  markManual(filed.preset.id);
+  applyEqPatch({
+    eqPresets: filed.presets,
+    eqBands: filed.preset.bands.map((band) => ({ ...band })),
+    eqAutoPreamp: filed.preset.autoPreamp,
+    eqPreampDb: filed.preset.preampDb,
+    eqLimiter: filed.preset.limiter,
+    eqActivePresetId: filed.preset.id,
+    eqEnabled: true,
+  });
+}
+
+export function deleteEqPreset(id: string): void {
+  const deviceRules = { ...state.settings.eqDeviceRules };
+  for (const [device, presetId] of Object.entries(deviceRules)) {
+    if (presetId === id) {
+      delete deviceRules[device];
+    }
+  }
+  applyEqPatch({
+    eqPresets: state.settings.eqPresets.filter((preset) => preset.id !== id),
+    eqContextRules: state.settings.eqContextRules.filter((rule) => rule.presetId !== id),
+    eqDeviceRules: deviceRules,
+    eqActivePresetId: state.settings.eqActivePresetId === id
+      ? null
+      : state.settings.eqActivePresetId,
+  });
+}
+
+/** Puts a saved curve in force. A hand-picked one holds until the song moves on. */
+export function applyEqPreset(presetId: string, byHand = true): void {
+  const preset = presetById(presetId);
+  if (!preset) {
+    return;
+  }
+  if (byHand) {
+    markManual(preset.id);
+  }
+  applyEqPatch({
+    eqBands: preset.bands.map((band) => ({ ...band })),
+    eqAutoPreamp: preset.autoPreamp,
+    eqPreampDb: preset.preampDb,
+    eqLimiter: preset.limiter,
+    eqActivePresetId: preset.id,
+    eqEnabled: true,
+  });
+}
+
+/**
+ * Notes a curve as the one picked by hand, so no rule puts another over it
+ * until what is playing moves on.
+ */
+function markManual(presetId: string): void {
+  eqManual = { presetId, key: eqContextKey() };
+  eqApplied = "";
+}
+
+export function setEqContextRule(kind: EqContextKind, value: string, presetId: string): void {
+  const rest = state.settings.eqContextRules.filter(
+    (rule) => !(rule.kind === kind && rule.value === value),
+  );
+  const rule: EqContextRule = { kind, value, presetId };
+  applyEqPatch({ eqContextRules: [...rest, rule] });
+  syncEqOrigin();
+}
+
+export function removeEqContextRule(kind: EqContextKind, value: string): void {
+  applyEqPatch({
+    eqContextRules: state.settings.eqContextRules.filter(
+      (rule) => !(rule.kind === kind && rule.value === value),
+    ),
+  });
+  syncEqOrigin();
+}
+
+export function setEqDeviceRule(deviceId: string, presetId: string): void {
+  const deviceRules = { ...state.settings.eqDeviceRules };
+  if (presetId) {
+    deviceRules[deviceId] = presetId;
+  } else {
+    delete deviceRules[deviceId];
+  }
+  applyEqPatch({ eqDeviceRules: deviceRules });
+  syncEqOrigin();
+}
+
+function presetById(id: string | null): EqPreset | undefined {
+  return id ? state.settings.eqPresets.find((preset) => preset.id === id) : undefined;
+}
+
+/** What the current song and queue key a rule on. */
+function eqContextKey(): string {
+  const track = currentTrack();
+  const snapshot = player.snapshot();
+  return [
+    snapshot.sourceId ?? "",
+    track?.album ?? "",
+    track?.artist ?? "",
+    track?.genre ?? "",
+  ].join("\u0000");
+}
+
+/**
+ * The rule that picks a curve for what is playing, or `null` when none does.
+ * Only a rule is ever applied on its own; the active preset says where the
+ * curve came from, and the bands themselves are what the user is working on.
+ */
+function eqRule(): EqOrigin | null {
+  const track = currentTrack();
+  const sourceId = player.snapshot().sourceId;
+  const candidates: { kind: EqContextKind; value: string | null | undefined }[] = [
+    { kind: "playlist", value: sourceId },
+    { kind: "album", value: track?.album },
+    { kind: "artist", value: track?.artist },
+    { kind: "genre", value: track?.genre },
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate.value) {
+      continue;
+    }
+    const rule = state.settings.eqContextRules.find(
+      (entry) => entry.kind === candidate.kind && entry.value === candidate.value,
+    );
+    if (rule && presetById(rule.presetId)) {
+      return { kind: candidate.kind, label: candidate.value, presetId: rule.presetId };
+    }
+  }
+
+  const outputId = state.settings.eqOutputId;
+  const byDevice = outputId ? state.settings.eqDeviceRules[outputId] : undefined;
+  if (byDevice && presetById(byDevice)) {
+    return { kind: "device", label: outputLabel(outputId), presetId: byDevice };
+  }
+
+  return null;
+}
+
+/** What picked the curve in force, or `null` when nothing did. */
+export function eqOrigin(): EqOrigin | null {
+  const manual = presetById(eqManual?.presetId ?? null);
+  if (manual) {
+    return { kind: "manual", label: manual.name, presetId: manual.id };
+  }
+
+  const rule = eqRule();
+  if (rule) {
+    return rule;
+  }
+
+  const active = presetById(state.settings.eqActivePresetId);
+  return active ? { kind: "preset", label: active.name, presetId: active.id } : null;
+}
+
+function outputLabel(id: string): string {
+  return eqOutputsKnown.find((output) => output.id === id)?.label ?? "This output";
+}
+
+/** Follows what is playing, so a rule picks the curve that goes with it. */
+function syncEqOrigin(): void {
+  const key = eqContextKey();
+  if (eqManual && eqManual.key !== key) {
+    eqManual = null;
+  }
+
+  const rule = eqManual ? null : eqRule();
+  const signature = rule ? `${rule.kind}\u0000${rule.presetId}` : "";
+  if (signature === eqApplied) {
+    return;
+  }
+  eqApplied = signature;
+  if (rule) {
+    applyEqPreset(rule.presetId, false);
+  }
+}
+
+/**
+ * Notes the rule already in force at launch, so opening the app leaves the
+ * curve where it was left rather than putting a preset back over the edits.
+ */
+function seedEqOrigin(): void {
+  const rule = eqRule();
+  eqApplied = rule ? `${rule.kind}\u0000${rule.presetId}` : "";
+}
+
+function newEqId(): string {
+  return `eq-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function emit(): void {

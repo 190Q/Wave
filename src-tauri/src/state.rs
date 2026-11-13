@@ -36,6 +36,81 @@ static MINI_INNER: Mutex<Option<PhysicalSize<u32>>> = Mutex::new(None);
 
 static NORMAL_FRAME: Mutex<Option<WindowGeometry>> = Mutex::new(None);
 
+/// One band of the equaliser.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EqBand {
+    pub id: String,
+    /// The Web Audio filter name: `peaking`, `lowShelf`, `highShelf`, `lowPass`,
+    /// `highPass`, `bandPass` or `notch`.
+    pub kind: String,
+    pub freq: f64,
+    pub gain: f64,
+    pub q: f64,
+    pub enabled: bool,
+}
+
+impl Default for EqBand {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            kind: "peaking".to_string(),
+            freq: 1_000.0,
+            gain: 0.0,
+            q: 1.0,
+            enabled: true,
+        }
+    }
+}
+
+/// A saved curve, with the settings that go with it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EqPreset {
+    pub id: String,
+    pub name: String,
+    /// `manual`, or `autoeq` for an imported measurement.
+    pub source: String,
+    pub bands: Vec<EqBand>,
+    pub auto_preamp: bool,
+    pub preamp_db: f64,
+    pub limiter: bool,
+}
+
+impl Default for EqPreset {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            source: "manual".to_string(),
+            bands: Vec::new(),
+            auto_preamp: true,
+            preamp_db: 0.0,
+            limiter: true,
+        }
+    }
+}
+
+/// A curve that is picked automatically for one album, artist, playlist or genre.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EqContextRule {
+    /// `album`, `artist`, `playlist` or `genre`.
+    pub kind: String,
+    pub value: String,
+    pub preset_id: String,
+}
+
+impl Default for EqContextRule {
+    fn default() -> Self {
+        Self {
+            kind: "album".to_string(),
+            value: String::new(),
+            preset_id: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -59,6 +134,26 @@ pub struct Settings {
     pub discord_presence: bool,
     /// Looks for a newer release and offers to install it. On by default.
     pub auto_update: bool,
+    /// Whether the equaliser is in the signal path at all.
+    pub eq_enabled: bool,
+    /// The bands being edited. Empty means a flat curve.
+    pub eq_bands: Vec<EqBand>,
+    /// Levels the curve so a boost cannot push it into clipping.
+    pub eq_auto_preamp: bool,
+    /// A trim added on top of the automatic preamp, in decibels.
+    pub eq_preamp_db: f64,
+    /// The safety limiter after the equaliser.
+    pub eq_limiter: bool,
+    /// Saved curves.
+    pub eq_presets: Vec<EqPreset>,
+    /// The preset the bands were last taken from.
+    pub eq_active_preset_id: Option<String>,
+    /// Output device -> preset id.
+    pub eq_device_rules: HashMap<String, String>,
+    /// Album, artist, playlist or genre -> preset id.
+    pub eq_context_rules: Vec<EqContextRule>,
+    /// Where playback is sent. Empty means the system default.
+    pub eq_output_id: String,
 }
 
 impl Default for Settings {
@@ -80,6 +175,16 @@ impl Default for Settings {
             system_media_controls: true,
             discord_presence: false,
             auto_update: true,
+            eq_enabled: false,
+            eq_bands: Vec::new(),
+            eq_auto_preamp: true,
+            eq_preamp_db: 0.0,
+            eq_limiter: true,
+            eq_presets: Vec::new(),
+            eq_active_preset_id: None,
+            eq_device_rules: HashMap::new(),
+            eq_context_rules: Vec::new(),
+            eq_output_id: String::new(),
         }
     }
 }

@@ -416,6 +416,29 @@ export class Player {
     }
   }
 
+  /**
+   * Asks for the current track again, for a change that only takes effect when
+   * a load starts. The playing state comes from the player rather than from the
+   * element, so a load that failed still comes back playing.
+   */
+  reloadCurrent(): void {
+    if (!this.currentId) {
+      return;
+    }
+
+    const position = this.positionMs;
+    this.stopFade();
+    this.level = 0;
+    this.engine.reload(this.playing, position);
+
+    if (this.playing) {
+      this.startClock();
+      this.startFade(this.targetLevel());
+    } else {
+      this.stopClock();
+    }
+  }
+
   /** Metadata arrived, so the duration and the seeked position are real now. */
   handleLoaded(): void {
     this.emitChange();

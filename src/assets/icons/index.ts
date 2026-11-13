@@ -3,6 +3,7 @@ import appIcon from "./app-icon.svg?raw";
 import close from "./close.svg?raw";
 import closeWindow from "./close-window.svg?raw";
 import covers from "./covers.svg?raw";
+import eq from "./eq.svg?raw";
 import folder from "./folder.svg?raw";
 import grip from "./grip.svg?raw";
 import importIcon from "./import.svg?raw";
@@ -31,6 +32,7 @@ export const icons = {
   close,
   "close-window": closeWindow,
   covers,
+  eq,
   folder,
   grip,
   import: importIcon,

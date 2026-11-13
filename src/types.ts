@@ -70,6 +70,64 @@ export interface GenerateOutcome {
   state: PersistedState;
 }
 
+/** The shape a band's filter takes, named the way Web Audio names it. */
+export type EqBandKind =
+  | "peaking"
+  | "lowShelf"
+  | "highShelf"
+  | "lowPass"
+  | "highPass"
+  | "bandPass"
+  | "notch";
+
+/** One band of the equaliser. */
+export interface EqBand {
+  id: string;
+  kind: EqBandKind;
+  /** The centre or corner frequency, in hertz. */
+  freq: number;
+  /** The boost or cut, in decibels. Ignored by the pass and notch shapes. */
+  gain: number;
+  /** The width, as the filter's Q. */
+  q: number;
+  /** A band switched off keeps its place and its values, but leaves the chain. */
+  enabled: boolean;
+}
+
+/** Where a saved curve came from, so an imported one can be told apart. */
+export type EqPresetSource = "manual" | "autoeq";
+
+/** A saved curve, with the settings that go with it. */
+export interface EqPreset {
+  id: string;
+  name: string;
+  source: EqPresetSource;
+  bands: EqBand[];
+  /** Levels the curve so its loudest point sits at full scale. */
+  autoPreamp: boolean;
+  /** A trim added on top of the automatic preamp, in decibels. */
+  preampDb: number;
+  /** The safety limiter after the equaliser. */
+  limiter: boolean;
+}
+
+/** What a rule keys on, so a curve can follow what is playing. */
+export type EqContextKind = "album" | "artist" | "playlist" | "genre";
+
+/** A curve that is picked automatically for one album, artist, playlist or genre. */
+export interface EqContextRule {
+  kind: EqContextKind;
+  /** The album or artist name, the playlist id, or the genre. */
+  value: string;
+  presetId: string;
+}
+
+/** An output the webview will admit to, as the device rules key on it. */
+export interface EqOutput {
+  id: string;
+  label: string;
+}
+
 export interface Settings {
   /** `adaptive`, or a `#rrggbb` the user picked. */
   theme: string;
@@ -101,6 +159,26 @@ export interface Settings {
   discordPresence: boolean;
   /** Looks for a newer release on launch, and says so when it finds one. */
   autoUpdate: boolean;
+  /** Whether the equaliser is in the signal path at all. */
+  eqEnabled: boolean;
+  /** The bands being edited. Empty means a flat curve. */
+  eqBands: EqBand[];
+  /** Levels the curve so a boost cannot push it into clipping. */
+  eqAutoPreamp: boolean;
+  /** A trim added on top of the automatic preamp, in decibels. */
+  eqPreampDb: number;
+  /** The safety limiter after the equaliser. */
+  eqLimiter: boolean;
+  /** Saved curves. */
+  eqPresets: EqPreset[];
+  /** The preset the bands were last taken from, `null` when they were not. */
+  eqActivePresetId: string | null;
+  /** Output device -> preset id. */
+  eqDeviceRules: Record<string, string>;
+  /** Album, artist, playlist or genre -> preset id. */
+  eqContextRules: EqContextRule[];
+  /** Where playback is sent. Empty means the system default. */
+  eqOutputId: string;
 }
 
 /** What the system's own controls and Discord are told about the song playing. */

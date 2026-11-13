@@ -33,6 +33,7 @@ import type {
 } from "../types";
 import { createPanel } from "./drop";
 import { mountCollectionPicker } from "./collection-picker";
+import { openEq } from "./eq";
 import { fillIcons } from "./icons";
 import { placePicker } from "./picker";
 import { claimPopup, releasePopup } from "./popups";
@@ -331,6 +332,11 @@ export function mountSettings(): void {
           setNotice("Could not forget the saved window.");
         }
         return;
+      case "open-eq":
+        // The overlay fills the window, so the panel gives way to it.
+        closeDialog();
+        openEq();
+        return;
       case "check-update": {
         // A version already found is offered rather than looked up again.
         if (getState().update) {
@@ -480,7 +486,14 @@ function playbackHtml(settings: Settings): string {
       "Normalize volume",
       "Measure each song once and play it at a level gain, so a quiet track is not lost next to a loud one.",
       settings.normalizeVolume,
-    )}`,
+    )}
+    <div class="settings-row">
+      <div class="settings-text">
+        <span class="settings-label">Equaliser</span>
+        <span class="settings-hint">Ten bands, an automatic preamp that keeps a boost from clipping, and a safety limiter. Changes are heard as they are made. Curves measured for headphones can be imported from AutoEq or Equalizer APO files.</span>
+      </div>
+      <button class="pill" type="button" data-command="open-eq">Open</button>
+    </div>`,
   );
 }
 
@@ -893,6 +906,15 @@ function snapNote(assigned: string, frame: WindowGeometry | null): string {
 /** The compact list: the settings that act at once, rather than waiting for Save. */
 function dropRowsHtml(root: string | null): string {
   return `
+    <button
+      class="drop-item"
+      type="button"
+      data-command="open-eq"
+      aria-label="Equaliser"
+      title="Equaliser"
+    >
+      <span class="btn-icon" data-icon="eq"></span>
+    </button>
     <button
       class="drop-item"
       type="button"

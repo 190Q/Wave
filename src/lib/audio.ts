@@ -9,6 +9,9 @@ export interface AudioEngineHandlers {
   onLoaded?: () => void;
   /** The file could not be read or decoded. */
   onError?: () => void;
+  onCorsRefused?: () => void;
+  /** A fresh element, or one on its way out, for the equaliser to follow. */
+  onElement?: (element: HTMLAudioElement, phase: "created" | "retired") => void;
 }
 
 export interface LoadOptions {
@@ -24,9 +27,32 @@ export class AudioEngine {
 
   private requestedMs: number | null = null;
 
+  /** The file the element is holding, so a reload can ask for it again. */
+  private loadedPath: string | null = null;
+
+  private cors = false;
+
+  /** Whether the element in hand got as far as reporting its metadata. */
+  private elementLoaded = false;
+
   constructor(handlers: AudioEngineHandlers = {}) {
     this.handlers = handlers;
     this.el = this.create();
+  }
+
+  /** Whether a file is loaded, so a reload has something to ask for again. */
+  get hasFile(): boolean {
+    return this.loadedPath !== null;
+  }
+
+  /** Asks for files in a way the equaliser can read. */
+  enableCors(): void {
+    this.cors = true;
+  }
+
+  /** Stops asking for files in a way the equaliser can read. */
+  disableCors(): void {
+    this.cors = false;
   }
 
   /** The media clock, which is what everything on screen is timed against. */
@@ -53,8 +79,32 @@ export class AudioEngine {
     const { autoplay = false, positionMs = 0 } = options;
 
     this.requestedMs = null;
+    this.loadedPath = path;
     this.swap();
     // `preload` is read when the load starts, so it has to be set first.
+    this.el.preload = autoplay ? "auto" : "metadata";
+    this.el.src = sourceUrl(path);
+
+    this.seek(positionMs);
+    if (autoplay) {
+      void this.play();
+    }
+  }
+
+  /**
+   * Loads the same file again on a brand new element. The cross-origin mode is
+   * read when a load starts, so changing it only takes effect this way.
+   */
+  reload(autoplay: boolean, positionMs: number): void {
+    const path = this.loadedPath;
+    if (path === null) {
+      return;
+    }
+
+    this.requestedMs = null;
+    this.forget(this.el);
+    this.release(this.el);
+    this.el = this.create();
     this.el.preload = autoplay ? "auto" : "metadata";
     this.el.src = sourceUrl(path);
 
@@ -67,6 +117,7 @@ export class AudioEngine {
   /** Releases the file, so the window does not hold a handle to it. */
   unload(): void {
     this.requestedMs = null;
+    this.loadedPath = null;
     this.retire(this.el);
     this.el = this.create();
   }
@@ -103,12 +154,15 @@ export class AudioEngine {
     const el = new Audio();
     el.preload = "metadata";
     el.volume = 0;
+    el.crossOrigin = this.cors ? "anonymous" : null;
 
     el.addEventListener("ended", this.handleEnded);
     el.addEventListener("loadedmetadata", this.handleMetadata);
     el.addEventListener("durationchange", this.handleDuration);
     el.addEventListener("error", this.handleError);
 
+    this.elementLoaded = false;
+    this.handlers.onElement?.(el, "created");
     return el;
   }
 
@@ -155,12 +209,14 @@ export class AudioEngine {
   }
 
   private release(el: HTMLAudioElement): void {
+    this.handlers.onElement?.(el, "retired");
     el.pause();
     el.removeAttribute("src");
     el.load();
   }
 
   private readonly handleMetadata = (): void => {
+    this.elementLoaded = true;
     const requested = this.requestedMs;
     this.requestedMs = null;
     if (requested !== null && requested > 0) {
@@ -178,8 +234,17 @@ export class AudioEngine {
   };
 
   private readonly handleError = (): void => {
+    if (this.cors && !this.elementLoaded) {
+      this.handlers.onCorsRefused?.();
+      return;
+    }
     this.handlers.onError?.();
   };
+}
+
+/** The asset URL for a library file, for anything outside the engine. */
+export function assetUrl(path: string): string {
+  return sourceUrl(path);
 }
 
 /** The asset URL for a library file, or the bare path outside Tauri. */

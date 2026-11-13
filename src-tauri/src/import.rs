@@ -133,7 +133,13 @@ pub fn refresh(app: &AppHandle, id: &str) -> Result<(), String> {
     };
 
     let audio = root.join(&known.rel_path);
-    let mut row = library::describe(&root, id, &audio, &known.original_name)?;
+    let mut row = library::describe(
+        &root,
+        id,
+        &audio,
+        &known.original_name,
+        known.content_hash.as_deref(),
+    )?;
     // A song is not newly added just because something was written into it.
     row.added_at = known.added_at;
     catalog.upsert_track(&row)?;
@@ -189,6 +195,7 @@ pub fn import_into_library(
     clear_staging(&root);
 
     let mut playlist_tracks: Vec<String> = Vec::new();
+    let mut landed: Vec<String> = Vec::new();
     let mut songs = 0usize;
     let mut images = 0usize;
     let mut lyrics = 0usize;
@@ -230,9 +237,22 @@ pub fn import_into_library(
                 images += usize::from(cover);
                 lyrics += usize::from(words);
                 similar += usize::from(near);
+                landed.push(id.clone());
                 playlist_tracks.push(id);
             }
             Err(error) => errors.push(format!("{key}: {error}")),
+        }
+    }
+
+    if !landed.is_empty() {
+        let rows = catalog.tracks_by_ids(&landed).unwrap_or_default();
+        let arrived: Vec<library::Track> = landed
+            .iter()
+            .filter_map(|id| rows.get(id))
+            .map(|row| library::to_track(row, &root))
+            .collect();
+        if !arrived.is_empty() {
+            let _ = app.emit(LANDED_EVENT, arrived);
         }
     }
 
@@ -383,7 +403,7 @@ fn import_one(
         None => false,
     };
 
-    let row = library::describe(root, &id, &target, file_name)?;
+    let row = library::describe(root, &id, &target, file_name, Some(&hash))?;
     catalog.upsert_track(&row)?;
 
     // Another recording of the same song is not a duplicate, but it is worth

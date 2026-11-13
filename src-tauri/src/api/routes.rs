@@ -6,6 +6,7 @@
 //! write, the tool report and the listening record are all the ones the front
 //! end uses. Only playback is relayed to the webview, where the player lives.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
@@ -139,7 +140,7 @@ fn player_json(call: &Call, report: Option<&Report>) -> Value {
         "track": track_of(call, report.current_id.as_deref()),
         "sourceId": report.source_id,
         "sourceName": report.source_name,
-        "queue": report.order,
+        "queue": report.order.clone().unwrap_or_default(),
         "positionMs": report.position_ms,
         "durationMs": report.duration_ms,
         "playing": report.playing,
@@ -158,15 +159,17 @@ fn player_queue(call: &Call) -> Outcome {
         return Ok(json!([]));
     };
 
-    let entries: Vec<Value> = report
-        .order
+    let order = report.order.clone().unwrap_or_default();
+    let tracks = tracks_of(call, &order);
+
+    let entries: Vec<Value> = order
         .iter()
         .enumerate()
         .map(|(index, id)| {
             json!({
                 "id": id,
                 "current": index == report.cursor,
-                "track": track_of(call, Some(id)),
+                "track": tracks.get(id),
             })
         })
         .collect();
@@ -195,7 +198,8 @@ fn play(call: &Call) -> Outcome {
         // Matched exactly as `wave search` matches, so a query that names one
         // song plays that song. A query that names several plays the first,
         // which is the one the search ranks first.
-        let found = songs::matching(&songs::all(call.app)?, &query);
+        let all = songs::all(call.app)?;
+        let found = songs::matching(&all, &query);
         let Some(track) = found.first() else {
             return Err(Failure::missing(format!(
                 "nothing in the library answers to {query}"
@@ -329,20 +333,23 @@ fn library_info(call: &Call) -> Outcome {
 }
 
 fn tracks(call: &Call) -> Outcome {
-    let all = songs::all(call.app)?;
     let query = call.query.get("q").unwrap_or_default();
-    let found = if query.trim().is_empty() {
-        all
-    } else {
-        // The same matcher `wave search` uses, so the API and the command line
-        // agree on what a query finds.
-        songs::matching(&all, query)
-    };
-
-    let total = found.len();
     let offset = call.query.count("offset")?.unwrap_or(0);
     let limit = call.query.count("limit")?.unwrap_or(usize::MAX);
-    let page: Vec<Track> = found.into_iter().skip(offset).take(limit).collect();
+
+    if query.trim().is_empty() {
+        let catalog = call.app.state::<Catalog>();
+        let total = catalog.present_count()?;
+        let rows = catalog.tracks_page(offset, limit)?;
+        let root = library::library_root(call.app)?;
+        let page: Vec<Track> = rows.iter().map(|row| library::to_track(row, &root)).collect();
+        return Ok(json!({ "total": total, "tracks": page }));
+    }
+
+    let all = songs::all(call.app)?;
+    let found = songs::matching(&all, query);
+    let total = found.len();
+    let page: Vec<&Track> = found.into_iter().skip(offset).take(limit).collect();
 
     Ok(json!({ "total": total, "tracks": page }))
 }
@@ -359,6 +366,7 @@ fn scan(call: &Call) -> Outcome {
         call.app.clone(),
         call.app.state::<Store>(),
         call.app.state::<Catalog>(),
+        true,
     );
 
     // The window applies this exactly as if it had scanned itself, so the two
@@ -392,7 +400,7 @@ fn delete_tracks(call: &Call) -> Outcome {
     )?;
 
     announce_state(call, &next);
-    announce_library(call);
+    announce_library(call, &track_ids);
     Ok(serde_json::to_value(next)?)
 }
 
@@ -400,11 +408,52 @@ fn import_log(call: &Call) -> Outcome {
     let path = crate::download_log::import_log_path(call.app.clone()).unwrap_or_default();
     let wanted = call.query.count("lines")?.unwrap_or(DEFAULT_LOG_LINES);
 
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().collect();
-    let tail: Vec<&str> = lines[lines.len().saturating_sub(wanted)..].to_vec();
+    let tail = tail_lines(std::path::Path::new(&path), wanted);
 
     Ok(json!({ "path": path, "tail": tail }))
+}
+
+/// The last `wanted` lines of a file, read from the end, so a long log is not
+/// loaded whole to answer for its tail.
+fn tail_lines(path: &std::path::Path, wanted: usize) -> Vec<String> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    const CHUNK: u64 = 64 * 1024;
+
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(size) = file.metadata().map(|meta| meta.len()) else {
+        return Vec::new();
+    };
+
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut at = size;
+    while at > 0 {
+        let step = CHUNK.min(at);
+        at -= step;
+        let mut block = vec![0u8; step as usize];
+        if file.seek(SeekFrom::Start(at)).is_err() || file.read_exact(&mut block).is_err() {
+            break;
+        }
+        block.extend_from_slice(&buffer);
+        buffer = block;
+        if buffer.iter().filter(|byte| **byte == b'\n').count() > wanted {
+            break;
+        }
+    }
+
+    let text = String::from_utf8_lossy(&buffer);
+    let mut lines: Vec<&str> = text.lines().collect();
+    // A read that started mid-file can begin in the middle of a line.
+    if at > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+
+    lines[lines.len().saturating_sub(wanted)..]
+        .iter()
+        .map(|line| line.to_string())
+        .collect()
 }
 
 fn all_playlists(call: &Call) -> Outcome {
@@ -415,6 +464,13 @@ fn all_playlists(call: &Call) -> Outcome {
 fn playlist(call: &Call, id: &str) -> Outcome {
     let found = playlist_of(call, id)?;
 
+    let tracks = tracks_of(call, &found.entries);
+    let waiting: HashSet<&str> = found
+        .pending
+        .iter()
+        .map(|entry| entry.id.as_str())
+        .collect();
+
     // In play order, with the songs the library is still waiting on marked.
     let entries: Vec<Value> = found
         .entries
@@ -422,8 +478,8 @@ fn playlist(call: &Call, id: &str) -> Outcome {
         .map(|entry| {
             json!({
                 "id": entry,
-                "pending": found.pending.iter().any(|waiting| &waiting.id == entry),
-                "track": track_of(call, Some(entry)),
+                "pending": waiting.contains(entry.as_str()),
+                "track": tracks.get(entry),
             })
         })
         .collect();
@@ -670,6 +726,21 @@ fn track_of(call: &Call, id: Option<&str>) -> Option<Track> {
     Some(library::to_track(&row, &root))
 }
 
+/// The songs for a set of ids, resolved in a few queries rather than one each.
+fn tracks_of(call: &Call, ids: &[String]) -> HashMap<String, Track> {
+    let Ok(root) = library::library_root(call.app) else {
+        return HashMap::new();
+    };
+    let catalog = call.app.state::<Catalog>();
+    let Ok(rows) = catalog.tracks_by_ids(ids) else {
+        return HashMap::new();
+    };
+
+    rows.values()
+        .map(|row| (row.id.clone(), library::to_track(row, &root)))
+        .collect()
+}
+
 /// Tells the window about a change it did not make, so it follows along rather
 /// than showing something that is no longer true.
 fn announce_state(call: &Call, state: &PersistedState) {
@@ -678,25 +749,18 @@ fn announce_state(call: &Call, state: &PersistedState) {
 
 /// Tells the window what the library holds now, in the shape a scan returns.
 ///
-/// The summary is built from the catalog rather than the disk: a delete has
-/// already taken the files away, so reading the folder again would say nothing
-/// new and would cost a whole scan.
-fn announce_library(call: &Call) {
+/// Only the songs that went are named: everything else is where the window
+/// already has it, so the whole library does not have to cross the wire.
+fn announce_library(call: &Call, removed: &[String]) {
     let Ok(root) = library::library_root(call.app) else {
         return;
     };
-    let Ok(rows) = call.app.state::<Catalog>().tracks() else {
-        return;
-    };
-
-    let mut tracks: Vec<Track> = rows
-        .iter()
-        .map(|row| library::to_track(row, &root))
-        .collect();
-    tracks.sort_by_key(|track| track.title.to_lowercase());
+    let (total, _) = call.app.state::<Catalog>().counts();
 
     let summary = ScanSummary {
-        tracks,
+        changed: Vec::new(),
+        removed: removed.to_vec(),
+        total,
         root: root.to_string_lossy().into_owned(),
         skipped: 0,
         errors: Vec::new(),

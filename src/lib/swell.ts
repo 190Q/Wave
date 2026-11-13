@@ -94,9 +94,14 @@ export function swellProgress(summary: SwellSummary): string {
   return `${minutes} of ${Math.round(SWELL_MIN_MS / 60_000)} minutes`;
 }
 
-/** Reads all three windows at once, so the switcher never has to wait. */
+/**
+ * Reads the windows the pane opens on. All time is left until it is asked for:
+ * it is the one that reads the whole record, and the pane rarely opens on it.
+ */
 export async function loadSwell(now: Date = new Date()): Promise<SwellLoad> {
-  const windows = SWELL_PERIODS.map((period) => swellWindow(period, now));
+  const windows = SWELL_PERIODS.filter((period) => period !== "all").map((period) =>
+    swellWindow(period, now),
+  );
   const summaries = await Promise.all(
     windows.map((window) => analyticsSwell(window.from, window.to, window.bucket)),
   );
@@ -112,6 +117,15 @@ export async function loadSwell(now: Date = new Date()): Promise<SwellLoad> {
   });
 
   return { summaries: loaded, period: ready ?? "year" };
+}
+
+/** Reads one window on its own, for a period the pane is not holding yet. */
+export async function loadSwellPeriod(
+  period: SwellPeriod,
+  now: Date = new Date(),
+): Promise<SwellSummary> {
+  const window = swellWindow(period, now);
+  return analyticsSwell(window.from, window.to, window.bucket);
 }
 
 export function swellAxis(

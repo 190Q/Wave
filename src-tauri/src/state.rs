@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
@@ -313,6 +313,11 @@ impl Store {
         edit(&mut guard);
         guard.clone()
     }
+
+    pub fn edit(&self, edit: impl FnOnce(&mut PersistedState)) {
+        let mut guard = self.guard();
+        edit(&mut guard);
+    }
 }
 
 fn state_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
@@ -422,13 +427,13 @@ pub fn remember_import<R: Runtime>(app: &AppHandle<R>, record: ImportRecord) {
     let _ = write_state(app, &next);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_state(app: AppHandle, store: State<'_, Store>) -> PersistedState {
     // Playlists live in the catalog, so the cached copy is refreshed on read.
     playlists::refresh(&app, &store)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_settings(
     app: AppHandle,
     store: State<'_, Store>,
@@ -674,7 +679,7 @@ pub fn apply_window_settings<R: Runtime>(app: &AppHandle<R>, store: &Store, was_
         if !was_mini && current.settings.remember_window {
             // Remember the frame, so leaving mini mode puts it back.
             if let Some(geometry) = read_frame(&window) {
-                store.update(|state| state.window = Some(geometry));
+                store.edit(|state| state.window = Some(geometry));
             }
         }
         let monitor = window.current_monitor().ok().flatten();
@@ -903,7 +908,7 @@ pub fn apply_window_slot(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_session(
     app: AppHandle,
     store: State<'_, Store>,
@@ -913,7 +918,7 @@ pub fn set_session(
     commit(&app, next)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn toggle_like(
     app: AppHandle,
     store: State<'_, Store>,
@@ -930,7 +935,7 @@ pub fn toggle_like(
 }
 
 /// Likes or unlikes several songs at once, for a selection.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_likes(
     app: AppHandle,
     store: State<'_, Store>,
@@ -938,13 +943,18 @@ pub fn set_likes(
     liked: bool,
 ) -> Result<PersistedState, String> {
     let next = store.update(|state| {
-        for track_id in track_ids {
-            let saved = state.likes.iter().any(|id| *id == track_id);
-            if liked && !saved {
-                state.likes.push(track_id);
-            } else if !liked && saved {
-                state.likes.retain(|id| *id != track_id);
+        let mut held: HashSet<String> = state.likes.iter().cloned().collect();
+        if liked {
+            for track_id in track_ids {
+                if held.insert(track_id.clone()) {
+                    state.likes.push(track_id);
+                }
             }
+        } else {
+            for track_id in track_ids {
+                held.remove(&track_id);
+            }
+            state.likes.retain(|id| held.contains(id));
         }
     });
     commit(&app, next)

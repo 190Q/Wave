@@ -130,13 +130,21 @@ export function mountTopbar(): void {
     const open = resultsOpen && state.search.trim().length > 0;
     searchWrap.classList.toggle("is-open", open);
 
+    // Scoring the library is only worth doing when the matches can have moved,
+    // which is what stops a progress event or a colour batch from re-scoring it.
+    const signature = open
+      ? `${state.search}\u0000${state.settings.searchAlgorithm}\u0000${state.collectionsRevision}`
+      : "";
+
     // Only re-rendering when the matches change keeps any scroll position.
-    const html = resultsHtml(state);
-    if (html !== renderedResults) {
-      renderedResults = html;
+    if (signature !== renderedResults) {
+      renderedResults = signature;
+      const html = open ? resultsHtml(state) : "";
       resultsList.innerHTML = html;
-      hydrateCovers(resultsList);
-      activateResult(0);
+      if (open) {
+        hydrateCovers(resultsList);
+        activateResult(0);
+      }
     }
     updateResultsOverflow();
   };
@@ -328,12 +336,24 @@ export function mountTopbar(): void {
   void document.fonts?.ready.then(fitCrates);
 
   let renderedCrates = "";
+  let cratesFrom: Collection[] | null = null;
+  let cratesById: Map<string, Collection> | null = null;
+
+  /** A lookup of the collections, built once per set rather than per crate. */
+  const collectionLookup = (collections: Collection[]): Map<string, Collection> => {
+    if (cratesById === null || cratesFrom !== collections) {
+      cratesFrom = collections;
+      cratesById = new Map(collections.map((collection) => [collection.id, collection]));
+    }
+    return cratesById;
+  };
 
   const render = (): void => {
     const state = getState();
+    const lookup = collectionLookup(state.collections);
 
     const crates = state.recents
-      .map((id) => state.collections.find((collection) => collection.id === id))
+      .map((id) => lookup.get(id))
       .filter((collection) => collection !== undefined)
       .map(
         (collection) => `

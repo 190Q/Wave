@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 
 use crate::identity;
 use crate::library::CONFIG_DIR;
@@ -10,7 +10,7 @@ use crate::state::{PendingTrack, Playlist, GENERATED_KIND};
 
 pub const CATALOG_FILE: &str = "library.db";
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 pub const LAYOUT_VERSION_KEY: &str = "layout_version";
 pub const LAYOUT_VERSION: &str = "2";
@@ -189,10 +189,7 @@ impl Catalog {
             connection
                 .execute_batch(&format!("{SCHEMA}{PENDING_TABLE}"))
                 .map_err(|e| format!("could not create the catalog: {e}"))?;
-            return stamp(&connection);
-        }
-
-        if found < SCHEMA_VERSION {
+        } else if found < SCHEMA_VERSION {
             if !has_column(&connection, "playlists", "kind") {
                 connection
                     .execute_batch(
@@ -213,9 +210,13 @@ impl Catalog {
                     .execute_batch("ALTER TABLE pending_tracks ADD COLUMN duration_ms INTEGER")
                     .map_err(|e| format!("could not add the waiting lengths: {e}"))?;
             }
-            return stamp(&connection);
         }
 
+        create_fold_indexes(&connection)?;
+
+        if found < SCHEMA_VERSION {
+            return stamp(&connection);
+        }
         Ok(())
     }
 
@@ -260,6 +261,67 @@ impl Catalog {
             &format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE missing = 0"),
             params![],
         )
+    }
+
+    /// How many songs the library holds, without reading any of them.
+    pub fn present_count(&self) -> Result<usize, String> {
+        self.guard()
+            .query_row("SELECT COUNT(*) FROM tracks WHERE missing = 0", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map(|count| count.max(0) as usize)
+            .map_err(|e| format!("could not read the catalog: {e}"))
+    }
+
+    /// One page of the library, in the same title order a whole listing uses,
+    /// so the whole library does not have to be read to answer a page of it.
+    pub fn tracks_page(&self, offset: usize, limit: usize) -> Result<Vec<TrackRow>, String> {
+        // A negative limit is SQLite's own "no limit".
+        let limit = i64::try_from(limit).unwrap_or(-1);
+        self.query_tracks(
+            &format!(
+                "SELECT {TRACK_COLUMNS} FROM tracks WHERE missing = 0 \
+                 ORDER BY lower(title), id LIMIT ?1 OFFSET ?2"
+            ),
+            params![limit, offset as i64],
+        )
+    }
+
+    /// The rows for a set of ids, in a few queries rather than one each.
+    pub fn tracks_by_ids(&self, ids: &[String]) -> Result<HashMap<String, TrackRow>, String> {
+        let mut found = HashMap::new();
+        if ids.is_empty() {
+            return Ok(found);
+        }
+
+        let connection = self.guard();
+        // Chunked, so a long queue does not have to fit in one statement.
+        for chunk in ids.chunks(500) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let mut statement = connection
+                .prepare(&format!(
+                    "SELECT {TRACK_COLUMNS} FROM tracks WHERE id IN ({placeholders})"
+                ))
+                .map_err(|e| format!("could not read the catalog: {e}"))?;
+            let rows = statement
+                .query_map(params_from_iter(chunk.iter()), read_track)
+                .map_err(|e| format!("could not read the catalog: {e}"))?;
+            for row in rows {
+                let row = row.map_err(|e| format!("could not read a catalog row: {e}"))?;
+                found.insert(row.id.clone(), row);
+            }
+        }
+        Ok(found)
+    }
+
+    /// Every row there is, the ones whose audio is gone included, keyed by id.
+    /// A scan reads this once instead of a query per song directory.
+    pub fn rows_by_id(&self) -> Result<HashMap<String, TrackRow>, String> {
+        Ok(self
+            .query_tracks(&format!("SELECT {TRACK_COLUMNS} FROM tracks"), params![])?
+            .into_iter()
+            .map(|row| (row.id.clone(), row))
+            .collect())
     }
 
     pub fn track(&self, id: &str) -> Result<Option<TrackRow>, String> {
@@ -335,19 +397,43 @@ impl Catalog {
             .map_err(|e| format!("could not finish a catalog write: {e}"))
     }
 
-    /// Every song is marked gone, then each one the scan found is written back,
-    /// in one transaction. A song the scan did not see keeps its row.
-    pub fn sync_scan(&self, rows: &[TrackRow]) -> Result<(), String> {
+    /// Brings the catalog in line with a scan: only the rows that actually
+    /// changed are written, and a song the scan did not see is marked gone. A
+    /// song that is still there and unchanged keeps its row untouched.
+    pub fn sync_scan(&self, changed: &[TrackRow], seen: &[String]) -> Result<(), String> {
         let mut connection = self.guard();
         let transaction = connection
             .transaction()
             .map_err(|e| format!("could not start a catalog write: {e}"))?;
 
+        // A temp table rather than an `IN` list, so a large library does not
+        // have to fit in one statement.
         transaction
-            .execute("UPDATE tracks SET missing = 1 WHERE missing = 0", [])
+            .execute_batch(
+                "CREATE TEMP TABLE IF NOT EXISTS scan_seen (id TEXT PRIMARY KEY); \
+                 DELETE FROM scan_seen;",
+            )
+            .map_err(|e| format!("could not prepare the scan: {e}"))?;
+        {
+            let mut statement = transaction
+                .prepare("INSERT OR IGNORE INTO scan_seen (id) VALUES (?1)")
+                .map_err(|e| format!("could not prepare the scan: {e}"))?;
+            for id in seen {
+                statement
+                    .execute(params![id])
+                    .map_err(|e| format!("could not note a scanned song: {e}"))?;
+            }
+        }
+
+        transaction
+            .execute(
+                "UPDATE tracks SET missing = 1 WHERE missing = 0 \
+                 AND id NOT IN (SELECT id FROM scan_seen)",
+                [],
+            )
             .map_err(|e| format!("could not update the catalog: {e}"))?;
 
-        for row in rows {
+        for row in changed {
             write_row(&transaction, row)?;
         }
 
@@ -692,22 +778,98 @@ impl Catalog {
     }
 
     pub fn add_to_playlist(&self, id: &str, track_ids: &[String]) -> Result<(), String> {
-        let mut entries = self.playlist_entries(id)?;
-        for track_id in track_ids {
-            if !entries.contains(track_id) {
-                entries.push(track_id.clone());
+        if track_ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut connection = self.guard();
+        let transaction = connection
+            .transaction()
+            .map_err(|e| format!("could not start a catalog write: {e}"))?;
+
+        let mut held: HashSet<String> = HashSet::new();
+        let mut next_position: i64 = 0;
+        {
+            let mut statement = transaction
+                .prepare("SELECT track_id, position FROM playlist_tracks WHERE playlist_id = ?1")
+                .map_err(|e| format!("could not read the playlist: {e}"))?;
+            let rows = statement
+                .query_map(params![id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
+                .map_err(|e| format!("could not read the playlist: {e}"))?;
+            for row in rows {
+                let (track_id, position) =
+                    row.map_err(|e| format!("could not read a playlist entry: {e}"))?;
+                held.insert(track_id);
+                next_position = next_position.max(position + 1);
             }
         }
-        self.set_playlist_entries(id, &entries)
+
+        let mut added = false;
+        for track_id in track_ids {
+            if !held.insert(track_id.clone()) {
+                continue;
+            }
+            transaction
+                .execute(
+                    "INSERT INTO playlist_tracks (playlist_id, track_id, position) \
+                     VALUES (?1, ?2, ?3)",
+                    params![id, track_id, next_position],
+                )
+                .map_err(|e| format!("could not write a playlist entry: {e}"))?;
+            next_position += 1;
+            added = true;
+        }
+
+        if added {
+            transaction
+                .execute(
+                    "UPDATE playlists SET updated_at = ?2 WHERE id = ?1",
+                    params![id, identity::now_ms()],
+                )
+                .map_err(|e| format!("could not stamp the playlist: {e}"))?;
+        }
+
+        transaction
+            .commit()
+            .map_err(|e| format!("could not finish a catalog write: {e}"))
     }
 
     pub fn remove_from_playlist(&self, id: &str, track_ids: &[String]) -> Result<(), String> {
-        let entries: Vec<String> = self
-            .playlist_entries(id)?
-            .into_iter()
-            .filter(|track_id| !track_ids.contains(track_id))
-            .collect();
-        self.set_playlist_entries(id, &entries)
+        if track_ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut connection = self.guard();
+        let transaction = connection
+            .transaction()
+            .map_err(|e| format!("could not start a catalog write: {e}"))?;
+
+        let mut removed = 0usize;
+        {
+            let mut statement = transaction
+                .prepare("DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2")
+                .map_err(|e| format!("could not prepare the playlist: {e}"))?;
+            for track_id in track_ids {
+                removed += statement
+                    .execute(params![id, track_id])
+                    .map_err(|e| format!("could not drop a playlist entry: {e}"))?;
+            }
+        }
+
+        if removed > 0 {
+            transaction
+                .execute(
+                    "UPDATE playlists SET updated_at = ?2 WHERE id = ?1",
+                    params![id, identity::now_ms()],
+                )
+                .map_err(|e| format!("could not stamp the playlist: {e}"))?;
+        }
+
+        transaction
+            .commit()
+            .map_err(|e| format!("could not finish a catalog write: {e}"))
     }
 
     /// Writes playlists wholesale, for the migration.
@@ -976,6 +1138,38 @@ fn stamp(connection: &Connection) -> Result<(), String> {
         .map_err(|e| format!("could not stamp the catalog version: {e}"))
 }
 
+fn create_fold_indexes(connection: &Connection) -> Result<(), String> {
+    let wanted = [
+        ("tracks", "title", "tracks_fold_title", "lower(trim(title))"),
+        (
+            "tracks",
+            "artist",
+            "tracks_fold_artist",
+            "lower(trim(coalesce(artist, '')))",
+        ),
+        (
+            "tracks",
+            "album",
+            "tracks_fold_album",
+            "lower(trim(coalesce(album, '')))",
+        ),
+        ("playlists", "name", "playlists_fold_name", "lower(trim(name))"),
+    ];
+
+    for (table, column, name, expression) in wanted {
+        if !has_column(connection, table, column) {
+            continue;
+        }
+        connection
+            .execute_batch(&format!(
+                "CREATE INDEX IF NOT EXISTS {name} ON {table} ({expression})"
+            ))
+            .map_err(|e| format!("could not index {table}: {e}"))?;
+    }
+
+    Ok(())
+}
+
 /// Whether a table already has a column, which is what makes an upgrade safe to
 /// run twice.
 fn has_column(connection: &Connection, table: &str, column: &str) -> bool {
@@ -1082,7 +1276,7 @@ mod tests {
         let catalog = Catalog::open(&root).unwrap();
         catalog.upsert_track(&song("one", "One", "h")).unwrap();
 
-        catalog.sync_scan(&[]).unwrap();
+        catalog.sync_scan(&[], &[]).unwrap();
         assert!(catalog.tracks().unwrap().is_empty());
         assert_eq!(catalog.counts(), (0, 1));
         assert!(catalog.track("one").unwrap().is_some());
@@ -1132,7 +1326,7 @@ mod tests {
         assert_eq!(one_playlist(&catalog, &id).track_ids, vec!["three", "one", "two"]);
 
         // A song the library no longer has leaves the list but keeps its place.
-        catalog.sync_scan(&[]).unwrap();
+        catalog.sync_scan(&[], &[]).unwrap();
         catalog.upsert_track(&song("one", "one", "one")).unwrap();
         assert_eq!(one_playlist(&catalog, &id).track_ids, vec!["one"]);
         assert_eq!(catalog.playlist_entries(&id).unwrap().len(), 3);

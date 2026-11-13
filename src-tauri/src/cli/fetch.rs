@@ -3,6 +3,7 @@
 
 use tauri::AppHandle;
 
+use crate::library;
 use crate::progress::Output;
 
 use super::{count, songs};
@@ -50,9 +51,9 @@ pub fn run(app: &AppHandle, options: &Options) -> Result<(), String> {
 /// The songs a pass works on.
 fn ids(app: &AppHandle, options: &Options) -> Result<Vec<String>, String> {
     let tracks = songs::all(app)?;
-    let wanted = match &options.text {
+    let wanted: Vec<&library::Track> = match &options.text {
         Some(text) => songs::matching(&tracks, text),
-        None => tracks,
+        None => tracks.iter().collect(),
     };
 
     if wanted.is_empty() {
@@ -62,7 +63,7 @@ fn ids(app: &AppHandle, options: &Options) -> Result<Vec<String>, String> {
         });
     }
 
-    Ok(wanted.into_iter().map(|track| track.id).collect())
+    Ok(wanted.into_iter().map(|track| track.id.clone()).collect())
 }
 
 /// A pass that went cleanly has nothing to say; the exit code carries the rest.

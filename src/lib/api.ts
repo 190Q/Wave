@@ -41,6 +41,9 @@ export function mountApi(): void {
   });
 }
 
+/** The queue revision last sent, so the queue only crosses the wire when it moves. */
+let sentQueueRevision = -1;
+
 /** Sends the player as it stands, answering `command` when one was just applied. */
 function report(command: string | null): void {
   const snapshot = player.snapshot();
@@ -49,8 +52,6 @@ function report(command: string | null): void {
     currentId: snapshot.currentId,
     sourceId: snapshot.sourceId,
     sourceName: snapshot.sourceName,
-    order: snapshot.order,
-    sourceOrder: snapshot.sourceOrder,
     cursor: snapshot.cursor,
     positionMs: Math.round(snapshot.positionMs),
     durationMs: Math.round(snapshot.durationMs),
@@ -60,6 +61,14 @@ function report(command: string | null): void {
     volume: snapshot.volume,
     muted: snapshot.muted,
   };
+
+  // The position is reported every second; a 50k queue is not sent with it.
+  if (snapshot.queueRevision !== sentQueueRevision) {
+    sentQueueRevision = snapshot.queueRevision;
+    payload.order = [...snapshot.order];
+    payload.sourceOrder = [...snapshot.sourceOrder];
+  }
+
   void reportApiState(payload).catch(() => {
     // Not running inside Tauri, or the backend is no longer there.
   });

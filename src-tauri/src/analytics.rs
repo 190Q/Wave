@@ -16,6 +16,11 @@ const SESSION_GAP_MS: i64 = 30 * 60 * 1000;
 /// How many songs `analytics_top_songs` ranks by default.
 pub const TOP_SONGS_LIMIT: usize = 100;
 
+/// How many of the most recent sittings the co-played pairs are drawn from.
+/// The join is quadratic in the plays of a session, so it is not run over the
+/// whole record.
+const CO_PLAY_SESSIONS: i64 = 500;
+
 /// How many entries a ranking keeps unless the caller asks otherwise.
 const DEFAULT_LIMIT: usize = 5;
 
@@ -322,6 +327,8 @@ impl Analytics {
             conn.execute_batch(SCHEMA)?;
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
+
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS sessions_ended_at ON sessions (ended_at);")?;
         Ok(())
     }
 
@@ -420,17 +427,17 @@ impl Analytics {
         let mut conn = self.guard();
         let tx = conn.transaction().map_err(db_error)?;
 
-        let existing: Option<Option<i64>> = tx
+        let existing: Option<(Option<i64>, i64)> = tx
             .query_row(
-                "SELECT session_id FROM plays WHERE listen_id = ?1",
+                "SELECT session_id, ms_played FROM plays WHERE listen_id = ?1",
                 params![play.listen_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(db_error)?;
 
-        let session_id = match existing {
-            Some(session_id) => {
+        let (session_id, inserted, before_ms) = match existing {
+            Some((session_id, before)) => {
                 tx.execute(
                     "UPDATE plays SET \
                        ended_at = excluded.ended_at, \
@@ -452,7 +459,7 @@ impl Analytics {
                     ],
                 )
                 .map_err(db_error)?;
-                session_id
+                (session_id, false, before)
             }
             None => {
                 let session_id = session_for(&tx, play.started_at, play.ended_at)?;
@@ -479,13 +486,27 @@ impl Analytics {
                     ],
                 )
                 .map_err(db_error)?;
-                Some(session_id)
+                (Some(session_id), true, 0)
             }
         };
 
         if let Some(session_id) = session_id {
-            refresh_session(&tx, session_id)?;
+            let after: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(ms_played, 0) FROM plays WHERE listen_id = ?1",
+                    params![play.listen_id],
+                    |row| row.get(0),
+                )
+                .map_err(db_error)?;
+
+            tx.execute(
+                "UPDATE sessions SET ms_played = MAX(0, ms_played + ?2), plays = plays + ?3 \
+                 WHERE id = ?1",
+                params![session_id, after - before_ms, i64::from(inserted)],
+            )
+            .map_err(db_error)?;
         }
+
         tx.commit().map_err(db_error)
     }
 
@@ -532,6 +553,13 @@ impl Analytics {
     pub fn swell(&self, from: i64, to: i64, bucket: &str) -> Result<SwellSummary, String> {
         let conn = self.guard();
         swell(&conn, from, to, bucket).map_err(db_error)
+    }
+
+    /// The three numbers `recommend_status` reads, without building a whole
+    /// summary to get at them.
+    pub fn marks(&self) -> Result<(i64, i64, i64), String> {
+        let conn = self.guard();
+        marks(&conn).map_err(db_error)
     }
 
     pub fn recommendation_seeds(&self, limit: usize) -> Result<RecommendationSeeds, String> {
@@ -614,19 +642,6 @@ fn session_for(conn: &Connection, started_at: i64, ended_at: Option<i64>) -> Res
     Ok(id)
 }
 
-/// Recomputes a sitting's totals from the listens that landed in it.
-fn refresh_session(conn: &Connection, session_id: i64) -> Result<(), String> {
-    conn.execute(
-        "UPDATE sessions SET \
-           plays = (SELECT COUNT(*) FROM plays WHERE session_id = ?1), \
-           ms_played = (SELECT COALESCE(SUM(ms_played), 0) FROM plays WHERE session_id = ?1) \
-         WHERE id = ?1",
-        params![session_id],
-    )
-    .map_err(db_error)?;
-    Ok(())
-}
-
 fn bucket_format(bucket: &str) -> &'static str {
     match bucket {
         "day" => "%Y-%m-%d",
@@ -662,6 +677,24 @@ fn top_songs(
         })
     })?
     .collect()
+}
+
+/// The plays, the milliseconds and the artists the whole record holds. This is
+/// what the generator is offered on, so it is read on its own rather than as
+/// part of a summary with rankings and charts in it.
+fn marks(conn: &Connection) -> rusqlite::Result<(i64, i64, i64)> {
+    conn.query_row(
+        &format!(
+            "SELECT COALESCE(SUM(CASE WHEN {STREAM_COND} THEN 1 ELSE 0 END), 0), \
+                    COALESCE(SUM(p.ms_played), 0), \
+                    COUNT(DISTINCT CASE WHEN {STREAM_COND} \
+                        AND TRIM(COALESCE(t.artist, '')) <> '' \
+                        THEN LOWER(TRIM(t.artist)) END) \
+             FROM plays p LEFT JOIN tracks t ON t.track_id = p.track_id"
+        ),
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )
 }
 
 /// Every song that has been streamed, with how many times. A song that was only
@@ -939,10 +972,13 @@ fn recommendation_seeds(
             "SELECT a.track_id, b.track_id, COUNT(*) AS together \
              FROM plays a JOIN plays b \
                ON b.session_id = a.session_id AND b.track_id > a.track_id \
+             WHERE a.session_id IN ( \
+               SELECT id FROM sessions ORDER BY ended_at DESC LIMIT ?2 \
+             ) \
              GROUP BY a.track_id, b.track_id \
              ORDER BY together DESC, a.track_id LIMIT ?1",
         )?;
-        stmt.query_map(params![limit], |row| {
+        stmt.query_map(params![limit, CO_PLAY_SESSIONS], |row| {
             Ok(CoPlayed {
                 a: row.get(0)?,
                 b: row.get(1)?,
@@ -1046,12 +1082,12 @@ pub fn analytics_remember_tracks(
     analytics.remember_tracks(&tracks)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn analytics_record_play(analytics: State<'_, Analytics>, play: PlayRecord) -> Result<(), String> {
     analytics.record_play(&play)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn analytics_record_events(
     analytics: State<'_, Analytics>,
     events: Vec<EventRecord>,
@@ -1226,6 +1262,43 @@ mod tests {
         assert_eq!(ms, 180_000);
         assert_eq!(reason, "ended");
         assert_eq!(completed, 1);
+    }
+
+    /// The totals are kept as the listens land, rather than added up again, so
+    /// a checkpoint and the end of the same song must not be counted twice.
+    #[test]
+    fn a_sitting_keeps_running_totals() {
+        let store = store();
+        store
+            .remember_tracks(&[track("a", "Artist", "Album", "Pop", "music")])
+            .unwrap();
+
+        let at = now_ms();
+        store
+            .record_play(&play("one", "a", at, 60_000, true, "ended"))
+            .unwrap();
+        // The checkpoint a long song sends part-way through, then its end.
+        store
+            .record_play(&PlayRecord {
+                ended_at: None,
+                completed: false,
+                reason: "open".to_string(),
+                ..play("two", "a", at + 60_000, 30_000, false, "open")
+            })
+            .unwrap();
+        store
+            .record_play(&play("two", "a", at + 60_000, 180_000, true, "ended"))
+            .unwrap();
+
+        let conn = store.guard();
+        let (plays, ms): (i64, i64) = conn
+            .query_row("SELECT plays, ms_played FROM sessions", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+
+        assert_eq!(plays, 2);
+        assert_eq!(ms, 60_000 + 180_000);
     }
 
     #[test]

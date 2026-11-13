@@ -116,6 +116,13 @@
   contain-intrinsic-size: auto 3.4rem;
 }
 
+/* The stand-in for the rows a windowed list is not drawing. */
+.window-gap {
+  flex: none;
+  list-style: none;
+  pointer-events: none;
+}
+
 .entry:hover,
 .entry:focus-visible {
   background: var(--raise);

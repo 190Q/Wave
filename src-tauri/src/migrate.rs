@@ -181,7 +181,7 @@ fn apply(
         let cover = copy_cover(&index, root, planned)?;
         let lyrics = copy_lyrics(&index, root, planned)?;
 
-        match library::describe(root, &planned.new_id, &target, &planned.name) {
+        match library::describe(root, &planned.new_id, &target, &planned.name, None) {
             Ok(row) => {
                 catalog.upsert_track(&row)?;
                 report.songs += 1;
@@ -1268,7 +1268,7 @@ mod migration_tests {
         fs::write(dir.join("cover.jpg"), b"a cover".to_vec()).unwrap();
 
         let catalog = Catalog::open(&root).unwrap();
-        let row = library::describe(&root, &id, &dir.join("audio.wav"), "one.wav").unwrap();
+        let row = library::describe(&root, &id, &dir.join("audio.wav"), "one.wav", None).unwrap();
         assert_eq!(
             row.cover_path.as_deref(),
             Some(format!("songs/{id}/cover.jpg").as_str())

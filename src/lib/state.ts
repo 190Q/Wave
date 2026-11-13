@@ -98,6 +98,8 @@ export interface AppState {
   tracks: Track[];
   tracksById: Map<string, Track>;
   collections: Collection[];
+  /** Bumped whenever the collections are rebuilt, so a pane can tell cheaply. */
+  collectionsRevision: number;
   root: string;
   skipped: number;
   scanErrors: string[];
@@ -174,6 +176,7 @@ const state: AppState = {
   tracks: [],
   tracksById: new Map(),
   collections: [],
+  collectionsRevision: 0,
   root: "",
   skipped: 0,
   scanErrors: [],
@@ -361,7 +364,7 @@ export function pruneArtworkQueue(window: Set<string>, queue: Set<string>): void
   }
 }
 
-export function prefetchArtwork(trackIds: string[]): void {
+export function prefetchArtwork(trackIds: readonly string[]): void {
   for (const id of trackIds) {
     const track = state.tracksById.get(id);
     if (!track?.artworkPath || artworkUrls.has(id) || artworkFailed.has(id)) {
@@ -686,7 +689,10 @@ export async function rescan(): Promise<void> {
   emit();
 
   try {
-    await applyScan(await ipc.scanLibrary());
+    const known = state.libraryInfo?.tracks;
+    const full =
+      state.tracksById.size === 0 || (known !== undefined && state.tracksById.size !== known);
+    await applyScan(await ipc.scanLibrary(full));
   } catch (error) {
     state.scanErrors = [describe(error)];
   }
@@ -703,17 +709,34 @@ export async function rescan(): Promise<void> {
  * did. Shared so the two paths can never drift apart.
  */
 async function applyScan(summary: ScanSummary): Promise<void> {
-  state.tracks = summary.tracks;
-  state.tracksById = new Map(summary.tracks.map((track) => [track.id, track]));
+  // Only what moved is merged in, so a scan that changed nothing does not have
+  // to rebuild the whole listing.
+  if (summary.changed.length > 0 || summary.removed.length > 0) {
+    const byId = new Map(state.tracksById);
+    for (const id of summary.removed) {
+      byId.delete(id);
+    }
+    for (const track of summary.changed) {
+      byId.set(track.id, track);
+    }
+
+    state.tracksById = byId;
+    state.tracks = [...byId.values()].sort((left, right) =>
+      left.title.toLowerCase().localeCompare(right.title.toLowerCase()),
+    );
+  }
+
   artworkFailed.clear();
   retainArtwork();
   state.root = summary.root;
   state.skipped = summary.skipped;
   state.scanErrors = summary.errors;
   await readLibraryInfo();
-  recomputeCollections();
+  refreshCollections();
   repairQueue();
-  rememberTracks(summary.tracks);
+  if (summary.changed.length > 0) {
+    rememberTracks(summary.changed);
+  }
   applyPersisted(await ipc.loadState());
   adoptSource();
 }
@@ -743,7 +766,7 @@ async function analyseLoudness(): Promise<void> {
   try {
     do {
       loudnessAgain = false;
-      await ipc.analyseLoudness(state.tracks.map((track) => track.id));
+      await ipc.analyseLoudness([]);
     } while (loudnessAgain);
   } catch {
     // A song with no reading simply plays at its own level.
@@ -1719,7 +1742,7 @@ let configTimer: number | null = null;
 function watchSources(): void {
   void listen<ImportProgress>("wavelist-import", (event) => {
     state.transferProgress = event.payload;
-    emit();
+    scheduleEmit();
   }).catch(() => {
     // A plain browser has no Tauri event bridge.
   });
@@ -1729,35 +1752,35 @@ function watchSources(): void {
     if (downloading) {
       state.downloadProgress = event.payload;
     }
-    emit();
+    scheduleEmit();
   }).catch(() => {
     // Not running inside Tauri, for example `npm run dev` in a browser.
   });
 
   void listen<ImportProgress>(GENERATE_PROGRESS_EVENT, (event) => {
     state.generateProgress = event.payload;
-    emit();
+    scheduleEmit();
   }).catch(() => {
     // Same as above.
   });
 
   void listen<ImportProgress>(LYRICS_PROGRESS_EVENT, (event) => {
     state.lyricsProgress = event.payload;
-    emit();
+    scheduleEmit();
   }).catch(() => {
     // Same as above.
   });
 
   void listen<ImportProgress>(COVERS_PROGRESS_EVENT, (event) => {
     state.coversProgress = event.payload;
-    emit();
+    scheduleEmit();
   }).catch(() => {
     // Same as above.
   });
 
   void listen<ImportProgress>(GENRES_PROGRESS_EVENT, (event) => {
     state.genresProgress = event.payload;
-    emit();
+    scheduleEmit();
   }).catch(() => {
     // Same as above.
   });
@@ -1802,7 +1825,7 @@ function mergeLanded(landed: Track[]): void {
 
   recomputeCollections();
   adoptSource();
-  emit();
+  scheduleEmit();
 }
 
 /** Follows a loudness pass, so each reading lands as soon as it is measured. */
@@ -1820,7 +1843,7 @@ function watchLoudness(): void {
     if (player.currentId === id) {
       player.refreshGain();
     }
-    emit();
+    scheduleEmit();
   }).catch(() => {
     // Not running inside Tauri, for example `npm run dev` in a browser.
   });
@@ -1949,7 +1972,7 @@ async function startUpdater(): Promise<void> {
 function watchUpdate(): void {
   void listen<UpdateProgress>(UPDATE_PROGRESS_EVENT, (event) => {
     state.updateProgress = event.payload;
-    emit();
+    scheduleEmit();
   }).catch(() => {
     // Not running inside Tauri, for example `npm run dev` in a browser.
   });
@@ -2053,21 +2076,96 @@ export async function ensureLyrics(track: Track | undefined): Promise<void> {
 
 function applyPersisted(next: PersistedState): void {
   state.settings = next.settings ?? state.settings;
-  state.playlists = next.playlists ?? [];
-  state.pendingById = indexPending(state.playlists);
-  state.likes = new Set(next.likes ?? []);
+
+  // Replacing these only when they actually moved is what lets the collections
+  // below be left alone, so a volume save does not re-group the library.
+  const playlists = next.playlists ?? [];
+  if (!samePlaylists(state.playlists, playlists)) {
+    state.playlists = playlists;
+    state.pendingById = indexPending(playlists);
+  }
+
+  const likes = next.likes ?? [];
+  if (!sameLikes(state.likes, likes)) {
+    state.likes = new Set(likes);
+  }
+
   state.windowSlots = next.windowSlots ?? [];
   state.recentImports = next.recentImports ?? [];
   state.spotify = next.spotify ?? null;
   state.update = next.update ?? null;
-  state.colours = new Map(
-    Object.entries(next.artworkColours ?? {}).filter(([, hex]) => isUsableAccent(hex)),
-  );
-  recomputeCollections();
+  applyColours(next.artworkColours ?? {});
+  refreshCollections();
 }
+
+/** True when two sets of likes hold the same songs. */
+function sameLikes(current: Set<string>, next: string[]): boolean {
+  return current.size === next.length && next.every((id) => current.has(id));
+}
+
+/** True when two sets of playlists hold the same songs in the same order. */
+function samePlaylists(current: Playlist[], next: Playlist[]): boolean {
+  if (current === next) {
+    return true;
+  }
+  if (current.length !== next.length) {
+    return false;
+  }
+
+  return current.every((before, at) => {
+    const after = next[at];
+    return (
+      before.id === after.id &&
+      before.name === after.name &&
+      before.kind === after.kind &&
+      sameList(before.trackIds, after.trackIds) &&
+      sameList(before.entries, after.entries) &&
+      samePending(before.pending, after.pending)
+    );
+  });
+}
+
+function sameList(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, at) => value === right[at]);
+}
+
+function samePending(left: PendingTrack[], right: PendingTrack[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((entry, at) => entry.id === right[at].id && entry.coverPath === right[at].coverPath)
+  );
+}
+
+let coloursRead = -1;
+
+function applyColours(next: Record<string, string>): void {
+  const entries = Object.entries(next);
+  if (entries.length === coloursRead) {
+    return;
+  }
+  coloursRead = entries.length;
+  state.colours = new Map(entries.filter(([, hex]) => isUsableAccent(hex)));
+}
+
+let collectionsFrom: { tracks: Track[]; playlists: Playlist[]; likes: Set<string> } | null = null;
 
 function recomputeCollections(): void {
   state.collections = buildCollections(state.tracks, state.playlists, state.likes);
+  state.collectionsRevision += 1;
+  collectionsFrom = { tracks: state.tracks, playlists: state.playlists, likes: state.likes };
+}
+
+/** Rebuilds the collections only when something they are built from moved. */
+function refreshCollections(): void {
+  if (
+    collectionsFrom !== null &&
+    collectionsFrom.tracks === state.tracks &&
+    collectionsFrom.playlists === state.playlists &&
+    collectionsFrom.likes === state.likes
+  ) {
+    return;
+  }
+  recomputeCollections();
 }
 
 /** Every pending entry the playlists hold, keyed by id. */
@@ -2200,8 +2298,8 @@ function currentSession(): Session {
     playback: {
       sourceId: snapshot.sourceId,
       sourceName: snapshot.sourceName,
-      sourceOrder: snapshot.sourceOrder,
-      order: snapshot.order,
+      sourceOrder: [...snapshot.sourceOrder],
+      order: [...snapshot.order],
       cursor: snapshot.cursor,
       positionMs: Math.round(snapshot.positionMs),
       shuffle: snapshot.shuffle,

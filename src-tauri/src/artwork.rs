@@ -1,10 +1,35 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager, State};
 
 use crate::state::{self, Store};
+
+/// How long between writes of the colour cache. Colours arrive as covers scroll
+/// into view, so without this a browse through a large library rewrites
+/// `state.json` once per newly seen song.
+const COLOUR_WRITE_GAP: Duration = Duration::from_secs(2);
+
+static LAST_COLOUR_WRITE: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// True when the colour cache is next in line to be written. Colours only ever
+/// live in memory until then, and the autosave picks up whatever is left.
+fn colour_write_due() -> bool {
+    let mut last = LAST_COLOUR_WRITE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let now = Instant::now();
+    match *last {
+        Some(at) if now.duration_since(at) < COLOUR_WRITE_GAP => false,
+        _ => {
+            *last = Some(now);
+            true
+        }
+    }
+}
 
 /// How far each channel is shifted to form a bucket key. 4 bits per channel
 /// gives 4096 buckets, which is plenty at this resolution.
@@ -154,11 +179,14 @@ pub fn artwork_colour(
     let candidates = dominant_colours(Path::new(&path))?;
     let colour = usable_accent(&candidates).ok_or_else(|| format!("{path} had no usable colour"))?;
 
-    let next = store.update(|state| {
+    store.edit(|state| {
         state.artwork_colours.insert(track_id, colour.clone());
     });
-    // Failing to cache is not a reason to withhold the colour we just computed.
-    let _ = state::save(&app, &next);
+    // The colour is in memory either way. The file is only written every so
+    // often, and failing to cache is not a reason to withhold it.
+    if colour_write_due() {
+        let _ = state::save(&app, &store.snapshot());
+    }
     Ok(colour)
 }
 

@@ -14,26 +14,19 @@ use super::{count, Find, Pick};
 
 /// Every song the library holds, as the catalog has it, in title order.
 pub fn all(app: &AppHandle) -> Result<Vec<Track>, String> {
-    let root = library::library_root(app)?;
     let catalog = app.state::<Catalog>();
-
-    let mut tracks: Vec<Track> = catalog
-        .tracks()?
-        .iter()
-        .map(|row| library::to_track(row, &root))
-        .collect();
-    tracks.sort_by_key(|track| track.title.to_lowercase());
-
-    Ok(tracks)
+    library::all_tracks(app, &catalog)
 }
 
 pub fn list(app: &AppHandle, options: &Find) -> Result<(), String> {
     let tracks = all(app)?;
-    show(&tracks, options)
+    let found: Vec<&Track> = tracks.iter().collect();
+    show(&found, options)
 }
 
 pub fn search(app: &AppHandle, options: &Find) -> Result<(), String> {
-    let found = matching(&all(app)?, &options.text);
+    let tracks = all(app)?;
+    let found = matching(&tracks, &options.text);
     if found.is_empty() {
         return Err(format!("nothing in the library answers to {}", options.text));
     }
@@ -43,12 +36,13 @@ pub fn search(app: &AppHandle, options: &Find) -> Result<(), String> {
 
 /// The songs a query answers to. A track id is itself; anything else is matched
 /// on title, artist and album together, folded the way the importer folds tags,
-/// so case, accents and stray spacing do not matter.
-pub fn matching(tracks: &[Track], query: &str) -> Vec<Track> {
+/// so case, accents and stray spacing do not matter. The songs are borrowed, so
+/// a match does not copy the song.
+pub fn matching<'a>(tracks: &'a [Track], query: &str) -> Vec<&'a Track> {
     let query = query.trim();
 
     if let Some(found) = tracks.iter().find(|track| track.id == query) {
-        return vec![found.clone()];
+        return vec![found];
     }
 
     let needle = fold(query);
@@ -59,7 +53,6 @@ pub fn matching(tracks: &[Track], query: &str) -> Vec<Track> {
     tracks
         .iter()
         .filter(|track| haystack(track).contains(&needle))
-        .cloned()
         .collect()
 }
 
@@ -76,7 +69,7 @@ fn haystack(track: &Track) -> String {
 /// The songs a command that acts on them should act on. More than one match is
 /// refused unless the command was told to take them all, so a word that turns
 /// out to be common cannot change more than was meant.
-pub fn pick(tracks: &[Track], options: &Pick) -> Result<Vec<Track>, String> {
+pub fn pick<'a>(tracks: &'a [Track], options: &Pick) -> Result<Vec<&'a Track>, String> {
     let found = matching(tracks, &options.text);
     if found.is_empty() {
         return Err(format!("nothing in the library answers to {}", options.text));
@@ -101,9 +94,9 @@ pub fn pick(tracks: &[Track], options: &Pick) -> Result<Vec<Track>, String> {
 const SHOWN: usize = 10;
 
 /// Prints the songs, or writes them out for a script.
-fn show(tracks: &[Track], options: &Find) -> Result<(), String> {
+fn show(tracks: &[&Track], options: &Find) -> Result<(), String> {
     let limit = options.limit.unwrap_or(usize::MAX);
-    let shown: Vec<&Track> = tracks.iter().take(limit).collect();
+    let shown: Vec<&&Track> = tracks.iter().take(limit).collect();
 
     if options.json {
         println!(
@@ -138,13 +131,13 @@ pub fn scan(app: &AppHandle) -> Result<(), String> {
     let catalog = app.state::<Catalog>();
     let store = app.state::<Store>();
 
-    let summary = library::scan(app, &catalog);
+    let summary = library::scan(app, &catalog, false);
     let _ = crate::playlists::refresh(app, &store);
 
     for error in &summary.errors {
         eprintln!("failed: {error}");
     }
-    println!("{} at {}", count(summary.tracks.len(), "song"), summary.root);
+    println!("{} at {}", count(summary.total, "song"), summary.root);
     if summary.skipped > 0 {
         println!("{} files that are not music were left alone.", summary.skipped);
     }
@@ -198,18 +191,24 @@ pub fn info(app: &AppHandle, json: bool) -> Result<(), String> {
 
 /// Puts the songs a search finds into Liked Songs, or takes them out again.
 pub fn set_liked(app: &AppHandle, options: &Pick, liked: bool) -> Result<(), String> {
-    let tracks = pick(&all(app)?, options)?;
+    let binding = all(app)?;
+    let tracks = pick(&binding, options)?;
     let store = app.state::<Store>();
     let ids: HashSet<String> = tracks.iter().map(|track| track.id.clone()).collect();
 
     let next = store.update(|state| {
-        for id in &ids {
-            let saved = state.likes.iter().any(|liked| liked == id);
-            if liked && !saved {
-                state.likes.push(id.clone());
-            } else if !liked && saved {
-                state.likes.retain(|liked| liked != id);
+        let mut held: HashSet<String> = state.likes.iter().cloned().collect();
+        if liked {
+            for id in &ids {
+                if held.insert(id.clone()) {
+                    state.likes.push(id.clone());
+                }
             }
+        } else {
+            for id in &ids {
+                held.remove(id);
+            }
+            state.likes.retain(|id| held.contains(id));
         }
     });
     crate::state::save(app, &next)?;
@@ -224,7 +223,8 @@ pub fn set_liked(app: &AppHandle, options: &Pick, liked: bool) -> Result<(), Str
 
 /// Deletes the songs a search finds, with their files.
 pub fn delete(app: &AppHandle, options: &Pick) -> Result<(), String> {
-    let tracks = pick(&all(app)?, options)?;
+    let binding = all(app)?;
+    let tracks = pick(&binding, options)?;
     let ids: Vec<String> = tracks.iter().map(|track| track.id.clone()).collect();
 
     let catalog = app.state::<Catalog>();
@@ -298,7 +298,7 @@ mod tests {
     fn found(query: &str) -> Vec<String> {
         matching(&library(), query)
             .into_iter()
-            .map(|track| track.id)
+            .map(|track| track.id.clone())
             .collect()
     }
 

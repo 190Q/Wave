@@ -72,11 +72,29 @@ function words(text: string): string[] {
   return text.split(TOKEN_SPLIT).filter(Boolean);
 }
 
-function fieldsOfItem<T>(item: T, fieldsOf: FieldsOf<T>): string[] {
+const fieldCache = new WeakMap<object, string[]>();
+
+function foldFields<T>(item: T, fieldsOf: FieldsOf<T>): string[] {
   return fieldsOf(item)
     .filter((field): field is string => typeof field === "string")
     .map(normalise)
     .filter(Boolean);
+}
+
+function fieldsOfItem<T>(item: T, fieldsOf: FieldsOf<T>): string[] {
+  if (typeof item !== "object" || item === null) {
+    return foldFields(item, fieldsOf);
+  }
+
+  const key = item as object;
+  const cached = fieldCache.get(key);
+  if (cached) {
+    return cached;
+  }
+
+  const folded = foldFields(item, fieldsOf);
+  fieldCache.set(key, folded);
+  return folded;
 }
 
 export function scoreItems<T>(

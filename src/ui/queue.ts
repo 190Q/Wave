@@ -136,7 +136,7 @@ export function mountQueue(): void {
     return slots;
   };
 
-  const isReshuffle = (order: string[]): boolean =>
+  const isReshuffle = (order: readonly string[]): boolean =>
     order.length > 0 && order.length === renderedIds.size && order.every((id) => renderedIds.has(id));
 
   const recentre = (centre: number): void => {
@@ -160,7 +160,7 @@ export function mountQueue(): void {
   };
 
   const createCard = (
-    order: string[],
+    order: readonly string[],
     slot: number,
     total: number,
     looping: boolean,
@@ -321,7 +321,7 @@ export function mountQueue(): void {
   };
 
   const syncWindow = (
-    order: string[],
+    order: readonly string[],
     total: number,
     looping: boolean,
     centre: number,
@@ -435,7 +435,7 @@ export function mountQueue(): void {
     });
   };
 
-  const syncArtwork = (order: string[], total: number, looping: boolean): void => {
+  const syncArtwork = (order: readonly string[], total: number, looping: boolean): void => {
     const swaps: CoverSwap[] = [];
 
     for (const [slot, card] of cards) {

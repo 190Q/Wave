@@ -5,8 +5,9 @@ import { FADE_MS, smoothstep } from "./fade";
 export interface PlayerSnapshot {
   sourceId: string | null;
   sourceName: string;
-  sourceOrder: string[];
-  order: string[];
+  sourceOrder: readonly string[];
+  order: readonly string[];
+  queueRevision: number;
   cursor: number;
   travel: number;
   currentId: string | null;
@@ -51,6 +52,9 @@ export class Player {
   /** The order tracks are actually played in. */
   private order: string[] = [];
   private cursor = 0;
+
+  /** Bumped whenever the queue moves. */
+  private orderRevision = 0;
 
   private travel = 0;
 
@@ -126,8 +130,9 @@ export class Player {
     return {
       sourceId: this.sourceId,
       sourceName: this.sourceName,
-      sourceOrder: [...this.sourceOrder],
-      order: [...this.order],
+      sourceOrder: this.sourceOrder,
+      order: this.order,
+      queueRevision: this.orderRevision,
       cursor: this.cursor,
       travel: this.travel,
       currentId: this.currentId,
@@ -179,6 +184,7 @@ export class Player {
     const found = current ? this.order.indexOf(current) : -1;
     this.cursor = found >= 0 ? found : 0;
 
+    this.orderRevision += 1;
     this.emitChange();
     this.emitProgress();
   }
@@ -203,6 +209,7 @@ export class Player {
     this.stopFade();
     this.stopClock();
     this.loadCurrent(false, Math.max(playback.positionMs, 0));
+    this.orderRevision += 1;
     this.emitChange();
     this.emitProgress();
   }
@@ -360,6 +367,7 @@ export class Player {
     }
     this.order.push(trackId);
     this.sourceOrder.push(trackId);
+    this.orderRevision += 1;
     this.emitChange();
   }
 
@@ -370,6 +378,7 @@ export class Player {
     }
     this.order.splice(this.cursor + 1, 0, trackId);
     this.sourceOrder.push(trackId);
+    this.orderRevision += 1;
     this.emitChange();
   }
 
@@ -393,6 +402,7 @@ export class Player {
       this.cursor = Math.min(this.cursor, this.order.length - 1);
       this.loadCurrent(this.playing);
     }
+    this.orderRevision += 1;
     this.emitChange();
     this.emitProgress();
   }
@@ -434,6 +444,7 @@ export class Player {
 
     const found = keepId ? this.order.indexOf(keepId) : 0;
     this.cursor = found >= 0 ? found : 0;
+    this.orderRevision += 1;
   }
 
   private loadCurrent(autoplay: boolean, positionMs = 0): void {

@@ -266,7 +266,7 @@ fn library_index(app: &AppHandle) -> HashMap<String, String> {
     let catalog = app.state::<Catalog>();
     let mut index = HashMap::new();
 
-    for track in library::scan(app, &catalog).tracks {
+    for track in library::all_tracks(app, &catalog).unwrap_or_default() {
         remember(
             &mut index,
             &track.id,

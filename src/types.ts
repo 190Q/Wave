@@ -179,8 +179,8 @@ export interface PlayerReport {
   currentId: string | null;
   sourceId: string | null;
   sourceName: string;
-  order: string[];
-  sourceOrder: string[];
+  order?: string[];
+  sourceOrder?: string[];
   cursor: number;
   positionMs: number;
   durationMs: number;
@@ -616,7 +616,9 @@ export interface ImportPlan {
 }
 
 export interface ScanSummary {
-  tracks: Track[];
+  changed: Track[];
+  removed: string[];
+  total: number;
   root: string;
   skipped: number;
   errors: string[];

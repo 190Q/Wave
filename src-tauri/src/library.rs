@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -112,7 +112,9 @@ pub struct Track {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanSummary {
-    pub tracks: Vec<Track>,
+    pub changed: Vec<Track>,
+    pub removed: Vec<String>,
+    pub total: usize,
     pub root: String,
     pub skipped: usize,
     pub errors: Vec<String>,
@@ -128,12 +130,27 @@ pub struct LibraryInfo {
     pub db_bytes: u64,
 }
 
-pub fn scan<R: Runtime>(app: &AppHandle<R>, catalog: &Catalog) -> ScanSummary {
+/// Every song the library holds, in title order, which is the listing the
+/// window draws.
+pub fn all_tracks<R: Runtime>(app: &AppHandle<R>, catalog: &Catalog) -> Result<Vec<Track>, String> {
+    let root = library_root(app)?;
+    let mut tracks: Vec<Track> = catalog
+        .tracks()?
+        .iter()
+        .map(|row| to_track(row, &root))
+        .collect();
+    tracks.sort_by_key(|track| track.title.to_lowercase());
+    Ok(tracks)
+}
+
+pub fn scan<R: Runtime>(app: &AppHandle<R>, catalog: &Catalog, full: bool) -> ScanSummary {
     let root = match library_root(app) {
         Ok(root) => root,
         Err(error) => {
             return ScanSummary {
-                tracks: Vec::new(),
+                changed: Vec::new(),
+                removed: Vec::new(),
+                total: 0,
                 root: String::new(),
                 skipped: 0,
                 errors: vec![error],
@@ -141,8 +158,11 @@ pub fn scan<R: Runtime>(app: &AppHandle<R>, catalog: &Catalog) -> ScanSummary {
         }
     };
 
+    let known = catalog.rows_by_id().unwrap_or_default();
+
     let mut errors = Vec::new();
-    let mut rows: Vec<TrackRow> = Vec::new();
+    let mut changed: Vec<TrackRow> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
     let mut skipped = 0usize;
 
     let songs = root.join(SONGS_DIR);
@@ -164,8 +184,13 @@ pub fn scan<R: Runtime>(app: &AppHandle<R>, catalog: &Catalog) -> ScanSummary {
                     continue;
                 }
 
-                match reconcile(&path, &root, catalog, &mut errors) {
-                    Ok(Some(row)) => rows.push(row),
+                match reconcile(&path, &root, &known, &mut errors) {
+                    Ok(Some((row, moved))) => {
+                        seen.push(row.id.clone());
+                        if moved || full {
+                            changed.push(row);
+                        }
+                    }
                     Ok(None) => {}
                     Err(error) => errors.push(error),
                 }
@@ -174,16 +199,28 @@ pub fn scan<R: Runtime>(app: &AppHandle<R>, catalog: &Catalog) -> ScanSummary {
         Err(error) => errors.push(format!("could not read {}: {error}", songs.display())),
     }
 
-    // One write for the whole scan. Anything the scan did not see keeps its row.
-    if let Err(error) = catalog.sync_scan(&rows) {
+    // A song the scan did not see is gone, which is the one change that has to
+    // be worked out for every row rather than only the rows the scan touched.
+    let present: HashSet<&str> = seen.iter().map(String::as_str).collect();
+    let mut removed: Vec<String> = known
+        .values()
+        .filter(|row| !row.missing && !present.contains(row.id.as_str()))
+        .map(|row| row.id.clone())
+        .collect();
+    removed.sort();
+
+    if let Err(error) = catalog.sync_scan(&changed, &seen) {
         errors.push(error);
     }
 
-    let mut tracks: Vec<Track> = rows.iter().map(|row| to_track(row, &root)).collect();
+    let total = seen.len();
+    let mut tracks: Vec<Track> = changed.iter().map(|row| to_track(row, &root)).collect();
     tracks.sort_by_key(|track| track.title.to_lowercase());
 
     ScanSummary {
-        tracks,
+        changed: tracks,
+        removed,
+        total,
         root: root.to_string_lossy().into_owned(),
         skipped,
         errors,
@@ -191,13 +228,14 @@ pub fn scan<R: Runtime>(app: &AppHandle<R>, catalog: &Catalog) -> ScanSummary {
 }
 
 /// Brings one song's directory in line with the catalog, or returns `None` when
-/// the directory holds no audio.
+/// the directory holds no audio. The flag says whether the row actually moved,
+/// so a scan only writes what changed.
 fn reconcile(
     dir: &Path,
     root: &Path,
-    catalog: &Catalog,
+    known_rows: &HashMap<String, TrackRow>,
     errors: &mut Vec<String>,
-) -> Result<Option<TrackRow>, String> {
+) -> Result<Option<(TrackRow, bool)>, String> {
     let dir_name = dir
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -205,7 +243,7 @@ fn reconcile(
 
     let named_as_id = identity::is_id(&dir_name);
     let known = if named_as_id {
-        catalog.track(&dir_name)?
+        known_rows.get(&dir_name)
     } else {
         None
     };
@@ -213,7 +251,6 @@ fn reconcile(
     // The file the catalog recorded, or the only audio file in the directory,
     // which covers a file renamed by hand.
     let recorded = known
-        .as_ref()
         .map(|row| root.join(&row.rel_path))
         .filter(|path| path.is_file());
 
@@ -259,22 +296,23 @@ fn reconcile(
 
     // Nothing has changed since the catalog last looked, so the tags are taken
     // as read instead of being read again.
-    let unchanged = known.as_ref().is_some_and(|row| {
+    let unchanged = known.is_some_and(|row| {
         row.rel_path == rel_path && row.bytes == stamp.bytes && row.modified_ms == stamp.modified_ms
     });
 
     if unchanged {
-        let mut row = known.unwrap_or_default();
-        row.missing = false;
+        let source = known.expect("checked just above");
+        let mut row = source.clone();
         let cover = kept(root, row.cover_path.clone(), &dir, cover_in);
         let lyrics = kept(root, row.lyrics_path.clone(), &dir, lyrics_in);
+        let moved = source.missing || cover != row.cover_path || lyrics != row.lyrics_path;
         row.cover_path = cover;
         row.lyrics_path = lyrics;
-        return Ok(Some(row));
+        row.missing = false;
+        return Ok(Some((row, moved)));
     }
 
     let original_name = known
-        .as_ref()
         .map(|row| row.original_name.clone())
         .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| {
@@ -284,12 +322,9 @@ fn reconcile(
                 .unwrap_or_default()
         });
 
-    let mut row = read_row(&id, &audio, &dir, &rel_path, &original_name, stamp)?;
-    row.added_at = known
-        .as_ref()
-        .map(|row| row.added_at)
-        .unwrap_or(row.added_at);
-    Ok(Some(row))
+    let mut row = read_row(&id, &audio, &dir, &rel_path, &original_name, stamp, None)?;
+    row.added_at = known.map(|row| row.added_at).unwrap_or(row.added_at);
+    Ok(Some((row, true)))
 }
 
 /// Describes a song that has just been written into the library, so the catalog
@@ -299,6 +334,7 @@ pub fn describe(
     id: &str,
     audio: &Path,
     original_name: &str,
+    hash: Option<&str>,
 ) -> Result<TrackRow, String> {
     let dir = audio
         .parent()
@@ -307,7 +343,15 @@ pub fn describe(
         .ok_or_else(|| format!("{} is outside the library", audio.display()))?;
     let stamp = identity::stamp_of(audio)?;
 
-    read_row(id, audio, dir, &rel_path, original_name, stamp)
+    read_row(
+        id,
+        audio,
+        dir,
+        &rel_path,
+        original_name,
+        stamp,
+        hash.map(str::to_string),
+    )
 }
 
 fn read_row(
@@ -317,6 +361,7 @@ fn read_row(
     rel_path: &str,
     original_name: &str,
     stamp: identity::Stamp,
+    hash: Option<String>,
 ) -> Result<TrackRow, String> {
     let file_name = audio
         .file_name()
@@ -370,13 +415,18 @@ fn read_row(
             .and_then(|(data, extension)| write_cover(dir, data, extension))
     });
 
+    let content_hash = match hash {
+        Some(hash) => hash,
+        None => identity::content_hash(audio)?,
+    };
+
     Ok(TrackRow {
         id: id.to_string(),
         rel_path: rel_path.to_string(),
         original_name: original_name.to_string(),
         bytes: stamp.bytes,
         modified_ms: stamp.modified_ms,
-        content_hash: Some(identity::content_hash(audio)?),
+        content_hash: Some(content_hash),
         title,
         artist: clean(artist),
         album: clean(album),
@@ -655,8 +705,9 @@ pub fn scan_library(
     app: AppHandle,
     store: State<'_, Store>,
     catalog: State<'_, Catalog>,
+    full: bool,
 ) -> ScanSummary {
-    let summary = scan(&app, &catalog);
+    let summary = scan(&app, &catalog, full);
     let _ = crate::playlists::refresh(&app, &store);
     summary
 }
@@ -680,7 +731,7 @@ pub fn open_library_folder(app: AppHandle) -> Result<(), String> {
         .map_err(|e| format!("could not open {}: {e}", root.display()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_tracks(
     app: AppHandle,
     store: State<'_, Store>,

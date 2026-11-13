@@ -14,7 +14,7 @@ pub fn fill_maximized_window(window: &tauri::WebviewWindow) {
 
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+        GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONULL,
     };
     use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -25,7 +25,7 @@ pub fn fill_maximized_window(window: &tauri::WebviewWindow) {
     const ID: usize = 0x5741_5645;
 
     /// The monitor's work area, but only while the window is maximized.
-    fn maximized_work_area(hwnd: HWND) -> Option<RECT> {
+    fn maximized_work_area(hwnd: HWND, proposed: RECT) -> Option<RECT> {
         let mut placement = WINDOWPLACEMENT {
             length: size_of::<WINDOWPLACEMENT>() as u32,
             ..WINDOWPLACEMENT::default()
@@ -35,7 +35,7 @@ pub fn fill_maximized_window(window: &tauri::WebviewWindow) {
             return None;
         }
 
-        let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+        let monitor = unsafe { MonitorFromRect(&proposed, MONITOR_DEFAULTTONULL) };
         let mut info = MONITORINFO {
             cbSize: size_of::<MONITORINFO>() as u32,
             ..MONITORINFO::default()
@@ -55,8 +55,8 @@ pub fn fill_maximized_window(window: &tauri::WebviewWindow) {
         _data: usize,
     ) -> LRESULT {
         if message == WM_NCCALCSIZE && wparam.0 != 0 {
-            if let Some(area) = maximized_work_area(hwnd) {
-                let params = unsafe { &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS) };
+            let params = unsafe { &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS) };
+            if let Some(area) = maximized_work_area(hwnd, params.rgrc[0]) {
                 params.rgrc[0] = area;
                 return LRESULT(0);
             }

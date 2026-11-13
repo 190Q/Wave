@@ -155,6 +155,10 @@ struct Taste {
     /// The artists the record leans on, most first.
     artists: Vec<(String, f64)>,
     genres: Vec<(String, f64)>,
+    /// The same two, keyed by folded name, so scoring a candidate is a lookup
+    /// rather than a walk with a fold in every step of it.
+    artist_scores: HashMap<String, f64>,
+    genre_scores: HashMap<String, f64>,
     /// Songs abandoned early, by title and artist.
     skipped: HashSet<String>,
     /// Liked songs, by title and artist.
@@ -176,22 +180,27 @@ impl Taste {
                 .collect()
         };
 
+        let artists = affinity(&seeds.artists);
+        let genres = affinity(&seeds.genres);
+
         Self {
-            artists: affinity(&seeds.artists),
-            genres: affinity(&seeds.genres),
+            artist_scores: by_folded(&artists),
+            genre_scores: by_folded(&genres),
+            artists,
+            genres,
             skipped: keys(&seeds.skipped),
             liked: keys(&seeds.liked),
         }
     }
 
     fn artist(&self, name: &str) -> f64 {
-        score_of(&self.artists, name)
+        self.artist_scores.get(&fold(name)).copied().unwrap_or(0.0)
     }
 
     fn genre(&self, genres: &[String]) -> f64 {
         genres
             .iter()
-            .map(|name| score_of(&self.genres, name))
+            .map(|name| self.genre_scores.get(&fold(name)).copied().unwrap_or(0.0))
             .fold(0.0, f64::max)
     }
 }
@@ -333,12 +342,10 @@ fn affinity(rows: &[Affinity]) -> Vec<(String, f64)> {
         .collect()
 }
 
-fn score_of(rows: &[(String, f64)], name: &str) -> f64 {
-    let wanted = fold(name);
+fn by_folded(rows: &[(String, f64)]) -> HashMap<String, f64> {
     rows.iter()
-        .find(|(saved, _)| fold(saved) == wanted)
-        .map(|(_, score)| *score)
-        .unwrap_or(0.0)
+        .map(|(name, score)| (fold(name), *score))
+        .collect()
 }
 
 fn fold(value: &str) -> String {
@@ -356,10 +363,7 @@ fn song_key(title: &str, artist: &str) -> String {
 /// How the listening record stands against the Wave Swell marks.
 fn marks(app: &AppHandle) -> (i64, i64, i64) {
     let analytics = app.state::<Analytics>();
-    match analytics.swell(0, crate::identity::now_ms(), "month") {
-        Ok(summary) => (summary.plays, summary.ms_listened, summary.unique_artists),
-        Err(_) => (0, 0, 0),
-    }
+    analytics.marks().unwrap_or((0, 0, 0))
 }
 
 /// How far off the marks the record is, said the way the Swell pane says it.
@@ -885,9 +889,14 @@ mod tests {
     use super::*;
 
     fn taste() -> Taste {
+        let artists = vec![("The Beatles".to_string(), 1.0), ("Other".to_string(), 0.5)];
+        let genres = vec![("Rock".to_string(), 1.0)];
+
         Taste {
-            artists: vec![("The Beatles".to_string(), 1.0), ("Other".to_string(), 0.5)],
-            genres: vec![("Rock".to_string(), 1.0)],
+            artist_scores: by_folded(&artists),
+            genre_scores: by_folded(&genres),
+            artists,
+            genres,
             skipped: HashSet::new(),
             liked: HashSet::new(),
         }

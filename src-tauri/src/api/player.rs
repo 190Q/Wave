@@ -36,8 +36,8 @@ pub struct Report {
     pub source_id: Option<String>,
     pub source_name: String,
     /// The play order, which is what the queue is.
-    pub order: Vec<String>,
-    pub source_order: Vec<String>,
+    pub order: Option<Vec<String>>,
+    pub source_order: Option<Vec<String>>,
     /// Where in `order` the current song sits.
     pub cursor: usize,
     pub position_ms: f64,
@@ -154,10 +154,22 @@ impl Bridge {
     /// Takes in a report from the window and wakes whoever is waiting on it.
     pub fn accept(&self, report: Report) {
         let mut heard = self.guard();
-        if let Some(id) = report.command.clone() {
-            heard.acked = Some((id, report.clone()));
+        let mut report = report;
+
+        // The window only sends the queue when it has moved, so a report that
+        // leaves it out carries the one already known.
+        if report.order.is_none() {
+            report.order = heard.last.as_ref().and_then(|last| last.order.clone());
         }
+        if report.source_order.is_none() {
+            report.source_order = heard.last.as_ref().and_then(|last| last.source_order.clone());
+        }
+
+        let acked = report.command.clone().map(|id| (id, report.clone()));
         heard.last = Some(report);
+        if let Some(acked) = acked {
+            heard.acked = Some(acked);
+        }
         self.arrived.notify_all();
     }
 
@@ -210,7 +222,7 @@ impl Bridge {
 /// What the window says about the player. Called on every player change, on a
 /// one-second position timer, and again, carrying the id, as soon as a command
 /// has been applied.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn api_report(bridge: State<'_, Bridge>, report: Report) {
     bridge.accept(report);
 }
@@ -267,6 +279,25 @@ mod tests {
         );
     }
 
+    /// The position is reported every second, and the queue only when it moves,
+    /// so a report without one must not wipe what is known.
+    #[test]
+    fn a_report_without_a_queue_keeps_the_last_one() {
+        let bridge = Bridge::default();
+        bridge.accept(Report {
+            order: Some(vec!["abc".to_string(), "def".to_string()]),
+            ..Report::default()
+        });
+        bridge.accept(Report {
+            playing: true,
+            ..Report::default()
+        });
+
+        let kept = bridge.snapshot().unwrap();
+        assert_eq!(kept.order, Some(vec!["abc".to_string(), "def".to_string()]));
+        assert!(kept.playing);
+    }
+
     #[test]
     fn a_window_that_never_answers_gives_up() {
         let bridge = Bridge::default();
@@ -302,7 +333,7 @@ mod tests {
         assert_eq!(report.current_id.as_deref(), Some("abc"));
         assert_eq!(report.source_id.as_deref(), Some("liked"));
         assert_eq!(report.source_name, "Liked Songs");
-        assert_eq!(report.order, vec!["abc", "def"]);
+        assert_eq!(report.order, Some(vec!["abc".to_string(), "def".to_string()]));
         assert_eq!(report.cursor, 1);
         assert_eq!(report.position_ms, 1000.0);
         assert_eq!(report.duration_ms, 290_000.0);

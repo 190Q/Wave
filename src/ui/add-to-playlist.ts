@@ -75,7 +75,10 @@ export function openAddToPlaylist(anchor: HTMLElement, trackIds: string[]): void
 
   const included = new Set(
     addablePlaylists(getState().playlists)
-      .filter((playlist) => trackIds.every((id) => playlist.trackIds.includes(id)))
+      .filter((playlist) => {
+        const held = new Set(playlist.trackIds);
+        return trackIds.every((id) => held.has(id));
+      })
       .map((playlist) => playlist.id),
   );
 

@@ -107,8 +107,7 @@ pub(crate) fn export(
     ids: &[String],
 ) -> Result<usize, String> {
     let catalog = app.state::<Catalog>();
-    let tracks: HashMap<_, _> = library::scan(app, &catalog)
-        .tracks
+    let tracks: HashMap<_, _> = library::all_tracks(app, &catalog)?
         .into_iter()
         .map(|track| (track.id.clone(), track))
         .collect();
@@ -260,7 +259,7 @@ pub(crate) fn run(
 
         outcome.errors.extend_from_slice(report.failures());
         import::remember_import(app, "wavelist", &list.name, &outcome);
-        library::scan(app, &catalog);
+        library::scan(app, &catalog, false);
         outcome.state = playlists::refresh(app, &app.state::<Store>());
         Ok(outcome)
     })();

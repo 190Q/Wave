@@ -31,6 +31,7 @@ import {
   SWELL_PERIODS,
   bucketLabel,
   loadSwell,
+  loadSwellPeriod,
   sprintSeries,
   sprintTotal,
   swellAxis,
@@ -63,6 +64,7 @@ import { fillIcons } from "./icons";
 import { highlightHtml } from "./highlight";
 import { openImport } from "./import-dialog";
 import { openMenu, type MenuItem, type MenuPoint } from "./menu";
+import { WindowedList } from "./windowed";
 
 const SWIPE_TRAVEL = 1.75;
 const SWIPE_MS = 260;
@@ -133,14 +135,30 @@ export function mountLibrary(): void {
   let listTracks: Map<string, Track> | null = null;
   let listPlays: Map<string, number> | null = null;
 
-  const entryRows = (): HTMLElement[] =>
-    Array.from(list.querySelectorAll<HTMLElement>("[data-collection]"));
+  /** The collections the list is showing, in the order they are drawn. */
+  let shownCollections: Collection[] = [];
+  /** 1 while the pinned Wave Swell entry sits above the collections. */
+  let entryOffset = 0;
+  /** The songs the detail pane is showing, in the order they are drawn. */
+  let shownIds: string[] = [];
 
-  /** The songs the detail is showing, in the order they are drawn. */
-  const shownTrackIds = (): string[] =>
-    Array.from(list.querySelectorAll<HTMLElement>("[data-track]")).map(
-      (row) => row.dataset.track ?? "",
-    );
+  /**
+   * The rows near the viewport, with a spacer standing in for the rest, so a
+   * collection of fifty thousand songs does not become fifty thousand elements.
+   */
+  const entryWindow = new WindowedList({
+    scroller: list,
+    host: listRows,
+    rowHeight: 60,
+    spacerTag: "div",
+    onDraw: (host) => {
+      fillIcons(host);
+      hydrateCovers(host);
+    },
+  });
+
+  /** The same for the open collection's songs, rebuilt with the pane. */
+  let detailWindow: WindowedList | null = null;
 
   const trackRows = (ids: string[]): HTMLElement[] => {
     const wanted = new Set(ids);
@@ -150,19 +168,22 @@ export function mountLibrary(): void {
     });
   };
 
+  /** The songs the detail is showing, in the order they are drawn. */
+  const shownTrackIds = (): string[] => shownIds;
+
   /** Repaints the selected rows in place, and forgets any that have gone. */
   const syncSelection = (): void => {
-    const present = new Set<string>();
+    // What is selected is judged against the collection, not against the rows
+    // that happen to be drawn, so a windowed list keeps an off-screen selection.
+    const shown = new Set(shownIds);
     for (const row of list.querySelectorAll<HTMLElement>("[data-track]")) {
       const id = row.dataset.track;
-      if (id === undefined) {
-        continue;
+      if (id !== undefined) {
+        row.classList.toggle("is-selected", selection.has(id));
       }
-      present.add(id);
-      row.classList.toggle("is-selected", selection.has(id));
     }
     for (const id of [...selection]) {
-      if (!present.has(id)) {
+      if (!shown.has(id)) {
         selection.delete(id);
       }
     }
@@ -227,51 +248,48 @@ export function mountLibrary(): void {
   };
 
   const activeIndex = (): number =>
-    entryRows().findIndex((row) => row.dataset.collection === activeId);
+    shownCollections.findIndex((collection) => collection.id === activeId);
 
   const activateEntry = (index: number, scroll: boolean): void => {
-    const rows = entryRows();
-    if (rows.length === 0) {
+    if (shownCollections.length === 0) {
       activeId = null;
       return;
     }
 
-    const at = Math.max(0, Math.min(index, rows.length - 1));
-    activeId = rows[at].dataset.collection ?? null;
-    rows.forEach((row, position) => {
-      const on = position === at;
-      row.classList.toggle("is-active", on);
-      if (on) {
-        row.setAttribute("aria-current", "true");
-      } else {
-        row.removeAttribute("aria-current");
-      }
-    });
+    const at = Math.max(0, Math.min(index, shownCollections.length - 1));
+    activeId = shownCollections[at].id;
+    entryWindow.refresh();
 
     if (scroll) {
-      rows[at].scrollIntoView({ block: "nearest" });
+      entryWindow.scrollToIndex(at + entryOffset);
     }
   };
 
   /** Moves the highlight by `step`, wrapping around the ends of the list. */
   const stepEntry = (step: number): void => {
-    const rows = entryRows();
-    if (rows.length === 0) {
+    if (shownCollections.length === 0) {
       activeId = null;
       return;
     }
 
     const at = activeIndex();
     const from = at < 0 ? (step > 0 ? -1 : 0) : at;
-    activateEntry((from + step + rows.length) % rows.length, true);
+    activateEntry((from + step + shownCollections.length) % shownCollections.length, true);
   };
 
   const restoreEntry = (): void => {
-    const at = activeIndex();
-    activateEntry(at < 0 ? 0 : at, false);
+    if (shownCollections.length === 0) {
+      activeId = null;
+      return;
+    }
+
+    if (activeIndex() < 0) {
+      activeId = shownCollections[0].id;
+      entryWindow.refresh();
+    }
   };
 
-  /** Reads all three windows at once, so the period switcher never waits. */
+  /** Reads the windows the pane opens on, so the switcher rarely waits. */
   const readSwell = async (): Promise<void> => {
     if (swellReading) {
       return;
@@ -286,6 +304,31 @@ export function mountLibrary(): void {
       swellPeriod = load.period;
     } catch (error) {
       swellLoad = null;
+      swellError = error instanceof Error ? error.message : String(error);
+    }
+
+    swellReading = false;
+    render();
+
+    if (swellLoad && !swellLoad.summaries[swellPeriod]) {
+      void readSwellPeriod(swellPeriod);
+    }
+  };
+
+  /** Reads one window the pane is not holding yet, all time included. */
+  const readSwellPeriod = async (period: SwellPeriod): Promise<void> => {
+    if (!swellLoad || swellLoad.summaries[period] || swellReading) {
+      return;
+    }
+
+    swellReading = true;
+    swellError = null;
+    render();
+
+    try {
+      const summary = await loadSwellPeriod(period);
+      swellLoad = { ...swellLoad, summaries: { ...swellLoad.summaries, [period]: summary } };
+    } catch (error) {
       swellError = error instanceof Error ? error.message : String(error);
     }
 
@@ -342,7 +385,7 @@ export function mountLibrary(): void {
         return;
       case "Enter": {
         event.preventDefault();
-        const id = entryRows()[activeIndex()]?.dataset.collection;
+        const id = shownCollections[activeIndex()]?.id;
         if (id) {
           openEntry(id);
         }
@@ -383,6 +426,7 @@ export function mountLibrary(): void {
     if (period?.dataset.swellPeriod) {
       swellPeriod = period.dataset.swellPeriod as SwellPeriod;
       render();
+      void readSwellPeriod(swellPeriod);
       return;
     }
 
@@ -661,6 +705,56 @@ export function mountLibrary(): void {
     clearSelection();
   });
 
+  /** Draws the open collection, with its rows windowed when they are uniform. */
+  const paintDetail = (collection: Collection | undefined): void => {
+    const state = getState();
+    const signature = collection
+      ? `${collection.id}\u0000${state.collectionsRevision}`
+      : "";
+
+    if (listPane.dataset.detail === signature) {
+      syncLikes(listPane, state);
+      syncProgress(listPane, state, collection);
+      return;
+    }
+
+    delete listPane.dataset.swell;
+    listPane.dataset.detail = signature;
+    listPane.innerHTML = collection ? renderDetail(state, collection) : "";
+
+    detailWindow?.destroy();
+    detailWindow = null;
+    shownIds = [];
+
+    const host = listPane.querySelector<HTMLElement>(".tracks");
+    if (collection && host) {
+      shownIds = detailIds(state, collection);
+
+      // A generated playlist mixes waiting rows with downloaded ones, which are
+      // not the same height, so it is drawn whole instead.
+      if (collection.kind !== "generated") {
+        detailWindow = new WindowedList({
+          scroller: list,
+          host,
+          rowHeight: 34,
+          spacerTag: "li",
+          onDraw: (drawn) => {
+            fillIcons(drawn);
+            hydrateCovers(listPane);
+            syncSelection();
+          },
+        });
+        detailWindow.set(shownIds.length, (index) =>
+          detailRowHtml(state, collection, shownIds, index),
+        );
+      }
+    }
+
+    fillIcons(listPane);
+    hydrateCovers(listPane);
+    syncProgress(listPane, state, collection);
+  };
+
   const render = (): void => {
     const state = getState();
 
@@ -712,10 +806,20 @@ export function mountLibrary(): void {
       listPane.hidden = false;
       count.textContent = "";
       folders.innerHTML = "";
+
+      if (listPainted !== "") {
+        entryWindow.clear();
+        shownCollections = [];
+        listPainted = "";
+      }
+
       if (openCollectionId === SWELL_ID) {
+        detailWindow?.destroy();
+        detailWindow = null;
+        shownIds = [];
         paintSwell(listPane, state, swellLoad, swellPeriod, swellReading, swellError);
       } else {
-        paintDetail(listPane, state, collectionById(openCollectionId));
+        paintDetail(collectionById(openCollectionId));
         syncSelection();
       }
     } else {
@@ -723,6 +827,9 @@ export function mountLibrary(): void {
       listPane.hidden = true;
       delete listPane.dataset.detail;
       delete listPane.dataset.swell;
+      detailWindow?.destroy();
+      detailWindow = null;
+      shownIds = [];
 
       // Coming back from a pane leaves the rows that are already drawn alone.
       const key = listKey(state, creating, renaming);
@@ -745,9 +852,25 @@ export function mountLibrary(): void {
         listFrom = state.collections;
         listTracks = state.tracksById;
         listPlays = state.playCounts;
-        listRows.innerHTML = renderList(state, collections, creating, renaming);
-        fillIcons(listRows);
-        hydrateCovers(listRows);
+        shownCollections = collections;
+
+        // The editors are a different height from the rows, and there is only
+        // ever one of them, so the list is drawn whole while one is up.
+        if (creating || renaming || collections.length === 0) {
+          entryOffset = 0;
+          entryWindow.clear();
+          listRows.innerHTML = renderList(state, collections, creating, renaming, activeId);
+          fillIcons(listRows);
+          hydrateCovers(listRows);
+        } else {
+          const pinned = state.filter === "all" && state.query.trim() === "";
+          entryOffset = pinned ? 1 : 0;
+          entryWindow.set(collections.length + entryOffset, (index) =>
+            pinned && index === 0
+              ? swellEntryHtml()
+              : entryRowHtml(state, collections[index - entryOffset], activeId),
+          );
+        }
         restoreEntry();
       }
       count.textContent = listCount;
@@ -811,23 +934,29 @@ function swipePanel(root: HTMLElement, direction: 1 | -1): void {
   );
 }
 
-function paintDetail(list: HTMLElement, state: AppState, collection: Collection | undefined): void {
-  const signature = collection
-    ? `${collection.id}\u0000${collection.name}\u0000${collection.entries.join("|")}`
-    : "";
+/** The ids the detail pane draws, in the order it draws them. */
+function detailIds(state: AppState, collection: Collection): string[] {
+  if (collection.kind === "generated") {
+    return collection.entries;
+  }
+  return collection.trackIds.filter((id) => state.tracksById.has(id));
+}
 
-  if (list.dataset.detail === signature) {
-    syncLikes(list, state);
-    syncProgress(list, state, collection);
-    return;
+/** One row of the detail pane, at the position it is drawn in. */
+function detailRowHtml(
+  state: AppState,
+  collection: Collection,
+  ids: string[],
+  index: number,
+): string {
+  const id = ids[index];
+  const track = state.tracksById.get(id);
+  if (track) {
+    return trackRowHtml(state, track, index, collection.kind === "playlist");
   }
 
-  delete list.dataset.swell;
-  list.dataset.detail = signature;
-  list.innerHTML = collection ? renderDetail(state, collection) : "";
-  fillIcons(list);
-  hydrateCovers(list);
-  syncProgress(list, state, collection);
+  const pending = state.pendingById.get(id);
+  return pending ? pendingRowHtml(pending, index) : "";
 }
 
 /** Fills the line under a generated playlist's header, without repainting its rows. */
@@ -894,11 +1023,35 @@ function syncLikes(root: ParentNode, state: AppState): void {
   }
 }
 
+/** One collection's row, which is what a windowed list draws. */
+function entryRowHtml(state: AppState, collection: Collection, activeId: string | null): string {
+  const editable = isEditable(collection);
+  const active = collection.id === activeId;
+
+  return `
+      <div class="entry${isPinned(collection) ? " is-pinned" : ""}${active ? " is-active" : ""}" data-collection="${escapeHtml(collection.id)}" role="button" tabindex="0"${active ? ' aria-current="true"' : ""}>
+        <span class="entry-cover">
+          ${collectionCover(state, collection)}
+          ${coverPlayHtml(collection)}
+        </span>
+        <span class="entry-text">
+          <span class="crate-name">${highlightHtml(collection.name, state.query, state.settings.searchAlgorithm)}</span>
+          <span class="crate-sub">${escapeHtml(collection.subtitle)}</span>
+        </span>
+        ${editable ? `<button class="row-more" type="button" data-menu="${escapeHtml(collection.id)}" aria-label="Playlist actions for ${escapeHtml(collection.name)}">...</button>` : ""}
+      </div>`;
+}
+
+/**
+ * The whole list, drawn in one go. Only used while an inline editor is up and
+ * for an empty list, since the editors are not the height of a row.
+ */
 function renderList(
   state: AppState,
   collections: Collection[],
   creating: boolean,
   renaming: string | null,
+  activeId: string | null,
 ): string {
   const rows: string[] = [];
 
@@ -921,19 +1074,7 @@ function renderList(
       continue;
     }
 
-    const editable = isEditable(collection);
-    rows.push(`
-      <div class="entry${isPinned(collection) ? " is-pinned" : ""}" data-collection="${escapeHtml(collection.id)}" role="button" tabindex="0">
-        <span class="entry-cover">
-          ${collectionCover(state, collection)}
-          ${coverPlayHtml(collection)}
-        </span>
-        <span class="entry-text">
-          <span class="crate-name">${highlightHtml(collection.name, state.query, state.settings.searchAlgorithm)}</span>
-          <span class="crate-sub">${escapeHtml(collection.subtitle)}</span>
-        </span>
-        ${editable ? `<button class="row-more" type="button" data-menu="${escapeHtml(collection.id)}" aria-label="Playlist actions for ${escapeHtml(collection.name)}">...</button>` : ""}
-      </div>`);
+    rows.push(entryRowHtml(state, collection, activeId));
   }
 
   if (rows.length === 0) {
@@ -945,7 +1086,6 @@ function renderList(
 
 function renderDetail(state: AppState, collection: Collection): string {
   const generated = collection.kind === "generated";
-  const reorderable = collection.kind === "playlist";
   const tracks = collection.trackIds
     .map((id) => state.tracksById.get(id))
     .filter((track): track is Track => track !== undefined);
@@ -973,7 +1113,7 @@ function renderDetail(state: AppState, collection: Collection): string {
           return pending ? pendingRowHtml(pending, index) : "";
         })
         .join("")
-    : tracks.map((track, index) => trackRowHtml(state, track, index, reorderable)).join("");
+    : "";
 
   return `
     <div class="detail">

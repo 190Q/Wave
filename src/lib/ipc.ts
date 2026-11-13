@@ -143,8 +143,8 @@ export function deleteTracks(trackIds: string[]): Promise<PersistedState> {
   return invoke("delete_tracks", { trackIds });
 }
 
-export function scanLibrary(): Promise<ScanSummary> {
-  return invoke("scan_library");
+export function scanLibrary(full: boolean): Promise<ScanSummary> {
+  return invoke("scan_library", { full });
 }
 
 /** What the library holds on disk, for the settings panel. */

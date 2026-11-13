@@ -30,7 +30,7 @@ pub fn write<R: Runtime>(
     Ok(id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_playlist(
     app: AppHandle,
     store: State<'_, Store>,
@@ -49,7 +49,7 @@ pub fn create_playlist(
     Ok(refresh(&app, &store))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rename_playlist(
     app: AppHandle,
     store: State<'_, Store>,
@@ -69,7 +69,7 @@ pub fn rename_playlist(
     Ok(refresh(&app, &store))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_playlist(
     app: AppHandle,
     store: State<'_, Store>,
@@ -80,7 +80,7 @@ pub fn delete_playlist(
     Ok(refresh(&app, &store))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn add_to_playlist(
     app: AppHandle,
     store: State<'_, Store>,
@@ -92,7 +92,7 @@ pub fn add_to_playlist(
     Ok(refresh(&app, &store))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn remove_from_playlist(
     app: AppHandle,
     store: State<'_, Store>,
@@ -104,7 +104,7 @@ pub fn remove_from_playlist(
     Ok(refresh(&app, &store))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reorder_playlist(
     app: AppHandle,
     store: State<'_, Store>,

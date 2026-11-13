@@ -542,6 +542,34 @@ function windowHtml(settings: Settings): string {
   );
 }
 
+/** What the measured count was worked out from, so it is not walked again. */
+let measuredFrom: AppState["tracks"] | null = null;
+let measuredAt = -1;
+let measuredTotal = 0;
+
+/**
+ * How many songs have a loudness reading. Counted once per library state, with
+ * the pass's own progress folded in so a reading that lands is noticed.
+ */
+function measuredTracks(state: AppState): number {
+  const at = state.analysing?.done ?? -1;
+  if (measuredFrom === state.tracks && measuredAt === at) {
+    return measuredTotal;
+  }
+
+  measuredFrom = state.tracks;
+  measuredAt = at;
+
+  let total = 0;
+  for (const track of state.tracks) {
+    if (track.lufs !== null) {
+      total += 1;
+    }
+  }
+  measuredTotal = total;
+  return total;
+}
+
 function libraryHtml(state: AppState, exportId: string): string {
   const collection = state.collections.find((collection) => collection.id === exportId);
   const notes: string[] = [];
@@ -557,7 +585,7 @@ function libraryHtml(state: AppState, exportId: string): string {
   if (state.analysing) {
     notes.push(`Measuring loudness, ${state.analysing.done} of ${state.analysing.total}`);
   } else {
-    const measured = state.tracks.filter((track) => track.lufs !== null).length;
+    const measured = measuredTracks(state);
     if (measured > 0 && measured < state.tracks.length) {
       notes.push(`${measured} of ${state.tracks.length} measured for volume`);
     }

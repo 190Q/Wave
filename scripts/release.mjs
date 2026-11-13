@@ -123,6 +123,9 @@ function readVersion() {
   return version;
 }
 
+/** The parts a version can be bumped by, and what each is usually for. */
+const PARTS = ["patch", "minor", "major"];
+
 /** The version that follows `current` when `part` is bumped. */
 function bumped(current, part) {
   const [major, minor, patch] = current.split(".").map(Number);
@@ -273,7 +276,7 @@ function commandBump(part) {
 
   if (/^\d+\.\d+\.\d+/.test(part)) {
     next = part;
-  } else if (["major", "minor", "patch"].includes(part)) {
+  } else if (PARTS.includes(part)) {
     next = bumped(current, part);
   } else {
     fail(`"${part}" is not a part or a version`);
@@ -289,61 +292,118 @@ function commandBody(options) {
   say(releaseBody(options.features));
 }
 
+/** Whether a tag is already in this repo. */
+function tagged(tag) {
+  return git(["tag", "--list", tag], { capture: true }).trim() !== "";
+}
+
 /**
  * The steps for cutting a release, worked out from the tree as it stands. It
  * reads VERSION and git only, so it needs no network and no gh.
  */
-function commandGuide() {
+function commandGuide(part) {
   const version = readVersion();
-  const next = bumped(version, "minor");
-  const tag = `v${version}`;
-  const nextTag = `v${next}`;
-  const taken = git(["tag", "--list", tag], { capture: true }).trim() !== "";
+  const kind = part ?? "patch";
+
+  let next;
+  if (/^\d+\.\d+\.\d+/.test(kind)) next = kind;
+  else if (PARTS.includes(kind)) next = bumped(version, kind);
+  else fail(`"${kind}" is not a part or a version; guide takes patch, minor, major, or x.y.z`);
+
+  const versionTag = `v${version}`;
+  const released = tagged(versionTag);
+  const cutting = !released && !part ? version : next;
+  const cuttingTag = `v${cutting}`;
   const dirty = git(["status", "--porcelain"], { capture: true }).trim() !== "";
   const wrong = drift(version);
   const ci = existsSync(WORKFLOW);
+  const rest = PARTS.filter((candidate) => candidate !== kind)
+    .map((candidate) => `${candidate} gives ${bumped(version, candidate)}`);
+  const others = rest.length > 1 ? `${rest.slice(0, -1).join(", ")} and ${rest[rest.length - 1]}` : rest[0];
 
-  say("Wave release guide");
+  const state = tagged(cuttingTag)
+    ? `${cuttingTag} is already tagged, so pick another version`
+    : released
+      ? `${versionTag} is released, so ${cuttingTag} is the next one`
+      : `${versionTag} is free, so ${version} is still to go out`;
+
+  say(`Wave release guide, cutting ${cuttingTag}`);
   say("");
   say(`  VERSION  ${version}`);
-  say(`  copies   ${wrong.length === 0 ? "every copy agrees" : `${wrong.length} out of step, and the bump in step 1 writes them all`}`);
-  say(`  tag      ${taken ? `${tag} is taken, so bump the version before publishing` : `${tag} is free`}`);
+  say(`  copies   ${wrong.length === 0 ? "every copy agrees" : `${wrong.length} out of step, which the bump writes`}`);
   say(`  tree     ${dirty ? "has uncommitted changes, which publish commits as the release" : "is clean"}`);
+  say(`  tag      ${state}`);
   say("");
   say("Steps");
   say("");
-  say("  1. Bump the version, which writes it into every file that carries a copy");
-  say(`       node scripts/release.mjs bump minor        ${version} -> ${next}`);
-  say(`       node scripts/release.mjs bump ${next}        to name the version yourself`);
-  say("");
-  say("  2. Check that nothing drifted");
-  say("       node scripts/release.mjs status");
-  say("");
-  say("  3. Publish, naming what is new");
-  say('       node scripts/release.mjs publish --feature "Added a queue" --feature "Fixed a bug"');
-  if (ci) {
-    say(`     Syncs VERSION, commits "Release ${nextTag}", tags it, pushes it, and hands the`);
-    say("     build to CI. Every --feature becomes one line in a New features list at the top");
-    say("     of the release, and the flag repeats. Leave it off when nothing is new.");
+  if (cutting === version) {
+    say("  1. Bump the version, unless you meant a different one");
+    say(`       npm run release -- bump patch        ${version} -> ${bumped(version, "patch")}`);
+    say(`     ${versionTag} is not tagged, so ${version} is the version to publish as it`);
+    say("     stands, and this step can be skipped.");
   } else {
-    say(`     Syncs VERSION, commits "Release ${nextTag}", tags it, pushes it, then builds both`);
-    say("     installers here and publishes the release from them. Every --feature becomes one");
-    say("     line in a New features list at the top of the release, and the flag repeats.");
+    say("  1. Bump the version");
+    say(`       npm run release -- bump ${PARTS.includes(kind) ? kind : cutting}`);
+    say(`     ${version} -> ${cutting}. VERSION is the single source of truth, and this writes it`);
+    say("     into every file that carries a copy: package.json, package-lock.json,");
+    say("     src-tauri/tauri.conf.json, src-tauri/Cargo.toml and src-tauri/Cargo.lock.");
+    say("     patch is for fixes, minor for new features and major for a change that");
+    say("     breaks an older install.");
+    say(`     From here, ${others}.`);
+    if (PARTS.includes(kind)) {
+      say("     A version can also be named instead:");
+      say(`       npm run release -- bump ${cutting}`);
+    }
   }
+  say("");
+  say("  2. Check that every copy agrees");
+  say("       npm run release -- status");
+  say("     Lists every file that carries a copy of VERSION and whether it matches.");
+  say("");
+  say("  3. Publish");
+  say('       node scripts/release.mjs publish --feature "Added a queue" --feature "Fixed a bug"');
+  say("     This is the one step that cannot go through npm, which takes any option");
+  say("     for itself and drops it before the script sees it. It syncs VERSION,");
+  say(`     commits everything outstanding as "Release ${cuttingTag}", tags ${cuttingTag}, and`);
+  say("     pushes the branch and the tag.");
+  if (ci) {
+    say("     It then dispatches the release workflow, which builds Windows and Linux");
+    say("     and publishes both builds with the release.");
+  } else {
+    say("     It then builds both installers here and publishes the release from them.");
+  }
+  say("     Every --feature becomes one line of a New features list at the top of the");
+  say("     release body, and the flag repeats. Leave it off when nothing is new.");
+  say("     It commits the whole working tree, so put that in the state you want");
+  say(`     first, and it stops if ${cuttingTag} is already tagged.`);
+  say("     To see the plan and change nothing:");
+  say("       node scripts/release.mjs publish --dry-run");
   say("");
   if (ci) {
     say("  4. Watch the build");
     say("       gh run list");
     say("       gh run watch --exit-status");
+    say("     The release appears once both platforms have finished.");
     say("");
   }
-  say("Other things worth knowing, all in the same form");
-  say("  publish --dry-run      print the plan and change nothing");
-  say("  publish --no-publish   stop after pushing the tag");
-  say("  publish --local        build both installers here instead of in CI");
-  say("  edit <tag> --feature   change the list on a release already out");
-  say("  assets <tag>           list what a release carries");
-  say("  help                   every command the tool takes");
+  if (kind === "major") {
+    say("A major release");
+    say("  The steps are the same, and the notes are what change. A major version reads as a");
+    say("  break, so give --feature a line for everything people will notice, and say plainly");
+    say("  what an older install loses or has to do differently.");
+    say("");
+  }
+  say("Other things worth knowing");
+  for (const [command, description] of [
+    ["publish --dry-run", "print the plan and change nothing"],
+    ["publish --no-publish", "stop after pushing the tag"],
+    ["publish --local", "build both installers here instead of in CI"],
+    [`edit ${cuttingTag} --feature`, "change the list on a release that is already out"],
+    [`assets ${cuttingTag}`, "list what a release carries"],
+  ]) {
+    say(`  ${`node scripts/release.mjs ${command}`.padEnd(48)}${description}`);
+  }
+  say(`  ${"npm run release -- help".padEnd(48)}every command and option`);
 }
 
 function requireGh() {
@@ -668,7 +728,8 @@ Version
   bump <major|minor|patch|x.y.z>  Change VERSION, then sync
 
 Releases
-  guide                           Print the steps for cutting a release
+  guide [part]                    Print the steps for cutting a release, where
+                                  part is patch, minor, major or x.y.z
   list                            List every release
   view <tag>                      Show one release
   assets <tag>                    List a release's assets
@@ -704,7 +765,7 @@ function main() {
     case "check": return commandStatus();
     case "sync": return commandSync();
     case "bump": return commandBump(first);
-    case "guide": return commandGuide();
+    case "guide": return commandGuide(first);
     case "body": return commandBody(options);
     case "list": return commandList();
     case "view": return commandView(first);

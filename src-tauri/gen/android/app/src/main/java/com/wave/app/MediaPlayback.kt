@@ -8,8 +8,15 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
 import android.os.Build
+import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
+import android.support.v4.media.MediaDescriptionCompat
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -17,6 +24,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.media.app.NotificationCompat.MediaStyle
+import androidx.media.session.MediaButtonReceiver
 import java.io.File
 
 /**
@@ -46,6 +54,10 @@ object MediaPlayback {
   /** How far the seek button moves, matching the front end's own step. */
   private const val SEEK_STEP_MS = 10_000.0
 
+  private const val KEEP_ALIVE_EVERY_MS = 30_000L
+
+  private const val TILE_SIZE = 256
+
   /** Where a button press goes. The plugin fills this in when it is loaded. */
   @Volatile
   var onControl: ((String, Double?) -> Unit)? = null
@@ -54,7 +66,17 @@ object MediaPlayback {
   private var notification: Notification? = null
   private var artwork: Bitmap? = null
   private var artworkPath = ""
+  private var tile: Bitmap? = null
+  private var tileKey = ""
   private var requests = 0
+
+  private var lastSong: Song? = null
+
+  private var queue: List<QueueTrack> = emptyList()
+
+  private var shown: Shown? = null
+
+  private var keptAt = 0L
 
   /** The notification the playback service puts up, or null when nothing is on. */
   val current: Notification?
@@ -62,27 +84,47 @@ object MediaPlayback {
 
   /** Shows a song, or takes the whole session down when there is none. */
   fun show(context: Context, song: Song) {
-    artwork = artworkFor(song.artworkPath.orEmpty())
-
     val session = session(context)
-    session.setMetadata(metadata(song))
+    lastSong = song
     session.setPlaybackState(state(song))
-    session.isActive = true
 
-    // The notification is built before the service is started, so the service
-    // always has one to put up when Android asks for it.
-    val built = build(context, song)
-    notification = built
-    NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, built)
+    val wanted = Shown.of(song)
+    val due = SystemClock.elapsedRealtime() - keptAt >= KEEP_ALIVE_EVERY_MS
+    if (wanted == shown && !due) {
+      return
+    }
+
+    if (wanted != shown) {
+      artwork = artworkFor(song.artworkPath.orEmpty())
+      session.setMetadata(metadata(song))
+      session.isActive = true
+
+      // The foreground service needs a notification before it starts.
+      val built = build(context, song)
+      notification = built
+      NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, built)
+      shown = wanted
+    }
+
     keepAlive(context, true)
+    keptAt = SystemClock.elapsedRealtime()
   }
 
   /** Takes the notification down and stops holding the process up. */
   fun clear(context: Context) {
+    shown = null
     notification = null
+    lastSong = null
     session?.isActive = false
     NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
     keepAlive(context, false)
+  }
+
+  fun setQueue(context: Context, tracks: List<QueueTrack>) {
+    queue = tracks
+    val session = session(context)
+    session.setQueue(queueItems(tracks))
+    lastSong?.let { session.setPlaybackState(state(it)) }
   }
 
   /** Hands a button press to whoever is listening for one. */
@@ -114,7 +156,16 @@ object MediaPlayback {
   private fun session(context: Context): MediaSessionCompat {
     session?.let { return it }
 
+    Log.i("Wave", "audio focus is managed by the WebView")
     val created = MediaSessionCompat(context, "Wave")
+
+    created.setFlags(
+      MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or
+        MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
+    )
+    created.setMediaButtonReceiver(mediaButton(context))
+    created.setSessionActivity(open(context))
+
     created.setCallback(
       object : MediaSessionCompat.Callback() {
         override fun onPlay() = press("play", null)
@@ -125,6 +176,7 @@ object MediaPlayback {
         override fun onSeekTo(position: Long) = press("seekTo", position.toDouble())
         override fun onFastForward() = press("seekBy", SEEK_STEP_MS)
         override fun onRewind() = press("seekBy", -SEEK_STEP_MS)
+        override fun onSkipToQueueItem(id: Long) = press("skipToQueueItem", id.toDouble())
       }
     )
     created.isActive = true
@@ -150,7 +202,7 @@ object MediaPlayback {
   }
 
   private fun state(song: Song): PlaybackStateCompat {
-    val actions = PlaybackStateCompat.ACTION_PLAY or
+    var actions = PlaybackStateCompat.ACTION_PLAY or
       PlaybackStateCompat.ACTION_PAUSE or
       PlaybackStateCompat.ACTION_PLAY_PAUSE or
       PlaybackStateCompat.ACTION_STOP or
@@ -159,6 +211,10 @@ object MediaPlayback {
       PlaybackStateCompat.ACTION_SEEK_TO or
       PlaybackStateCompat.ACTION_FAST_FORWARD or
       PlaybackStateCompat.ACTION_REWIND
+
+    if (queue.isNotEmpty()) {
+      actions = actions or PlaybackStateCompat.ACTION_SKIP_TO_QUEUE_ITEM
+    }
 
     return PlaybackStateCompat.Builder()
       .setActions(actions)
@@ -173,6 +229,7 @@ object MediaPlayback {
   private fun build(context: Context, song: Song): Notification {
     notificationChannel(context)
 
+    val colour = colourOf(song)
     val builder = NotificationCompat.Builder(context, CHANNEL_ID)
       .setSmallIcon(R.drawable.ic_wave_notification)
       .setContentTitle(song.title.orEmpty())
@@ -182,20 +239,36 @@ object MediaPlayback {
       .setOnlyAlertOnce(true)
       .setShowWhen(false)
       .setOngoing(song.playing)
-      .addAction(button(context, android.R.drawable.ic_media_previous, "Previous", "previous", null))
+      .addAction(button(context, R.drawable.ic_wave_previous, "Previous", "previous", null))
 
     if (song.playing) {
-      builder.addAction(button(context, android.R.drawable.ic_media_pause, "Pause", "pause", null))
+      builder.addAction(button(context, R.drawable.ic_wave_pause, "Pause", "pause", null))
     } else {
-      builder.addAction(button(context, android.R.drawable.ic_media_play, "Play", "play", null))
+      builder.addAction(button(context, R.drawable.ic_wave_play, "Play", "play", null))
     }
 
-    builder.addAction(button(context, android.R.drawable.ic_media_next, "Next", "next", null))
+    builder.addAction(button(context, R.drawable.ic_wave_next, "Next", "next", null))
     builder.addAction(
-      button(context, android.R.drawable.ic_media_ff, "Forward 10 seconds", "seekBy", SEEK_STEP_MS)
+      button(context, R.drawable.ic_wave_rewind, "Rewind 10 seconds", "seekBy", -SEEK_STEP_MS)
+    )
+    builder.addAction(
+      button(context, R.drawable.ic_wave_forward, "Forward 10 seconds", "seekBy", SEEK_STEP_MS)
     )
 
-    artwork?.let { builder.setLargeIcon(it) }
+    // Android 8 to 12 colour the card from the song; 13 and later ignore both of
+    // these and take the colour off the artwork instead.
+    if (colour != null) {
+      builder.setColor(colour)
+      builder.setColorized(true)
+    }
+
+    val cover = artwork
+    if (cover != null) {
+      builder.setLargeIcon(cover)
+    } else if (colour != null) {
+      // The tile is what gives a song with no cover a colour on 13 and later.
+      builder.setLargeIcon(letterTile(song, colour))
+    }
 
     builder.setStyle(
       MediaStyle()
@@ -204,6 +277,75 @@ object MediaPlayback {
     )
 
     return builder.build()
+  }
+
+  /** The play order as the session wants it, with the list index as the queue id. */
+  private fun queueItems(tracks: List<QueueTrack>): List<MediaSessionCompat.QueueItem> =
+    tracks.mapIndexed { index, track ->
+      val extras = Bundle().apply {
+        putLong(MediaMetadataCompat.METADATA_KEY_DURATION, track.durationMs)
+      }
+      val description = MediaDescriptionCompat.Builder()
+        .setMediaId(track.id.orEmpty())
+        .setTitle(track.title.orEmpty())
+        .setSubtitle(track.artist.orEmpty())
+        .setExtras(extras)
+        .build()
+      MediaSessionCompat.QueueItem(description, index.toLong())
+    }
+
+  /** The broadcast the platform sends a media button to when no session takes it. */
+  private fun mediaButton(context: Context): PendingIntent {
+    val intent = Intent(Intent.ACTION_MEDIA_BUTTON)
+      .setClass(context, MediaButtonReceiver::class.java)
+    return PendingIntent.getBroadcast(
+      context,
+      0,
+      intent,
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
+  }
+
+  /** A square of the song's colour with its first letter on it, for a song with no cover. */
+  private fun letterTile(song: Song, colour: Int): Bitmap {
+    val letter = song.title.orEmpty().trim().take(1).uppercase()
+    val key = "$colour|$letter"
+    val cached = tile
+    if (cached != null && key == tileKey) {
+      return cached
+    }
+
+    val bitmap = Bitmap.createBitmap(TILE_SIZE, TILE_SIZE, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    canvas.drawColor(colour)
+
+    if (letter.isNotEmpty()) {
+      val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+      paint.color = Color.WHITE
+      paint.textAlign = Paint.Align.CENTER
+      paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+      paint.textSize = TILE_SIZE * 0.5f
+      // Centred on the middle of the square rather than on the baseline.
+      val middle = TILE_SIZE / 2f - (paint.descent() + paint.ascent()) / 2f
+      canvas.drawText(letter, TILE_SIZE / 2f, middle, paint)
+    }
+
+    tile = bitmap
+    tileKey = key
+    return bitmap
+  }
+
+  private fun colourOf(song: Song): Int? {
+    val value = song.colour.orEmpty().trim()
+    if (value.isEmpty()) {
+      return null
+    }
+
+    return try {
+      Color.parseColor(value)
+    } catch (error: IllegalArgumentException) {
+      null
+    }
   }
 
   /** `Artist` on its own, or `Artist - Album` when the song has both. */
@@ -277,10 +419,7 @@ object MediaPlayback {
     manager.createNotificationChannel(channel)
   }
 
-  /**
-   * The cover the library holds, read off disk. It is kept, because the same
-   * song is reported once a second for as long as it plays.
-   */
+  /** Caches decoded artwork while the same song is reported. */
   private fun artworkFor(path: String): Bitmap? {
     if (path.isEmpty()) {
       return null
@@ -292,5 +431,27 @@ object MediaPlayback {
     artworkPath = path
     artwork = if (File(path).isFile) BitmapFactory.decodeFile(path) else null
     return artwork
+  }
+
+  private data class Shown(
+    val title: String,
+    val artist: String,
+    val album: String,
+    val durationMs: Long,
+    val artworkPath: String,
+    val colour: String,
+    val playing: Boolean,
+  ) {
+    companion object {
+      fun of(song: Song) = Shown(
+        song.title.orEmpty(),
+        song.artist.orEmpty(),
+        song.album.orEmpty(),
+        song.durationMs,
+        song.artworkPath.orEmpty(),
+        song.colour.orEmpty(),
+        song.playing,
+      )
+    }
   }
 }

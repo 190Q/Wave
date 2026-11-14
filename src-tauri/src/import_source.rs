@@ -247,6 +247,7 @@ fn run_inner(
         duplicates,
         similar,
         playlist,
+        track_ids: Vec::new(),
         // The download failures belong in the same list as the import ones.
         errors: report.failures().to_vec(),
         state: PersistedState::default(),

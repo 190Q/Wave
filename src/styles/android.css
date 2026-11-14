@@ -134,8 +134,48 @@ html[data-device="android"] {
   background: rgb(255 255 255 / 0.75);
 }
 
-[data-device="android"] #queue-toggle {
+[data-device="android"] .dock-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.15rem;
+}
+
+[data-device="android"] .dock-row .buttons {
+  order: 2;
+  flex: 0 1 auto;
+  justify-content: center;
+  gap: 0.15rem;
+}
+
+[data-device="android"] .dock-row .buttons .icon,
+[data-device="android"] .dock-row .buttons .icon-pill {
+  width: clamp(2rem, 10vw, 3rem);
+  height: clamp(2rem, 10vw, 3rem);
+}
+
+[data-device="android"] .dock-side:not(.dock-end) {
+  display: contents;
+}
+
+[data-device="android"] .dock-end {
   display: none;
+}
+
+[data-device="android"] #like {
+  order: 1;
+  flex: none;
+  width: 2.25rem;
+  height: 2.25rem;
+}
+
+[data-device="android"] .dock-position {
+  order: 3;
+  flex: none;
+}
+
+[data-device="android"] #like svg {
+  width: var(--control-glyph);
+  height: var(--control-glyph);
 }
 
 /* The lyrics panel is the sheet the dock drag pulls up. It fills the frame

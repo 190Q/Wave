@@ -1,5 +1,6 @@
 import type { Playback, RepeatMode } from "../types";
 import type { AudioEngine } from "./audio";
+import { isAndroidPlatform } from "./device";
 import { FADE_MS, smoothstep } from "./fade";
 
 export interface PlayerSnapshot {
@@ -86,6 +87,7 @@ export class Player {
     this.engine = engine;
     this.sourceOf = sourceOf;
     this.applyLevel();
+    document.addEventListener("visibilitychange", this.settleLevelIfHidden);
   }
 
   onChange(listener: ChangeListener): () => void {
@@ -522,11 +524,17 @@ export class Player {
 
   /** The level the element settles at: silent while paused or muted. */
   private targetLevel(): number {
-    if (this.muted || !this.playing) {
+    if (!this.playing) {
       return 0;
     }
     const id = this.currentId;
     const gain = id ? (this.sourceOf(id)?.gain ?? 1) : 1;
+    if (isAndroidPlatform) {
+      return Math.min(1, gain);
+    }
+    if (this.muted) {
+      return 0;
+    }
     return (this.volume / MAX_VOLUME) * MAX_GAIN * gain;
   }
 
@@ -547,8 +555,10 @@ export class Player {
   /** Moves the level to its target over a moment, rather than in one step. */
   private startFade(to: number): void {
     const from = this.level;
-    if (from === to) {
+    if (from === to || document.hidden) {
       this.stopFade();
+      this.level = to;
+      this.applyLevel();
       this.settleFade();
       return;
     }
@@ -581,6 +591,18 @@ export class Player {
     }
 
     this.fade = null;
+    this.settleFade();
+  };
+
+  /** The page went away, so a fade that is still running is finished here. */
+  private readonly settleLevelIfHidden = (): void => {
+    if (!document.hidden) {
+      return;
+    }
+    const to = this.fade?.to ?? this.targetLevel();
+    this.stopFade();
+    this.level = to;
+    this.applyLevel();
     this.settleFade();
   };
 

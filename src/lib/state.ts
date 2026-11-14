@@ -40,9 +40,11 @@ import type {
 } from "../types";
 import { flushAnalytics, mountAnalytics, notePlaybackError, noteTrackEnded, recordEvent, rememberTracks } from "./analytics";
 import { AudioEngine, assetUrl } from "./audio";
+import { mountAudioWatchdog } from "./audio-watchdog";
 import type { EqProfile } from "./autoeq";
 import { COLLECTION_FILTERS, buildCollections, findCollection, sortAlbumTracks } from "./collections";
 import { FALLBACK_COLOUR, colourFromId, isUsableAccent } from "./colour";
+import { isAndroidPlatform } from "./device";
 import { DEFAULT_EQ_BANDS, EqChain } from "./eq";
 import * as ipc from "./ipc";
 import { plural } from "./format";
@@ -308,6 +310,13 @@ const engine = new AudioEngine({
 
 /** Set while the engine is asking for files in a way Web Audio can read. */
 let engineCors = false;
+let audioStreamBase: string | null = null;
+
+function audioPath(track: Track): string {
+  return isAndroidPlatform && audioStreamBase
+    ? `${audioStreamBase}/${encodeURIComponent(track.id)}`
+    : track.path;
+}
 
 /** Set while the check below is running, so only one is ever in flight. */
 let corsChecking = false;
@@ -379,7 +388,8 @@ async function syncEqReading(): Promise<void> {
     return;
   }
 
-  const path = currentTrack()?.path;
+  const track = currentTrack();
+  const path = track ? audioPath(track) : undefined;
   if (path === undefined) {
     return;
   }
@@ -410,8 +420,13 @@ async function syncEqReading(): Promise<void> {
 export const player = new Player(engine, (trackId) => {
   const track = state.tracksById.get(trackId);
   return track
-    ? { path: track.path, durationMs: track.durationMs, gain: trackGain(track) }
+    ? { path: audioPath(track), durationMs: track.durationMs, gain: trackGain(track) }
     : undefined;
+});
+
+mountAudioWatchdog(engine, player, (message) => {
+  console.warn(message);
+  setNotice(message);
 });
 
 /** The gain a song plays at, or `1` while normalization is switched off. */
@@ -779,6 +794,13 @@ export async function init(): Promise<void> {
   });
   await readAppVersion();
   try {
+    if (isAndroidPlatform) {
+      try {
+        audioStreamBase = await ipc.audioStreamBase();
+      } catch (error) {
+        setNotice(`Could not start audio streaming: ${describe(error)}`);
+      }
+    }
     const persisted = await ipc.loadState();
     applyPersisted(persisted);
     seedEqOrigin();
@@ -819,14 +841,14 @@ async function readLibraryInfo(): Promise<void> {
   }
 }
 
-export async function rescan(): Promise<void> {
+export async function rescan(forceFull = false): Promise<void> {
   state.scanning = true;
   emit();
 
   try {
     const known = state.libraryInfo?.tracks;
     const full =
-      state.tracksById.size === 0 || (known !== undefined && state.tracksById.size !== known);
+      forceFull || state.tracksById.size === 0 || (known !== undefined && state.tracksById.size !== known);
     await applyScan(await ipc.scanLibrary(full));
   } catch (error) {
     state.scanErrors = [describe(error)];
@@ -882,6 +904,29 @@ export async function rescanLibrary(): Promise<void> {
   await backfillGenres();
 }
 
+export async function rereadTags(): Promise<void> {
+  setNotice("Reading the tags again...");
+  try {
+    await applyScan(await ipc.rereadTags());
+    setNotice(`${plural(state.tracks.length, "song")} read again.`);
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
+export async function fixTagsAndCovers(): Promise<void> {
+  await rereadTags();
+
+  const ids = state.tracks.map((track) => track.id);
+  if (ids.length === 0) {
+    setNotice("There is nothing in the library to fix.");
+    return;
+  }
+
+  const parts = [await fillCovers(ids), await fillGenres(ids)];
+  setNotice(parts.filter(Boolean).join(", ") || "Nothing needed fixing.");
+}
+
 /** Set while a pass is running, so a second one cannot start on top of it. */
 let loudnessRunning = false;
 /** Set when a pass is asked for while one is already running. */
@@ -910,6 +955,17 @@ async function analyseLoudness(): Promise<void> {
     state.analysing = null;
     emit();
   }
+}
+
+async function completeImport(outcome: ImportOutcome): Promise<string> {
+  const ids = outcome.trackIds;
+  if (ids.length === 0) {
+    return "";
+  }
+
+  setNotice(`Looking up ${plural(ids.length, "song")}...`);
+  const parts = [await fillCovers(ids), await fillGenres(ids)];
+  return parts.filter(Boolean).join(", ");
 }
 
 /** The one-line summary both import paths finish with. */
@@ -951,7 +1007,8 @@ export async function importFolder(choose: () => Promise<boolean | null>): Promi
     const outcome = await ipc.importFolder(folder, createPlaylist, null);
     applyPersisted(outcome.state);
     await rescan();
-    setNotice(importSummary(outcome));
+    const found = await completeImport(outcome);
+    setNotice([importSummary(outcome), found].filter(Boolean).join(", "));
   } catch (error) {
     setNotice(describe(error));
   }
@@ -969,7 +1026,8 @@ export async function importPickedFiles(): Promise<void> {
     const outcome = await ipc.importPickedFiles(paths);
     applyPersisted(outcome.state);
     await rescan();
-    setNotice(importSummary(outcome));
+    const found = await completeImport(outcome);
+    setNotice([importSummary(outcome), found].filter(Boolean).join(", "));
   } catch (error) {
     setNotice(describe(error));
   }
@@ -982,7 +1040,8 @@ export async function importPhoneMusic(): Promise<void> {
     const outcome = await ipc.scanPhoneMusic();
     applyPersisted(outcome.state);
     await rescan();
-    setNotice(importSummary(outcome));
+    const found = await completeImport(outcome);
+    setNotice([importSummary(outcome), found].filter(Boolean).join(", "));
   } catch (error) {
     setNotice(describe(error));
   }
@@ -1141,6 +1200,9 @@ export function jobRunning(progress: ImportProgress | null): boolean {
 /** The one-line summary a finished covers fetch leaves behind. */
 function coversSummary(outcome: CoversOutcome): string {
   const parts = [`${outcome.restored} restored`];
+  if (outcome.tagged > 0) {
+    parts.push(`${outcome.tagged} given tags`);
+  }
   if (outcome.embedded > 0) {
     parts.push(`${outcome.embedded} from the files`);
   }
@@ -1165,14 +1227,21 @@ function coversSummary(outcome: CoversOutcome): string {
 /** Restores missing cover art for every song in a collection. */
 export async function fetchCovers(collectionId: string): Promise<void> {
   const collection = collectionById(collectionId);
-  if (!collection || collection.trackIds.length === 0 || jobRunning(state.coversProgress)) {
-    return;
+  if (collection) {
+    await fillCovers(collection.trackIds);
+  }
+}
+
+/** Restores missing cover art for a set of songs, and answers with its summary. */
+async function fillCovers(trackIds: string[]): Promise<string> {
+  if (trackIds.length === 0 || jobRunning(state.coversProgress)) {
+    return "";
   }
 
   state.coversProgress = {
     phase: "covers",
     done: 0,
-    total: collection.trackIds.length,
+    total: trackIds.length,
     label: "",
     message: "Starting...",
     failures: [],
@@ -1181,17 +1250,17 @@ export async function fetchCovers(collectionId: string): Promise<void> {
   };
   emit();
 
+  let message = "";
   try {
-    const outcome = await ipc.fetchCovers(collection.trackIds);
-    // The new covers are linked in the index, so the songs need re-reading.
-    await rescan();
+    const outcome = await ipc.fetchCovers(trackIds);
+    await rescan(true);
 
-    const message = coversSummary(outcome);
+    message = coversSummary(outcome);
     setNotice(message);
     state.coversProgress = {
       phase: "done",
-      done: collection.trackIds.length,
-      total: collection.trackIds.length,
+      done: trackIds.length,
+      total: trackIds.length,
       label: "",
       message,
       failures: outcome.errors,
@@ -1199,11 +1268,13 @@ export async function fetchCovers(collectionId: string): Promise<void> {
       startedAt: Date.now(),
     };
   } catch (error) {
-    const message = describe(error);
+    message = describe(error);
     setNotice(message);
     state.coversProgress = failedProgress(message);
+    message = "";
   }
   emit();
+  return message;
 }
 
 /** The one-line summary a finished genre pass leaves behind. */
@@ -1237,14 +1308,21 @@ function genresSummary(outcome: GenresOutcome): string {
 /** Writes the genre of every song in a collection into its file. */
 export async function fetchGenres(collectionId: string): Promise<void> {
   const collection = collectionById(collectionId);
-  if (!collection || collection.trackIds.length === 0 || jobRunning(state.genresProgress)) {
-    return;
+  if (collection) {
+    await fillGenres(collection.trackIds);
+  }
+}
+
+/** Writes the genre of a set of songs into their files, and answers with a summary. */
+async function fillGenres(trackIds: string[]): Promise<string> {
+  if (trackIds.length === 0 || jobRunning(state.genresProgress)) {
+    return "";
   }
 
   state.genresProgress = {
     phase: "genres",
     done: 0,
-    total: collection.trackIds.length,
+    total: trackIds.length,
     label: "",
     message: "Starting...",
     failures: [],
@@ -1253,19 +1331,19 @@ export async function fetchGenres(collectionId: string): Promise<void> {
   };
   emit();
 
+  let message = "";
   try {
-    const outcome = await ipc.fetchGenres(collection.trackIds);
-    // The genres are written into the files, so the songs need re-reading.
-    await rescan();
+    const outcome = await ipc.fetchGenres(trackIds);
+    await rescan(true);
 
-    const message = genresSummary(outcome);
+    message = genresSummary(outcome);
     setNotice(message);
     // Only what the pass got through, so a pass that stopped early says so.
-    const handled = Math.max(collection.trackIds.length - outcome.remaining, 0);
+    const handled = Math.max(trackIds.length - outcome.remaining, 0);
     state.genresProgress = {
       phase: "done",
       done: handled,
-      total: collection.trackIds.length,
+      total: trackIds.length,
       label: "",
       message,
       failures: outcome.errors,
@@ -1273,11 +1351,13 @@ export async function fetchGenres(collectionId: string): Promise<void> {
       startedAt: Date.now(),
     };
   } catch (error) {
-    const message = describe(error);
+    message = describe(error);
     setNotice(message);
     state.genresProgress = failedProgress(message);
+    message = "";
   }
   emit();
+  return message;
 }
 
 /** Set while the library-wide pass is running, so a second one cannot start. */
@@ -1696,6 +1776,11 @@ export async function deleteTracks(trackIds: string[]): Promise<void> {
 
   try {
     applyPersisted(await ipc.deleteTracks(trackIds));
+    const removed = new Set(trackIds);
+    state.tracks = state.tracks.filter((track) => !removed.has(track.id));
+    state.tracksById = new Map(state.tracks.map((track) => [track.id, track]));
+    retainArtwork();
+    refreshCollections();
     for (const id of trackIds) {
       player.removeFromQueue(id);
     }

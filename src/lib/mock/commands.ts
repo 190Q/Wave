@@ -461,6 +461,7 @@ function download(playlistId: string, entryIds: string[]): ImportOutcome {
     duplicates: 0,
     similar: 0,
     playlist: playlist.name,
+    trackIds: [],
     errors: [],
     state: snapshot(),
   };
@@ -524,6 +525,7 @@ function fetchCovers(trackIds: string[]): CoversOutcome {
     skipped: held.length - missing.length,
     missing: missing.length,
     untagged: 0,
+    tagged: 0,
     errors: [],
   };
 }
@@ -583,6 +585,7 @@ function importOutcome(errors: string[]): ImportOutcome {
     duplicates: 0,
     similar: 0,
     playlist: null,
+    trackIds: [],
     errors,
     state: snapshot(),
   };

@@ -71,6 +71,18 @@ pub struct NowPlaying {
     pub playing: bool,
     /// Where the cover sits on disk, empty when the song has none.
     pub artwork: String,
+    /// The song's `#rrggbb`, which the phone's notification is tinted with.
+    pub colour: String,
+}
+
+/// One song of the play order, as the surfaces that offer a queue show it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct QueueTrack {
+    pub id: String,
+    pub title: String,
+    pub artist: String,
+    pub duration_ms: u64,
 }
 
 /// Something the system's own controls asked for, on its way to the player.
@@ -88,6 +100,9 @@ pub struct Control {
 enum SystemMessage {
     /// Shows a song, or clears the controls when there is none.
     Show(Option<NowPlaying>),
+    /// The play order, for the phone's card, which is the only surface with one.
+    #[cfg(target_os = "android")]
+    Queue(Vec<QueueTrack>),
     /// Takes the controls down and ends the thread.
     Stop,
     /// A button on the controls was pressed.
@@ -141,6 +156,20 @@ impl Presence {
         }
         if let Some(discord) = workers.discord.as_ref() {
             let _ = discord.send(DiscordMessage::Show(song));
+        }
+    }
+
+    /// Hands the play order over, for the surface that shows one.
+    pub fn set_queue(&self, tracks: Vec<QueueTrack>) {
+        #[cfg(not(target_os = "android"))]
+        let _ = tracks;
+
+        #[cfg(target_os = "android")]
+        {
+            let workers = self.guard();
+            if let Some(system) = workers.system.as_ref() {
+                let _ = system.send(SystemMessage::Queue(tracks));
+            }
         }
     }
 
@@ -232,6 +261,12 @@ pub fn watch_config(app: &AppHandle) {
 #[tauri::command]
 pub fn set_now_playing(presence: State<'_, Presence>, song: Option<NowPlaying>) {
     presence.show(song);
+}
+
+/// Hands the play order over, so the phone's own media card can offer the queue.
+#[tauri::command]
+pub fn set_queue(presence: State<'_, Presence>, tracks: Vec<QueueTrack>) {
+    presence.set_queue(tracks);
 }
 
 /// Claims the system's media controls for the main window.
@@ -350,6 +385,7 @@ fn run_session(session: crate::media_session::Session, receiver: Receiver<System
     loop {
         match receiver.recv() {
             Ok(SystemMessage::Show(song)) => session.show(song),
+            Ok(SystemMessage::Queue(tracks)) => session.set_queue(&tracks),
             Ok(SystemMessage::Stop) | Err(_) => break,
         }
     }
@@ -756,6 +792,7 @@ mod tests {
             position_ms,
             playing,
             artwork: "C:\\cover.jpg".to_string(),
+            colour: "#334455".to_string(),
         }
     }
 

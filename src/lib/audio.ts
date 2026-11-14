@@ -74,6 +74,11 @@ export class AudioEngine {
     return !this.el.paused && !this.el.ended;
   }
 
+  /** The element in hand, for a report when the sound goes missing. */
+  get element(): HTMLAudioElement {
+    return this.el;
+  }
+
   /** Points the element at a file, crossing over from whatever was playing. */
   load(path: string, options: LoadOptions = {}): void {
     const { autoplay = false, positionMs = 0 } = options;
@@ -249,6 +254,9 @@ export function assetUrl(path: string): string {
 
 /** The asset URL for a library file, or the bare path outside Tauri. */
 function sourceUrl(path: string): string {
+  if (path.startsWith("http://127.0.0.1:")) {
+    return path;
+  }
   try {
     return convertFileSrc(path);
   } catch {

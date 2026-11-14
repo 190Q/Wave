@@ -43,6 +43,7 @@ class MediaPlaybackService : Service() {
   }
 
   override fun onDestroy() {
+    Log.i("Wave", "the playback service stopped")
     wakeLock?.let { if (it.isHeld) it.release() }
     wakeLock = null
     ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -58,6 +59,7 @@ class MediaPlaybackService : Service() {
     val notification = MediaPlayback.current
     if (notification == null) {
       // Nothing is loaded, so there is nothing to be in the foreground for.
+      Log.i("Wave", "the playback service stopped: nothing is loaded")
       stopSelf()
       return
     }
@@ -70,7 +72,9 @@ class MediaPlaybackService : Service() {
 
     try {
       ServiceCompat.startForeground(this, MediaPlayback.NOTIFICATION_ID, notification, type)
+      Log.i("Wave", "the playback service is in the foreground")
     } catch (error: Exception) {
+      Log.i("Wave", "the playback service could not go to the foreground")
       Log.w("Wave", "the playback service could not go to the foreground", error)
       stopSelf()
     }

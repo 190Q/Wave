@@ -62,6 +62,10 @@
   transition: transform 0.45s var(--ease), opacity 0.45s ease, filter 0.45s ease;
 }
 
+.carousel.is-dragging .card {
+  will-change: transform;
+}
+
 .card-body {
   position: relative;
   width: 100%;

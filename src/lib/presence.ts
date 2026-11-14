@@ -2,8 +2,17 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type { MediaControl, NowPlaying } from "../types";
-import { setNowPlaying, showMainWindow } from "./ipc";
-import { currentTrack, getState, player, setVolume, stepTrack, subscribe } from "./state";
+import { setNowPlaying, setQueue, showMainWindow } from "./ipc";
+import {
+  colourFor,
+  currentTrack,
+  getState,
+  player,
+  setVolume,
+  stepTrack,
+  subscribe,
+  trackById,
+} from "./state";
 
 /** Sent by the backend when the system's own controls ask for something. */
 const CONTROL_EVENT = "media-control";
@@ -16,6 +25,9 @@ const POSITION_STEP_MS = 900;
 
 /** How far one fast forward or rewind step moves. */
 const SEEK_STEP_MS = 10_000;
+
+/** How many songs of the play order are handed to the system's controls. */
+const QUEUE_LIMIT = 50;
 
 /** Keeps the system's own media controls, and Discord, in step with the player. */
 export function mountPresence(): void {
@@ -40,9 +52,45 @@ export function mountPresence(): void {
     });
   };
 
+  /** The queue revision last handed over, so an order that has not moved is left alone. */
+  let sentQueue = -1;
+
+  const pushQueue = (): void => {
+    if (!showing()) {
+      sentQueue = -1;
+      return;
+    }
+
+    const snapshot = player.snapshot();
+    if (snapshot.queueRevision === sentQueue) {
+      return;
+    }
+    sentQueue = snapshot.queueRevision;
+
+    const tracks = snapshot.order.slice(0, QUEUE_LIMIT).flatMap((id) => {
+      const track = trackById(id);
+      return track
+        ? [
+            {
+              id: track.id,
+              title: track.title,
+              artist: track.artist ?? "",
+              durationMs: track.durationMs,
+            },
+          ]
+        : [];
+    });
+
+    void setQueue(tracks).catch(() => {
+      // Not running inside Tauri, or the backend is no longer there.
+    });
+  };
+
   player.onChange(push);
-  // A switch turned on mid-song has nothing to show until the next update.
+  player.onChange(pushQueue);
+  player.onProgress(push);
   subscribe(push);
+  subscribe(pushQueue);
   window.setInterval(() => {
     if (player.snapshot().playing) {
       push();
@@ -76,6 +124,7 @@ function nowPlaying(): NowPlaying | null {
     positionMs: Math.round(snapshot.positionMs),
     playing: snapshot.playing,
     artwork: track.artworkPath ?? "",
+    colour: colourFor(track),
   };
 }
 
@@ -90,6 +139,7 @@ function worthSending(next: NowPlaying | null, last: NowPlaying | null): boolean
     next.artist !== last.artist ||
     next.album !== last.album ||
     next.artwork !== last.artwork ||
+    next.colour !== last.colour ||
     next.durationMs !== last.durationMs ||
     next.playing !== last.playing
   ) {
@@ -129,6 +179,14 @@ function apply(control: MediaControl): void {
     case "seekTo":
       player.seek(control.value ?? 0);
       return;
+    case "skipToQueueItem": {
+      const order = player.snapshot().order;
+      const id = order[Math.round(control.value ?? -1)];
+      if (id !== undefined) {
+        player.playTrack(id);
+      }
+      return;
+    }
     case "volume":
       setVolume(Math.round(control.value ?? 0));
       return;

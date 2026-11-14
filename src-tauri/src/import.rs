@@ -41,6 +41,8 @@ pub struct ImportOutcome {
     /// Added even though something else shares their title, artist and album.
     pub similar: usize,
     pub playlist: Option<String>,
+    /// The songs that landed, so the front end can fill in what they are missing.
+    pub track_ids: Vec<String>,
     pub errors: Vec<String>,
     pub state: PersistedState,
 }
@@ -217,6 +219,9 @@ pub fn import_picked_files(app: AppHandle, paths: Vec<String>) -> Result<ImportO
                 outcome.similar += usize::from(landed.similar);
                 outcome.images += usize::from(landed.cover);
                 outcome.lyrics += usize::from(landed.lyrics);
+                if !landed.duplicate {
+                    outcome.track_ids.push(landed.id.clone());
+                }
             }
             Err(error) => outcome.errors.push(format!("{name}: {error}")),
         }
@@ -277,6 +282,7 @@ fn merge(into: &mut ImportOutcome, one: ImportOutcome) {
     into.skipped += one.skipped;
     into.duplicates += one.duplicates;
     into.similar += one.similar;
+    into.track_ids.extend(one.track_ids);
     into.errors.extend(one.errors);
 }
 
@@ -435,6 +441,7 @@ pub fn import_into_library(
         duplicates,
         similar,
         playlist,
+        track_ids: landed,
         errors,
         state: playlists::refresh(app, &store),
     };

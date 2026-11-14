@@ -8,6 +8,7 @@ use lofty::file::FileType;
 use lofty::prelude::{Accessor, AudioFile, ItemKey, TaggedFileExt};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime, State};
+#[cfg(not(target_os = "android"))]
 use tauri_plugin_opener::OpenerExt;
 
 use crate::catalog::{Catalog, TrackRow, LAYOUT_VERSION};
@@ -154,6 +155,19 @@ pub fn all_tracks<R: Runtime>(app: &AppHandle<R>, catalog: &Catalog) -> Result<V
 }
 
 pub fn scan<R: Runtime>(app: &AppHandle<R>, catalog: &Catalog, full: bool) -> ScanSummary {
+    sweep(app, catalog, full, false)
+}
+
+pub fn reread<R: Runtime>(app: &AppHandle<R>, catalog: &Catalog) -> ScanSummary {
+    sweep(app, catalog, false, true)
+}
+
+fn sweep<R: Runtime>(
+    app: &AppHandle<R>,
+    catalog: &Catalog,
+    full: bool,
+    reread: bool,
+) -> ScanSummary {
     let root = match library_root(app) {
         Ok(root) => root,
         Err(error) => {
@@ -194,7 +208,7 @@ pub fn scan<R: Runtime>(app: &AppHandle<R>, catalog: &Catalog, full: bool) -> Sc
                     continue;
                 }
 
-                match reconcile(&path, &root, &known, &mut errors) {
+                match reconcile(&path, &root, &known, &mut errors, reread) {
                     Ok(Some((row, moved))) => {
                         seen.push(row.id.clone());
                         if moved || full {
@@ -245,6 +259,7 @@ fn reconcile(
     root: &Path,
     known_rows: &HashMap<String, TrackRow>,
     errors: &mut Vec<String>,
+    reread: bool,
 ) -> Result<Option<(TrackRow, bool)>, String> {
     let dir_name = dir
         .file_name()
@@ -304,11 +319,13 @@ fn reconcile(
         .ok_or_else(|| format!("{} is outside the library", audio.display()))?;
     let stamp = identity::stamp_of(&audio)?;
 
-    // Nothing has changed since the catalog last looked, so the tags are taken
-    // as read instead of being read again.
-    let unchanged = known.is_some_and(|row| {
-        row.rel_path == rel_path && row.bytes == stamp.bytes && row.modified_ms == stamp.modified_ms
-    });
+    // An explicit tag refresh bypasses the unchanged-file shortcut.
+    let unchanged = !reread
+        && known.is_some_and(|row| {
+            row.rel_path == rel_path
+                && row.bytes == stamp.bytes
+                && row.modified_ms == stamp.modified_ms
+        });
 
     if unchanged {
         let source = known.expect("checked just above");
@@ -333,7 +350,12 @@ fn reconcile(
         });
 
     let mut row = read_row(&id, &audio, &dir, &rel_path, &original_name, stamp, None)?;
-    row.added_at = known.map(|row| row.added_at).unwrap_or(row.added_at);
+    if let Some(previous) = known {
+        row.added_at = previous.added_at;
+        row.lufs = previous.lufs;
+        row.peak = previous.peak;
+        row.loudness_bytes = previous.loudness_bytes;
+    }
     Ok(Some((row, true)))
 }
 
@@ -413,9 +435,7 @@ fn read_row(
 
     let has_embedded_art = embedded.is_some();
 
-    let title = title
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| fallback_title(original_name, audio));
+    let (title, artist) = name_of(title, artist, original_name, audio);
 
     // Art inside the file is written out beside it, so a cover lives with the
     // song rather than in a cache that can be cleared.
@@ -438,7 +458,7 @@ fn read_row(
         modified_ms: stamp.modified_ms,
         content_hash: Some(content_hash),
         title,
-        artist: clean(artist),
+        artist,
         album: clean(album),
         album_artist: clean(album_artist),
         track_no,
@@ -581,21 +601,63 @@ fn clean(value: Option<String>) -> Option<String> {
     value.filter(|text| !text.trim().is_empty())
 }
 
-/// A song with no title tag is shown under the name it arrived with.
-fn fallback_title(original_name: &str, audio: &Path) -> String {
-    let from_original = Path::new(original_name)
+/// The title and artist a row ends up with: what the file's own tags say, and
+/// where they say nothing, what the name it arrived with gives away.
+fn name_of(
+    tag_title: Option<String>,
+    tag_artist: Option<String>,
+    original_name: &str,
+    audio: &Path,
+) -> (String, Option<String>) {
+    let named = named_from_file(original_name, audio);
+    let title = tag_title
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(named.title);
+    let artist = clean(tag_artist).or(named.artist);
+    (title, artist)
+}
+
+/// What a file name gives away about a song whose own tags say nothing.
+struct Named {
+    /// The first half of an `Artist - Title` name, when it names one.
+    artist: Option<String>,
+    title: String,
+}
+
+/// `Artist - Title` names both, anything else is a title on its own. The name
+/// the song arrived with is preferred over the one it is filed under.
+fn named_from_file(original_name: &str, audio: &Path) -> Named {
+    let stem = stem_of(original_name)
+        .filter(|stem| usable_stem(stem))
+        .or_else(|| stem_of(&audio.to_string_lossy()).filter(|stem| usable_stem(stem)));
+
+    let Some(stem) = stem else {
+        return Named {
+            artist: None,
+            title: "Untitled".to_string(),
+        };
+    };
+
+    match stem.split_once(" - ") {
+        Some((artist, title)) if !artist.trim().is_empty() && !title.trim().is_empty() => Named {
+            artist: Some(artist.trim().to_string()),
+            title: title.trim().to_string(),
+        },
+        _ => Named {
+            artist: None,
+            title: stem,
+        },
+    }
+}
+
+fn stem_of(value: &str) -> Option<String> {
+    Path::new(value)
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
-        .filter(|stem| !stem.trim().is_empty() && stem != AUDIO_STEM);
+}
 
-    from_original
-        .or_else(|| {
-            audio
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .filter(|stem| !stem.trim().is_empty() && stem != AUDIO_STEM)
-        })
-        .unwrap_or_else(|| "Untitled".to_string())
+fn usable_stem(stem: &str) -> bool {
+    !stem.trim().is_empty() && stem != AUDIO_STEM
 }
 
 pub fn has_extension(path: &Path, allowed: &[&str]) -> bool {
@@ -722,6 +784,17 @@ pub fn scan_library(
     summary
 }
 
+#[tauri::command(async)]
+pub fn reread_tags(
+    app: AppHandle,
+    store: State<'_, Store>,
+    catalog: State<'_, Catalog>,
+) -> ScanSummary {
+    let summary = reread(&app, &catalog);
+    let _ = crate::playlists::refresh(&app, &store);
+    summary
+}
+
 #[tauri::command]
 pub fn library_info(catalog: State<'_, Catalog>) -> LibraryInfo {
     let (tracks, missing) = catalog.counts();
@@ -733,12 +806,19 @@ pub fn library_info(catalog: State<'_, Catalog>) -> LibraryInfo {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_library_folder(app: AppHandle) -> Result<(), String> {
-    let root = library_root(&app)?;
-    app.opener()
-        .open_path(root.to_string_lossy().into_owned(), None::<&str>)
-        .map_err(|e| format!("could not open {}: {e}", root.display()))
+    #[cfg(target_os = "android")]
+    {
+        app.state::<crate::media_session::Session>().open_music_folder()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let root = library_root(&app)?;
+        app.opener()
+            .open_path(root.to_string_lossy().into_owned(), None::<&str>)
+            .map_err(|e| format!("could not open {}: {e}", root.display()))
+    }
 }
 
 #[tauri::command(async)]
@@ -796,4 +876,147 @@ pub fn delete(
     save(app, &next)?;
 
     Ok(crate::playlists::refresh(app, store))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rereading_tags_preserves_existing_loudness_in_the_returned_row() {
+        let root = std::env::temp_dir().join(format!("wave-reread-{}", uuid::Uuid::new_v4()));
+        let id = identity::new_id();
+        let dir = track_dir(&root, &id);
+        fs::create_dir_all(&dir).unwrap();
+        let audio = dir.join("audio.wav");
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&38u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&8000u32.to_le_bytes());
+        wav.extend_from_slice(&16000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&2u32.to_le_bytes());
+        wav.extend_from_slice(&[0, 0]);
+        fs::write(&audio, wav).unwrap();
+
+        let mut previous = describe(&root, &id, &audio, "Artist - Song.wav", None).unwrap();
+        previous.lufs = Some(-12.0);
+        previous.peak = Some(0.8);
+        previous.loudness_bytes = Some(previous.bytes);
+        let known = HashMap::from([(id, previous.clone())]);
+        let (updated, changed) = reconcile(&dir, &root, &known, &mut Vec::new(), true)
+            .unwrap()
+            .unwrap();
+        assert!(changed);
+        assert_eq!(updated.lufs, previous.lufs);
+        assert_eq!(updated.peak, previous.peak);
+        assert_eq!(updated.loudness_bytes, previous.loudness_bytes);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A song already filed in the library, so its own name says nothing.
+    fn filed(name: &str) -> (String, Option<String>) {
+        name_of(None, None, name, Path::new("/library/songs/abc/audio.mp3"))
+    }
+
+    #[test]
+    fn reads_an_artist_and_a_title_out_of_a_file_name() {
+        let (title, artist) = filed("Slipknot - Eyeless.mp3");
+        assert_eq!(title, "Eyeless");
+        assert_eq!(artist.as_deref(), Some("Slipknot"));
+    }
+
+    #[test]
+    fn a_name_with_no_dash_is_a_title_on_its_own() {
+        let (title, artist) = filed("Eyeless.mp3");
+        assert_eq!(title, "Eyeless");
+        assert_eq!(artist, None);
+    }
+
+    #[test]
+    fn a_name_with_nothing_before_the_dash_is_a_title_on_its_own() {
+        let (title, artist) = filed(" - Eyeless.mp3");
+        assert_eq!(title, " - Eyeless");
+        assert_eq!(artist, None);
+    }
+
+    #[test]
+    fn the_first_dash_is_the_one_that_separates_the_two() {
+        let (title, artist) = filed("A Tout Le Monde - Remastered 2004.mp3");
+        assert_eq!(title, "Remastered 2004");
+        assert_eq!(artist.as_deref(), Some("A Tout Le Monde"));
+    }
+
+    #[test]
+    fn a_name_that_is_only_the_stem_wave_writes_names_nothing() {
+        let (title, artist) = name_of(None, None, "audio.mp3", Path::new("/library/songs/abc/audio.mp3"));
+        assert_eq!(title, "Untitled");
+        assert_eq!(artist, None);
+    }
+
+    #[test]
+    fn the_name_the_song_arrived_with_is_preferred_over_the_one_on_disk() {
+        let (title, artist) = name_of(
+            None,
+            None,
+            "Korn - Freak On a Leash.mp3",
+            Path::new("/library/songs/abc/Something Else.mp3"),
+        );
+        assert_eq!(title, "Freak On a Leash");
+        assert_eq!(artist.as_deref(), Some("Korn"));
+    }
+
+    #[test]
+    fn a_song_already_filed_falls_back_to_the_name_it_came_in_as() {
+        let (title, artist) = name_of(
+            None,
+            None,
+            "",
+            Path::new("/somewhere/Korn - Freak On a Leash.mp3"),
+        );
+        assert_eq!(title, "Freak On a Leash");
+        assert_eq!(artist.as_deref(), Some("Korn"));
+    }
+
+    #[test]
+    fn a_tag_beats_the_file_name() {
+        let (title, artist) = name_of(
+            Some("Eyeless".to_string()),
+            Some("Slipknot".to_string()),
+            "Something - Else.mp3",
+            Path::new("/library/songs/abc/audio.mp3"),
+        );
+        assert_eq!(title, "Eyeless");
+        assert_eq!(artist.as_deref(), Some("Slipknot"));
+    }
+
+    #[test]
+    fn a_title_tag_with_no_artist_tag_still_takes_the_name_apart() {
+        let (title, artist) = name_of(
+            Some("Eyeless".to_string()),
+            None,
+            "Slipknot - Eyeless.mp3",
+            Path::new("/library/songs/abc/audio.mp3"),
+        );
+        assert_eq!(title, "Eyeless");
+        assert_eq!(artist.as_deref(), Some("Slipknot"));
+    }
+
+    #[test]
+    fn an_empty_tag_counts_as_no_tag_at_all() {
+        let (title, artist) = name_of(
+            Some("   ".to_string()),
+            Some(String::new()),
+            "Slipknot - Eyeless.mp3",
+            Path::new("/library/songs/abc/audio.mp3"),
+        );
+        assert_eq!(title, "Eyeless");
+        assert_eq!(artist.as_deref(), Some("Slipknot"));
+    }
 }

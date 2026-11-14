@@ -191,12 +191,19 @@ export interface NowPlaying {
   playing: boolean;
   /** Where the cover sits on disk, empty when the song has none. */
   artwork: string;
+  /** The song's `#rrggbb`, which the phone's notification is tinted with. */
+  colour: string;
 }
 
-/**
- * Something the system's own controls asked for. `seekBy` and `seekTo` carry
- * milliseconds, `volume` carries `0` to `100`, and the rest carry nothing.
- */
+/** One song of the play order, as the system's own controls show it. */
+export interface QueueTrack {
+  id: string;
+  title: string;
+  artist: string;
+  durationMs: number;
+}
+
+// Seek values are milliseconds, volume is 0-100, and skipToQueueItem is a queue index.
 export interface MediaControl {
   action:
     | "play"
@@ -207,6 +214,7 @@ export interface MediaControl {
     | "stop"
     | "seekBy"
     | "seekTo"
+    | "skipToQueueItem"
     | "volume"
     | "raise";
   value: number | null;
@@ -661,6 +669,8 @@ export interface CoversOutcome {
   missing: number;
   /** No artist to look them up by. */
   untagged: number;
+  /** Given the artist and album a lookup found, which the file did not carry. */
+  tagged: number;
   errors: string[];
 }
 
@@ -717,6 +727,8 @@ export interface ImportOutcome {
   duplicates: number;
   similar: number;
   playlist: string | null;
+  /** The songs that landed, which are the ones still missing their metadata. */
+  trackIds: string[];
   errors: string[];
   state: PersistedState;
 }

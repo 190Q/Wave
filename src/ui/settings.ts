@@ -1,5 +1,5 @@
 import { forgetCaptured } from "../lib/analytics";
-import { device } from "../lib/device";
+import { device, isAndroidPlatform } from "../lib/device";
 import { escapeHtml, formatTotalDuration, plural } from "../lib/format";
 import {
   analyticsStats,
@@ -15,6 +15,7 @@ import {
   captureWindowSlot,
   checkForUpdates,
   exportCollection,
+  fixTagsAndCovers,
   getState,
   jobRunning,
   rescanLibrary,
@@ -327,6 +328,10 @@ export function mountSettings(): void {
       case "rescan":
         await rescanLibrary();
         return;
+      case "fix-tags":
+        closeDialog();
+        await fixTagsAndCovers();
+        return;
       case "reset-window":
         try {
           await resetWindowGeometry();
@@ -623,24 +628,31 @@ function libraryHtml(state: AppState, exportId: string): string {
     ? `<p class="settings-hint">${escapeHtml(storageLine(info))}</p>`
     : "";
 
+  const android = isAndroidPlatform;
+  const busy = state.scanning ? " disabled" : "";
+
   return section(
     "Library",
     `<div class="settings-row is-stacked">
       <span class="settings-label">Library folder</span>
       ${
-        state.root
+        state.root && !android
           ? `<p class="folder-path" title="${escapeHtml(state.root)}">${escapeHtml(state.root)}</p>`
-          : `<p class="settings-hint">No library folder yet.</p>`
+          : ""
       }
       <div class="settings-actions">
-        <button class="pill" type="button" data-command="open-folder"${state.root ? "" : " disabled"}>Open in Explorer</button>
-        <button class="pill" type="button" data-command="rescan"${state.scanning ? " disabled" : ""}>Rescan library</button>
+        <button class="pill" type="button" data-command="open-folder"${state.root ? "" : " disabled"}>${android ? "Open in file manager" : "Open in Explorer"}</button>
+        <button class="pill" type="button" data-command="rescan"${busy}>Rescan library</button>
+        <button class="pill" type="button" data-command="fix-tags"${busy}>Fix tags and covers</button>
       </div>
       <p class="settings-hint">${escapeHtml(notes.join(". "))}</p>
       ${storage}
       ${errors}
     </div>
-    <div class="settings-row is-stacked">
+    ${
+      android
+        ? ""
+        : `<div class="settings-row is-stacked">
       <span class="settings-label">Export playlist</span>
       <p class="settings-hint">Save an ordered song list with its tags and genres as a .wavelist file. Import it in Wave to download the audio, covers and lyrics. Only the list itself is saved.</p>
       <div class="import-field">
@@ -650,7 +662,8 @@ function libraryHtml(state: AppState, exportId: string): string {
           aria-expanded="false" autocomplete="off" spellcheck="false" />
         <button class="pill" type="button" data-command="export-playlist"${collection?.trackIds.length ? "" : " disabled"}>Export</button>
       </div>
-    </div>`,
+    </div>`
+    }`,
   );
 }
 
@@ -908,6 +921,16 @@ function snapNote(assigned: string, frame: WindowGeometry | null): string {
 
 /** The compact list: the settings that act at once, rather than waiting for Save. */
 function dropRowsHtml(root: string | null): string {
+  const folder = `<button
+      class="drop-item"
+      type="button"
+      data-command="open-folder"
+      aria-label="${isAndroidPlatform ? "Open in file manager" : "Open in Explorer"}"
+      title="${isAndroidPlatform ? "Open in file manager" : "Open in Explorer"}"${root ? "" : " disabled"}
+    >
+      <span class="btn-icon" data-icon="folder"></span>
+    </button>`;
+
   return `
     <button
       class="drop-item"
@@ -921,12 +944,13 @@ function dropRowsHtml(root: string | null): string {
     <button
       class="drop-item"
       type="button"
-      data-command="open-folder"
-      aria-label="Open in Explorer"
-      title="Open in Explorer"${root ? "" : " disabled"}
+      data-command="fix-tags"
+      aria-label="Fix tags and covers"
+      title="Fix tags and covers"
     >
-      <span class="btn-icon" data-icon="folder"></span>
-    </button>`;
+      <span class="btn-icon" data-icon="covers"></span>
+    </button>
+    ${folder}`;
 }
 
 function section(title: string, inner: string): string {

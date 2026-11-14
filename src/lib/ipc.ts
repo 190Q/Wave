@@ -18,6 +18,7 @@ import type {
   PlayRecord,
   PlayerReport,
   PlaylistMode,
+  QueueTrack,
   RecommendationSeeds,
   RecommendStatus,
   ScanSummary,
@@ -38,9 +39,18 @@ export function loadState(): Promise<PersistedState> {
   return invoke("get_state");
 }
 
+export function audioStreamBase(): Promise<string> {
+  return invoke("audio_stream_base");
+}
+
 /** Tells the system's own controls and Discord what is playing, or that nothing is. */
 export function setNowPlaying(song: NowPlaying | null): Promise<void> {
   return invoke("set_now_playing", { song });
+}
+
+/** Hands the play order over, for the controls that can offer a queue. */
+export function setQueue(tracks: QueueTrack[]): Promise<void> {
+  return invoke("set_queue", { tracks });
 }
 
 /**
@@ -145,6 +155,11 @@ export function deleteTracks(trackIds: string[]): Promise<PersistedState> {
 
 export function scanLibrary(full: boolean): Promise<ScanSummary> {
   return invoke("scan_library", { full });
+}
+
+/** Reads every song's tags again, which is what fills in an older library. */
+export function rereadTags(): Promise<ScanSummary> {
+  return invoke("reread_tags");
 }
 
 /** What the library holds on disk, for the settings panel. */

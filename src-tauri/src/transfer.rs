@@ -248,6 +248,7 @@ pub(crate) fn run(
             duplicates,
             similar,
             playlist: None,
+            track_ids: Vec::new(),
             errors: Vec::new(),
             state: PersistedState::default(),
         };

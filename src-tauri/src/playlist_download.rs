@@ -154,6 +154,7 @@ fn run_inner(
         duplicates,
         similar,
         playlist: Some(playlist_id.to_string()),
+        track_ids: Vec::new(),
         errors: report.failures().to_vec(),
         state: PersistedState::default(),
     };

@@ -257,6 +257,31 @@
   display: none;
 }
 
+/* The bar over the rows, for acting on a selection with no right-click. */
+.selection-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.55rem 0.6rem;
+  border-radius: 0.6rem;
+  background: var(--raise);
+}
+
+.selection-bar[hidden] {
+  display: none;
+}
+
+.selection-count {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.selection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
 .track-artist {
   flex: none;
   max-width: 9rem;

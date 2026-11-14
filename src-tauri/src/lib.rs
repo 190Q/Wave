@@ -7,6 +7,8 @@
 
 mod analytics;
 mod api;
+#[cfg(any(target_os = "android", test))]
+mod audio_stream;
 #[cfg(target_os = "android")]
 mod apk;
 mod artwork;
@@ -210,6 +212,14 @@ pub fn run() {
         .setup(|app| {
             prepare(app.handle());
 
+            #[cfg(target_os = "android")]
+            match audio_stream::AudioStream::start(app.handle()) {
+                Ok(stream) => {
+                    app.manage(stream);
+                }
+                Err(error) => eprintln!("the audio stream could not start: {error}"),
+            }
+
             // The bridge is managed whether or not the port can be taken, so
             // the report command has somewhere to put what the window sends.
             app.manage(api::player::Bridge::default());
@@ -256,11 +266,15 @@ pub fn run() {
             state::toggle_like,
             state::set_likes,
             presence::set_now_playing,
+            presence::set_queue,
+            #[cfg(target_os = "android")]
+            audio_stream::audio_stream_base,
             api::player::api_report,
             update::check_update,
             update::update_status,
             update::install_update,
             library::scan_library,
+            library::reread_tags,
             library::library_info,
             library::open_library_folder,
             library::delete_tracks,
@@ -316,6 +330,10 @@ pub fn run() {
         // The media controls have to be let go of while the app is still here,
         // or the song stays in the system's own controls after it has closed.
         if let tauri::RunEvent::Exit = event {
+            #[cfg(target_os = "android")]
+            if let Some(stream) = handle.try_state::<audio_stream::AudioStream>() {
+                stream.shutdown();
+            }
             if let Some(presence) = handle.try_state::<presence::Presence>() {
                 presence.shutdown();
             }

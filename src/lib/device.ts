@@ -42,6 +42,8 @@ declare global {
 export const isWebKitGtk =
   /Linux/.test(navigator.userAgent) && !/Chrome\//.test(navigator.userAgent);
 
+export const isAndroidPlatform = /Android/i.test(navigator.userAgent);
+
 let kind: DeviceKind = "desktop";
 
 function asked(): DeviceKind | null {
@@ -59,7 +61,7 @@ function asked(): DeviceKind | null {
 }
 
 function detected(): DeviceKind {
-  if (/Android/i.test(navigator.userAgent)) {
+  if (isAndroidPlatform) {
     return "android";
   }
   // A Linux phone is WebKitGTK driven by a finger. Nothing else on Linux says

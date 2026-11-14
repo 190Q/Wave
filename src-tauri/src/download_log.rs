@@ -4,17 +4,17 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Manager, Runtime};
+#[cfg(not(target_os = "android"))]
 use tauri_plugin_opener::OpenerExt;
 
 use crate::identity::now_ms;
 
-/// The folder the log lives in, beside the library.
-const LOG_DIR: &str = "logs";
+pub(crate) const LOG_DIR: &str = "logs";
 const LOG_FILE: &str = "import.log";
 
 /// The log the import underway is writing, if there is one. An import is run
@@ -163,16 +163,45 @@ pub fn import_log_path(app: AppHandle) -> Result<String, String> {
 }
 
 /// Opens the download log, making it first so there is something to open.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_import_log(app: AppHandle) -> Result<(), String> {
     let path = log_path(&app)?;
     if !path.is_file() {
         fs::write(&path, b"").map_err(|e| format!("could not create {}: {e}", path.display()))?;
     }
 
-    app.opener()
-        .open_path(path.to_string_lossy().into_owned(), None::<&str>)
-        .map_err(|e| format!("could not open {}: {e}", path.display()))
+    open_log(&app, &path)
+}
+
+pub(crate) fn open_log(app: &AppHandle, path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    let shared = {
+        let dir = app
+            .path()
+            .app_cache_dir()
+            .map_err(|e| format!("could not resolve the app cache: {e}"))?
+            .join("shared-logs");
+        fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+        let name = path.file_name().ok_or_else(|| "the log has no filename".to_string())?;
+        let copy = dir.join(name);
+        fs::copy(path, &copy).map_err(|e| format!("could not copy the log: {e}"))?;
+        copy
+    };
+    #[cfg(not(target_os = "android"))]
+    let shared = path.to_path_buf();
+
+    #[cfg(target_os = "android")]
+    {
+        let name = shared.file_name().and_then(|name| name.to_str())
+            .ok_or_else(|| "the log has an invalid filename".to_string())?;
+        app.state::<crate::media_session::Session>().open_log(name)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        app.opener()
+            .open_path(shared.to_string_lossy().into_owned(), None::<&str>)
+            .map_err(|e| format!("could not open {}: {e}", shared.display()))
+    }
 }
 
 /// The command as it was run, so it can be pasted into a terminal.
@@ -209,7 +238,7 @@ fn block(bytes: &[u8]) -> String {
 }
 
 /// A Unix time in milliseconds said as `YYYY-MM-DD HH:MM:SS`, in UTC.
-fn timestamp(ms: i64) -> String {
+pub(crate) fn timestamp(ms: i64) -> String {
     let days = ms.div_euclid(86_400_000);
     let (year, month, day) = civil_from_days(days);
 

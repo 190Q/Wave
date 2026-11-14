@@ -88,6 +88,10 @@ export function mountQueue(): void {
   let dragRem = 0;
   let suppressClick = false;
 
+  /** The pointer position the next frame will use. */
+  let dragX = 0;
+  let dragFrame: number | null = null;
+
   const RAPID_WINDOW_MS = 300;
   let lastCursorAt = 0;
   let rapid = false;
@@ -408,7 +412,10 @@ export function mountQueue(): void {
           : rapid
             ? "transform 0.16s linear"
             : "";
-      card.style.transition = !animate || jumped ? "none" : normal;
+      const wanted = !animate || jumped ? "none" : normal;
+      if (card.style.transition !== wanted) {
+        card.style.transition = wanted;
+      }
       card.style.transform = transform;
       if (jumped && animate) {
         void card.offsetWidth;
@@ -439,13 +446,23 @@ export function mountQueue(): void {
     });
   };
 
-  const syncArtwork = (order: readonly string[], total: number, looping: boolean): void => {
+  const syncCards = (order: readonly string[], total: number, looping: boolean): void => {
     const swaps: CoverSwap[] = [];
 
     for (const [slot, card] of cards) {
       const track = trackById(order[indexAt(slot, total, looping)]);
       if (!track) {
         continue;
+      }
+
+      const title = card.querySelector<HTMLElement>(".card-title");
+      const artist = card.querySelector<HTMLElement>(".card-artist");
+      if (title && title.textContent !== track.title) {
+        title.textContent = track.title;
+      }
+      const artistName = track.artist ?? "Unknown artist";
+      if (artist && artist.textContent !== artistName) {
+        artist.textContent = artistName;
       }
 
       const visible = Math.abs(Number(card.dataset.offset ?? 0)) <= VISIBLE_RANGE;
@@ -507,6 +524,23 @@ export function mountQueue(): void {
     bouncing = false;
   };
 
+  const paintDrag = (): void => {
+    dragFrame = null;
+    if (!dragging) {
+      return;
+    }
+    dragRem = (dragX - dragStartX) / remPx;
+    render();
+  };
+
+  // Coalesce pointer events into one render per frame.
+  const moveDrag = (clientX: number): void => {
+    dragX = clientX;
+    if (dragFrame === null) {
+      dragFrame = requestAnimationFrame(paintDrag);
+    }
+  };
+
   carousel.addEventListener("pointerdown", (event) => {
     if ((event.target as HTMLElement).closest("button")) {
       return;
@@ -516,14 +550,14 @@ export function mountQueue(): void {
     dragRem = 0;
     suppressClick = false;
     carousel.setPointerCapture(event.pointerId);
+    carousel.classList.add("is-dragging");
   });
 
   carousel.addEventListener("pointermove", (event) => {
     if (!dragging) {
       return;
     }
-    dragRem = (event.clientX - dragStartX) / remPx;
-    render();
+    moveDrag(event.clientX);
   });
 
   const endDrag = (event: PointerEvent): void => {
@@ -531,9 +565,15 @@ export function mountQueue(): void {
       return;
     }
     dragging = false;
+    carousel.classList.remove("is-dragging");
+    if (dragFrame !== null) {
+      window.cancelAnimationFrame(dragFrame);
+      dragFrame = null;
+    }
     if (carousel.hasPointerCapture(event.pointerId)) {
       carousel.releasePointerCapture(event.pointerId);
     }
+    dragRem = (event.clientX - dragStartX) / remPx;
     settle();
   };
 
@@ -684,7 +724,7 @@ export function mountQueue(): void {
 
     carousel.classList.toggle("is-empty", total === 0);
     place(total, virtualCenter, !dragging);
-    syncArtwork(snapshot.order, total, looping);
+    syncCards(snapshot.order, total, looping);
 
     if (total > 0) {
       const window = new Set<string>();

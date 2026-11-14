@@ -2,13 +2,25 @@ package com.wave.app
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ComponentName
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Typeface
 import android.os.Build
+import android.provider.DocumentsContract
 import android.util.Log
 import android.view.View
+import android.view.WindowManager
 import android.webkit.WebView
+import android.widget.ScrollView
+import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.graphics.Insets
+import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.ScriptHandler
@@ -23,6 +35,8 @@ import app.tauri.plugin.Channel
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
+import java.io.File
+import java.io.RandomAccessFile
 
 /** The song the front end is playing, in the shape `media_session.rs` sends it. */
 @InvokeArg
@@ -34,6 +48,7 @@ class Song {
   var positionMs: Long = 0
   var playing: Boolean = false
   var artworkPath: String? = null
+  var colour: String? = null
 }
 
 @InvokeArg
@@ -41,10 +56,33 @@ class SongArgs {
   var song: Song? = null
 }
 
+/** One entry of the play order, in the shape `media_session.rs` sends it. */
+@InvokeArg
+class QueueTrack {
+  var id: String? = null
+  var title: String? = null
+  var artist: String? = null
+  var durationMs: Long = 0
+}
+
+@InvokeArg
+class QueueArgs {
+  var tracks: List<QueueTrack>? = null
+}
+
 @InvokeArg
 class EventsArgs {
   lateinit var channel: Channel
 }
+
+@InvokeArg
+class LogArgs {
+  lateinit var name: String
+}
+
+/** How long after a pause the webview is put back into its running state. */
+private const val KEEP_ALIVE_RETRY_MS = 500L
+private const val LOG_VIEW_BYTES = 1_048_576L
 
 /**
  * The phone's own media session.
@@ -67,6 +105,10 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
   private var webView: WebView? = null
   private var insets: Insets? = null
   private var startScript: ScriptHandler? = null
+  private var playing = false
+
+  /** True once the keep-alive has been said out loud for the current song. */
+  private var keepAliveLogged = false
 
   override fun load(webView: WebView) {
     this.webView = webView
@@ -81,6 +123,14 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
     pushInsets()
   }
 
+  override fun onPause(activity: AppCompatActivity) {
+    keepPlaying()
+  }
+
+  override fun onStop(activity: AppCompatActivity) {
+    keepPlaying()
+  }
+
   /** The channel the button presses go back on. */
   @Command
   fun startEvents(invoke: Invoke) {
@@ -93,24 +143,183 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
   fun setNowPlaying(invoke: Invoke) {
     val song = invoke.parseArgs(SongArgs::class.java).song
     if (song == null) {
+      playing = false
+      keepAliveLogged = false
+      keepDisplayAwake(false)
       MediaPlayback.clear(activity)
       invoke.resolve()
       return
     }
 
+    val wasPlaying = playing
+    playing = song.playing
+    keepDisplayAwake(playing)
+
     if (song.playing) {
       askForNotifications()
+      if (!wasPlaying) {
+        keepPlaying()
+      }
+    } else {
+      keepAliveLogged = false
     }
 
     MediaPlayback.show(activity, song)
     invoke.resolve()
   }
 
+  /** Hands over the play order, so the phone's own card can offer the queue. */
+  @Command
+  fun setQueue(invoke: Invoke) {
+    val tracks = invoke.parseArgs(QueueArgs::class.java).tracks ?: emptyList()
+    MediaPlayback.setQueue(activity, tracks)
+    invoke.resolve()
+  }
+
   /** Takes the notification down, for when the app is on its way out. */
   @Command
   fun stopSession(invoke: Invoke) {
+    playing = false
+    keepAliveLogged = false
+    keepDisplayAwake(false)
     MediaPlayback.clear(activity)
     invoke.resolve()
+  }
+
+  @Command
+  fun openMusicFolder(invoke: Invoke) {
+    val authority = "${activity.packageName}.documents"
+    val tree = DocumentsContract.buildTreeDocumentUri(authority, MusicDocumentsProvider.ROOT_ID)
+    val directory = DocumentsContract.buildDocumentUriUsingTree(tree, MusicDocumentsProvider.ROOT_ID)
+    val root = DocumentsContract.buildRootUri(authority, MusicDocumentsProvider.ROOT_ID)
+    val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+    val rootView = Intent(Intent.ACTION_VIEW).setDataAndType(root, "vnd.android.document/root")
+    val directoryView = Intent(Intent.ACTION_VIEW).setDataAndType(directory, DocumentsContract.Document.MIME_TYPE_DIR)
+    for (view in listOf(rootView, directoryView)) {
+      view.clipData = ClipData.newRawUri("Wave music", tree)
+      view.addFlags(flags)
+    }
+    activity.runOnUiThread {
+      try {
+        val manager = activity.packageManager
+        val rootHandlers = manager.queryIntentActivities(rootView, PackageManager.MATCH_DEFAULT_ONLY)
+        val directoryHandlers = manager.queryIntentActivities(directoryView, PackageManager.MATCH_DEFAULT_ONLY)
+        if (rootHandlers.isEmpty() && directoryHandlers.isEmpty()) {
+          val picker = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+              putExtra(DocumentsContract.EXTRA_INITIAL_URI, directory)
+            }
+          }
+          activity.startActivity(picker)
+        } else {
+          val base = if (rootHandlers.isNotEmpty()) rootView else directoryView
+          val rootComponents = rootHandlers.map { ComponentName(it.activityInfo.packageName, it.activityInfo.name) }.toSet()
+          val alternatives = directoryHandlers.mapNotNull {
+            val component = ComponentName(it.activityInfo.packageName, it.activityInfo.name)
+            if (component in rootComponents || rootHandlers.isEmpty()) null
+            else Intent(directoryView).setComponent(component)
+          }
+          val chooser = Intent.createChooser(base, "Open Wave music")
+          if (alternatives.isNotEmpty()) {
+            chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, alternatives.toTypedArray())
+          }
+          activity.startActivity(chooser)
+        }
+        invoke.resolve()
+      } catch (error: Exception) {
+        invoke.reject(error.message ?: "Could not open a file manager")
+      }
+    }
+  }
+
+  @Command
+  fun openLog(invoke: Invoke) {
+    val name = invoke.parseArgs(LogArgs::class.java).name
+    if (name != "import.log") {
+      invoke.reject("Invalid log name")
+      return
+    }
+
+    val file = File(activity.cacheDir, "shared-logs/$name")
+    val contents = try {
+      RandomAccessFile(file, "r").use { input ->
+        val size = input.length()
+        val start = (size - LOG_VIEW_BYTES).coerceAtLeast(0)
+        val bytes = ByteArray((size - start).toInt())
+        input.seek(start)
+        input.readFully(bytes)
+        val prefix = if (start > 0) "Showing the last 1 MB. Open with another app to see the full log.\n\n" else ""
+        prefix + bytes.toString(Charsets.UTF_8)
+      }
+    } catch (error: Exception) {
+      invoke.reject(error.message ?: "Could not read the log")
+      return
+    }
+
+    activity.runOnUiThread {
+      try {
+        val padding = (16 * activity.resources.displayMetrics.density).toInt()
+        val text = TextView(activity).apply {
+          this.text = contents.ifEmpty { "The log is empty." }
+          textSize = 12f
+          typeface = Typeface.MONOSPACE
+          setTextIsSelectable(true)
+          setPadding(padding, padding, padding, padding)
+        }
+        val scroll = ScrollView(activity).apply { addView(text) }
+        AlertDialog.Builder(activity)
+          .setTitle(name)
+          .setView(scroll)
+          .setPositiveButton("Close", null)
+          .setNeutralButton("Open with...") { _, _ ->
+            try {
+              val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", file)
+              val view = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "text/plain")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+              }
+              activity.startActivity(Intent.createChooser(view, "Open log"))
+            } catch (error: Exception) {
+              Toast.makeText(activity, error.message ?: "Could not open the log", Toast.LENGTH_LONG).show()
+            }
+          }
+          .show()
+        invoke.resolve()
+      } catch (error: Exception) {
+        invoke.reject(error.message ?: "Could not open the log")
+      }
+    }
+  }
+
+  private fun keepPlaying() {
+    if (!playing) {
+      return
+    }
+
+    val view = webView ?: return
+    if (!keepAliveLogged) {
+      keepAliveLogged = true
+      Log.i("Wave", "playback keep-alive: webView.onResume and resumeTimers")
+    }
+
+    view.post {
+      view.onResume()
+      view.resumeTimers()
+      view.postDelayed({
+        view.onResume()
+        view.resumeTimers()
+      }, KEEP_ALIVE_RETRY_MS)
+    }
+  }
+
+  private fun keepDisplayAwake(wanted: Boolean) {
+    if (wanted) {
+      activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    } else {
+      activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
   }
 
   private fun report(action: String, value: Double?) {

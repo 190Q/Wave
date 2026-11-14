@@ -13,7 +13,7 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::plugin::{Builder, PluginHandle, TauriPlugin};
 use tauri::{AppHandle, Emitter, Manager, Wry};
 
-use crate::presence::{Control, NowPlaying, CONTROL_EVENT};
+use crate::presence::{Control, NowPlaying, QueueTrack, CONTROL_EVENT};
 
 /// Where the Kotlin plugin lives, and what it is called.
 const PLUGIN_PACKAGE: &str = "com.wave.app";
@@ -43,6 +43,7 @@ struct Song {
     position_ms: u64,
     playing: bool,
     artwork_path: String,
+    colour: String,
 }
 
 impl From<&NowPlaying> for Song {
@@ -55,6 +56,7 @@ impl From<&NowPlaying> for Song {
             position_ms: song.position_ms,
             playing: song.playing,
             artwork_path: song.artwork.clone(),
+            colour: song.colour.clone(),
         }
     }
 }
@@ -67,10 +69,21 @@ struct Show {
     song: Option<Song>,
 }
 
+/// What `setQueue` is called with.
+#[derive(serde::Serialize)]
+struct Queue<'a> {
+    tracks: &'a [QueueTrack],
+}
+
 /// What `startEvents` is called with.
 #[derive(serde::Serialize)]
 struct Events {
     channel: Channel<serde_json::Value>,
+}
+
+#[derive(serde::Serialize)]
+struct LogFile<'a> {
+    name: &'a str,
 }
 
 /// The Rust half of the Kotlin media session.
@@ -78,6 +91,20 @@ struct Events {
 pub struct Session(PluginHandle<Wry>);
 
 impl Session {
+    pub fn open_music_folder(&self) -> Result<(), String> {
+        self.0
+            .run_mobile_plugin::<serde_json::Value>("openMusicFolder", ())
+            .map(|_| ())
+            .map_err(|error| format!("the music folder could not be opened: {error}"))
+    }
+
+    pub fn open_log(&self, name: &str) -> Result<(), String> {
+        self.0
+            .run_mobile_plugin::<serde_json::Value>("openLog", LogFile { name })
+            .map(|_| ())
+            .map_err(|error| format!("the log viewer could not be opened: {error}"))
+    }
+
     /// Hands the plugin the channel its button presses come back on, so a press
     /// reaches the front end as the same `media-control` event the desktop
     /// path emits.
@@ -114,6 +141,17 @@ impl Session {
                 .run_mobile_plugin::<serde_json::Value>("setNowPlaying", payload)
         {
             eprintln!("the phone's media session could not follow the song: {error}");
+        }
+    }
+
+    /// Hands the play order over, so the phone's own card can offer the queue.
+    pub fn set_queue(&self, tracks: &[QueueTrack]) {
+        let payload = Queue { tracks };
+        if let Err(error) = self
+            .0
+            .run_mobile_plugin::<serde_json::Value>("setQueue", payload)
+        {
+            eprintln!("the phone's media session could not be given the queue: {error}");
         }
     }
 

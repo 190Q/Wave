@@ -1,5 +1,5 @@
 import { createIcon } from "../assets/icons/index";
-import { device } from "../lib/device";
+import { device, insets } from "../lib/device";
 import { formatDuration } from "../lib/format";
 import { bounce, reduceMotionActive } from "../lib/motion";
 import { MAX_VOLUME, MIN_VOLUME } from "../lib/player";
@@ -40,6 +40,7 @@ export function mountDock(): void {
   const volume = element<HTMLInputElement>("volume");
   const volumeBars = element("volume-bars");
   const position = element("dock-position");
+  const grab = element<HTMLButtonElement>("dock-grab");
 
   if (
     !dock || !timeNow || !timeTotal || !like || !shuffle || !previous ||
@@ -84,39 +85,69 @@ export function mountDock(): void {
     paintProgress(player.snapshot().positionMs, player.snapshot().durationMs);
   };
 
+  let pressing = false;
+  let pressedId: number | null = null;
+
   dock.addEventListener("pointerdown", (event) => {
-    if ((event.target as HTMLElement).closest("button, input")) {
+    if (event.clientY >= window.innerHeight - insets().bottom) {
       return;
     }
+    // The volume slider is the one control that drags itself.
+    if (event.target instanceof HTMLInputElement) {
+      return;
+    }
+
+    pressing = true;
+    sheet?.press(event);
+
+    if ((event.target as HTMLElement).closest("button")) {
+      return;
+    }
+
+    pressedId = event.pointerId;
+    dock.setPointerCapture(event.pointerId);
+
     scrubbing = true;
     dock.classList.add("is-scrubbing");
-    dock.setPointerCapture(event.pointerId);
-    previewSeek(fractionAt(event.clientX));
-    sheet?.press(event);
-  });
-
-  dock.addEventListener("pointermove", (event) => {
-    if (sheet?.owned()) {
-      sheet.move(event);
-      return;
-    }
-    if (!scrubbing) {
-      return;
-    }
-    sheet?.move(event);
-    if (sheet?.owned()) {
-      dropScrub();
-      return;
-    }
     previewSeek(fractionAt(event.clientX));
   });
 
-  const stopScrub = (event: PointerEvent, commit: boolean): void => {
-    const sought = scrubbing && !(sheet?.owned() ?? false);
+  window.addEventListener("pointermove", (event) => {
+    if (!pressing) {
+      return;
+    }
+    if (!sheet) {
+      if (scrubbing) {
+        previewSeek(fractionAt(event.clientX));
+      }
+      return;
+    }
+    sheet.move(event);
+    if (sheet.owned()) {
+      if (scrubbing) {
+        dropScrub();
+      }
+      return;
+    }
+    if (scrubbing) {
+      previewSeek(fractionAt(event.clientX));
+    }
+  });
+
+  const stopPress = (commit: boolean): void => {
+    if (!pressing) {
+      return;
+    }
+    pressing = false;
+    if (pressedId !== null && dock.hasPointerCapture(pressedId)) {
+      dock.releasePointerCapture(pressedId);
+    }
+    pressedId = null;
+
+    const dragged = sheet?.owned() ?? false;
+    const sought = scrubbing && !dragged;
     sheet?.release();
-    if (dock.hasPointerCapture(event.pointerId)) {
-      dock.releasePointerCapture(event.pointerId);
-    }
+
     if (!scrubbing) {
       return;
     }
@@ -128,8 +159,8 @@ export function mountDock(): void {
     paintProgress(player.snapshot().positionMs, player.snapshot().durationMs);
   };
 
-  dock.addEventListener("pointerup", (event) => stopScrub(event, true));
-  dock.addEventListener("pointercancel", (event) => stopScrub(event, false));
+  window.addEventListener("pointerup", () => stopPress(true));
+  window.addEventListener("pointercancel", () => stopPress(false));
 
   play.addEventListener("click", () => player.toggle());
   previous.addEventListener("click", () => player.previous());
@@ -241,6 +272,11 @@ export function mountDock(): void {
     const snapshot = player.snapshot();
     const track = currentTrack();
     const idle = !track;
+
+    // The handle only leads somewhere while the song has lyrics to show.
+    if (grab) {
+      grab.hidden = getState().lyrics.length === 0;
+    }
 
     if (snapshot.playing !== lastPlaying) {
       lastPlaying = snapshot.playing;

@@ -26,6 +26,9 @@ const INSETS_EVENT = "wave:insets";
 /** The key device.ts remembers the kind under. Both pages share this storage. */
 const DEVICE_KEY = "wave:device";
 
+/** Where the stub keeps whether lyrics are handed over, so a reload keeps it. */
+const LYRICS_KEY = "wave:sim:lyrics";
+
 const POLL_MS = 500;
 const CLOCK_MS = 30_000;
 
@@ -41,6 +44,7 @@ function main(): void {
   const kindSelect = element<HTMLSelectElement>("kind");
   const cutoutSelect = element<HTMLSelectElement>("cutout-shape");
   const lyrics = element<HTMLInputElement>("lyrics");
+  const update = element<HTMLInputElement>("update");
   const reloadButton = element<HTMLButtonElement>("reload");
   const lockNow = element("lock-now");
   const seek = element<HTMLInputElement>("seek");
@@ -57,6 +61,7 @@ function main(): void {
     !kindSelect ||
     !cutoutSelect ||
     !lyrics ||
+    !update ||
     !reloadButton ||
     !lockNow ||
     !seek
@@ -131,6 +136,7 @@ function main(): void {
       `insets ${values.top}/${values.right}/${values.bottom}/${values.left}`,
       held ? `${held.tracks} tracks, ${held.playlists} playlists, ${held.likes} likes` : "loading the fixture",
       lyrics.checked ? "lyrics on" : "lyrics off",
+      update.checked ? "an update is offered, reload to see it" : "no update offered",
     ].join(". ");
   };
 
@@ -179,6 +185,7 @@ function main(): void {
   presetSelect.value = preset.id;
   kindSelect.value = kind;
   cutoutSelect.value = cutoutShape;
+  lyrics.checked = window.localStorage.getItem(LYRICS_KEY) === "1";
 
   // The two pages are same-origin, so this is the storage device.ts reads.
   localStorage.setItem(DEVICE_KEY, kind);
@@ -205,6 +212,11 @@ function main(): void {
 
   lyrics.addEventListener("change", () => {
     bridge()?.setLyricsAvailable(lyrics.checked);
+    reload();
+  });
+
+  update.addEventListener("change", () => {
+    bridge()?.setUpdateAvailable(update.checked);
     paintNote();
   });
 

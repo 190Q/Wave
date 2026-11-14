@@ -7,6 +7,8 @@
 
 mod analytics;
 mod api;
+#[cfg(target_os = "android")]
+mod apk;
 mod artwork;
 mod catalog;
 #[cfg(desktop)]
@@ -201,7 +203,8 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let builder = builder
         .plugin(media_session::init())
-        .plugin(music_library::init());
+        .plugin(music_library::init())
+        .plugin(apk::init());
 
     let app = builder
         .setup(|app| {

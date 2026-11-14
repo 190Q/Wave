@@ -19,3 +19,9 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# The plugins beside the app are loaded from Rust by name, their commands are
+# looked up by name, and the arguments of a command are read out of JSON by
+# field name. None of that survives renaming, and a command that nothing calls
+# directly would be dropped altogether, so the package is left as it is.
+-keep class com.wave.app.** { *; }

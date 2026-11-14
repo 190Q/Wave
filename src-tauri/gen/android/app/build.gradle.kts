@@ -25,6 +25,22 @@ android {
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }
+    val signingKeystore = file(
+        (findProperty("waveKeystore") as String?)
+            ?: "${System.getProperty("user.home")}/.android/debug.keystore"
+    )
+
+    signingConfigs {
+        if (signingKeystore.exists()) {
+            create("wave") {
+                storeFile = signingKeystore
+                storePassword = (findProperty("waveKeystorePassword") as String?) ?: "android"
+                keyAlias = (findProperty("waveKeyAlias") as String?) ?: "androiddebugkey"
+                keyPassword = (findProperty("waveKeyPassword") as String?) ?: "android"
+            }
+        }
+    }
+
     buildTypes {
         getByName("debug") {
             manifestPlaceholders["usesCleartextTraffic"] = "true"
@@ -39,6 +55,9 @@ android {
             }
         }
         getByName("release") {
+            if (signingKeystore.exists()) {
+                signingConfig = signingConfigs.getByName("wave")
+            }
             optimization {
                enable = true
             }

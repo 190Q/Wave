@@ -8,6 +8,7 @@ import {
   withAlpha,
   type Hsv,
 } from "../lib/colour";
+import { device } from "../lib/device";
 import { escapeHtml } from "../lib/format";
 import {
   ADAPTIVE_THEME,
@@ -242,7 +243,7 @@ export function mountTheme(): void {
   element("theme-close")?.addEventListener("click", () => closeDialog());
 
   dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) {
+    if (event.target === dialog && device() !== "android") {
       closeDialog();
     }
   });

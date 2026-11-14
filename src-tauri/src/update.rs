@@ -1,41 +1,33 @@
 //! Checking for a newer release and installing it.
 //!
 //! The latest release is read from GitHub's releases API, the installer for
-//! this platform is picked out of its assets, and on Windows and Linux Wave
-//! can install it itself rather than sending the user to the release page.
+//! this platform is picked out of its assets, and Wave installs it itself
+//! rather than sending the user to the release page.
 //!
-//! A phone gets its updates from the store it was installed from, so nothing
-//! here runs on Android: the three commands say so rather than pretending.
+//! Windows runs the installer, an AppImage replaces itself, and a phone has no
+//! way to replace its own install: there the download is handed to the system
+//! installer, which asks the user to confirm it. Anywhere else the three
+//! commands say so rather than pretending.
 
 use serde::{Deserialize, Serialize};
-#[cfg(desktop)]
 use std::io::{Read, Write};
-#[cfg(desktop)]
-use std::path::Path;
-#[cfg(desktop)]
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-#[cfg(desktop)]
 use std::time::Duration;
-#[cfg(desktop)]
 use tauri::{AppHandle, Emitter, Manager, State};
 
-#[cfg(desktop)]
 use crate::state::{self, Store};
 
 /// The latest release, from the public releases API.
-#[cfg(desktop)]
 const RELEASES_URL: &str = "https://api.github.com/repos/190Q/Wave/releases/latest";
 
 /// How long a metadata request may take before it is given up on.
-#[cfg(desktop)]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The size of each read while the installer downloads.
-#[cfg(desktop)]
 const CHUNK: usize = 64 * 1024;
 
 /// Sent with the bytes received so far while the installer downloads.
-#[cfg(desktop)]
 const UPDATE_PROGRESS_EVENT: &str = "update-progress";
 
 /// A newer release the app can offer to install.
@@ -59,7 +51,6 @@ pub struct UpdateInfo {
 }
 
 /// What the front end is told while the installer downloads.
-#[cfg(desktop)]
 #[derive(Clone, Serialize)]
 struct Progress {
     received: u64,
@@ -67,7 +58,6 @@ struct Progress {
 }
 
 /// A GitHub release, in the shape the API returns it.
-#[cfg(desktop)]
 #[derive(Deserialize, Default)]
 struct Release {
     #[serde(default)]
@@ -83,7 +73,6 @@ struct Release {
 }
 
 /// One file attached to a release.
-#[cfg(desktop)]
 #[derive(Debug, Clone, Deserialize, Default)]
 struct Asset {
     #[serde(default)]
@@ -94,7 +83,6 @@ struct Asset {
 
 /// The one HTTP client the updater uses. A whole-request timeout is set on the
 /// metadata call instead, so a long installer download is not cut short.
-#[cfg(desktop)]
 fn client() -> &'static reqwest::blocking::Client {
     static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
@@ -109,7 +97,6 @@ fn client() -> &'static reqwest::blocking::Client {
 ///
 /// A release that is no newer than the running version clears the offer, and a
 /// reading older than the one already stored never replaces it.
-#[cfg(desktop)]
 fn check(app: &AppHandle) -> Result<Option<UpdateInfo>, String> {
     let store = app.state::<Store>();
     let current = app.package_info().version.to_string();
@@ -155,7 +142,6 @@ fn check(app: &AppHandle) -> Result<Option<UpdateInfo>, String> {
 
 /// The releases are read with a blocking client, which has to be on a thread of
 /// its own rather than on the one the window runs on.
-#[cfg(desktop)]
 #[tauri::command]
 pub async fn check_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
     let handle = app.clone();
@@ -166,7 +152,6 @@ pub async fn check_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> 
 
 /// The update already found, without any network access. The settings panel
 /// calls this when it opens so the button can already say what is waiting.
-#[cfg(desktop)]
 #[tauri::command]
 pub fn update_status(app: AppHandle, store: State<'_, Store>) -> Option<UpdateInfo> {
     let stored = store.snapshot().update?;
@@ -180,8 +165,8 @@ pub fn update_status(app: AppHandle, store: State<'_, Store>) -> Option<UpdateIn
     None
 }
 
-/// Downloads the stored installer and starts it, then closes the app.
-#[cfg(desktop)]
+/// Downloads the stored installer and hands it over: Windows and an AppImage
+/// run it and close the app, a phone leaves the install to the system.
 fn install_stored(app: &AppHandle) -> Result<(), String> {
     let store = app.state::<Store>();
     let Some(info) = store.snapshot().update else {
@@ -195,14 +180,35 @@ fn install_stored(app: &AppHandle) -> Result<(), String> {
         ));
     }
 
-    let downloaded = std::env::temp_dir().join(&info.asset_name);
+    let downloaded = download_path(app, &info)?;
     download(app, &info.asset_url, &downloaded)?;
     install(app, &downloaded, &info)
 }
 
+/// Where the installer is written. A phone keeps it in its own cache, which is
+/// the folder its FileProvider shares with the system installer; everywhere
+/// else the system's temporary folder is what the installer expects.
+fn download_path(app: &AppHandle, info: &UpdateInfo) -> Result<PathBuf, String> {
+    #[cfg(target_os = "android")]
+    {
+        let dir = app
+            .path()
+            .app_cache_dir()
+            .map_err(|e| format!("could not resolve the app cache directory: {e}"))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+        Ok(dir.join(&info.asset_name))
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(std::env::temp_dir().join(&info.asset_name))
+    }
+}
+
 /// The installer is downloaded with a blocking client, so it is put on a thread
 /// of its own rather than on the one the window runs on.
-#[cfg(desktop)]
 #[tauri::command]
 pub async fn install_update(app: AppHandle) -> Result<(), String> {
     let handle = app.clone();
@@ -212,7 +218,6 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
 }
 
 /// Reads the latest release from GitHub's releases API.
-#[cfg(desktop)]
 fn latest_release(current: &str) -> Result<Release, String> {
     let response = client()
         .get(RELEASES_URL)
@@ -234,7 +239,6 @@ fn latest_release(current: &str) -> Result<Release, String> {
 }
 
 /// Streams the installer to `destination`, reporting progress as it goes.
-#[cfg(desktop)]
 fn download(app: &AppHandle, url: &str, destination: &Path) -> Result<(), String> {
     let mut response = client()
         .get(url)
@@ -273,7 +277,6 @@ fn download(app: &AppHandle, url: &str, destination: &Path) -> Result<(), String
 }
 
 /// True when `candidate` is a higher version than `current`.
-#[cfg(desktop)]
 fn is_newer(candidate: &str, current: &str) -> bool {
     let candidate = version_parts(candidate);
     let current = version_parts(current);
@@ -290,7 +293,6 @@ fn is_newer(candidate: &str, current: &str) -> bool {
 }
 
 /// The numeric parts of a version, with a leading `v` and any `-suffix` gone.
-#[cfg(desktop)]
 fn version_parts(version: &str) -> Vec<u64> {
     let version = version.strip_prefix('v').unwrap_or(version);
     let version = version.split('-').next().unwrap_or(version);
@@ -302,7 +304,6 @@ fn version_parts(version: &str) -> Vec<u64> {
 }
 
 /// The lines of the release body's `New features` list.
-#[cfg(desktop)]
 fn feature_lines(body: &str) -> Vec<String> {
     let mut features = Vec::new();
     let mut after_heading = false;
@@ -331,14 +332,12 @@ fn feature_lines(body: &str) -> Vec<String> {
 }
 
 /// The installer to offer for this platform, if the release carries one.
-#[cfg(desktop)]
 fn installer_asset(assets: &[Asset]) -> Option<Asset> {
     pick_asset(assets, installer_names())
 }
 
 /// Picks the asset whose name ends with the preferred suffix, then the plain
 /// one. The slim name is a longer ending, so it is looked for first.
-#[cfg(desktop)]
 fn pick_asset(assets: &[Asset], names: (&str, &str)) -> Option<Asset> {
     let (preferred, plain) = names;
 
@@ -350,42 +349,67 @@ fn pick_asset(assets: &[Asset], names: (&str, &str)) -> Option<Asset> {
 }
 
 /// The two name endings the installer for this platform may have.
-#[cfg(all(desktop, windows))]
+#[cfg(windows)]
 fn installer_names() -> (&'static str, &'static str) {
     ("-setup-slim.exe", "-setup.exe")
 }
 
-#[cfg(all(desktop, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn installer_names() -> (&'static str, &'static str) {
     ("-slim.AppImage", ".AppImage")
 }
 
-#[cfg(all(desktop, not(any(windows, target_os = "linux"))))]
+#[cfg(target_os = "android")]
+fn installer_names() -> (&'static str, &'static str) {
+    (android_abi_name(), ".apk")
+}
+
+#[cfg(target_os = "android")]
+fn android_abi_name() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "arm64.apk"
+    } else if cfg!(target_arch = "arm") {
+        "armv7.apk"
+    } else if cfg!(target_arch = "x86_64") {
+        "x86_64.apk"
+    } else if cfg!(target_arch = "x86") {
+        "x86.apk"
+    } else {
+        ".apk"
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
 fn installer_names() -> (&'static str, &'static str) {
     ("", "")
 }
 
 /// True when Wave can replace its own install rather than pointing at the
 /// release page.
-#[cfg(all(desktop, windows))]
+#[cfg(windows)]
 fn can_install_itself() -> bool {
     true
 }
 
 /// An AppImage can replace itself. A `.deb` or `.rpm` install needs root, so
 /// it is left to the release page.
-#[cfg(all(desktop, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn can_install_itself() -> bool {
     std::env::var_os("APPIMAGE").is_some()
 }
 
-#[cfg(all(desktop, not(any(windows, target_os = "linux"))))]
+#[cfg(target_os = "android")]
+fn can_install_itself() -> bool {
+    true
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
 fn can_install_itself() -> bool {
     false
 }
 
 /// Runs the downloaded installer, which starts Wave again once it is done.
-#[cfg(all(desktop, windows))]
+#[cfg(windows)]
 fn install(app: &AppHandle, downloaded: &Path, _info: &UpdateInfo) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
 
@@ -405,7 +429,7 @@ fn install(app: &AppHandle, downloaded: &Path, _info: &UpdateInfo) -> Result<(),
 }
 
 /// Replaces the running AppImage with the download and starts it again.
-#[cfg(all(desktop, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn install(app: &AppHandle, downloaded: &Path, info: &UpdateInfo) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -434,7 +458,16 @@ fn install(app: &AppHandle, downloaded: &Path, info: &UpdateInfo) -> Result<(), 
     Ok(())
 }
 
-#[cfg(all(desktop, not(any(windows, target_os = "linux"))))]
+#[cfg(target_os = "android")]
+fn install(app: &AppHandle, downloaded: &Path, _info: &UpdateInfo) -> Result<(), String> {
+    let installer = app
+        .try_state::<crate::apk::ApkInstaller>()
+        .ok_or_else(|| "the installer is not loaded".to_string())?;
+
+    installer.install(&downloaded.to_string_lossy())
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
 fn install(_app: &AppHandle, _downloaded: &Path, _info: &UpdateInfo) -> Result<(), String> {
     Err("this platform cannot update itself".to_string())
 }
@@ -450,25 +483,7 @@ fn exit_soon(app: &AppHandle) {
     });
 }
 
-#[cfg(not(desktop))]
-#[tauri::command]
-pub async fn check_update() -> Result<Option<UpdateInfo>, String> {
-    Err("Wave updates itself on desktop only; a phone is updated from its app store".to_string())
-}
-
-#[cfg(not(desktop))]
-#[tauri::command]
-pub fn update_status() -> Option<UpdateInfo> {
-    None
-}
-
-#[cfg(not(desktop))]
-#[tauri::command]
-pub async fn install_update() -> Result<(), String> {
-    Err("Wave updates itself on desktop only; a phone is updated from its app store".to_string())
-}
-
-#[cfg(all(test, desktop))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

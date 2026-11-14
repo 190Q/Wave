@@ -8,7 +8,13 @@ const DRAG_SLOP_PX = 12;
 const VERTICAL_RATIO = 1.5;
 
 /** How much of the way up the sheet has to be before it stays there. */
-const OPEN_SHARE = 0.35;
+const OPEN_SHARE = 0.25;
+
+/** How long a drag may last and still count as a flick rather than a drag. */
+const FLICK_MS = 300;
+
+/** How far a flick has to travel before it settles the way it was going. */
+const FLICK_DISTANCE_PX = 40;
 
 /** Matches the settle transition in the stylesheet. */
 const SETTLE_MS = 340;
@@ -24,17 +30,18 @@ export interface LyricsSheet {
 
 /**
  * The lyrics sheet: the dock is dragged upwards to pull it into the frame, and
- * the panel is dragged back down to put it away. The dock and the queue are
- * pushed up in front of it, and the sheet fills the frame from under the top
- * bar down.
+ * the handle at the top of the sheet is dragged back down to put it away. The
+ * dock and the queue are pushed up in front of it, and the sheet fills the frame
+ * from under the top bar down.
  */
 export function mountLyricsSheet(): LyricsSheet | null {
   const stage = document.querySelector<HTMLElement>(".stage");
   const topbar = document.querySelector<HTMLElement>(".topbar");
   const panel = document.getElementById("lyrics-panel");
+  const grab = document.getElementById("lyrics-grab");
   const root = document.documentElement;
 
-  if (!stage || !topbar || !panel) {
+  if (!stage || !topbar || !panel || !grab) {
     return null;
   }
 
@@ -48,6 +55,8 @@ export function mountLyricsSheet(): LyricsSheet | null {
   let originX = 0;
   let originY = 0;
   let originTravel = 0;
+  /** When the drag in hand began, which is what makes a flick a flick. */
+  let startedAt = 0;
 
   /** The room the sheet has, which is what it takes to push the stack clear. */
   const room = (): number => panel.clientHeight;
@@ -89,6 +98,19 @@ export function mountLyricsSheet(): LyricsSheet | null {
   /** A drag that lifts the stack also lifts the sheet, so the two stay joined. */
   const travelTo = (clientY: number): void => dragTo(originTravel + (originY - clientY));
 
+  /**
+   * Where the sheet settles when the finger comes off: a flick goes the way it
+   * was flicked, and anything slower has to have carried the sheet most of the
+   * way before it stays there.
+   */
+  const settle = (): void => {
+    const travelled = travel - originTravel;
+    const far = Math.abs(travelled) >= room() * OPEN_SHARE;
+    const quick = performance.now() - startedAt < FLICK_MS;
+    const flicked = quick && Math.abs(travelled) >= FLICK_DISTANCE_PX;
+    settleTo(far || flicked ? travelled > 0 : open);
+  };
+
   const press = (event: PointerEvent): void => {
     if (open || !wanted()) {
       return;
@@ -97,6 +119,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
     originX = event.clientX;
     originY = event.clientY;
     originTravel = travel;
+    startedAt = performance.now();
   };
 
   const move = (event: PointerEvent): void => {
@@ -123,40 +146,41 @@ export function mountLyricsSheet(): LyricsSheet | null {
       return;
     }
     owns = false;
-    settleTo(travel >= room() * OPEN_SHARE);
+    settle();
   };
 
-  // The panel is the only thing left on screen once the sheet is up, so it is
-  // what a drag back down starts from.
-  panel.addEventListener("pointerdown", (event) => {
+  // The handle is the sheet's own, and the only thing left to drag once it is
+  // up: the lyrics below it are the scrub, so they cannot move the sheet too.
+  grab.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || !open || !wanted()) {
       return;
     }
     dragging = true;
     originY = event.clientY;
     originTravel = travel;
-    panel.setPointerCapture(event.pointerId);
+    startedAt = performance.now();
+    grab.setPointerCapture(event.pointerId);
   });
 
-  panel.addEventListener("pointermove", (event) => {
+  grab.addEventListener("pointermove", (event) => {
     if (dragging) {
       travelTo(event.clientY);
     }
   });
 
-  const endPanelDrag = (event: PointerEvent): void => {
+  const endGrabDrag = (event: PointerEvent): void => {
     if (!dragging) {
       return;
     }
     dragging = false;
-    if (panel.hasPointerCapture(event.pointerId)) {
-      panel.releasePointerCapture(event.pointerId);
+    if (grab.hasPointerCapture(event.pointerId)) {
+      grab.releasePointerCapture(event.pointerId);
     }
-    settleTo(travel >= room() * OPEN_SHARE);
+    settle();
   };
 
-  panel.addEventListener("pointerup", endPanelDrag);
-  panel.addEventListener("pointercancel", endPanelDrag);
+  grab.addEventListener("pointerup", endGrabDrag);
+  grab.addEventListener("pointercancel", endGrabDrag);
 
   /** The sheet follows the top bar, which moves with the notch and the rotation. */
   const refit = (): void => {

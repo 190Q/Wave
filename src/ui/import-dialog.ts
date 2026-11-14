@@ -512,7 +512,7 @@ export function mountImportDialog(): void {
   });
 
   dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) {
+    if (event.target === dialog && device() !== "android") {
       close();
     }
   });

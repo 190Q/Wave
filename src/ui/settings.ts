@@ -1,4 +1,5 @@
 import { forgetCaptured } from "../lib/analytics";
+import { device } from "../lib/device";
 import { escapeHtml, formatTotalDuration, plural } from "../lib/format";
 import {
   analyticsStats,
@@ -77,6 +78,8 @@ export function mountSettings(): void {
   if (!dialog || !trigger || !closeButton || !saveButton || !body || !dropToggle || !dropList) {
     return;
   }
+
+  const android = device() === "android";
 
   /** What the panel is editing. Committed only on Save, discarded otherwise. */
   let draft: Settings = { ...getState().settings };
@@ -182,11 +185,11 @@ export function mountSettings(): void {
       playbackHtml(draft),
       nowPlayingHtml(draft),
       appearanceHtml(draft),
-      windowHtml(draft),
+      android ? "" : windowHtml(draft),
       libraryHtml(state, selectedExport()?.id ?? ""),
       analyticsHtml(draft, listeningStats, listeningSwell),
       searchHtml(draft),
-      shortcutsHtml(draft, state.windowSlots, openSlot),
+      android ? "" : shortcutsHtml(draft, state.windowSlots, openSlot),
       updatesHtml(state, draft),
     ].join("");
     placeSlotPicker();
@@ -391,7 +394,7 @@ export function mountSettings(): void {
   });
 
   dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) {
+    if (event.target === dialog && device() !== "android") {
       closeDialog();
     }
   });

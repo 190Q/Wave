@@ -17,6 +17,7 @@ import type {
   SwellSummary,
   TopSong,
   Track,
+  UpdateInfo,
 } from "../../types";
 import { artworkJpeg, coverJpeg } from "./artwork";
 import type { SimSummary } from "./bridge";
@@ -29,9 +30,12 @@ const AUDIO_EXTENSIONS = new Set(["mp3", "flac", "m4a", "opus", "ogg", "wav", "a
 
 const RANKED_LIMIT = 100;
 
+/** Where the frame's lyrics switch is kept, so a reload keeps it. */
+const LYRICS_KEY = "wave:sim:lyrics";
+
 let tracks = buildTracks();
 let persisted = buildFixture(tracks);
-let lyricsAvailable = false;
+let updateAvailable = false;
 let nowPlayingSong: NowPlaying | null = null;
 let playlistCount = persisted.playlists.length;
 let nextListener = 1;
@@ -83,8 +87,16 @@ export function unregisterListener(event: string, id: number): void {
   listeners.get(event)?.delete(id);
 }
 
+function lyricsAvailable(): boolean {
+  return window.localStorage.getItem(LYRICS_KEY) === "1";
+}
+
 export function setLyricsAvailable(on: boolean): void {
-  lyricsAvailable = on;
+  window.localStorage.setItem(LYRICS_KEY, on ? "1" : "0");
+}
+
+export function setUpdateAvailable(on: boolean): void {
+  updateAvailable = on;
 }
 
 export function nowPlaying(): NowPlaying | null {
@@ -96,6 +108,26 @@ export function summary(): SimSummary {
     tracks: tracks.length,
     playlists: persisted.playlists.length,
     likes: persisted.likes.length,
+  };
+}
+
+/**
+ * The release the stub offers when the frame asks for one, so the notice, the
+ * popup and the settings section can all be seen without a device.
+ */
+function offeredUpdate(): UpdateInfo {
+  return {
+    version: "0.3.0",
+    url: "https://github.com/190Q/Wave/releases/latest",
+    features: [
+      "Phone updates come from GitHub releases",
+      "A notice no longer covers the library",
+      "The queue scales with the screen",
+    ],
+    publishedAt: new Date(Date.now() - 86_400_000).toISOString(),
+    assetName: "Wave_0.3.0_arm64.apk",
+    assetUrl: "https://example.com/Wave_0.3.0_arm64.apk",
+    automatic: true,
   };
 }
 
@@ -313,7 +345,7 @@ const handlers: Record<string, Handler> = {
   fetch_genres: ({ trackIds }) => fetchGenres(list(trackIds)),
 
   artwork_colour: ({ trackId, path }) => colourFor(text(path) || text(trackId)),
-  load_lyrics: ({ trackId }) => (lyricsAvailable ? lyricsFor(text(trackId)) : null),
+  load_lyrics: ({ trackId }) => (lyricsAvailable() ? lyricsFor(text(trackId)) : null),
   artwork_bytes: ({ path }) => artworkJpeg(text(path)),
   cover_bytes: ({ paths }) => coverJpeg(list(paths)),
 
@@ -327,8 +359,8 @@ const handlers: Record<string, Handler> = {
   analytics_stats: () => null,
   analytics_clear: () => undefined,
 
-  check_update: () => null,
-  update_status: () => null,
+  check_update: () => (updateAvailable ? offeredUpdate() : null),
+  update_status: () => (updateAvailable ? offeredUpdate() : null),
   install_update: () => undefined,
 
   "plugin:app|version": () => "0.2.0",

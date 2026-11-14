@@ -47,7 +47,14 @@ The same app runs on Android and on Linux phones. The desktop window is unchange
 ### Android
 
 ```sh
-npm run tauri android build --apk --debug -t aarch64
+npx tauri android build --apk --debug -t aarch64
+```
+
+The CLI can also be reached through npm, but then the flags have to sit behind `--`, and
+PowerShell swallows a bare one, so it has to be quoted:
+
+```powershell
+npm run tauri '--' android build --apk --debug -t aarch64
 ```
 
 That leaves the APK in
@@ -76,6 +83,11 @@ What the phone does differently:
 - Import is from the phone itself: pick audio files with the system picker, or let Wave
   read the music folders on the device. Spotify, Deezer and YouTube link import needs
   yt-dlp, ffmpeg and Deno, which cannot run on Android, so those are not offered.
+- Updates come from the release page, not from a store. The same check Wave makes on the
+  desktop finds a newer release, and **Settings → Updates** downloads the APK and hands
+  it to the system installer, which asks you to confirm; Android also asks once for
+  permission to install from Wave. The APK is attached to every release as
+  `Wave_x.y.z_arm64.apk`, and it is the one to install by hand the first time.
 
 ### Linux phones
 
@@ -97,7 +109,7 @@ can be driven with no phone attached and without the Rust side at all.
 
 The frame is the fast loop for the interface. The Android-specific behaviour, meaning
 the permissions, the notification, the foreground service and the `content://` URIs the
-picker hands back, needs real Android: `npm run tauri android dev` runs it on an emulator
+picker hands back, needs real Android: `npx tauri android dev` runs it on an emulator
 or a device.
 
 `npm run phone` opens the desktop build in a 360x720 window with the phone device forced,
@@ -225,9 +237,10 @@ Alpine, which do not carry glibc.
   the window and through the system's own notifications. The notice opens a popup
   with the version, the release link and whatever the release lists as new, and a
   button that downloads the slim installer and runs it, so an update needs no trip
-  to the browser. The check is one request to GitHub, and nothing about you or your
-  library goes with it. It can be switched off, and a check can be asked for by
-  hand, in **Settings → Updates**.
+  to the browser. On a phone the same button downloads the APK and hands it to the
+  system installer instead, which asks for a confirmation. The check is one request
+  to GitHub, and nothing about you or your library goes with it. It can be switched
+  off, and a check can be asked for by hand, in **Settings → Updates**.
 
 ## Command line
 

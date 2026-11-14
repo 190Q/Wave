@@ -6,6 +6,7 @@ import {
   nowPlaying,
   registerCallback,
   setLyricsAvailable,
+  setUpdateAvailable,
   summary,
   unregisterCallback,
   unregisterListener,
@@ -37,6 +38,7 @@ const internals: TauriInternals = {
 const bridge: SimBridge = {
   emit: emitEvent,
   setLyricsAvailable,
+  setUpdateAvailable,
   nowPlaying,
   summary,
 };

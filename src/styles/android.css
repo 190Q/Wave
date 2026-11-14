@@ -47,6 +47,13 @@
   display: inline-grid;
 }
 
+html[data-device="android"] {
+  --card-size: min(74vw, calc((100vh - 17rem) / 1.29), 20rem);
+  --card-height: calc(var(--card-size) * 1.29);
+  --carousel-space: var(--card-height);
+  --card-spacing: 9rem;
+}
+
 /* The queue is a block in the column, centred between the top bar and the
    dock, rather than a carousel hanging off the bottom of the stage. It is
    always shown, since the dock no longer carries a queue button. */
@@ -96,6 +103,35 @@
     calc(1.25rem + var(--inset-left));
   transform: translateY(calc(-1 * var(--sheet-travel)));
   touch-action: none;
+  overflow: visible;
+}
+
+[data-device="android"] .dock-grab {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 9rem;
+  height: 2.5rem;
+  padding: 0;
+  background: none;
+  border: 0;
+  touch-action: none;
+}
+
+[data-device="android"] .dock-grab-bar {
+  width: 3rem;
+  height: 0.25rem;
+  border-radius: 62rem;
+  background: rgb(255 255 255 / 0.4);
+  transition: background 0.2s;
+}
+
+[data-device="android"] .dock-grab:active .dock-grab-bar {
+  background: rgb(255 255 255 / 0.75);
 }
 
 [data-device="android"] #queue-toggle {
@@ -117,6 +153,41 @@
   padding-right: calc(1.5rem + var(--inset-right));
   padding-left: calc(1.5rem + var(--inset-left));
   transform: translateY(calc(100% - var(--sheet-travel)));
+}
+
+/* The lyrics are centred in the sheet, rather than ranged left in a column. */
+[data-device="android"] .lyric {
+  justify-content: center;
+  text-align: center;
+}
+
+[data-device="android"] .lyrics-grab {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  z-index: 2;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 3rem;
+  padding: 0;
+  background: none;
+  border: 0;
+  touch-action: none;
+}
+
+[data-device="android"] .lyrics-grab-bar {
+  width: 3rem;
+  height: 0.25rem;
+  border-radius: 62rem;
+  background: rgb(255 255 255 / 0.4);
+  transition: background 0.2s;
+}
+
+[data-device="android"] .lyrics-grab:active .lyrics-grab-bar {
+  background: rgb(255 255 255 / 0.75);
 }
 
 /* A settled sheet travels over the same transition a drag would not. */
@@ -173,7 +244,7 @@
   overflow-y: auto;
 }
 
-[data-device="android"] .confirm-dialog {
+[data-device="android"] .confirm-dialog[open] {
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -228,33 +299,48 @@
   --thumb: 2.75rem;
 }
 
+[data-touch="true"],
+[data-touch="true"] * {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* The controls a row only offers to a pointer are left out altogether: on a
+   finger they read as part of the row, and the row itself is the button. */
+[data-touch="true"] .cover-play,
 [data-touch="true"] .row-more,
 [data-touch="true"] .track-add,
-[data-touch="true"] .track-download,
-[data-touch="true"] .cover-play {
-  opacity: 1;
-  transform: none;
+[data-touch="true"] .track-download {
+  display: none;
 }
 
 /* Stretched rather than enlarged, so the rows keep the height a finger can
    still aim at. */
-[data-touch="true"] .row-more,
-[data-touch="true"] .track-add,
-[data-touch="true"] .track-download {
-  align-self: stretch;
-  width: 2.5rem;
-  height: auto;
-}
-
 [data-touch="true"] .track-like {
   align-self: stretch;
   width: 2.4rem;
   height: auto;
 }
 
-[data-touch="true"] .cover-play {
-  width: 2.4rem;
-  height: 2.4rem;
+/* A swipe across the cards belongs to the carousel, never to the page. */
+[data-touch="true"] .carousel {
+  touch-action: none;
+}
+
+/* The dock is the sheet's handle as well as the seek bar, so a press
+   anywhere on it belongs to the drag rather than to a scroll. */
+[data-touch="true"] .dock,
+[data-touch="true"] .dock :not(input) {
+  touch-action: none;
+}
+
+/* The cover in the middle is the largest thing on the screen, so its title
+   is set for a phone rather than for a card at the foot of a window. */
+[data-touch="true"] .card-title {
+  font-size: 1.05rem;
+}
+
+[data-touch="true"] .card-artist {
+  font-size: 0.9rem;
 }
 
 [data-touch="true"] .pill {

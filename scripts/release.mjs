@@ -8,6 +8,7 @@
 // `sync`, so VERSION is the only one to edit by hand.
 import { execFileSync, execSync } from "node:child_process";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -78,7 +79,21 @@ const MUSL_TARGET = "aarch64-unknown-linux-musl";
 const BINARY = "wave";
 const MUSL_DIR = join(TARGET_DIR, "musl");
 
-// ---------------------------------------------------------------- output ----
+const ANDROID_DIR = join(TARGET_DIR, "android");
+const APK_BUILD = join(
+  root,
+  "src-tauri",
+  "gen",
+  "android",
+  "app",
+  "build",
+  "outputs",
+  "apk",
+  "universal",
+  "release",
+  "app-universal-release.apk",
+);
+
 
 const say = (message = "") => console.log(message);
 const warn = (message) => console.error(`warning: ${message}`);
@@ -86,8 +101,6 @@ const fail = (message) => {
   console.error(`error: ${message}`);
   process.exit(1);
 };
-
-// ----------------------------------------------------------------- shell ----
 
 function run(file, args, { capture = false, input } = {}) {
   // A command that reads stdin has to be handed a pipe for it.
@@ -199,7 +212,7 @@ function drift(version) {
  * the same.
  */
 const BODY = [
-  "Installers for Windows and Linux.",
+  "Installers for Windows, Linux and Android.",
   "",
   "Every installer comes in two builds. The plain one ships yt-dlp, ffmpeg,",
   "ffprobe and Deno, so downloading a link works on a fresh install. The",
@@ -223,6 +236,10 @@ const BODY = [
   "musl, where the glibc packages cannot run, so they get an aarch64 tarball",
   "of their own. That one is the binary on its own: ffmpeg and Deno publish",
   "no musl build, so there is nothing to put beside it.",
+  "",
+  "The Android APK is for a phone. Install it once by hand, and Wave offers each",
+  "later release in **Settings → Updates**: it downloads the APK and hands it to",
+  "the system installer, which asks you to confirm. Nothing goes through a store.",
 ].join("\n");
 
 /**
@@ -386,8 +403,8 @@ function commandGuide(part) {
   say("     pushes the branch and the tag.");
   if (ci) {
     say("     It then dispatches the release workflow, which builds Windows and Linux");
-    say("     for x86_64 and aarch64, adds the aarch64 musl package, and publishes");
-    say("     every build with the release.");
+    say("     for x86_64 and aarch64, adds the aarch64 musl package and the Android");
+    say("     APK, and publishes every build with the release.");
   } else {
     say("     It then builds both installers here and publishes the release from them.");
   }
@@ -413,6 +430,8 @@ function commandGuide(part) {
     say("");
   }
   say("Other things worth knowing");
+  say("  The Android job signs the APK with the keystore held as the ANDROID_KEYSTORE");
+  say("  secret, base64 encoded, so an update installs over the copy on the phone.");
   for (const [command, description] of [
     ["publish --dry-run", "print the plan and change nothing"],
     ["publish --no-publish", "stop after pushing the tag"],
@@ -635,6 +654,42 @@ function commandUploadMusl(tag) {
   gh(["release", "upload", tag, path, "--clobber"]);
 }
 
+/** What the APK is called in a release, which is the name the app looks for. */
+function apkName(version) {
+  return `Wave_${version}_arm64.apk`;
+}
+
+/**
+ * Builds the APK a phone updates from, and names it for the release. It is
+ * signed with the keystore build.gradle.kts picks, which has to be the one the
+ * copy on the phone was built with or Android will refuse the update.
+ */
+function commandApk() {
+  const version = readVersion();
+  shell("npx tauri android build --apk -t aarch64");
+
+  if (!existsSync(APK_BUILD)) {
+    fail("the android build produced no signed APK; is the signing keystore there?");
+  }
+
+  mkdirSync(ANDROID_DIR, { recursive: true });
+  const target = join(ANDROID_DIR, apkName(version));
+  copyFileSync(APK_BUILD, target);
+  say(`\nWrote ${target}`);
+}
+
+function commandUploadApk(tag) {
+  if (!tag) fail("upload-apk needs a tag");
+
+  const path = join(ANDROID_DIR, apkName(readVersion()));
+  if (!existsSync(path)) {
+    fail(`there is no APK for ${readVersion()}; build one with \`node scripts/release.mjs apk\``);
+  }
+
+  requireGh();
+  gh(["release", "upload", tag, path, "--clobber"]);
+}
+
 function releaseExists(tag) {
   try {
     execFileSync("gh", ["release", "view", tag], { cwd: root, stdio: "ignore" });
@@ -807,9 +862,11 @@ Releases
   publish [options]               Sync, commit, tag, push, and publish
   slim                            Build the slim installers and rename them
   musl                            Build the aarch64 musl package, on Alpine
+  apk                             Build the signed Android APK and name it
   upload <tag> <file...>          Add assets to a release
   upload-slim <tag>               Add the slim installers to a release
   upload-musl <tag>               Add the musl package to a release
+  upload-apk <tag>                Add the Android APK to a release
   rm-asset <tag> <name...>        Remove assets from a release
   edit <tag> [options]            Change a release's title, notes or draft state
   delete <tag> --yes [--tag]      Delete a release, and its git tag with --tag
@@ -845,9 +902,11 @@ function main() {
     case "assets": return commandAssets(first);
     case "slim": return commandSlim();
     case "musl": return commandMusl();
+    case "apk": return commandApk();
     case "upload": return commandUpload(first, more);
     case "upload-slim": return commandUploadSlim(first);
     case "upload-musl": return commandUploadMusl(first);
+    case "upload-apk": return commandUploadApk(first);
     case "rm-asset": return commandRemoveAsset(first, more);
     case "delete": return commandDelete(first, options);
     case "edit": return commandEdit(first, options);

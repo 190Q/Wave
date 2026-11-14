@@ -1,6 +1,7 @@
 import { escapeHtml } from "../lib/format";
 import {
   artworkUrlFor,
+  colourFor,
   ensureColour,
   getState,
   player,
@@ -79,7 +80,9 @@ export function mountQueue(): void {
   let lastCursor = 0;
   let lastTravel = 0;
 
-  const remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  const rootStyles = getComputedStyle(document.documentElement);
+  const remPx = parseFloat(rootStyles.fontSize) || 16;
+  const spacingRem = parseFloat(rootStyles.getPropertyValue("--card-spacing")) || SPACING_REM;
   let dragging = false;
   let dragStartX = 0;
   let dragRem = 0;
@@ -182,6 +185,7 @@ export function mountQueue(): void {
     card.dataset.slot = String(slot);
     card.dataset.index = String(index);
     card.dataset.artwork = artworkUrlFor(track, tier) ?? "";
+    card.dataset.colour = colourFor(track);
     card.innerHTML = `
       <div class="card-body" style="${coverStyle(track, tier)}">
         <div class="card-text">
@@ -392,7 +396,7 @@ export function mountQueue(): void {
       const hidden = distance > VISIBLE_RANGE;
 
       const transform =
-        `translateX(${offset * SPACING_REM}rem) ` +
+        `translateX(${offset * spacingRem}rem) ` +
         `translateY(${(distance * distance * ARC_DROP_REM).toFixed(3)}rem) ` +
         `rotate(${offset * ARC_ANGLE_DEG}deg) ` +
         `scale(${1 - Math.min(distance, VISIBLE_RANGE) * 0.04})`;
@@ -447,13 +451,15 @@ export function mountQueue(): void {
       const visible = Math.abs(Number(card.dataset.offset ?? 0)) <= VISIBLE_RANGE;
       const tier: ArtworkTier = visible ? "queue" : "idle";
       const signature = artworkUrlFor(track, tier) ?? "";
-      if (card.dataset.artwork === signature) {
+      const colour = colourFor(track);
+      if (card.dataset.artwork === signature && card.dataset.colour === colour) {
         continue;
       }
 
       // A card still showing its colour hands over to the cover under the sweep.
       const revealing = visible && !card.dataset.artwork && signature !== "";
       card.dataset.artwork = signature;
+      card.dataset.colour = colour;
 
       const body = card.querySelector<HTMLElement>(".card-body");
       if (!body) {
@@ -476,10 +482,10 @@ export function mountQueue(): void {
     const total = snapshot.order.length;
     const looping = snapshot.repeat !== "off";
 
-    const virtual = centerSlot - dragRem / SPACING_REM;
+    const virtual = centerSlot - dragRem / spacingRem;
     bouncing = !looping && total > 1 && (virtual < 0 || virtual > total - 1);
 
-    const steps = Math.round(-dragRem / SPACING_REM);
+    const steps = Math.round(-dragRem / spacingRem);
     suppressClick = Math.abs(dragRem) > 4 / remPx;
     dragRem = 0;
 
@@ -655,7 +661,7 @@ export function mountQueue(): void {
       lastTravel = snapshot.travel;
     }
 
-    const rawCenter = centerSlot - dragRem / SPACING_REM;
+    const rawCenter = centerSlot - dragRem / spacingRem;
     const virtualCenter = looping ? rawCenter : resist(rawCenter, total, false);
     const materialCenter = Math.round(virtualCenter);
 
@@ -699,7 +705,8 @@ export function mountQueue(): void {
   const fitCarousel = (): void => {
     const root = getComputedStyle(document.documentElement);
     const rootPx = parseFloat(root.fontSize) || 16;
-    const reserved = parseFloat(root.getPropertyValue("--carousel-space")) * rootPx;
+    const declared = parseFloat(root.getPropertyValue("--carousel-space"));
+    const reserved = Number.isFinite(declared) ? declared * rootPx : carousel.offsetHeight;
 
     const titlebar = document.getElementById("titlebar");
     const dock = document.getElementById("dock");

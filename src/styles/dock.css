@@ -12,6 +12,10 @@
   user-select: none;
 }
 
+.dock-grab {
+  display: none;
+}
+
 .dock-fill {
   position: absolute;
   left: 0;

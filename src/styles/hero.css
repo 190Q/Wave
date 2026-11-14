@@ -87,6 +87,10 @@
   display: none;
 }
 
+.lyrics-grab {
+  display: none;
+}
+
 .lyrics-track {
   --lyric-active-size: 1.75rem;
   position: absolute;

@@ -3,7 +3,7 @@
   position: absolute;
   top: 3.6rem;
   right: 1rem;
-  z-index: 800;
+  z-index: 350;
   display: flex;
   align-items: center;
   gap: 0.5rem;

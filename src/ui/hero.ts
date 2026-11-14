@@ -283,8 +283,10 @@ export function mountHero(): void {
     const index = Math.min(Math.max(activeLyricIndex(renderedLyrics ?? [], positionMs), -1), last);
     heldAtEnd = last >= 0 && index === last;
 
-    // The song has run past its last lyric: hold the panel there, highlighted, to the end.
-    if (heldAtEnd) {
+    // The song has run past its last lyric: hold the panel there, highlighted,
+    // to the end. A drag is the user asking for an earlier line, so it is left
+    // to follow the finger and take the song back with it.
+    if (heldAtEnd && !dragging && !scrubbing) {
       stopChase();
       wheelTravel = 0;
       targetLine = last;
@@ -315,9 +317,6 @@ export function mountHero(): void {
         return;
       }
       event.preventDefault();
-      if (heldAtEnd) {
-        return;
-      }
 
       const perLine = event.deltaMode === 1 ? WHEEL_LINE_PX : event.deltaMode === 2 ? WHEEL_STEP_PX : 1;
       wheelTravel += event.deltaY * perLine;
@@ -334,7 +333,11 @@ export function mountHero(): void {
   );
 
   panel.addEventListener("pointerdown", (event) => {
-    if (android || event.button !== 0 || lyricLines.length === 0 || heldAtEnd) {
+    if (event.button !== 0 || lyricLines.length === 0) {
+      return;
+    }
+    // The sheet's own handle is what moves the sheet, not the lyrics.
+    if ((event.target as HTMLElement).closest(".lyrics-grab")) {
       return;
     }
     dragging = true;
@@ -346,7 +349,7 @@ export function mountHero(): void {
   });
 
   panel.addEventListener("pointermove", (event) => {
-    if (!dragging || heldAtEnd) {
+    if (!dragging) {
       return;
     }
     // Pulling the lyrics up brings the later ones into the centre, however tall they are.
@@ -361,10 +364,6 @@ export function mountHero(): void {
     dragging = false;
     if (panel.hasPointerCapture(event.pointerId)) {
       panel.releasePointerCapture(event.pointerId);
-    }
-    if (heldAtEnd) {
-      endScrub();
-      return;
     }
     // Settle on the nearest line, so the highlight and the offset agree.
     targetLine = clampLine(Math.round(targetLine));

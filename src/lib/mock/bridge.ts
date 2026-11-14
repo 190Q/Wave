@@ -17,6 +17,8 @@ export interface SimBridge {
   emit(event: string, payload?: unknown): void;
   /** Whether load_lyrics hands a song a lyric file. */
   setLyricsAvailable(on: boolean): void;
+  /** Whether the update check reports a newer release. */
+  setUpdateAvailable(on: boolean): void;
   /** The song the app last handed to the system's own controls. */
   nowPlaying(): NowPlaying | null;
   summary(): SimSummary;

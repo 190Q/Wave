@@ -105,3 +105,73 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/release.mjs upload-musl ${{ inputs.tag }}
+
+  # The APK a phone updates from. It is signed with the keystore the copy on the
+  # phone was built with, which is held as a secret: an update only installs over
+  # a build that carries the same signature. The keystore is the standard debug
+  # one, so a phone that has been running locally built APKs updates in place.
+  android:
+    name: build (android)
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: 27.0.12077973
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Android NDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "ndk;$NDK_VERSION"
+          echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Write the signing keystore
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+        run: |
+          if [ -z "$KEYSTORE" ]; then
+            echo "::error::the ANDROID_KEYSTORE secret is not set, so the APK cannot be signed"
+            exit 1
+          fi
+          mkdir -p "$HOME/.android"
+          printf '%s' "$KEYSTORE" | base64 --decode > "$HOME/.android/debug.keystore"
+
+      - name: Build the APK
+        run: node scripts/release.mjs apk
+
+      # The desktop builds are what create the release, and they run alongside
+      # this job, so the upload waits for it to exist.
+      - name: Attach the APK
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for attempt in $(seq 1 30); do
+            gh release view "${{ inputs.tag }}" > /dev/null 2>&1 && break
+            echo "waiting for ${{ inputs.tag }} to be published"
+            sleep 20
+          done
+          node scripts/release.mjs upload-apk ${{ inputs.tag }}

@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use lofty::file::FileType;
 use lofty::prelude::{Accessor, AudioFile, ItemKey, TaggedFileExt};
@@ -35,12 +36,21 @@ pub const AUDIO_STEM: &str = "audio";
 pub const COVER_STEM: &str = "cover";
 pub const LYRICS_NAME: &str = "lyrics.lrc";
 
+static ROOT: OnceLock<PathBuf> = OnceLock::new();
+
 pub fn library_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    let root = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("could not resolve the app data directory: {e}"))?
-        .join("library");
+    let root = match ROOT.get() {
+        Some(root) => root.clone(),
+        None => {
+            let resolved = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| format!("could not resolve the app data directory: {e}"))?
+                .join("library");
+            let _ = ROOT.set(resolved.clone());
+            resolved
+        }
+    };
 
     for dir in [SONGS_DIR, CONFIG_DIR] {
         let path = root.join(dir);

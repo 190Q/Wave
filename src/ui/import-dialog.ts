@@ -348,6 +348,7 @@ export function mountImportDialog(): void {
   const runImportAction = (action: string): void => {
     switch (action) {
       case "folder":
+        close();
         void importFolder(() => choiceDialog({
           title: "Import this folder",
           message: "Add only the songs to your library, or also create a playlist from this folder? Songs that share a title but differ by artist or album stay separate tracks, and songs whose audio the library already has are skipped.",
@@ -356,17 +357,21 @@ export function mountImportDialog(): void {
         }));
         return;
       case "files":
+        close();
         void importPickedFiles();
         return;
       case "phone":
+        close();
         void importPhoneMusic();
         return;
       case "wavelist":
+        close();
         void importWaveList();
         return;
       case "link": {
         const field = body.querySelector<HTMLInputElement>("#import-link-url");
         if (field) {
+          close();
           void startLinkImport(field.value);
         }
         return;

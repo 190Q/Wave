@@ -1960,7 +1960,7 @@ function watchSources(): void {
   void listen(CONFIG_EVENT, () => {
     // One save can arrive as several events, so wait for the dust to settle.
     if (configTimer !== null) {
-      window.clearTimeout(configTimer);
+      return;
     }
     configTimer = window.setTimeout(() => {
       configTimer = null;

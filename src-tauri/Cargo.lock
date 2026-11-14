@@ -5312,6 +5312,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tiny_http",
  "uuid 1.28.0",
+ "webpki-root-certs",
  "webview2-com",
  "windows",
 ]

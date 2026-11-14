@@ -190,7 +190,7 @@ pub fn import_picked_files(app: AppHandle, paths: Vec<String>) -> Result<ImportO
     }
 
     let store = app.state::<Store>();
-    let names = picked_names(&app, &paths);
+    let names = picked_names(&app, &paths)?;
     let mut outcome = ImportOutcome::default();
 
     for (index, uri) in paths.iter().enumerate() {
@@ -283,16 +283,20 @@ fn merge(into: &mut ImportOutcome, one: ImportOutcome) {
 /// What the system calls each picked file. Android is the one platform where
 /// the picker hands back something that is not already a name, so everywhere
 /// else the name is taken from the path itself.
-fn picked_names(app: &AppHandle, paths: &[String]) -> Vec<String> {
+fn picked_names(app: &AppHandle, paths: &[String]) -> Result<Vec<String>, String> {
     #[cfg(target_os = "android")]
-    if let Some(library) = app.try_state::<crate::music_library::MusicLibrary>() {
-        if let Ok(names) = library.names(paths) {
-            return names;
-        }
+    {
+        let library = app
+            .try_state::<crate::music_library::MusicLibrary>()
+            .ok_or_else(|| "the phone's music library is not loaded".to_string())?;
+        return library.names(paths);
     }
 
-    let _ = app;
-    paths.iter().map(|path| picked_name(path)).collect()
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(paths.iter().map(|path| picked_name(path)).collect())
+    }
 }
 
 /// The name to fall back on when the system cannot say what a picked file is

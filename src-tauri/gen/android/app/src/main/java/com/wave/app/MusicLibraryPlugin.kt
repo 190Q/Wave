@@ -61,7 +61,7 @@ class MusicLibraryPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun musicDirectories(invoke: Invoke) {
     val result = JSObject()
-    result.put("directories", JSArray.from(folders().toList()))
+    result.put("directories", jsArray(folders()))
     invoke.resolve(result)
   }
 
@@ -69,8 +69,18 @@ class MusicLibraryPlugin(private val activity: Activity) : Plugin(activity) {
   fun names(invoke: Invoke) {
     val args = invoke.parseArgs(UriList::class.java)
     val result = JSObject()
-    result.put("names", JSArray.from(args.uris.map { displayName(it) }))
+    result.put("names", jsArray(args.uris.map { displayName(it) }))
     invoke.resolve(result)
+  }
+
+  /**
+   * A JSON array from a list. JSArray.from takes only a real Java array and
+   * returns null for a list, and a null value drops the key it is put under.
+   */
+  private fun jsArray(values: List<String>): JSArray {
+    val array = JSArray()
+    values.forEach { array.put(it) }
+    return array
   }
 
   private fun granted(value: Boolean): JSObject {

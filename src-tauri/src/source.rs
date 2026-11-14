@@ -142,6 +142,9 @@ pub fn watch_config(app: &AppHandle) {
             let Ok(event) = result else {
                 return;
             };
+            if matches!(event.kind, notify::EventKind::Access(_)) {
+                return;
+            }
             let touched = event.paths.iter().any(|path| {
                 path.file_name()
                     .map(|name| name.eq_ignore_ascii_case(ENV_FILE))
@@ -214,11 +217,30 @@ fn unquote(value: &str) -> String {
     trimmed.to_string()
 }
 
+/// A client builder with the TLS settings this platform needs.
+///
+/// Android has no trust store Rust can read, and reqwest's rustls backend
+/// would otherwise use rustls-platform-verifier, which needs a JVM that is not
+/// wired up here: without one the first handshake panics, which is what killed
+/// every request on a phone. Mozilla's own roots are used instead.
+pub(crate) fn client_builder() -> reqwest::blocking::ClientBuilder {
+    #[cfg(target_os = "android")]
+    {
+        let roots = webpki_root_certs::TLS_SERVER_ROOT_CERTS
+            .iter()
+            .filter_map(|der| reqwest::Certificate::from_der(der.as_ref()).ok());
+        return reqwest::blocking::Client::builder().tls_certs_only(roots);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    reqwest::blocking::Client::builder()
+}
+
 /// The one HTTP client every source shares.
 pub(crate) fn client() -> &'static reqwest::blocking::Client {
     static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
-        reqwest::blocking::Client::builder()
+        client_builder()
             .user_agent("Wave/0.1")
             .build()
             .unwrap_or_else(|_| reqwest::blocking::Client::new())

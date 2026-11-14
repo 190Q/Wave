@@ -82,6 +82,12 @@ rustls = { version = "0.23", default-features = false, features = [
   "tls12",
 ] }
 
+# Android has no trust store that Rust can read, and reqwest's rustls backend
+# would otherwise reach for rustls-platform-verifier, which needs JVM wiring
+# Wave does not have and panics on the first handshake without it. Mozilla's
+# own roots are used instead, so nothing has to be wired into the APK.
+webpki-root-certs = "1"
+
 # Used to turn off WebView2's own browser shortcuts (Ctrl+R, F5, F12, ...), to
 # give a command the console it was run from, and to put the media controls
 # worker in an apartment of its own.

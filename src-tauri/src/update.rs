@@ -12,7 +12,6 @@
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -81,16 +80,16 @@ struct Asset {
     browser_download_url: String,
 }
 
-/// The one HTTP client the updater uses. A whole-request timeout is set on the
-/// metadata call instead, so a long installer download is not cut short.
-fn client() -> &'static reqwest::blocking::Client {
-    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::blocking::Client::builder()
-            .connect_timeout(REQUEST_TIMEOUT)
-            .build()
-            .unwrap_or_else(|_| reqwest::blocking::Client::new())
-    })
+/// A client for one check or one download. A whole-request timeout is set on
+/// the metadata call instead, so a long installer download is not cut short.
+///
+/// A fresh one each time: the client owns a thread of its own, and one whose
+/// thread has died fails every later call with the same panic.
+fn client() -> Result<reqwest::blocking::Client, String> {
+    crate::source::client_builder()
+        .connect_timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|error| format!("the update client could not be built: {error}"))
 }
 
 /// Checks for a newer release and keeps the newest offer seen.
@@ -100,7 +99,7 @@ fn client() -> &'static reqwest::blocking::Client {
 fn check(app: &AppHandle) -> Result<Option<UpdateInfo>, String> {
     let store = app.state::<Store>();
     let current = app.package_info().version.to_string();
-    let release = latest_release(&current)?;
+    let release = latest_release(&client()?, &current)?;
 
     let tag = release.tag_name.trim();
     let version = tag.strip_prefix('v').unwrap_or(tag).to_string();
@@ -218,8 +217,8 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
 }
 
 /// Reads the latest release from GitHub's releases API.
-fn latest_release(current: &str) -> Result<Release, String> {
-    let response = client()
+fn latest_release(client: &reqwest::blocking::Client, current: &str) -> Result<Release, String> {
+    let response = client
         .get(RELEASES_URL)
         .header(reqwest::header::USER_AGENT, format!("Wave/{current}"))
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
@@ -240,7 +239,7 @@ fn latest_release(current: &str) -> Result<Release, String> {
 
 /// Streams the installer to `destination`, reporting progress as it goes.
 fn download(app: &AppHandle, url: &str, destination: &Path) -> Result<(), String> {
-    let mut response = client()
+    let mut response = client()?
         .get(url)
         .send()
         .map_err(|e| format!("the installer could not be reached: {e}"))?;

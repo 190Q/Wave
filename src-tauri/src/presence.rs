@@ -584,19 +584,25 @@ impl Discord {
         self.song = song;
     }
 
+    fn current(&self) -> Option<NowPlaying> {
+        self.song.clone().filter(|song| song.playing)
+    }
+
     /// Writes the activity the current state calls for, connecting first if it
     /// has to. A write that fails drops the connection, so the next pass
     /// starts over rather than talking into a pipe that is no longer there.
     fn push(&mut self) {
+        let song = self.current();
+
         if self.client.is_none() {
             // Nothing to say yet, so there is no reason to open the pipe.
-            if self.song.is_none() {
+            if song.is_none() {
                 return;
             }
             self.connect();
         }
 
-        let Some(song) = self.song.clone() else {
+        let Some(song) = song else {
             if self.shown.is_none() {
                 return;
             }
@@ -634,7 +640,7 @@ impl Discord {
 
     /// True while Discord has not been reached and there is something to show.
     fn waiting(&self) -> bool {
-        self.client.is_none() && self.song.is_some()
+        self.client.is_none() && self.current().is_some()
     }
 
     fn connect(&mut self) {
@@ -892,6 +898,94 @@ mod tests {
         discord.show(Some(song("Alison", 30_000, false)));
 
         assert_eq!(stamps(discord.anchor.as_ref(), discord.song.as_ref().unwrap()), (0, 0));
+    }
+
+    #[test]
+    fn a_paused_song_is_not_held() {
+        let mut discord = Discord::new("id".to_string());
+        discord.show(Some(song("Alison", 25_000, true)));
+        assert!(discord.current().is_some());
+        assert!(discord.waiting());
+
+        discord.show(Some(song("Alison", 30_000, false)));
+
+        assert!(discord.current().is_none());
+        assert!(!discord.waiting());
+
+        discord.push();
+        assert!(discord.client.is_none());
+        assert!(discord.shown.is_none());
+
+        discord.show(Some(song("Alison", 90_000, false)));
+        assert!(discord.current().is_none());
+        assert!(!discord.waiting());
+
+        discord.show(Some(song("Alison", 90_000, true)));
+        assert!(discord.current().is_some());
+        assert!(discord.waiting());
+        let anchor = discord.anchor.as_ref().unwrap();
+        let stamps = stamps(Some(anchor), discord.song.as_ref().unwrap());
+        assert!(anchor.playing);
+        assert_eq!(anchor.position_ms, 90_000);
+        assert_eq!(stamps.0, anchor.at_ms.saturating_sub(90_000) as i64);
+        assert_eq!(stamps.1 - stamps.0, 290_000);
+
+        discord.show(None);
+        assert!(discord.current().is_none());
+        assert!(!discord.waiting());
+    }
+
+    #[test]
+    fn a_pause_clears_a_shown_activity_even_if_the_connection_fails() {
+        let mut discord = Discord::new("id".to_string());
+        discord.client = Some(DiscordIpcClient::new("id"));
+        discord.shown = Some(Shown {
+            title: "Alison".to_string(),
+            artist: "Slowdive".to_string(),
+            album: "Souvlaki".to_string(),
+            start: 1,
+            end: 2,
+        });
+        discord.show(Some(song("Alison", 30_000, false)));
+
+        discord.push();
+        assert!(discord.client.is_none());
+        assert!(discord.shown.is_none());
+        assert!(!discord.waiting());
+
+        discord.show(Some(song("Alison", 30_000, true)));
+        assert!(discord.waiting());
+    }
+
+    #[test]
+    #[ignore = "requires Discord and temporarily updates its activity"]
+    fn live_discord_presence_tracks_pause_and_resume() {
+        let mut discord = Discord::new(DEFAULT_DISCORD_CLIENT_ID.to_string());
+
+        discord.show(Some(song("Wave presence verification", 30_000, true)));
+        discord.push();
+        let (_, response) = discord.client.as_mut().unwrap().recv().unwrap();
+        assert_eq!(response["cmd"], "SET_ACTIVITY");
+        assert_ne!(response["evt"], "ERROR");
+        assert_eq!(response["data"]["details"], "Wave presence verification");
+
+        discord.show(Some(song("Wave presence verification", 30_000, false)));
+        discord.push();
+        let (_, response) = discord.client.as_mut().unwrap().recv().unwrap();
+        assert_eq!(response["cmd"], "SET_ACTIVITY");
+        assert_ne!(response["evt"], "ERROR");
+        assert!(response["data"].is_null());
+
+        discord.show(Some(song("Wave presence verification", 90_000, true)));
+        discord.push();
+        let (_, response) = discord.client.as_mut().unwrap().recv().unwrap();
+        assert_eq!(response["cmd"], "SET_ACTIVITY");
+        assert_ne!(response["evt"], "ERROR");
+        assert_eq!(response["data"]["details"], "Wave presence verification");
+        let expected = stamps(discord.anchor.as_ref(), discord.song.as_ref().unwrap());
+        assert_eq!(response["data"]["timestamps"]["start"], expected.0);
+        assert_eq!(response["data"]["timestamps"]["end"], expected.1);
+        discord.stop();
     }
 
     #[test]

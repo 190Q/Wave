@@ -615,8 +615,9 @@ Discord presence is off until it is switched on in **Settings → Now playing**,
 and there is nothing to set up first: the application Wave reports to is built
 into the app, so the switch is the only thing to touch. The card reads
 **Listening to Wave**, with the song as its title, the artist beneath it, and a
-progress bar that stops when the music does. The activity is cleared when Wave
-is closed, and when nothing is loaded.
+progress bar while the song plays. The activity is cleared when playback is
+paused, when nothing is loaded, or when Wave is closed. It returns when playback
+resumes, with the progress bar at the current position.
 
 The image beside it is Wave's own logo rather than the album cover. Discord
 draws only images uploaded to the application, or images at an address it can

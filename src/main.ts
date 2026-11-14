@@ -1,5 +1,6 @@
 import "./assets/icons/icons.css";
 import { mountApi } from "./lib/api";
+import { initDevice, isTouch } from "./lib/device";
 import { showMainWindow } from "./lib/ipc";
 import { mountMotion } from "./lib/motion";
 import { mountPresence } from "./lib/presence";
@@ -35,6 +36,7 @@ import { mountUpdate } from "./ui/update";
 const NOTICE_TIMEOUT_MS = 6000;
 
 function mount(): void {
+  initDevice();
   mountIcons();
   mountMotion();
   mountTitlebar();
@@ -162,7 +164,9 @@ function mountShortcuts(): void {
       return;
     }
 
-    if (event.ctrlKey && event.shiftKey && !event.altKey) {
+    const windowed = !isTouch();
+
+    if (windowed && event.ctrlKey && event.shiftKey && !event.altKey) {
       const digit = /^Digit([1-9])$/.exec(event.code)?.[1];
       if (digit) {
         const slot = Number(digit) - 1;
@@ -181,7 +185,9 @@ function mountShortcuts(): void {
     }
 
     const corner =
-      miniHeld && !event.repeat ? /^Digit([1-4])$/.exec(event.code)?.[1] : undefined;
+      windowed && miniHeld && !event.repeat
+        ? /^Digit([1-4])$/.exec(event.code)?.[1]
+        : undefined;
     if (corner) {
       event.preventDefault();
       cornerPicked = true;

@@ -68,7 +68,7 @@ fi
 
 case "$(uname -m)" in
   x86_64|amd64)   DEB=amd64; RPM=x86_64;  APPIMAGE=amd64 ;;
-  aarch64|arm64)  DEB=arm64; RPM=aarch64; APPIMAGE=arm64 ;;
+  aarch64|arm64)  DEB=arm64; RPM=aarch64; APPIMAGE=aarch64 ;;
   *) die "unsupported architecture: $(uname -m)" ;;
 esac
 

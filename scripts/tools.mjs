@@ -2,7 +2,7 @@
 // Wave's download tools fetcher.
 //
 //   npm run tools
-//   node scripts/tools.mjs [--platform win|linux] [--force]
+//   node scripts/tools.mjs [--platform win|linux] [--arch x64|arm64] [--force]
 //                          [--yt-dlp <tag>] [--ffmpeg <tag>] [--deno <tag>]
 //
 // Wave downloads through yt-dlp, which needs ffmpeg to make an mp3 and Deno to
@@ -37,6 +37,10 @@ const MANIFEST = join(OUT_DIR, "versions.json");
 /**
  * Where each tool comes from, and what to keep once it is unpacked.
  *
+ * `asset` and `pick` are read as [platform][arch], because the three tools
+ * publish a different build per architecture and a Linux package has to carry
+ * the one it was built for. Windows is x64 only.
+ *
  * `pick` maps the name in src-tauri/tools to the path inside the unpacked
  * archive, or to the download itself when the asset is a bare executable.
  */
@@ -46,29 +50,50 @@ const SOURCES = [
     repo: "yt-dlp/yt-dlp",
     // The PyInstaller builds, which carry the challenge scripts yt-dlp-ejs
     // ships, so nothing has to be fetched at run time.
-    asset: { win: "yt-dlp.exe", linux: "yt-dlp_linux" },
+    asset: {
+      win: { x64: "yt-dlp.exe" },
+      linux: { x64: "yt-dlp_linux", arm64: "yt-dlp_linux_aarch64" },
+    },
     checksums: "SHA2-256SUMS",
-    pick: { win: { "yt-dlp.exe": "yt-dlp.exe" }, linux: { "yt-dlp": "yt-dlp_linux" } },
+    pick: {
+      win: { x64: { "yt-dlp.exe": "yt-dlp.exe" } },
+      linux: {
+        x64: { "yt-dlp": "yt-dlp_linux" },
+        arm64: { "yt-dlp": "yt-dlp_linux_aarch64" },
+      },
+    },
     unpack: false,
   },
   {
     key: "ffmpeg",
     // yt-dlp's own build fork, which is the one its documentation points at.
-    // Static, so neither platform needs shared libraries beside it.
+    // Static, so neither platform needs shared libraries beside it. The arm64
+    // archive holds the same two programs, under a directory of its own name.
     repo: "yt-dlp/FFmpeg-Builds",
     asset: {
-      win: "ffmpeg-master-latest-win64-gpl.zip",
-      linux: "ffmpeg-master-latest-linux64-gpl.tar.xz",
+      win: { x64: "ffmpeg-master-latest-win64-gpl.zip" },
+      linux: {
+        x64: "ffmpeg-master-latest-linux64-gpl.tar.xz",
+        arm64: "ffmpeg-master-latest-linuxarm64-gpl.tar.xz",
+      },
     },
     checksums: "checksums.sha256",
     pick: {
       win: {
-        "ffmpeg.exe": "ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe",
-        "ffprobe.exe": "ffmpeg-master-latest-win64-gpl/bin/ffprobe.exe",
+        x64: {
+          "ffmpeg.exe": "ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe",
+          "ffprobe.exe": "ffmpeg-master-latest-win64-gpl/bin/ffprobe.exe",
+        },
       },
       linux: {
-        "ffmpeg": "ffmpeg-master-latest-linux64-gpl/bin/ffmpeg",
-        "ffprobe": "ffmpeg-master-latest-linux64-gpl/bin/ffprobe",
+        x64: {
+          "ffmpeg": "ffmpeg-master-latest-linux64-gpl/bin/ffmpeg",
+          "ffprobe": "ffmpeg-master-latest-linux64-gpl/bin/ffprobe",
+        },
+        arm64: {
+          "ffmpeg": "ffmpeg-master-latest-linuxarm64-gpl/bin/ffmpeg",
+          "ffprobe": "ffmpeg-master-latest-linuxarm64-gpl/bin/ffprobe",
+        },
       },
     },
     unpack: true,
@@ -77,20 +102,28 @@ const SOURCES = [
     key: "deno",
     // yt-dlp hands YouTube's JavaScript challenges to a runtime, and Deno is
     // the only one it enables by default. A single self-contained executable,
-    // which is why yt-dlp picked it.
+    // which is why yt-dlp picked it. Only glibc builds are published, so there
+    // is nothing here for a musl system.
     repo: "denoland/deno",
     asset: {
-      win: "deno-x86_64-pc-windows-msvc.zip",
-      linux: "deno-x86_64-unknown-linux-gnu.zip",
+      win: { x64: "deno-x86_64-pc-windows-msvc.zip" },
+      linux: {
+        x64: "deno-x86_64-unknown-linux-gnu.zip",
+        arm64: "deno-aarch64-unknown-linux-gnu.zip",
+      },
     },
     // Published as a file beside each asset, rather than one for the release.
     checksums: "asset",
-    pick: { win: { "deno.exe": "deno.exe" }, linux: { "deno": "deno" } },
+    pick: {
+      win: { x64: { "deno.exe": "deno.exe" } },
+      linux: { x64: { "deno": "deno" }, arm64: { "deno": "deno" } },
+    },
     unpack: true,
   },
 ];
 
 const PLATFORMS = ["win", "linux"];
+const ARCHES = ["x64", "arm64"];
 
 const say = (message = "") => console.log(message);
 const warn = (message) => console.error(`warning: ${message}`);
@@ -107,6 +140,7 @@ Wave's download tools fetcher.
 
 Options
   --platform <win|linux>   Which platform to fetch for (default: this one)
+  --arch <x64|arm64>       Which architecture to fetch for (default: this one)
   --force                  Fetch again even when the files are already there
   --yt-dlp <tag>           Pin a yt-dlp release, instead of the latest
   --ffmpeg <tag>           Pin an FFmpeg-Builds release
@@ -118,7 +152,7 @@ committed, so the first build on a machine downloads about 250 MB.
 `.trim();
 
 function parse(argv) {
-  const options = { platform: null, force: false, tags: {} };
+  const options = { platform: null, arch: null, force: false, tags: {} };
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -131,6 +165,9 @@ function parse(argv) {
     switch (arg) {
       case "--platform":
         options.platform = value("--platform");
+        break;
+      case "--arch":
+        options.arch = value("--arch");
         break;
       case "--force":
         options.force = true;
@@ -157,6 +194,9 @@ function parse(argv) {
   if (options.platform && !PLATFORMS.includes(options.platform)) {
     fail(`--platform takes ${PLATFORMS.join(" or ")}, not ${options.platform}`);
   }
+  if (options.arch && !ARCHES.includes(options.arch)) {
+    fail(`--arch takes ${ARCHES.join(" or ")}, not ${options.arch}`);
+  }
   return options;
 }
 
@@ -164,6 +204,12 @@ function hostPlatform() {
   if (process.platform === "win32") return "win";
   if (process.platform === "linux") return "linux";
   fail(`there is no Wave build for ${process.platform}; it ships for Windows and Linux`);
+}
+
+function hostArch() {
+  if (process.arch === "x64") return "x64";
+  if (process.arch === "arm64") return "arm64";
+  fail(`there is no Wave build for ${process.arch}; it ships for x64 and arm64`);
 }
 
 /** The release a tool is taken from, named by a tag or left as the latest. */
@@ -324,10 +370,13 @@ function unpack(archive, dest) {
   }
 }
 
-async function fetchTool(source, platform, options, manifest) {
-  const wanted = source.pick[platform];
+async function fetchTool(source, platform, arch, options, manifest) {
+  const wanted = source.pick[platform]?.[arch];
+  if (!wanted) fail(`${source.key} publishes nothing for ${platform} ${arch}`);
+
   const names = Object.keys(wanted);
-  const known = manifest[platform]?.[source.key];
+  const bucket = `${platform}-${arch}`;
+  const known = manifest[bucket]?.[source.key];
   const present = names.every((name) => existsSync(join(OUT_DIR, name)));
 
   if (present && !options.force) {
@@ -336,7 +385,7 @@ async function fetchTool(source, platform, options, manifest) {
   }
 
   const release = await fetchRelease(source.repo, options.tags[source.key]);
-  const assetName = source.asset[platform];
+  const assetName = source.asset[platform][arch];
   const asset = release.assets.find((candidate) => candidate.name === assetName);
   if (!asset) fail(`${source.repo} ${release.tag_name} has no ${assetName}`);
 
@@ -364,8 +413,8 @@ async function fetchTool(source, platform, options, manifest) {
       if (platform === "linux") chmodSync(target, 0o755);
     }
 
-    manifest[platform] = manifest[platform] ?? {};
-    manifest[platform][source.key] = {
+    manifest[bucket] = manifest[bucket] ?? {};
+    manifest[bucket][source.key] = {
       tag: release.tag_name,
       asset: assetName,
       sha256: digest,
@@ -379,6 +428,7 @@ async function fetchTool(source, platform, options, manifest) {
 async function main() {
   const options = parse(process.argv.slice(2));
   const platform = options.platform ?? hostPlatform();
+  const arch = options.arch ?? hostArch();
 
   mkdirSync(OUT_DIR, { recursive: true });
 
@@ -386,9 +436,9 @@ async function main() {
     ? JSON.parse(readFileSync(MANIFEST, "utf8"))
     : {};
 
-  say(`Fetching the download tools for ${platform}`);
+  say(`Fetching the download tools for ${platform} ${arch}`);
   for (const source of SOURCES) {
-    await fetchTool(source, platform, options, manifest);
+    await fetchTool(source, platform, arch, options, manifest);
   }
 
   writeFileSync(MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`);

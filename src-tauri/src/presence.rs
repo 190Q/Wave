@@ -6,6 +6,7 @@
 //! on Linux) and one to Discord. They are kept apart so that a Discord that is
 //! not answering can never hold up the media keys.
 
+#[cfg(desktop)]
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Mutex, MutexGuard};
@@ -17,11 +18,14 @@ use discord_rich_presence::activity::{
 };
 use discord_rich_presence::{DiscordIpc, DiscordIpcClient};
 use serde::{Deserialize, Serialize};
+#[cfg(desktop)]
 use souvlaki::{
     MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
     SeekDirection,
 };
-use tauri::{AppHandle, Emitter, Listener, Manager, State};
+#[cfg(desktop)]
+use tauri::Emitter;
+use tauri::{AppHandle, Listener, Manager, State};
 
 use crate::source::{now_ms, read_env};
 use crate::state::Store;
@@ -87,6 +91,7 @@ enum SystemMessage {
     /// Takes the controls down and ends the thread.
     Stop,
     /// A button on the controls was pressed.
+    #[cfg(desktop)]
     Pressed(MediaControlEvent),
 }
 
@@ -145,9 +150,7 @@ impl Presence {
 
         if system {
             if workers.system.is_none() {
-                let started = claim_controls(&self.app)
-                    .and_then(|controls| start_system(&self.app, controls));
-                if let Some((sender, thread)) = started {
+                if let Some((sender, thread)) = start_system(&self.app) {
                     workers.system = Some(sender);
                     workers.system_thread = Some(thread);
                 }
@@ -232,6 +235,7 @@ pub fn set_now_playing(presence: State<'_, Presence>, song: Option<NowPlaying>) 
 }
 
 /// Claims the system's media controls for the main window.
+#[cfg(desktop)]
 fn claim_controls(app: &AppHandle) -> Option<MediaControls> {
     #[cfg(windows)]
     let hwnd = app
@@ -258,10 +262,9 @@ fn claim_controls(app: &AppHandle) -> Option<MediaControls> {
 }
 
 /// Starts the thread that keeps the system's controls up to date.
-fn start_system(
-    app: &AppHandle,
-    mut controls: MediaControls,
-) -> Option<(Sender<SystemMessage>, JoinHandle<()>)> {
+#[cfg(desktop)]
+fn start_system(app: &AppHandle) -> Option<(Sender<SystemMessage>, JoinHandle<()>)> {
+    let mut controls = claim_controls(app)?;
     let (sender, receiver) = mpsc::channel();
     let pressed = sender.clone();
 
@@ -277,6 +280,7 @@ fn start_system(
     Some((sender, thread))
 }
 
+#[cfg(desktop)]
 fn run_system(app: AppHandle, mut controls: MediaControls, receiver: Receiver<SystemMessage>) {
     #[cfg(windows)]
     let _apartment = Apartment::join();
@@ -333,8 +337,28 @@ fn run_system(app: AppHandle, mut controls: MediaControls, receiver: Receiver<Sy
     }
 }
 
+#[cfg(target_os = "android")]
+fn start_system(app: &AppHandle) -> Option<(Sender<SystemMessage>, JoinHandle<()>)> {
+    let session = app.try_state::<crate::media_session::Session>()?.inner().clone();
+    let (sender, receiver) = mpsc::channel();
+    let thread = thread::spawn(move || run_session(session, receiver));
+    Some((sender, thread))
+}
+
+#[cfg(target_os = "android")]
+fn run_session(session: crate::media_session::Session, receiver: Receiver<SystemMessage>) {
+    loop {
+        match receiver.recv() {
+            Ok(SystemMessage::Show(song)) => session.show(song),
+            Ok(SystemMessage::Stop) | Err(_) => break,
+        }
+    }
+    session.stop();
+}
+
 /// True when the controls would have to be given the song again. The position
 /// is not part of it: that moves constantly and costs nothing to update.
+#[cfg(desktop)]
 fn rewritten(shown: Option<&NowPlaying>, next: Option<&NowPlaying>) -> bool {
     match (shown, next) {
         (None, None) => false,
@@ -353,6 +377,7 @@ fn same_track(left: &NowPlaying, right: &NowPlaying) -> bool {
 }
 
 /// Puts the song's tags and cover on the system's controls.
+#[cfg(desktop)]
 fn show_metadata(controls: &mut MediaControls, song: &NowPlaying) {
     let cover = cover_url(&song.artwork);
     let metadata = MediaMetadata {
@@ -369,6 +394,7 @@ fn show_metadata(controls: &mut MediaControls, song: &NowPlaying) {
 }
 
 /// Tells the controls whether the song is playing, and where it has got to.
+#[cfg(desktop)]
 fn show_playback(controls: &mut MediaControls, song: &NowPlaying) {
     let progress = Some(MediaPosition(Duration::from_millis(song.position_ms)));
     let playback = if song.playing {
@@ -394,6 +420,7 @@ fn text(value: &str) -> Option<&str> {
 /// A file that is no longer there is left off rather than passed on: Windows
 /// loads it itself and gives up on the whole song when it cannot, which would
 /// lose the tags as well as the picture.
+#[cfg(desktop)]
 fn cover_url(path: &str) -> Option<String> {
     if path.is_empty() || !Path::new(path).is_file() {
         return None;
@@ -405,18 +432,19 @@ fn cover_url(path: &str) -> Option<String> {
 /// library records its own relative parts with forward slashes, so a cover
 /// joined onto the root arrives as `C:\...\songs\<id>/cover.jpg`, which is
 /// refused outright rather than read.
-#[cfg(windows)]
+#[cfg(all(desktop, windows))]
 fn cover_path(path: &str) -> String {
     path.replace('/', "\\")
 }
 
-#[cfg(not(windows))]
+#[cfg(all(desktop, not(windows)))]
 fn cover_path(path: &str) -> String {
     path.to_string()
 }
 
 /// The message the player needs for a button press, or nothing when the event
 /// is one Wave has no answer for.
+#[cfg(desktop)]
 fn control_of(event: &MediaControlEvent) -> Option<Control> {
     let (action, value) = match event {
         MediaControlEvent::Play => ("play", None),
@@ -444,6 +472,7 @@ fn control_of(event: &MediaControlEvent) -> Option<Control> {
 }
 
 /// How far a seek moves, negative when it goes backwards.
+#[cfg(desktop)]
 fn step(direction: &SeekDirection, by: u64) -> f64 {
     match direction {
         SeekDirection::Forward => by as f64,
@@ -692,10 +721,10 @@ fn discord_client_id(app: &AppHandle) -> Option<String> {
 /// WinRT wants the calling thread to be in an apartment. The main thread is
 /// one already, but the worker is not, so it joins the multithreaded one for
 /// as long as it lives.
-#[cfg(windows)]
+#[cfg(all(desktop, windows))]
 struct Apartment;
 
-#[cfg(windows)]
+#[cfg(all(desktop, windows))]
 impl Apartment {
     fn join() -> Self {
         use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
@@ -707,7 +736,7 @@ impl Apartment {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(desktop, windows))]
 impl Drop for Apartment {
     fn drop(&mut self) {
         unsafe { windows::Win32::System::Com::CoUninitialize() };
@@ -730,6 +759,7 @@ mod tests {
         }
     }
 
+    #[cfg(desktop)]
     #[test]
     fn a_song_is_only_written_to_the_controls_when_it_changes() {
         let first = song("When The Sun Hits", 0, true);
@@ -743,6 +773,7 @@ mod tests {
         assert!(!rewritten(None, None));
     }
 
+    #[cfg(desktop)]
     #[test]
     fn the_cover_is_a_url_souvlaki_can_load() {
         let cover = std::env::temp_dir().join("wave-presence-cover.jpg");
@@ -760,7 +791,7 @@ mod tests {
     /// The library records its relative parts with forward slashes, so a cover
     /// joined onto the root arrives mixed. Windows refuses such a path outright,
     /// which used to cost the song its tags along with its picture.
-    #[cfg(windows)]
+    #[cfg(all(desktop, windows))]
     #[test]
     fn a_cover_path_is_handed_over_with_backslashes() {
         let cover = std::env::temp_dir().join("wave-presence-mixed.jpg");
@@ -775,6 +806,7 @@ mod tests {
         let _ = std::fs::remove_file(&cover);
     }
 
+    #[cfg(desktop)]
     #[test]
     fn a_button_press_becomes_what_the_player_understands() {
         let control = control_of(&MediaControlEvent::Next).unwrap();

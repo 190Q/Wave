@@ -1,4 +1,5 @@
 import { filterCollections } from "../lib/collections";
+import { device } from "../lib/device";
 import { escapeHtml, plural } from "../lib/format";
 import {
   getState,
@@ -54,6 +55,8 @@ export function mountTopbar(): void {
   ) {
     return;
   }
+
+  const android = device() === "android";
 
   libraryButton.addEventListener("click", () => toggleLibrary());
 
@@ -329,11 +332,13 @@ export function mountTopbar(): void {
     decideCrates();
   };
 
-  if (typeof ResizeObserver !== "undefined") {
+  if (!android && typeof ResizeObserver !== "undefined") {
     new ResizeObserver(decideCrates).observe(recents);
   }
   // Text metrics settle once the display font has loaded.
-  void document.fonts?.ready.then(fitCrates);
+  if (!android) {
+    void document.fonts?.ready.then(fitCrates);
+  }
 
   let renderedCrates = "";
   let cratesFrom: Collection[] | null = null;
@@ -350,13 +355,15 @@ export function mountTopbar(): void {
 
   const render = (): void => {
     const state = getState();
-    const lookup = collectionLookup(state.collections);
 
-    const crates = state.recents
-      .map((id) => lookup.get(id))
-      .filter((collection) => collection !== undefined)
-      .map(
-        (collection) => `
+    if (!android) {
+      const lookup = collectionLookup(state.collections);
+
+      const crates = state.recents
+        .map((id) => lookup.get(id))
+        .filter((collection) => collection !== undefined)
+        .map(
+          (collection) => `
           <button class="crate" type="button" data-collection="${escapeHtml(collection.id)}">
             ${collectionCoverHtml(collection, state.tracksById)}
             <span class="crate-text">
@@ -364,14 +371,15 @@ export function mountTopbar(): void {
               <span class="crate-sub">${escapeHtml(collection.subtitle)}</span>
             </span>
           </button>`,
-      )
-      .join("");
+        )
+        .join("");
 
-    if (crates !== renderedCrates) {
-      renderedCrates = crates;
-      recents.innerHTML = crates;
-      hydrateCovers(recents);
-      fitCrates();
+      if (crates !== renderedCrates) {
+        renderedCrates = crates;
+        recents.innerHTML = crates;
+        hydrateCovers(recents);
+        fitCrates();
+      }
     }
 
     syncResults();

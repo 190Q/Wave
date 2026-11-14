@@ -1,4 +1,5 @@
 import type { IconName } from "../assets/icons/index";
+import { device } from "../lib/device";
 import { escapeHtml, formatTotalDuration } from "../lib/format";
 import { scoreItems, type FieldsOf } from "../lib/search";
 import {
@@ -9,6 +10,8 @@ import {
   getState,
   importFolder,
   importLogPath,
+  importPhoneMusic,
+  importPickedFiles,
   importWaveList,
   importLink,
   jobRunning,
@@ -352,6 +355,12 @@ export function mountImportDialog(): void {
           cancelLabel: "Songs only",
         }));
         return;
+      case "files":
+        void importPickedFiles();
+        return;
+      case "phone":
+        void importPhoneMusic();
+        return;
       case "wavelist":
         void importWaveList();
         return;
@@ -532,13 +541,25 @@ export function mountImportDialog(): void {
 function sectionsHtml(state: AppState, picked: Map<string, string>): string {
   return [
     localSection(),
-    linkSection(),
+    device() === "android" ? "" : linkSection(),
     historySection(),
     ...FETCH_SECTIONS.map((spec) => fetchSection(spec, state, picked)),
   ].join("");
 }
 
 function localSection(): string {
+  if (device() === "android") {
+    return section(
+      "Import from this phone",
+      `<p class="import-hint">Pick audio files with the system picker, or let Wave read the music folders on the phone. Either way the songs are copied into Wave's own library, with their tags, covers and lyrics.</p>
+      <div class="import-actions">
+        <button class="pill" type="button" data-import="files">Import files</button>
+        <button class="pill" type="button" data-import="phone">Scan my phone's music</button>
+      </div>
+      <div id="import-transfer-state" aria-live="polite"></div>`,
+    );
+  }
+
   return section(
     "Local import",
     `<p class="import-hint">Bring in a music folder, or import a Wave playlist to download its songs without Spotify. Playlist downloads use the yt-dlp, ffmpeg and Deno that ship with Wave.</p>
@@ -848,9 +869,19 @@ function runFetch(action: string, collectionId: string): Promise<void> {
 function dropRowsHtml(state: AppState): string {
   const empty = state.collections.length === 0;
 
+  const local =
+    device() === "android"
+      ? [
+          dropRow("files", "import", "Import files"),
+          dropRow("phone", "library", "Scan my phone's music"),
+        ]
+      : [
+          dropRow("folder", "folder", "Import folder"),
+          dropRow("wavelist", "import", "Import Wave playlist"),
+        ];
+
   return [
-    dropRow("folder", "folder", "Import folder"),
-    dropRow("wavelist", "import", "Import Wave playlist"),
+    ...local,
     dropRow("lyrics", "lyrics", "Fetch lyrics", empty),
     dropRow("covers", "covers", "Fetch covers", empty),
     dropRow("genres", "library", "Fetch genres", empty),

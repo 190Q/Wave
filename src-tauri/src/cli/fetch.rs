@@ -5,8 +5,9 @@ use tauri::AppHandle;
 
 use crate::library;
 use crate::progress::Output;
+use crate::search;
 
-use super::{count, songs};
+use super::count;
 
 /// What a pass looks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,9 +51,9 @@ pub fn run(app: &AppHandle, options: &Options) -> Result<(), String> {
 
 /// The songs a pass works on.
 fn ids(app: &AppHandle, options: &Options) -> Result<Vec<String>, String> {
-    let tracks = songs::all(app)?;
+    let tracks = search::all(app)?;
     let wanted: Vec<&library::Track> = match &options.text {
-        Some(text) => songs::matching(&tracks, text),
+        Some(text) => search::matching(&tracks, text),
         None => tracks.iter().collect(),
     };
 

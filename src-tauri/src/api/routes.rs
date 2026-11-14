@@ -14,8 +14,8 @@ use tauri::{Emitter, Manager};
 
 use crate::analytics::Analytics;
 use crate::catalog::Catalog;
-use crate::cli::songs;
 use crate::library::{self, ScanSummary, Track};
+use crate::search;
 use crate::state::{self, PersistedState, Playlist, Settings, Store};
 use crate::tools;
 
@@ -198,8 +198,8 @@ fn play(call: &Call) -> Outcome {
         // Matched exactly as `wave search` matches, so a query that names one
         // song plays that song. A query that names several plays the first,
         // which is the one the search ranks first.
-        let all = songs::all(call.app)?;
-        let found = songs::matching(&all, &query);
+        let all = search::all(call.app)?;
+        let found = search::matching(&all, &query);
         let Some(track) = found.first() else {
             return Err(Failure::missing(format!(
                 "nothing in the library answers to {query}"
@@ -346,8 +346,8 @@ fn tracks(call: &Call) -> Outcome {
         return Ok(json!({ "total": total, "tracks": page }));
     }
 
-    let all = songs::all(call.app)?;
-    let found = songs::matching(&all, query);
+    let all = search::all(call.app)?;
+    let found = search::matching(&all, query);
     let total = found.len();
     let page: Vec<&Track> = found.into_iter().skip(offset).take(limit).collect();
 

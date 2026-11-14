@@ -1,8 +1,12 @@
 use tauri::AppHandle;
 
 use crate::import::ImportOutcome;
-use crate::import_source::{self, ImportPlan, Kind, Link, Service};
-use crate::progress::{Output, Reporter};
+#[cfg(desktop)]
+use crate::import_source::Service;
+use crate::import_source::{self, ImportPlan, Kind, Link};
+#[cfg(desktop)]
+use crate::progress::Output;
+use crate::progress::Reporter;
 use crate::source::read_env;
 use crate::spotify::{self, RefKind};
 
@@ -47,28 +51,46 @@ pub async fn spotify_import(
     url: String,
     download_duplicates: bool,
 ) -> Result<ImportOutcome, String> {
-    let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        import_source::run_link(
-            &handle,
-            Service::Spotify,
-            &url,
-            download_duplicates,
-            Output::Events,
-        )
-    })
-    .await
-    .map_err(|e| format!("the import stopped unexpectedly: {e}"))?
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, url, download_duplicates);
+        return Err(import_source::NOT_ON_ANDROID.to_string());
+    }
+
+    #[cfg(desktop)]
+    {
+        let handle = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            import_source::run_link(
+                &handle,
+                Service::Spotify,
+                &url,
+                download_duplicates,
+                Output::Events,
+            )
+        })
+        .await
+        .map_err(|e| format!("the import stopped unexpectedly: {e}"))?
+    }
 }
 
 /// Reads the link and works out which of its tracks the library already has, so
 /// the dialog can ask before downloading them again.
 #[tauri::command]
 pub async fn spotify_plan(app: AppHandle, url: String) -> Result<ImportPlan, String> {
-    let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        import_source::plan_link(&handle, Service::Spotify, &url, Output::Events)
-    })
-    .await
-    .map_err(|e| format!("could not read the link: {e}"))?
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, url);
+        return Err(import_source::NOT_ON_ANDROID.to_string());
+    }
+
+    #[cfg(desktop)]
+    {
+        let handle = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            import_source::plan_link(&handle, Service::Spotify, &url, Output::Events)
+        })
+        .await
+        .map_err(|e| format!("could not read the link: {e}"))?
+    }
 }

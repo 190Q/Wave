@@ -19,6 +19,16 @@ use crate::tools;
 /// Follows one import, track by track.
 pub const PROGRESS_EVENT: &str = "source-import";
 
+/// What a link import answers with on a platform that cannot download.
+///
+/// yt-dlp, ffmpeg and Deno all have to run as separate programs, and none of
+/// them has an Android build, so there is nothing on a phone to fetch a link's
+/// audio with. Saying so is better than a download that fails obscurely.
+#[cfg(not(desktop))]
+pub const NOT_ON_ANDROID: &str =
+    "link imports are not available on Android: yt-dlp, ffmpeg and Deno cannot run there. \
+     Import the music from the phone's own storage instead.";
+
 /// The services a pasted link can belong to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {

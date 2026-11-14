@@ -2,8 +2,12 @@ use tauri::AppHandle;
 
 use crate::deezer::{self, DeezerStatus, RefKind};
 use crate::import::ImportOutcome;
-use crate::import_source::{self, ImportPlan, Kind, Link, Service};
-use crate::progress::{Output, Reporter};
+#[cfg(desktop)]
+use crate::import_source::Service;
+use crate::import_source::{self, ImportPlan, Kind, Link};
+#[cfg(desktop)]
+use crate::progress::Output;
+use crate::progress::Reporter;
 
 /// Reads the link and asks Deezer what it holds.
 pub(crate) fn resolve(url: &str, report: &mut Reporter, enrich: bool) -> Result<Link, String> {
@@ -57,28 +61,46 @@ pub async fn deezer_import(
     url: String,
     download_duplicates: bool,
 ) -> Result<ImportOutcome, String> {
-    let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        import_source::run_link(
-            &handle,
-            Service::Deezer,
-            &url,
-            download_duplicates,
-            Output::Events,
-        )
-    })
-    .await
-    .map_err(|e| format!("the import stopped unexpectedly: {e}"))?
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, url, download_duplicates);
+        return Err(import_source::NOT_ON_ANDROID.to_string());
+    }
+
+    #[cfg(desktop)]
+    {
+        let handle = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            import_source::run_link(
+                &handle,
+                Service::Deezer,
+                &url,
+                download_duplicates,
+                Output::Events,
+            )
+        })
+        .await
+        .map_err(|e| format!("the import stopped unexpectedly: {e}"))?
+    }
 }
 
 #[tauri::command]
 pub async fn deezer_plan(app: AppHandle, url: String) -> Result<ImportPlan, String> {
-    let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        import_source::plan_link(&handle, Service::Deezer, &url, Output::Events)
-    })
-    .await
-    .map_err(|e| format!("could not read the link: {e}"))?
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, url);
+        return Err(import_source::NOT_ON_ANDROID.to_string());
+    }
+
+    #[cfg(desktop)]
+    {
+        let handle = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            import_source::plan_link(&handle, Service::Deezer, &url, Output::Events)
+        })
+        .await
+        .map_err(|e| format!("could not read the link: {e}"))?
+    }
 }
 
 #[tauri::command]

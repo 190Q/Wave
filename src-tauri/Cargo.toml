@@ -26,17 +26,9 @@ serde_json = "1"
 lofty = "0.25.4"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 tauri-plugin-dialog = "2.8.2"
+tauri-plugin-fs = "2.7.0"
 tauri-plugin-notification = "2"
 notify = "8.2.0"
-reqwest = { version = "0.13.5", default-features = false, features = [
-  "blocking",
-  "charset",
-  "form",
-  "http2",
-  "json",
-  "native-tls",
-  "query",
-] }
 ebur128 = "0.1.10"
 symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "alac", "aiff"] }
 rusqlite = { version = "0.40.2", features = ["bundled"], default-features = false }
@@ -46,11 +38,49 @@ blake3 = "1"
 # crate already is: no async runtime is pulled in for it.
 tiny_http = "0.12"
 
+discord-rich-presence = "1.1.0"
+
+# Every HTTP request the crate makes: lyrics, cover art, genres, the Spotify and
+# Deezer catalogues and the updater.
+#
+# Desktop keeps the platform's own TLS, which native-tls reaches through
+# SChannel on Windows and OpenSSL elsewhere. Android has neither, and openssl
+# will not build for it at all, so there rustls does the talking. reqwest 0.13
+# calls its rustls backend `rustls-no-provider`, so the provider is picked
+# here: ring, which needs nothing but the NDK's clang.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = [
+  "blocking",
+  "charset",
+  "form",
+  "http2",
+  "json",
+  "native-tls",
+  "query",
+] }
+
 # The system's own media controls: the Windows media flyout and the media keys,
 # or MPRIS on Linux. The zbus backend is pure Rust, so Linux needs no libdbus
-# development package to build.
+# development package to build. Android has no souvlaki backend; the media
+# session there is the Kotlin plugin in src/media_session.rs.
 souvlaki = { version = "0.9.3", default-features = false, features = ["use_zbus"] }
-discord-rich-presence = "1.1.0"
+
+[target.'cfg(target_os = "android")'.dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = [
+  "blocking",
+  "charset",
+  "form",
+  "http2",
+  "json",
+  "query",
+  "rustls-no-provider",
+] }
+rustls = { version = "0.23", default-features = false, features = [
+  "logging",
+  "ring",
+  "std",
+  "tls12",
+] }
 
 # Used to turn off WebView2's own browser shortcuts (Ctrl+R, F5, F12, ...), to
 # give a command the console it was run from, and to put the media controls

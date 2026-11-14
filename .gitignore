@@ -7,7 +7,11 @@ dist-ssr/
 
 # rust / tauri build output
 src-tauri/target/
-src-tauri/gen/
+
+# The ACL schemas are written by tauri-build on every run. The Android project
+# beside them is checked in: the manifest, the Kotlin sources and the signing
+# settings all live in it.
+src-tauri/gen/schemas/
 
 # the download tools, fetched by `npm run tools`
 src-tauri/tools/

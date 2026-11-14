@@ -1,3 +1,4 @@
+import { device } from "../lib/device";
 import { activeLyricIndex } from "../lib/lrc";
 import { escapeHtml, joinMeta } from "../lib/format";
 import {
@@ -33,6 +34,8 @@ export function mountHero(): void {
   if (!hero || !cover || !source || !title || !artist || !meta || !panel || !lyricTrack) {
     return;
   }
+
+  const android = device() === "android";
 
   const COVER_MAX_REM = 24;
   const COVER_MIN_REM = 6;
@@ -93,13 +96,15 @@ export function mountHero(): void {
   };
 
   const layout = (): void => {
-    fitCover();
-    fitText();
+    if (!android) {
+      fitCover();
+      fitText();
+    }
     refitLines();
   };
 
   if (typeof ResizeObserver !== "undefined") {
-    new ResizeObserver(layout).observe(hero);
+    new ResizeObserver(layout).observe(android ? panel : hero);
   }
   narrowLayout.addEventListener("change", layout);
   void document.fonts?.ready.then(layout);
@@ -329,7 +334,7 @@ export function mountHero(): void {
   );
 
   panel.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || lyricLines.length === 0 || heldAtEnd) {
+    if (android || event.button !== 0 || lyricLines.length === 0 || heldAtEnd) {
       return;
     }
     dragging = true;

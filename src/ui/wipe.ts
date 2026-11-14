@@ -1,5 +1,5 @@
+import { isWebKitGtk } from "../lib/device";
 import { reduceMotionActive } from "../lib/motion";
-import { isWebKitGtk } from "../lib/platform";
 
 const WIPE_MS = 600;
 

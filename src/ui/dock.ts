@@ -1,4 +1,5 @@
 import { createIcon } from "../assets/icons/index";
+import { device } from "../lib/device";
 import { formatDuration } from "../lib/format";
 import { bounce, reduceMotionActive } from "../lib/motion";
 import { MAX_VOLUME, MIN_VOLUME } from "../lib/player";
@@ -12,6 +13,8 @@ import {
   toggleLikeTrack,
   toggleQueue,
 } from "../lib/state";
+import { mountLyricsSheet, type LyricsSheet } from "./lyrics-sheet";
+import { mountTouch } from "./touch";
 
 
 const VOLUME_FILL_MS = 200;
@@ -45,6 +48,9 @@ export function mountDock(): void {
     return;
   }
 
+  mountTouch();
+  const sheet: LyricsSheet | null = device() === "android" ? mountLyricsSheet() : null;
+
   // The dock background is the seek bar: pressing anywhere on it shows where
   // the track would land, and letting go takes it there. Buttons keep their own
   // clicks.
@@ -71,6 +77,13 @@ export function mountDock(): void {
     timeNow.textContent = formatDuration(fraction * player.snapshot().durationMs);
   };
 
+  /** Gives the seek preview up, for a drag that has turned into the sheet. */
+  const dropScrub = (): void => {
+    scrubbing = false;
+    dock.classList.remove("is-scrubbing");
+    paintProgress(player.snapshot().positionMs, player.snapshot().durationMs);
+  };
+
   dock.addEventListener("pointerdown", (event) => {
     if ((event.target as HTMLElement).closest("button, input")) {
       return;
@@ -79,25 +92,37 @@ export function mountDock(): void {
     dock.classList.add("is-scrubbing");
     dock.setPointerCapture(event.pointerId);
     previewSeek(fractionAt(event.clientX));
+    sheet?.press(event);
   });
 
   dock.addEventListener("pointermove", (event) => {
-    if (scrubbing) {
-      previewSeek(fractionAt(event.clientX));
+    if (sheet?.owned()) {
+      sheet.move(event);
+      return;
     }
+    if (!scrubbing) {
+      return;
+    }
+    sheet?.move(event);
+    if (sheet?.owned()) {
+      dropScrub();
+      return;
+    }
+    previewSeek(fractionAt(event.clientX));
   });
 
   const stopScrub = (event: PointerEvent, commit: boolean): void => {
+    const sought = scrubbing && !(sheet?.owned() ?? false);
+    sheet?.release();
+    if (dock.hasPointerCapture(event.pointerId)) {
+      dock.releasePointerCapture(event.pointerId);
+    }
     if (!scrubbing) {
       return;
     }
     scrubbing = false;
     dock.classList.remove("is-scrubbing");
-    if (dock.hasPointerCapture(event.pointerId)) {
-      dock.releasePointerCapture(event.pointerId);
-    }
-    // The song only moves once the pointer is let go.
-    if (commit) {
+    if (commit && sought) {
       player.seekFraction(scrubFraction);
     }
     paintProgress(player.snapshot().positionMs, player.snapshot().durationMs);

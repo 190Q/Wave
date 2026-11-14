@@ -1,11 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+#[cfg(desktop)]
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalSize, Runtime, State, WebviewWindow};
+#[cfg(desktop)]
+use tauri::{Emitter, Monitor, PhysicalSize, WebviewWindow};
+use tauri::{AppHandle, Manager, Runtime, State};
 
 use crate::identity;
 use crate::playlists;
@@ -24,16 +27,28 @@ pub const GENERATED_KIND: &str = "generated";
 pub const SLOT_COUNT: usize = 9;
 const MIN_WIDTH: u32 = 485;
 const MIN_HEIGHT: u32 = 240;
-const MINI_WIDTH: f64 = MIN_WIDTH as f64;
-const MINI_HEIGHT: f64 = MIN_HEIGHT as f64;
-const MINI_CORNER_COUNT: u8 = 4;
 const DEFAULT_MINI_CORNER: u8 = 4;
-const APPLY_QUIET_MS: u64 = 400;
+
+static MIN_FRAME: OnceLock<(u32, u32)> = OnceLock::new();
 pub const SETTINGS_EVENT: &str = "settings-changed";
+
+// A phone has one window, filling the screen, so the frame, the slots and the
+// mini player are desktop-only from here down.
+#[cfg(desktop)]
+const MINI_WIDTH: f64 = MIN_WIDTH as f64;
+#[cfg(desktop)]
+const MINI_HEIGHT: f64 = MIN_HEIGHT as f64;
+#[cfg(desktop)]
+const MINI_CORNER_COUNT: u8 = 4;
+#[cfg(desktop)]
+const APPLY_QUIET_MS: u64 = 400;
+#[cfg(desktop)]
 static APPLYING_SINCE: Mutex<Option<Instant>> = Mutex::new(None);
 
+#[cfg(desktop)]
 static MINI_INNER: Mutex<Option<PhysicalSize<u32>>> = Mutex::new(None);
 
+#[cfg(desktop)]
 static NORMAL_FRAME: Mutex<Option<WindowGeometry>> = Mutex::new(None);
 
 /// One band of the equaliser.
@@ -395,6 +410,7 @@ pub struct Store {
 
 impl Store {
     pub fn load<R: Runtime>(app: &AppHandle<R>) -> Self {
+        note_min_frame(app);
         let mut state = read_state(app).unwrap_or_default();
         sanitise_geometries(&mut state);
         Self {
@@ -548,6 +564,7 @@ pub fn set_settings(
     let next = store.update(|state| state.settings = settings);
     let committed = commit(&app, next)?;
 
+    #[cfg(desktop)]
     if before.mini_player != committed.settings.mini_player
         || before.mini_corner != committed.settings.mini_corner
     {
@@ -575,6 +592,7 @@ pub fn set_settings(
 }
 
 /// Puts the mini player in a corner, for the `m + 1..4` shortcuts.
+#[cfg(desktop)]
 #[tauri::command]
 pub fn place_mini_player(
     app: AppHandle,
@@ -589,10 +607,44 @@ pub fn place_mini_player(
     Ok(committed)
 }
 
+/// There is no mini player on a phone, and nothing to put in a corner.
+#[cfg(not(desktop))]
+#[tauri::command]
+pub fn place_mini_player(
+    app: AppHandle,
+    store: State<'_, Store>,
+    corner: u8,
+) -> Result<PersistedState, String> {
+    let _ = corner;
+    let next = store.update(|state| state.settings.mini_corner = DEFAULT_MINI_CORNER);
+    commit(&app, next)
+}
+
+/// The floor a frame is clamped to, which the window config decides.
+fn min_frame() -> (u32, u32) {
+    *MIN_FRAME.get().unwrap_or(&(MIN_WIDTH, MIN_HEIGHT))
+}
+
+/// Records the floor the window config asks for.
+fn note_min_frame<R: Runtime>(app: &AppHandle<R>) {
+    let windows = &app.config().app.windows;
+    let Some(window) = windows
+        .iter()
+        .find(|window| window.label == "main")
+        .or_else(|| windows.first())
+    else {
+        return;
+    };
+
+    let width = window.min_width.unwrap_or(f64::from(MIN_WIDTH));
+    let height = window.min_height.unwrap_or(f64::from(MIN_HEIGHT));
+    let _ = MIN_FRAME.set((width.max(0.0) as u32, height.max(0.0) as u32));
+}
 
 fn clamp_geometry(geometry: &mut WindowGeometry) {
-    geometry.width = geometry.width.max(MIN_WIDTH);
-    geometry.height = geometry.height.max(MIN_HEIGHT);
+    let (width, height) = min_frame();
+    geometry.width = geometry.width.max(width);
+    geometry.height = geometry.height.max(height);
 }
 
 fn sanitise_geometries(state: &mut PersistedState) {
@@ -604,6 +656,7 @@ fn sanitise_geometries(state: &mut PersistedState) {
     }
 }
 
+#[cfg(desktop)]
 fn read_frame<R: Runtime>(window: &WebviewWindow<R>) -> Option<WindowGeometry> {
     if window.is_minimized().unwrap_or(false) {
         return None;
@@ -613,6 +666,7 @@ fn read_frame<R: Runtime>(window: &WebviewWindow<R>) -> Option<WindowGeometry> {
 }
 
 /// Picks the frame to keep: the live one, unless it is the maximised one.
+#[cfg(desktop)]
 fn frame_to_remember(live: WindowGeometry, normal: Option<WindowGeometry>) -> WindowGeometry {
     if !live.maximized {
         return live;
@@ -627,6 +681,7 @@ fn frame_to_remember(live: WindowGeometry, normal: Option<WindowGeometry>) -> Wi
     }
 }
 
+#[cfg(desktop)]
 fn read_window_geometry<R: Runtime>(window: &WebviewWindow<R>) -> Result<WindowGeometry, String> {
     let maximized = window.is_maximized().unwrap_or(false);
 
@@ -654,6 +709,7 @@ fn read_window_geometry<R: Runtime>(window: &WebviewWindow<R>) -> Result<WindowG
     Ok(geometry)
 }
 
+#[cfg(desktop)]
 fn apply_geometry<R: Runtime>(
     app: &AppHandle<R>,
     window: &WebviewWindow<R>,
@@ -691,6 +747,7 @@ fn apply_geometry<R: Runtime>(
 }
 
 /// Resizes the window to the saved outer size, which is kept in logical units.
+#[cfg(desktop)]
 fn resize_to<R: Runtime>(window: &WebviewWindow<R>, geometry: &WindowGeometry) {
     let mut geometry = geometry.clone();
     clamp_geometry(&mut geometry);
@@ -700,6 +757,7 @@ fn resize_to<R: Runtime>(window: &WebviewWindow<R>, geometry: &WindowGeometry) {
     );
 }
 
+#[cfg(desktop)]
 fn resize_outer<R: Runtime>(
     window: &WebviewWindow<R>,
     wanted: tauri::LogicalSize<f64>,
@@ -726,6 +784,7 @@ fn resize_outer<R: Runtime>(
     client
 }
 
+#[cfg(desktop)]
 fn lands_on_screen<R: Runtime>(
     app: &AppHandle<R>,
     window: &WebviewWindow<R>,
@@ -758,6 +817,7 @@ fn lands_on_screen<R: Runtime>(
 }
 
 /// Puts the window back where it sat, while the monitor it lived on is around.
+#[cfg(desktop)]
 fn move_to<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>, geometry: &WindowGeometry) {
     let monitor_present = match &geometry.monitor {
         Some(name) => app
@@ -771,6 +831,7 @@ fn move_to<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>, geometry: 
     }
 }
 
+#[cfg(desktop)]
 pub fn apply_window_settings<R: Runtime>(app: &AppHandle<R>, store: &Store, was_mini: bool) {
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -805,6 +866,7 @@ pub fn apply_window_settings<R: Runtime>(app: &AppHandle<R>, store: &Store, was_
     }
 }
 
+#[cfg(desktop)]
 fn place_in_corner<R: Runtime>(window: &WebviewWindow<R>, monitor: &Monitor, corner: u8) {
     let area = monitor.work_area();
     let size = window.outer_size().unwrap_or_default();
@@ -825,6 +887,7 @@ fn place_in_corner<R: Runtime>(window: &WebviewWindow<R>, monitor: &Monitor, cor
 }
 
 /// Watches the main window, so a resize the user drags it to ends mini mode.
+#[cfg(desktop)]
 pub fn watch_window<R: Runtime>(app: &AppHandle<R>) {
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -841,12 +904,14 @@ pub fn watch_window<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
+#[cfg(desktop)]
 fn note_programmatic_change() {
     let mut since = APPLYING_SINCE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     *since = Some(Instant::now());
 }
 
 /// True while the app is still settling a move it made itself.
+#[cfg(desktop)]
 fn applying() -> bool {
     let since = APPLYING_SINCE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     since
@@ -854,6 +919,7 @@ fn applying() -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(desktop)]
 fn note_resized<R: Runtime>(app: &AppHandle<R>, size: PhysicalSize<u32>) {
     if applying() || is_mini_size(size) {
         return;
@@ -876,6 +942,7 @@ fn note_resized<R: Runtime>(app: &AppHandle<R>, size: PhysicalSize<u32>) {
     let _ = window.set_always_on_top(next.settings.always_on_top);
 }
 
+#[cfg(desktop)]
 fn note_normal_frame<R: Runtime>(app: &AppHandle<R>, size: PhysicalSize<u32>) {
     if applying() || is_mini_size(size) {
         return;
@@ -891,21 +958,25 @@ fn note_normal_frame<R: Runtime>(app: &AppHandle<R>, size: PhysicalSize<u32>) {
     }
 }
 
+#[cfg(desktop)]
 fn remember_normal_frame(geometry: WindowGeometry) {
     let mut recorded = NORMAL_FRAME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     *recorded = Some(geometry);
 }
 
+#[cfg(desktop)]
 fn last_normal_frame() -> Option<WindowGeometry> {
     let recorded = NORMAL_FRAME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     recorded.clone()
 }
 
+#[cfg(desktop)]
 fn remember_mini_size(size: PhysicalSize<u32>) {
     let mut recorded = MINI_INNER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     *recorded = Some(size);
 }
 
+#[cfg(desktop)]
 fn is_mini_size(size: PhysicalSize<u32>) -> bool {
     let recorded = MINI_INNER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(recorded) = *recorded else {
@@ -915,6 +986,7 @@ fn is_mini_size(size: PhysicalSize<u32>) -> bool {
 }
 
 /// Applies the remembered geometry to the main window, before it is shown.
+#[cfg(desktop)]
 pub fn restore_window_geometry<R: Runtime>(app: &AppHandle<R>, store: &Store) {
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -934,6 +1006,7 @@ pub fn restore_window_geometry<R: Runtime>(app: &AppHandle<R>, store: &Store) {
     apply_geometry(app, &window, &geometry, SnapPart::Frame);
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub fn save_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<(), String> {
     let current = store.snapshot();
@@ -960,6 +1033,7 @@ pub fn save_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<(
 }
 
 /// Forgets the remembered geometry, so the next launch uses the defaults.
+#[cfg(desktop)]
 #[tauri::command]
 pub fn reset_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<(), String> {
     let next = store.update(|state| state.window = None);
@@ -967,6 +1041,7 @@ pub fn reset_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<
 }
 
 /// Remembers the window's current frame against a `Ctrl+Shift+1..9` slot.
+#[cfg(desktop)]
 #[tauri::command]
 pub fn save_window_slot(
     app: AppHandle,
@@ -995,6 +1070,7 @@ pub fn save_window_slot(
 }
 
 /// Snaps the window back to the frame saved against a slot.
+#[cfg(desktop)]
 #[tauri::command]
 pub fn apply_window_slot(
     app: AppHandle,
@@ -1011,6 +1087,47 @@ pub fn apply_window_slot(
     };
     apply_geometry(&app, &window, geometry, part);
     Ok(())
+}
+
+/// A phone's window fills the screen, so there is no frame to remember.
+#[cfg(not(desktop))]
+#[tauri::command]
+pub fn save_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<(), String> {
+    let _ = (app, store);
+    Err("a phone's window fills the screen, so there is no frame to remember".to_string())
+}
+
+/// A phone's window fills the screen, so there is no frame to forget.
+#[cfg(not(desktop))]
+#[tauri::command]
+pub fn reset_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<(), String> {
+    let _ = (app, store);
+    Err("a phone's window fills the screen, so there is no frame to forget".to_string())
+}
+
+/// A phone's window fills the screen, so there is no frame to save.
+#[cfg(not(desktop))]
+#[tauri::command]
+pub fn save_window_slot(
+    app: AppHandle,
+    store: State<'_, Store>,
+    slot: usize,
+) -> Result<PersistedState, String> {
+    let _ = (app, slot);
+    Ok(store.snapshot())
+}
+
+/// A phone's window fills the screen, so there is no frame to snap to.
+#[cfg(not(desktop))]
+#[tauri::command]
+pub fn apply_window_slot(
+    app: AppHandle,
+    store: State<'_, Store>,
+    slot: usize,
+    part: SnapPart,
+) -> Result<(), String> {
+    let _ = (app, store, slot, part);
+    Err("a phone's window fills the screen, so there is no frame to snap to".to_string())
 }
 
 #[tauri::command(async)]
@@ -1069,6 +1186,7 @@ pub fn set_likes(
 mod tests {
     use super::*;
 
+    #[cfg(desktop)]
     fn frame(width: u32, height: u32, maximized: bool) -> WindowGeometry {
         WindowGeometry {
             width,
@@ -1080,6 +1198,7 @@ mod tests {
         }
     }
 
+    #[cfg(desktop)]
     #[test]
     fn a_maximised_window_remembers_the_size_it_had_before() {
         let kept = frame_to_remember(frame(1920, 1080, true), Some(frame(900, 655, false)));
@@ -1090,6 +1209,7 @@ mod tests {
         assert!(kept.maximized);
     }
 
+    #[cfg(desktop)]
     #[test]
     fn a_maximised_window_with_nothing_remembered_keeps_its_own_frame() {
         let live = frame(1920, 1080, true);
@@ -1097,6 +1217,7 @@ mod tests {
         assert_eq!(frame_to_remember(live.clone(), None), live);
     }
 
+    #[cfg(desktop)]
     #[test]
     fn a_window_that_was_not_maximised_keeps_its_own_frame() {
         let live = frame(900, 655, false);

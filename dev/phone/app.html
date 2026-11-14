@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <!-- The simulator's copy of index.html: same markup, with the mock runtime's entry. -->
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Wave (phone)</title>
+    <link rel="stylesheet" href="/src/styles/tokens.css" />
+    <link rel="stylesheet" href="/src/styles/app.css" />
+    <script type="module" src="/dev/phone/app.ts" defer></script>
+  </head>
+
+  <body>
+    <main class="stage" id="stage">
+      <header class="titlebar" id="titlebar" data-tauri-drag-region>
+        <span class="titlebar-brand" data-icon="app-icon" aria-hidden="true"></span>
+        <span class="titlebar-title">Wave</span>
+
+        <div class="titlebar-controls">
+          <button class="titlebar-button" id="window-minimise" type="button" aria-label="Minimise">
+            <span class="btn-icon" data-icon="minimise"></span>
+          </button>
+          <button class="titlebar-button" id="window-maximise" type="button" aria-label="Maximise">
+            <span class="btn-icon" data-icon="maximise"></span>
+          </button>
+          <button class="titlebar-button is-close" id="window-close" type="button" aria-label="Close">
+            <span class="btn-icon" data-icon="close-window"></span>
+          </button>
+        </div>
+      </header>
+
+      <aside class="sheet" id="sheet" aria-label="Library">
+        <div class="sheet-head">
+          <h2>Library</h2>
+          <div class="sheet-head-actions">
+            <button class="pill" id="sheet-back" type="button" hidden>Back</button>
+            <button class="pill" id="new-playlist" type="button">New playlist</button>
+            <button class="pill icon-only" id="sheet-close" type="button" aria-label="Close library">
+              <span class="btn-icon" data-icon="close"></span>
+            </button>
+          </div>
+        </div>
+
+        <input
+          class="search sheet-search"
+          id="sheet-search"
+          type="search"
+          placeholder="Filter collections"
+          aria-label="Filter collections"
+          autocomplete="off"
+        />
+
+        <div class="chips" id="chips">
+          <button class="pill is-on" type="button" data-filter="all">All</button>
+          <button class="pill" type="button" data-filter="playlists">Playlists</button>
+          <button class="pill" type="button" data-filter="artists">Artists</button>
+          <button class="pill" type="button" data-filter="albums">Albums</button>
+          <button class="pill" type="button" data-filter="genres">Genres</button>
+        </div>
+
+        <div class="sheet-tools">
+          <span id="sheet-count"></span>
+          <button class="pill sort-button" id="sheet-sort" type="button" aria-haspopup="true" aria-label="Sort collections">
+            <span id="sheet-sort-label">A to Z</span>
+            <span class="sort-chevron" aria-hidden="true"></span>
+          </button>
+        </div>
+
+        <div class="sheet-list" id="library">
+          <div class="library-rows" id="library-rows"></div>
+          <div class="library-pane" id="library-pane" hidden></div>
+        </div>
+        <div class="sheet-foot" id="folders"></div>
+      </aside>
+
+      <header class="topbar">
+        <button class="pill pill-strong" id="library-open" type="button" aria-label="Library">
+          <span class="btn-icon" data-icon="library"></span>
+          <span class="pill-label">Library</span>
+        </button>
+        <nav class="crates" id="recents" aria-label="Recent collections"></nav>
+
+        <button class="pill icon-only search-open" id="search-open" type="button" aria-label="Search your library">
+          <span class="btn-icon" data-icon="search"></span>
+        </button>
+
+        <div class="drop-toggle" id="import-toggle">
+          <button
+            class="pill"
+            id="import-open"
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+            aria-label="Import"
+          >
+            <span class="btn-icon" data-icon="import"></span>
+            <span class="pill-label">Import</span>
+          </button>
+
+          <div class="drop" id="import-drop">
+            <div class="drop-inner">
+              <div class="drop-list" id="import-drop-list"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="drop-toggle" id="theme-toggle">
+          <button
+            class="pill"
+            id="theme-toggle-face"
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+            aria-label="Theme"
+          >
+            <span class="btn-icon" data-icon="theme"></span>
+            <span class="pill-label">Theme</span>
+          </button>
+
+          <div class="drop theme-drop" id="theme-drop">
+            <div class="drop-inner">
+              <div class="drop-list" id="theme-drop-list"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="drop-toggle" id="settings-toggle">
+          <button
+            class="pill icon-only settings-button"
+            id="settings-open"
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+            aria-label="Settings"
+          >
+            <span class="btn-icon" data-icon="settings"></span>
+          </button>
+
+          <div class="drop" id="settings-drop">
+            <div class="drop-inner">
+              <div class="drop-list" id="settings-drop-list"></div>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div class="search-modal" id="search-modal" hidden>
+        <div class="search-modal-panel" id="search-panel">
+          <div class="search-wrap" id="search-wrap">
+            <span class="search-icon" data-icon="search" aria-hidden="true"></span>
+            <input
+              class="search"
+              id="search"
+              type="search"
+              placeholder="Search your library"
+              aria-label="Search your library"
+              autocomplete="off"
+            />
+            <div class="results" id="results">
+              <div class="results-inner">
+                <div class="results-list" id="results-list"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <section class="hero" id="hero">
+        <div class="now-cover" id="now-cover"></div>
+        <div class="now">
+          <p class="kicker now-part" id="now-source"></p>
+          <h1 class="now-title now-part" id="now-title"></h1>
+          <p class="now-artist now-part" id="now-artist"></p>
+          <p class="now-meta now-part" id="now-meta"></p>
+        </div>
+        <div class="lyrics" id="lyrics-panel" hidden>
+          <div class="lyrics-track" id="lyrics"></div>
+        </div>
+      </section>
+
+      <section class="dock" id="dock">
+        <div class="dock-fill" id="dock-fill"></div>
+        <div class="dock-edge" id="dock-edge"></div>
+
+        <div class="dock-inner">
+          <div class="seek-row">
+            <span class="time" id="time-now">0:00</span>
+            <p class="dock-title" id="dock-title" aria-hidden="true">
+              <span class="dock-title-text" id="dock-title-text"></span>
+            </p>
+            <span class="time" id="time-total">0:00</span>
+          </div>
+
+          <div class="dock-row">
+            <div class="dock-side">
+              <button class="pill icon-pill" id="like" type="button" aria-label="Add to Liked Songs"></button>
+              <span class="dock-position" id="dock-position"></span>
+            </div>
+
+            <div class="buttons" id="dock-buttons">
+              <button class="pill icon-pill" id="shuffle" type="button" aria-label="Shuffle">
+                <span class="btn-icon" data-icon="shuffle"></span>
+              </button>
+              <button class="icon" id="prev" type="button" aria-label="Previous">
+                <span class="btn-icon" data-icon="previous"></span>
+              </button>
+              <button class="icon" id="play" type="button" aria-label="Play"></button>
+              <button class="icon" id="next" type="button" aria-label="Next">
+                <span class="btn-icon" data-icon="next"></span>
+              </button>
+              <button class="pill icon-pill" id="repeat" type="button" aria-label="Repeat off">
+                <span class="btn-icon" data-icon="repeat"></span>
+              </button>
+            </div>
+
+            <div class="dock-side dock-end">
+              <button class="pill icon-pill" id="queue-toggle" type="button" aria-label="Queue">
+                <span class="btn-icon" data-icon="queue"></span>
+              </button>
+              <div class="volume">
+                <input
+                  class="volume-input"
+                  id="volume"
+                  type="range"
+                  min="0"
+                  max="100"
+                  value="70"
+                  aria-label="Volume"
+                />
+                <span class="volume-bars" id="volume-bars" aria-hidden="true"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="carousel-space"></div>
+      <div class="carousel" id="carousel" aria-label="Playback queue"></div>
+
+      <p class="status" id="status" hidden></p>
+
+      <div class="update-toast" id="update-toast" hidden>
+        <span class="update-toast-text" id="update-toast-text"></span>
+        <button class="pill" id="update-toast-open" type="button">See what's new</button>
+        <button class="update-toast-close" id="update-toast-close" type="button" aria-label="Dismiss">
+          <span class="btn-icon" data-icon="close"></span>
+        </button>
+      </div>
+
+      <dialog class="theme-dialog" id="theme-dialog">
+        <div class="theme-dialog-head">
+          <h2>Theme</h2>
+          <button class="pill icon-only" id="theme-close" type="button" aria-label="Close">
+            <span class="btn-icon" data-icon="close"></span>
+          </button>
+        </div>
+
+        <div class="picker">
+          <div class="picker-inner" id="picker-inner">
+            <div class="picker-area" id="picker-area">
+              <span class="picker-knob" id="picker-knob"></span>
+            </div>
+
+            <input
+              class="picker-hue"
+              id="picker-hue"
+              type="range"
+              min="0"
+              max="360"
+              value="210"
+              aria-label="Hue"
+            />
+
+            <div class="picker-row">
+              <span class="picker-preview" id="picker-preview"></span>
+              <input
+                class="picker-hex"
+                id="picker-hex"
+                type="text"
+                spellcheck="false"
+                maxlength="7"
+                aria-label="Hex colour"
+              />
+              <button class="pill pill-strong" id="picker-apply" type="button">Use</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="theme-list" id="theme-list"></div>
+      </dialog>
+
+      <dialog class="settings-dialog" id="settings-dialog">
+        <div class="settings-head">
+          <h2>Settings</h2>
+          <button class="pill icon-only" id="settings-close" type="button" aria-label="Close">
+            <span class="btn-icon" data-icon="close"></span>
+          </button>
+        </div>
+
+        <div class="settings-body" id="settings-body"></div>
+
+        <div class="settings-foot">
+          <button class="pill pill-strong" id="settings-save" type="button" hidden>Save</button>
+        </div>
+      </dialog>
+
+      <div class="eq-modal" id="eq-modal" hidden>
+        <div class="eq-panel" id="eq-panel" role="dialog" aria-modal="true" aria-labelledby="eq-title">
+          <header class="eq-head">
+            <div class="eq-head-text">
+              <h2 id="eq-title">Equaliser</h2>
+              <p class="settings-hint" id="eq-origin"></p>
+            </div>
+
+            <div class="eq-head-actions">
+              <button class="pill" id="eq-power" type="button" role="switch" aria-checked="false">Off</button>
+              <button class="pill icon-only" id="eq-close" type="button" aria-label="Close">
+                <span class="btn-icon" data-icon="close"></span>
+              </button>
+            </div>
+          </header>
+
+          <div class="eq-body" id="eq-body"></div>
+
+          <input class="eq-file" id="eq-file" type="file" accept=".txt,.eq,text/plain" hidden />
+        </div>
+      </div>
+
+      <dialog class="import-dialog" id="import-dialog" aria-labelledby="import-title">
+        <div class="import-head">
+          <h2 id="import-title">Import</h2>
+          <button class="pill icon-only" id="import-close" type="button" aria-label="Close">
+            <span class="btn-icon" data-icon="close"></span>
+          </button>
+        </div>
+
+        <div class="import-body" id="import-body"></div>
+      </dialog>
+
+      <dialog
+        class="confirm-dialog"
+        id="confirm-dialog"
+        aria-labelledby="confirm-title"
+        aria-describedby="confirm-message"
+      >
+        <h2 class="confirm-title" id="confirm-title"></h2>
+        <p class="confirm-message" id="confirm-message"></p>
+
+        <div class="confirm-actions">
+          <button class="pill" id="confirm-cancel" type="button">Cancel</button>
+          <button class="pill pill-danger" id="confirm-accept" type="button"></button>
+        </div>
+      </dialog>
+
+      <dialog class="update-dialog" id="update-dialog" aria-labelledby="update-title">
+        <div class="update-head">
+          <h2 id="update-title">Update</h2>
+          <button class="pill icon-only" id="update-close" type="button" aria-label="Close">
+            <span class="btn-icon" data-icon="close"></span>
+          </button>
+        </div>
+
+        <div class="update-body" id="update-body"></div>
+
+        <div class="update-foot">
+          <button class="pill" id="update-release" type="button">View the release</button>
+          <button class="pill pill-strong" id="update-install" type="button">Update now</button>
+        </div>
+      </dialog>
+    </main>
+  </body>
+</html>

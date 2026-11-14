@@ -19,8 +19,11 @@ Wave is built and supported on **Windows 10/11** and **Linux** (X11 and
 Wayland). macOS is not supported.
 
 - The interface is plain TypeScript and the DOM. One file is platform-aware:
-  `src/lib/platform.ts` reports whether the webview is WebKitGTK, which is how an
-  effect that WebKitGTK renders badly gets skipped.
+  `src/lib/device.ts` works out whether the window is a desktop, a Linux phone or
+  Android, and how much of the screen the system already owns, so a stylesheet
+  asks for `[data-device="android"]` rather than guessing from a width. It also
+  reports whether the webview is WebKitGTK, which is how an effect that WebKitGTK
+  renders badly gets skipped.
 - The Rust side has a few small platform-specific pieces, all behind `cfg`:
   `#[cfg(windows)]` turns off WebView2's browser accelerator keys and gives the
   system media controls the window handle they are claimed by, and
@@ -36,6 +39,69 @@ Wayland). macOS is not supported.
   library.
 
 See [Requirements](#requirements) for the per-OS toolchain.
+
+## Phones
+
+The same app runs on Android and on Linux phones. The desktop window is unchanged.
+
+### Android
+
+```sh
+npm run tauri android build --apk --debug -t aarch64
+```
+
+That leaves the APK in
+`src-tauri/gen/android/app/build/outputs/apk/universal/debug/`. It is a debug build, so
+most of its size is Rust debug symbols; leave `--debug` off for a release build that is
+a small fraction of it.
+
+What the phone does differently:
+
+- The layout is the phone one, keyed off the device the front end works out for itself:
+  no cover, title, album, artist or "Playing from" line; the progress bar sits at the
+  bottom with no queue button; the queue sits in the middle of the screen; the library,
+  search, import, theme and settings buttons sit at the top.
+- Dragging the progress bar upwards brings the lyrics in and pushes the queue and the
+  progress bar out of frame below the top bar. Dragging the panel back down puts them
+  back. It only works when the song has lyrics.
+- Every dialog, the equaliser and the library fill the screen, and the top and bottom of
+  the layout are padded by the window insets the system reports, so nothing sits under
+  the camera or the gesture bar.
+- The equaliser keeps its right column only: the level, the saved curves, and the rules
+  that follow what plays and which output is in use. The curve graph and the band list
+  are desktop only.
+- The song appears in the notification shade and on the lock screen, with play, pause,
+  next, previous and a seek button. A foreground service of type `mediaPlayback` holds
+  the process and a wake lock, so playback carries on while the app is in the background.
+- Import is from the phone itself: pick audio files with the system picker, or let Wave
+  read the music folders on the device. Spotify, Deezer and YouTube link import needs
+  yt-dlp, ffmpeg and Deno, which cannot run on Android, so those are not offered.
+
+### Linux phones
+
+The aarch64 packages install on a phone running a glibc distribution such as Mobian, and
+a musl system such as postmarketOS takes the aarch64 musl tarball. Playback is the same
+GStreamer path the desktop uses, and the song appears in the shell's own media widget
+through MPRIS, which both Phosh and Plasma Mobile show and drive.
+
+The layout is the desktop one with the touch affordances turned on: the controls that are
+normally revealed by hovering are always visible, and hit targets are finger sized.
+
+### Trying the phone layouts on a PC
+
+`npm run dev:phone` opens a phone simulator in the browser: the real interface inside a
+phone-sized frame, with a device picker (360x720, 412x915 and 390x844), a notch or punch
+hole, a status bar, a gesture bar, and a strip that stands in for the lock screen's
+transport controls. It runs against a fake library of a few hundred songs, so the layout
+can be driven with no phone attached and without the Rust side at all.
+
+The frame is the fast loop for the interface. The Android-specific behaviour, meaning
+the permissions, the notification, the foreground service and the `content://` URIs the
+picker hands back, needs real Android: `npm run tauri android dev` runs it on an emulator
+or a device.
+
+`npm run phone` opens the desktop build in a 360x720 window with the phone device forced,
+which is enough to look at the Linux layout and the MPRIS entry.
 
 ## Install
 
@@ -63,7 +129,9 @@ folder.
 
 ### Linux
 
-Each release ships a `.deb`, an `.rpm`, and a portable `.AppImage`.
+Each release ships a `.deb`, an `.rpm`, and a portable `.AppImage`, built for
+x86_64 and for aarch64. postmarketOS and Alpine get an aarch64 musl tarball
+instead, because those packages need glibc.
 
 The installer script picks the right one for the machine — `apt`, then
 `dnf`/`zypper`/`rpm`, and if none of those fit it drops the AppImage in
@@ -90,7 +158,10 @@ chmod +x Wave_x.y.z_amd64.AppImage && ./Wave_x.y.z_amd64.AppImage
 ```
 
 Linux builds come from an `ubuntu-22.04` runner, so they need glibc 2.35 or
-newer (Ubuntu 22.04+, Debian 12+, Fedora 36+ and so on) and are x86_64 only.
+newer (Ubuntu 22.04+, Debian 12+, Fedora 36+ and so on). x86_64 and aarch64 are
+both built, and the aarch64 packages are what a Linux phone installs. A musl
+build is packaged as a tarball rather than a package, for postmarketOS and
+Alpine, which do not carry glibc.
 
 ## Features
 
@@ -598,6 +669,14 @@ with no restart.
   Now playing**, and look at the terminal Wave was started from: a failure to
   claim the controls is reported there and nowhere else. The media keys go with
   them, so with that switch off they do nothing.
+- **On Android, playback stops once the screen goes off.** Seen on an emulator: the
+  position advanced for about fifteen seconds after the display slept and then paused,
+  with the wake lock still held. Whether the WebView or the emulator's audio device is
+  to blame is not yet known. Playing with the screen awake, and with the app in the
+  background, both work.
+- **The cover is missing from the media widget on Linux.** MPRIS is handed `file://`
+  followed by the raw path, so a library whose path holds a space, a `%` or a `#` gives
+  the widget a URI it cannot read. The title, artist and album are unaffected.
 - **The media flyout says "Unknown app" and shows no icon.** Windows matches the
   id the running process reports against a Start Menu shortcut, and a build run
   straight from `target\debug` has no shortcut, so there is nothing to match. An

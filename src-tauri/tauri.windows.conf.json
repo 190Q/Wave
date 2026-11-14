@@ -1,5 +1,21 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "title": "Wave",
+        "width": 900,
+        "height": 655,
+        "minWidth": 485,
+        "minHeight": 240,
+        "visible": false,
+        "decorations": false,
+        "shadow": true,
+        "dragDropEnabled": false,
+        "additionalBrowserArgs": "--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion,HardwareMediaKeyHandling"
+      }
+    ]
+  },
   "bundle": {
     "resources": {
       "tools/yt-dlp.exe": "tools/yt-dlp.exe",

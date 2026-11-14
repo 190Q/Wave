@@ -20,12 +20,13 @@ jobs:
     name: build (${{ matrix.platform }})
     runs-on: ${{ matrix.platform }}
     strategy:
-      # One platform failing must not stop the other from publishing.
+      # One platform failing must not stop the others from publishing.
       fail-fast: false
       matrix:
         platform:
           - windows-latest
           - ubuntu-22.04
+          - ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -89,3 +90,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/release.mjs upload-slim ${{ inputs.tag }}
+
+      - name: Build the musl package
+        if: matrix.platform == 'ubuntu-22.04-arm'
+        run: |
+          docker run --rm \
+            --volume "$PWD:/wave" \
+            --workdir /wave \
+            alpine:3.22 \
+            sh scripts/musl-build.sh
+
+      - name: Attach the musl package
+        if: matrix.platform == 'ubuntu-22.04-arm'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/release.mjs upload-musl ${{ inputs.tag }}

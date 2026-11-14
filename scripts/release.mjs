@@ -9,6 +9,7 @@
 import { execFileSync, execSync } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -53,15 +54,29 @@ const TARGETS = [
   },
 ];
 
-const BUNDLE_DIR = join(root, "src-tauri", "target", "release", "bundle");
+const TARGET_DIR = process.env.CARGO_TARGET_DIR
+  ? resolve(process.env.CARGO_TARGET_DIR)
+  : join(root, "src-tauri", "target");
+
+const BUNDLE_DIR = join(TARGET_DIR, "release", "bundle");
 const WORKFLOW = join(root, ".github", "workflows", "release.yml");
 
 // Passed to the CLI, which reads it from the repo root.
 const SLIM_CONFIG = "src-tauri/tauri.slim.conf.json";
+// The phone config: a phone-sized window, the device forced to linuxPhone in
+// dev, and no download tools, which are glibc builds that musl cannot run.
+const PHONE_CONFIG = "src-tauri/tauri.phone.conf.json";
 
 // What a slim installer is called, so the two builds of a version cannot be
 // mistaken for one another.
 const SLIM_SUFFIX = "-slim";
+
+// The musl package: the target it is built for, the binary Cargo.toml names,
+// and where the tarball lands. It is kept out of the bundle directory, so the
+// Linux installers a release carries cannot pick it up as one of their own.
+const MUSL_TARGET = "aarch64-unknown-linux-musl";
+const BINARY = "wave";
+const MUSL_DIR = join(TARGET_DIR, "musl");
 
 // ---------------------------------------------------------------- output ----
 
@@ -204,7 +219,10 @@ const BODY = [
   "```",
   "",
   "Linux builds target glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+,",
-  "Fedora 36+) and are x86_64 only.",
+  "Fedora 36+) and come for x86_64 and aarch64. postmarketOS and Alpine are",
+  "musl, where the glibc packages cannot run, so they get an aarch64 tarball",
+  "of their own. That one is the binary on its own: ffmpeg and Deno publish",
+  "no musl build, so there is nothing to put beside it.",
 ].join("\n");
 
 /**
@@ -368,7 +386,8 @@ function commandGuide(part) {
   say("     pushes the branch and the tag.");
   if (ci) {
     say("     It then dispatches the release workflow, which builds Windows and Linux");
-    say("     and publishes both builds with the release.");
+    say("     for x86_64 and aarch64, adds the aarch64 musl package, and publishes");
+    say("     every build with the release.");
   } else {
     say("     It then builds both installers here and publishes the release from them.");
   }
@@ -565,6 +584,57 @@ function commandUploadSlim(tag) {
   gh(["release", "upload", tag, ...files, "--clobber"]);
 }
 
+/** What the musl package is called, target and all, so it cannot be taken for
+ * a glibc installer. */
+function muslName(version) {
+  return `Wave_${version}_aarch64_musl.tar.gz`;
+}
+
+/**
+ * Builds the aarch64 musl package, which postmarketOS and Alpine can run where
+ * the glibc installers cannot.
+ *
+ * There is no bundle, so nothing is named for an architecture by tauri and the
+ * tarball is named here instead. The phone config is what it is built with, so
+ * the download tools, which are glibc builds, are left out and never fetched.
+ * It has to run on Linux inside Alpine, which is what the release workflow
+ * puts it in; nothing else has the musl toolchain.
+ */
+function commandMusl() {
+  if (process.platform !== "linux") fail("the musl package has to be built on Linux");
+
+  const version = readVersion();
+  shell(`npx tauri build --no-bundle --target ${MUSL_TARGET} --config ${PHONE_CONFIG}`);
+
+  const binary = join(TARGET_DIR, MUSL_TARGET, "release", BINARY);
+  if (!existsSync(binary)) fail(`the musl build produced no ${BINARY}`);
+
+  mkdirSync(MUSL_DIR, { recursive: true });
+  const archive = join(MUSL_DIR, muslName(version));
+  // Only the binary goes in. The desktop entry and the icons come from the
+  // bundle, which a musl build has none of.
+  run("tar", ["-czf", archive, "-C", dirname(binary), BINARY]);
+  say(`\nWrote ${archive}`);
+}
+
+/** The musl package built for this version, if it is there. */
+function muslPackage() {
+  const path = join(MUSL_DIR, muslName(readVersion()));
+  return existsSync(path) ? path : null;
+}
+
+function commandUploadMusl(tag) {
+  if (!tag) fail("upload-musl needs a tag");
+
+  const path = muslPackage();
+  if (!path) {
+    fail(`there is no musl package for ${readVersion()}; build one with \`node scripts/release.mjs musl\``);
+  }
+
+  requireGh();
+  gh(["release", "upload", tag, path, "--clobber"]);
+}
+
 function releaseExists(tag) {
   try {
     execFileSync("gh", ["release", "view", tag], { cwd: root, stdio: "ignore" });
@@ -736,8 +806,10 @@ Releases
   body [--feature <text>...]      Print the body a release is given
   publish [options]               Sync, commit, tag, push, and publish
   slim                            Build the slim installers and rename them
+  musl                            Build the aarch64 musl package, on Alpine
   upload <tag> <file...>          Add assets to a release
   upload-slim <tag>               Add the slim installers to a release
+  upload-musl <tag>               Add the musl package to a release
   rm-asset <tag> <name...>        Remove assets from a release
   edit <tag> [options]            Change a release's title, notes or draft state
   delete <tag> --yes [--tag]      Delete a release, and its git tag with --tag
@@ -772,8 +844,10 @@ function main() {
     case "open": return commandOpen(first);
     case "assets": return commandAssets(first);
     case "slim": return commandSlim();
+    case "musl": return commandMusl();
     case "upload": return commandUpload(first, more);
     case "upload-slim": return commandUploadSlim(first);
+    case "upload-musl": return commandUploadMusl(first);
     case "rm-asset": return commandRemoveAsset(first, more);
     case "delete": return commandDelete(first, options);
     case "edit": return commandEdit(first, options);

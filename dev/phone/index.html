@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Wave phone simulator</title>
+    <link rel="stylesheet" href="/dev/phone/frame.css" />
+    <script type="module" src="/dev/phone/frame.ts" defer></script>
+  </head>
+
+  <body>
+    <main class="harness">
+      <section class="stage">
+        <div class="phone" id="phone">
+          <div class="screen">
+            <iframe class="app" id="app" title="Wave"></iframe>
+
+            <div class="status" id="status">
+              <span class="status-time" id="status-time"></span>
+              <span class="status-icons" aria-hidden="true">
+                <span class="glyph is-signal"></span>
+                <span class="glyph is-wifi"></span>
+                <span class="glyph is-battery"></span>
+              </span>
+            </div>
+
+            <div class="cutout" id="cutout" hidden></div>
+            <div class="gesture" id="gesture" aria-hidden="true"><span></span></div>
+          </div>
+        </div>
+
+        <p class="note" id="note"></p>
+      </section>
+
+      <aside class="panel">
+        <h1>Phone simulator</h1>
+        <p class="hint">
+          The real front end, with every Tauri command answered from a fixture. Nothing here needs a
+          phone or an emulator.
+        </p>
+
+        <label class="field">
+          <span>Device</span>
+          <select id="preset"></select>
+        </label>
+
+        <label class="field">
+          <span>Device kind</span>
+          <select id="kind">
+            <option value="android">android</option>
+            <option value="linuxPhone">linuxPhone</option>
+            <option value="desktop">desktop</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Top of the screen</span>
+          <select id="cutout-shape">
+            <option value="none">No cutout</option>
+            <option value="notch">Notch</option>
+            <option value="hole">Punch hole</option>
+          </select>
+        </label>
+
+        <label class="check">
+          <input type="checkbox" id="lyrics" />
+          <span>Lyrics available for the current song</span>
+        </label>
+
+        <button class="button" id="reload" type="button">Reload the app</button>
+
+        <section class="lock">
+          <h2>Fake lockscreen</h2>
+          <p class="hint">
+            Every button sends the media-control event the Rust backend sends, so the Android
+            control path can be driven without a device.
+          </p>
+          <p class="lock-now" id="lock-now"></p>
+          <input class="seek" id="seek" type="range" min="0" max="1000" value="0" aria-label="Seek" />
+          <div class="lock-buttons">
+            <button class="button" type="button" data-control="previous">Previous</button>
+            <button class="button" type="button" data-control="play">Play</button>
+            <button class="button" type="button" data-control="pause">Pause</button>
+            <button class="button" type="button" data-control="next">Next</button>
+          </div>
+        </section>
+      </aside>
+    </main>
+  </body>
+</html>

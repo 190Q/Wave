@@ -1,0 +1,273 @@
+/* The phone layout. Every rule here hangs off data-device="android" on <html>,
+   which src/lib/device.ts writes, so the desktop rules are left alone. The
+   touch rules at the end are keyed on data-touch, which covers a Linux phone
+   and any other coarse pointer as well. */
+
+/* The window frame is the desktop's: on a phone the top bar is the top edge. */
+[data-device="android"] .titlebar {
+  display: none;
+}
+
+/* How far the dock and the queue have been pushed up by the sheet drag, in
+   pixels. src/ui/lyrics-sheet.ts owns the value. */
+[data-device="android"] .stage {
+  --sheet-travel: 0px;
+}
+
+/* The notch and the gesture bar. The insets are whatever the system
+   reported, so nothing here is a fixed size. */
+[data-device="android"] .topbar {
+  position: relative;
+  z-index: 4;
+  padding-top: calc(1rem + var(--inset-top));
+  padding-right: calc(1rem + var(--inset-right));
+  padding-left: calc(1rem + var(--inset-left));
+  /* The dock is pushed up behind the bar, so the bar has to be opaque. The
+     stage's own gradient is painted here at its own size, which leaves no
+     seam where the two meet. */
+  background-image: var(--stage-background);
+  background-size: 100vw 100vh;
+  background-repeat: no-repeat;
+}
+
+/* The hero takes no room of its own, so its children join the stage's
+   column. The lyrics panel is the one that stays. */
+[data-device="android"] .hero {
+  display: contents;
+}
+
+[data-device="android"] .now-cover,
+[data-device="android"] .now {
+  display: none;
+}
+
+/* hero.ts leaves is-short off on Android, but nothing may hang off it either
+   way, so the library button stays put. */
+[data-device="android"].is-short #library-open {
+  display: inline-grid;
+}
+
+/* The queue is a block in the column, centred between the top bar and the
+   dock, rather than a carousel hanging off the bottom of the stage. It is
+   always shown, since the dock no longer carries a queue button. */
+[data-device="android"] .carousel-space {
+  display: none;
+}
+
+[data-device="android"] .carousel {
+  position: relative;
+  left: auto;
+  bottom: auto;
+  order: 1;
+  width: 100%;
+  height: var(--carousel-space);
+  margin-block: auto;
+  z-index: 2;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(calc(-1 * var(--sheet-travel)));
+  transition: none;
+}
+
+/* The cards were laid out around a zero width carousel; now they are laid out
+   around the middle of a full width block. */
+[data-device="android"] .carousel-live,
+[data-device="android"] .carousel-wash {
+  width: 100%;
+  height: 100%;
+}
+
+[data-device="android"] .card {
+  left: calc(50% - var(--card-size) / 2);
+}
+
+/* The dock is a bar along the bottom edge, and the sheet drag lifts it. */
+[data-device="android"] .dock {
+  position: relative;
+  order: 2;
+  z-index: 3;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  border-top: 0.0625rem solid rgb(255 255 255 / 0.1);
+  border-radius: 0;
+  padding: 1rem calc(1.25rem + var(--inset-right)) calc(0.7rem + var(--inset-bottom))
+    calc(1.25rem + var(--inset-left));
+  transform: translateY(calc(-1 * var(--sheet-travel)));
+  touch-action: none;
+}
+
+[data-device="android"] #queue-toggle {
+  display: none;
+}
+
+/* The lyrics panel is the sheet the dock drag pulls up. It fills the frame
+   from under the top bar down, starts just below the bottom edge, and rides
+   behind the dock and the queue. */
+[data-device="android"] .lyrics {
+  position: absolute;
+  top: var(--phone-topbar, 0px);
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1;
+  display: block;
+  height: auto;
+  padding-right: calc(1.5rem + var(--inset-right));
+  padding-left: calc(1.5rem + var(--inset-left));
+  transform: translateY(calc(100% - var(--sheet-travel)));
+}
+
+/* A settled sheet travels over the same transition a drag would not. */
+[data-device="android"] .stage.is-sheet-settling .lyrics,
+[data-device="android"] .stage.is-sheet-settling .carousel,
+[data-device="android"] .stage.is-sheet-settling .dock {
+  transition: transform 0.34s var(--ease);
+}
+
+/* The library is the whole screen. */
+[data-device="android"] .sheet {
+  width: 100%;
+  border-right: 0;
+  padding: calc(1.25rem + var(--inset-top)) calc(1rem + var(--inset-right))
+    calc(1.25rem + var(--inset-bottom)) calc(1rem + var(--inset-left));
+}
+
+/* Dialogs are full screen, and the safe area is the padding they keep. */
+[data-device="android"] .theme-dialog,
+[data-device="android"] .settings-dialog,
+[data-device="android"] .import-dialog,
+[data-device="android"] .confirm-dialog,
+[data-device="android"] .update-dialog {
+  margin: 0;
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  padding: var(--inset-top) var(--inset-right) var(--inset-bottom) var(--inset-left);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* A closed panel is measured off screen to see whether it fits at all, so the
+   full height is only taken while it is really open. */
+[data-device="android"] .theme-dialog[open],
+[data-device="android"] .settings-dialog[open],
+[data-device="android"] .import-dialog[open],
+[data-device="android"] .confirm-dialog[open],
+[data-device="android"] .update-dialog[open] {
+  height: 100%;
+}
+
+/* These two carry their own spacing rather than passing it to a head and a
+   body, so the safe area is added to it. */
+[data-device="android"] .theme-dialog,
+[data-device="android"] .confirm-dialog {
+  padding: calc(var(--inset-top) + 1.25rem) calc(var(--inset-right) + 1.25rem)
+    calc(var(--inset-bottom) + 1.25rem) calc(var(--inset-left) + 1.25rem);
+}
+
+/* The theme list is taller than a phone, and it is the panel that scrolls. */
+[data-device="android"] .theme-dialog {
+  overflow-y: auto;
+}
+
+[data-device="android"] .confirm-dialog {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+[data-device="android"] .confirm-actions {
+  justify-content: center;
+}
+
+[data-device="android"] .eq-panel {
+  padding: var(--inset-top) var(--inset-right) var(--inset-bottom) var(--inset-left);
+}
+
+/* The equaliser keeps only its right column. The graph and the bands stay in
+   the markup, since mountEq wants all four elements to be there. */
+[data-device="android"] .eq-graph,
+[data-device="android"] .eq-bands-wrap {
+  display: none;
+}
+
+[data-device="android"] .eq-body {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "side";
+  gap: 0;
+  padding: 1rem 1.25rem 1.25rem;
+  overflow: hidden;
+}
+
+[data-device="android"] .eq-side {
+  padding: 0;
+  border: 0;
+  overflow-y: auto;
+}
+
+/* Floating notices sit under the top bar rather than at a fixed offset. */
+[data-device="android"] .status,
+[data-device="android"] .update-toast {
+  top: calc(var(--phone-topbar, 4.5rem) + 0.5rem);
+}
+
+[data-device="android"] .search-modal {
+  padding-top: calc(var(--phone-topbar, 4.5rem) + 0.5rem);
+  padding-right: calc(1rem + var(--inset-right));
+  padding-left: calc(1rem + var(--inset-left));
+}
+
+/* A finger has no hover, so nothing may be kept back until one. */
+[data-touch="true"] {
+  --control: 2.75rem;
+  --control-large: 3rem;
+  --thumb: 2.75rem;
+}
+
+[data-touch="true"] .row-more,
+[data-touch="true"] .track-add,
+[data-touch="true"] .track-download,
+[data-touch="true"] .cover-play {
+  opacity: 1;
+  transform: none;
+}
+
+/* Stretched rather than enlarged, so the rows keep the height a finger can
+   still aim at. */
+[data-touch="true"] .row-more,
+[data-touch="true"] .track-add,
+[data-touch="true"] .track-download {
+  align-self: stretch;
+  width: 2.5rem;
+  height: auto;
+}
+
+[data-touch="true"] .track-like {
+  align-self: stretch;
+  width: 2.4rem;
+  height: auto;
+}
+
+[data-touch="true"] .cover-play {
+  width: 2.4rem;
+  height: 2.4rem;
+}
+
+[data-touch="true"] .pill {
+  min-height: 2.5rem;
+}
+
+[data-touch="true"] .icon-only {
+  width: 2.75rem;
+  height: 2.75rem;
+}
+
+/* A full width row is the easiest thing to hit, so the rows get taller. */
+[data-touch="true"] .track-row {
+  padding-top: 0.7rem;
+  padding-bottom: 0.7rem;
+}

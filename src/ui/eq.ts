@@ -623,10 +623,16 @@ export function mountEq(): void {
     }
   };
 
+  /** A canvas with no box has nothing to draw on, so the loop parks instead. */
+  const canvasSized = (): boolean => {
+    const rect = canvas.getBoundingClientRect();
+    return rect.width >= 1 && rect.height >= 1;
+  };
+
   /** The curve is redrawn every frame, so the spectrum moves with the sound. */
   const tick = (): void => {
     frame = null;
-    if (modal.hidden) {
+    if (modal.hidden || !canvasSized()) {
       return;
     }
     draw();
@@ -650,6 +656,16 @@ export function mountEq(): void {
       frame = null;
     }
   };
+
+  // The graph is off the screen on a phone, and comes back if the window is
+  // resized onto a layout that shows it.
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(() => {
+      if (!modal.hidden) {
+        startDrawing();
+      }
+    }).observe(canvas);
+  }
 
   // Pointing at the curve.
 

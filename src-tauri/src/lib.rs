@@ -1,7 +1,15 @@
+// A phone cannot run yt-dlp, ffmpeg or Deno, so the whole link-import path is
+// unreachable there: the commands that report it as unavailable are all that
+// answers. It is still compiled, so that the shape of the app does not depend
+// on which platform it was built for. Nothing is allowed on desktop, where any
+// of it going unused is worth being told about.
+#![cfg_attr(not(desktop), allow(dead_code))]
+
 mod analytics;
 mod api;
 mod artwork;
 mod catalog;
+#[cfg(desktop)]
 mod cli;
 mod cover_fetch;
 mod deezer;
@@ -17,11 +25,16 @@ mod loudness;
 mod lyrics;
 mod lyrics_fetch;
 mod migrate;
+#[cfg(target_os = "android")]
+mod media_session;
+#[cfg(target_os = "android")]
+mod music_library;
 mod playlist_download;
 mod playlists;
 mod presence;
 mod progress;
 mod recommend;
+mod search;
 mod source;
 mod spotify;
 mod youtube;
@@ -30,6 +43,7 @@ mod state;
 mod tools;
 mod transfer;
 mod update;
+#[cfg(desktop)]
 mod window_frame;
 
 use tauri::Manager;
@@ -87,9 +101,15 @@ fn reveal_main_window(app: &tauri::AppHandle) {
         return;
     }
 
-    let store = app.state::<state::Store>();
-    state::restore_window_geometry(app, &store);
-    state::apply_window_settings(app, &store, store.snapshot().settings.mini_player);
+    // A phone's window is the whole screen, so there is no frame to put back
+    // and no mini player to sit in a corner.
+    #[cfg(desktop)]
+    {
+        let store = app.state::<state::Store>();
+        state::restore_window_geometry(app, &store);
+        state::apply_window_settings(app, &store, store.snapshot().settings.mini_player);
+    }
+
     let _ = window.show();
 }
 
@@ -135,6 +155,11 @@ fn open_catalog(app: &tauri::AppHandle) -> catalog::Catalog {
     }
 }
 
+#[cfg(target_os = "android")]
+fn install_tls_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 #[cfg(target_os = "linux")]
 fn tune_webkit() {
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
@@ -149,19 +174,36 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     tune_webkit();
 
+    #[cfg(target_os = "android")]
+    install_tls_provider();
+
     let context: tauri::Context = tauri::generate_context!();
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if !args.is_empty() {
-        std::process::exit(cli::run(context, &args));
+
+    // A phone is started by the system, from an icon rather than a terminal, so
+    // there is no command line to read and no console to read it from.
+    #[cfg(desktop)]
+    {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if !args.is_empty() {
+            std::process::exit(cli::run(context, &args));
+        }
     }
 
     #[cfg(windows)]
     name_the_process(&context.config().identifier);
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_notification::init());
+
+    #[cfg(target_os = "android")]
+    let builder = builder
+        .plugin(media_session::init())
+        .plugin(music_library::init());
+
+    let app = builder
         .setup(|app| {
             prepare(app.handle());
 
@@ -177,6 +219,7 @@ pub fn run() {
                     eprintln!("could not allow the library on the asset protocol: {error}");
                 }
             }
+            #[cfg(desktop)]
             state::watch_window(app.handle());
             source::watch_config(app.handle());
             app.manage(presence::Presence::start(app.handle()));
@@ -220,6 +263,9 @@ pub fn run() {
             library::delete_tracks,
             loudness::analyse_loudness,
             import::import_folder,
+            import::import_picked_files,
+            #[cfg(target_os = "android")]
+            import::scan_phone_music,
             transfer::export_wavelist,
             transfer::import_wavelist,
             playlists::create_playlist,

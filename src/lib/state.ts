@@ -957,6 +957,37 @@ export async function importFolder(choose: () => Promise<boolean | null>): Promi
   }
 }
 
+/** Imports the files a picker handed back. On Android those are content URIs. */
+export async function importPickedFiles(): Promise<void> {
+  try {
+    const paths = await ipc.pickAudioFiles();
+    if (!paths || paths.length === 0) {
+      return;
+    }
+
+    setNotice("Importing...");
+    const outcome = await ipc.importPickedFiles(paths);
+    applyPersisted(outcome.state);
+    await rescan();
+    setNotice(importSummary(outcome));
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
+/** Imports what the phone's own music folders hold. */
+export async function importPhoneMusic(): Promise<void> {
+  try {
+    setNotice("Looking through your music folders...");
+    const outcome = await ipc.scanPhoneMusic();
+    applyPersisted(outcome.state);
+    await rescan();
+    setNotice(importSummary(outcome));
+  } catch (error) {
+    setNotice(describe(error));
+  }
+}
+
 let transferPending = false;
 
 export async function importWaveList(): Promise<void> {

@@ -218,12 +218,21 @@ pub async fn download_playlist(
     playlist_id: String,
     entry_ids: Vec<String>,
 ) -> Result<ImportOutcome, String> {
-    let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        run(&handle, &playlist_id, &entry_ids, Output::Events)
-    })
-    .await
-    .map_err(|e| format!("the download stopped unexpectedly: {e}"))?
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, playlist_id, entry_ids);
+        return Err(import_source::NOT_ON_ANDROID.to_string());
+    }
+
+    #[cfg(desktop)]
+    {
+        let handle = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            run(&handle, &playlist_id, &entry_ids, Output::Events)
+        })
+        .await
+        .map_err(|e| format!("the download stopped unexpectedly: {e}"))?
+    }
 }
 
 #[cfg(test)]

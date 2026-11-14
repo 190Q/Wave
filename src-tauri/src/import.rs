@@ -2,9 +2,11 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_fs::{FilePath, FsExt, OpenOptions};
 
 use crate::catalog::Catalog;
 use crate::cover_fetch;
@@ -25,7 +27,9 @@ const COPY_BUFFER: usize = 128 * 1024;
 /// until it is known what it is.
 const STAGING_DIR: &str = "staging";
 
-#[derive(Debug, Serialize)]
+const PICKED_DIR: &str = "picked";
+
+#[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportOutcome {
     pub songs: usize,
@@ -171,6 +175,157 @@ pub fn import_folder(
 
     outcome.state = app.state::<Store>().snapshot();
     Ok(outcome)
+}
+
+/// Imports the files the user picked out of the system's own file picker.
+///
+/// On Android the picker hands back a `content://` URI, which `std::fs` cannot
+/// open and only the fs plugin can, so the bytes come in through it and are
+/// staged inside the library before the usual tagging pass reads them. On
+/// desktop the picker hands back a plain path and the same code reads it.
+#[tauri::command(async)]
+pub fn import_picked_files(app: AppHandle, paths: Vec<String>) -> Result<ImportOutcome, String> {
+    if paths.is_empty() {
+        return Err("nothing was picked".to_string());
+    }
+
+    let store = app.state::<Store>();
+    let names = picked_names(&app, &paths);
+    let mut outcome = ImportOutcome::default();
+
+    for (index, uri) in paths.iter().enumerate() {
+        let name = names
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| picked_name(uri));
+
+        let staged = match stage_picked(&app, uri, &name) {
+            Ok(staged) => staged,
+            Err(error) => {
+                outcome.errors.push(format!("{name}: {error}"));
+                continue;
+            }
+        };
+
+        let landed = land(&app, &staged);
+        let _ = fs::remove_file(&staged);
+
+        match landed {
+            Ok(landed) => {
+                outcome.songs += usize::from(!landed.duplicate);
+                outcome.duplicates += usize::from(landed.duplicate);
+                outcome.similar += usize::from(landed.similar);
+                outcome.images += usize::from(landed.cover);
+                outcome.lyrics += usize::from(landed.lyrics);
+            }
+            Err(error) => outcome.errors.push(format!("{name}: {error}")),
+        }
+    }
+
+    remember_import(&app, "phone", "Picked files", &outcome);
+    outcome.state = store.snapshot();
+    Ok(outcome)
+}
+
+/// Imports the music the phone already holds, which is the way a phone gets a
+/// library at all: there is no folder picker to point Wave at one.
+#[cfg(target_os = "android")]
+#[tauri::command(async)]
+pub fn scan_phone_music(app: AppHandle) -> Result<ImportOutcome, String> {
+    let library = app.state::<crate::music_library::MusicLibrary>();
+    if !library.request_audio_permission()? {
+        return Err(
+            "Wave needs the permission to read this phone's music before it can scan for \
+             it"
+                .to_string(),
+        );
+    }
+
+    let folders = library.music_directories()?;
+    let store = app.state::<Store>();
+    let mut outcome = ImportOutcome::default();
+    let mut scanned = 0usize;
+
+    for folder in folders {
+        let path = PathBuf::from(&folder);
+        if !path.is_dir() {
+            continue;
+        }
+        scanned += 1;
+
+        match import_into_library(&app, &path, true, None) {
+            Ok(found) => merge(&mut outcome, found),
+            Err(error) => outcome.errors.push(format!("{folder}: {error}")),
+        }
+    }
+
+    if scanned == 0 {
+        return Err("this phone has no music folders to scan".to_string());
+    }
+
+    remember_import(&app, "phone", "This phone's music", &outcome);
+    outcome.state = store.snapshot();
+    Ok(outcome)
+}
+
+/// Folds one folder's outcome into the pass as a whole.
+#[cfg(target_os = "android")]
+fn merge(into: &mut ImportOutcome, one: ImportOutcome) {
+    into.songs += one.songs;
+    into.images += one.images;
+    into.lyrics += one.lyrics;
+    into.skipped += one.skipped;
+    into.duplicates += one.duplicates;
+    into.similar += one.similar;
+    into.errors.extend(one.errors);
+}
+
+/// What the system calls each picked file. Android is the one platform where
+/// the picker hands back something that is not already a name, so everywhere
+/// else the name is taken from the path itself.
+fn picked_names(app: &AppHandle, paths: &[String]) -> Vec<String> {
+    #[cfg(target_os = "android")]
+    if let Some(library) = app.try_state::<crate::music_library::MusicLibrary>() {
+        if let Ok(names) = library.names(paths) {
+            return names;
+        }
+    }
+
+    let _ = app;
+    paths.iter().map(|path| picked_name(path)).collect()
+}
+
+/// The name to fall back on when the system cannot say what a picked file is
+/// called: the last part of the URI, which is all a plain path needs.
+fn picked_name(path: &str) -> String {
+    let last = path.rsplit(['/', '\\']).next().unwrap_or(path).trim();
+    if last.is_empty() || last == "." || last == ".." {
+        return "picked".to_string();
+    }
+    last.to_string()
+}
+
+/// Copies a picked file into the library, so the tagging pass has a real path
+/// to read. The fs plugin is what opens a `content://` URI; a plain path goes
+/// straight through it.
+fn stage_picked(app: &AppHandle, uri: &str, name: &str) -> Result<PathBuf, String> {
+    let root = library_root(app)?;
+    let dir = root.join(CONFIG_DIR).join(PICKED_DIR);
+    fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    let staged = dir.join(picked_name(name));
+
+    let mut options = OpenOptions::new();
+    options.read(true);
+    let picked = FilePath::from_str(uri).expect("a URI or a path is always a file path");
+    let mut source = app
+        .fs()
+        .open(picked, options)
+        .map_err(|e| format!("could not read {name}: {e}"))?;
+    let mut target = fs::File::create(&staged)
+        .map_err(|e| format!("could not write {}: {e}", staged.display()))?;
+
+    std::io::copy(&mut source, &mut target).map_err(|e| format!("could not copy {name}: {e}"))?;
+    Ok(staged)
 }
 
 pub fn import_into_library(

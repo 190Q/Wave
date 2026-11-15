@@ -1,5 +1,5 @@
 import { createIcon } from "../assets/icons/index";
-import { device, insets } from "../lib/device";
+import { device, insets, isTouch } from "../lib/device";
 import { formatDuration } from "../lib/format";
 import { bounce, reduceMotionActive } from "../lib/motion";
 import { MAX_VOLUME, MIN_VOLUME } from "../lib/player";
@@ -68,7 +68,8 @@ export function mountDock(): void {
     if (rect.width <= 0) {
       return 0;
     }
-    return Math.min(Math.max((clientX - rect.left) / rect.width, 0), 1);
+    const edge = isTouch() ? Math.min(24, rect.width / 4) : 0;
+    return Math.min(Math.max((clientX - rect.left - edge) / (rect.width - edge * 2), 0), 1);
   };
 
   /** Follows the pointer while the dock is held, without moving the track. */

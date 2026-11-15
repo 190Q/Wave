@@ -526,7 +526,7 @@ fn kept(
     find(dir).as_deref().and_then(|path| relative_owned(path, dir))
 }
 
-fn cover_in(dir: &Path) -> Option<PathBuf> {
+pub(crate) fn cover_in(dir: &Path) -> Option<PathBuf> {
     let entries = fs::read_dir(dir).ok()?;
     for entry in entries.flatten() {
         let path = entry.path();
@@ -540,7 +540,7 @@ fn cover_in(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn lyrics_in(dir: &Path) -> Option<PathBuf> {
+pub(crate) fn lyrics_in(dir: &Path) -> Option<PathBuf> {
     let path = dir.join(LYRICS_NAME);
     path.is_file().then_some(path)
 }
@@ -779,7 +779,10 @@ pub fn scan_library(
     catalog: State<'_, Catalog>,
     full: bool,
 ) -> ScanSummary {
-    let summary = scan(&app, &catalog, full);
+    let mut summary = scan(&app, &catalog, full);
+    if let Err(error) = crate::transfer::resolve_imported(&catalog) {
+        summary.errors.push(error);
+    }
     let _ = crate::playlists::refresh(&app, &store);
     summary
 }

@@ -6,7 +6,6 @@ import {
   sendNotification,
 } from "@tauri-apps/plugin-notification";
 
-import { device } from "../lib/device";
 import { escapeHtml } from "../lib/format";
 import { getState, installUpdate, setNotice, subscribe } from "../lib/state";
 import type { UpdateInfo, UpdateProgress } from "../types";
@@ -166,7 +165,7 @@ export function mountUpdate(): void {
   closeButton.addEventListener("click", closeDialog);
 
   dialog.addEventListener("click", (event) => {
-    if (event.target === dialog && device() !== "android") {
+    if (event.target === dialog) {
       closeDialog();
     }
   });

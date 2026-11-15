@@ -248,9 +248,7 @@ html[data-device="android"] {
 /* Dialogs are full screen, and the safe area is the padding they keep. */
 [data-device="android"] .theme-dialog,
 [data-device="android"] .settings-dialog,
-[data-device="android"] .import-dialog,
-[data-device="android"] .confirm-dialog,
-[data-device="android"] .update-dialog {
+[data-device="android"] .import-dialog {
   margin: 0;
   width: 100%;
   max-width: none;
@@ -265,16 +263,11 @@ html[data-device="android"] {
    full height is only taken while it is really open. */
 [data-device="android"] .theme-dialog[open],
 [data-device="android"] .settings-dialog[open],
-[data-device="android"] .import-dialog[open],
-[data-device="android"] .confirm-dialog[open],
-[data-device="android"] .update-dialog[open] {
+[data-device="android"] .import-dialog[open] {
   height: 100%;
 }
 
-/* These two carry their own spacing rather than passing it to a head and a
-   body, so the safe area is added to it. */
-[data-device="android"] .theme-dialog,
-[data-device="android"] .confirm-dialog {
+[data-device="android"] .theme-dialog {
   padding: calc(var(--inset-top) + 1.25rem) calc(var(--inset-right) + 1.25rem)
     calc(var(--inset-bottom) + 1.25rem) calc(var(--inset-left) + 1.25rem);
 }
@@ -284,14 +277,22 @@ html[data-device="android"] {
   overflow-y: auto;
 }
 
-[data-device="android"] .confirm-dialog[open] {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
+[data-device="android"] .confirm-dialog,
+[data-device="android"] .update-dialog {
+  max-height: calc(100vh - var(--inset-top) - var(--inset-bottom) - 2rem);
 }
 
-[data-device="android"] .confirm-actions {
-  justify-content: center;
+[data-device="android"] .update-dialog {
+  max-height: min(34rem, calc(100vh - var(--inset-top) - var(--inset-bottom) - 2rem));
+}
+
+[data-device="android"] .confirm-dialog {
+  overflow-y: auto;
+}
+
+[data-device="android"] .add-to {
+  max-width: calc(100vw - var(--inset-left) - var(--inset-right) - 1rem);
+  max-height: min(24rem, calc(100vh - var(--inset-top) - var(--inset-bottom) - 1rem));
 }
 
 [data-device="android"] .eq-panel {
@@ -385,6 +386,14 @@ html[data-device="android"] {
 
 [data-touch="true"] .pill {
   min-height: 2.5rem;
+}
+
+[data-touch="true"] .menu {
+  max-width: calc(100vw - 1rem);
+}
+
+[data-touch="true"] .menu-item {
+  min-height: 2.75rem;
 }
 
 [data-touch="true"] .icon-only {

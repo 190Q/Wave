@@ -232,8 +232,97 @@ pub fn import_picked_files(app: AppHandle, paths: Vec<String>) -> Result<ImportO
     Ok(outcome)
 }
 
-/// Imports the music the phone already holds, which is the way a phone gets a
-/// library at all: there is no folder picker to point Wave at one.
+#[cfg(target_os = "android")]
+#[tauri::command(async)]
+pub fn import_phone_folder(app: AppHandle) -> Result<Option<ImportOutcome>, String> {
+    let phone = app.state::<crate::music_library::MusicLibrary>();
+    let Some(uri) = phone.pick_folder()? else {
+        return Ok(None);
+    };
+    let _ = app.emit("phone-folder-import", "Reading the selected folder...");
+    let files = phone.folder_files(&uri)?;
+    let mut folders = std::collections::BTreeMap::new();
+    for file in &files {
+        folders.entry(&file.parent).or_insert_with(Vec::new).push(file);
+    }
+    let total = files.iter()
+        .filter(|file| has_extension(Path::new(&file.name), AUDIO_EXTENSIONS))
+        .count();
+
+    let root = library_root(&app)?;
+    let catalog = app.state::<Catalog>();
+    let store = app.state::<Store>();
+    let mut outcome = ImportOutcome::default();
+    let mut processed = 0;
+
+    for siblings in folders.values_mut() {
+        siblings.sort_by(|a, b| a.name.cmp(&b.name));
+        let audio_files: Vec<_> = siblings.iter()
+            .filter(|file| has_extension(Path::new(&file.name), AUDIO_EXTENSIONS))
+            .collect();
+        let mut sidecars = std::collections::HashMap::new();
+        for file in siblings.iter() {
+            let path = Path::new(&file.name);
+            if has_extension(path, IMAGE_EXTENSIONS) || has_extension(path, LYRICS_EXTENSIONS) {
+                sidecars.entry(library::file_stem_lower(path)).or_insert_with(Vec::new).push(*file);
+            }
+        }
+        for file in &audio_files {
+            processed += 1;
+            if processed == 1 || processed % 10 == 0 || processed == total {
+                let _ = app.emit("phone-folder-import", format!("Importing song {processed} of {total}..."));
+            }
+            let dir = root.join(CONFIG_DIR).join(PICKED_DIR).join(crate::identity::new_id());
+            fs::create_dir_all(&dir).map_err(|e| format!("could not create staging folder: {e}"))?;
+            let name = picked_name(&file.name);
+            let audio = dir.join(&name);
+            if let Err(error) = stage_picked_at(&app, &file.uri, &audio) {
+                outcome.errors.push(format!("{name}: {error}"));
+                let _ = fs::remove_dir_all(&dir);
+                continue;
+            }
+
+            let stem = library::file_stem_lower(Path::new(&name));
+            let mut associated = sidecars.get(&stem).cloned().unwrap_or_default();
+            if audio_files.len() == 1 {
+                for (key, extensions) in [("cover", IMAGE_EXTENSIONS), ("lyrics", LYRICS_EXTENSIONS)] {
+                    if stem != key {
+                        associated.extend(sidecars.get(key).into_iter().flatten()
+                            .filter(|file| has_extension(Path::new(&file.name), extensions))
+                            .copied());
+                    }
+                }
+            }
+            for sidecar in associated {
+                let target = dir.join(picked_name(&sidecar.name));
+                if let Err(error) = stage_picked_at(&app, &sidecar.uri, &target) {
+                    outcome.errors.push(format!("{}: {error}", sidecar.name));
+                }
+            }
+
+            let images = SidecarIndex::build(&dir, IMAGE_EXTENSIONS);
+            let lyrics = SidecarIndex::build(&dir, LYRICS_EXTENSIONS);
+            match import_one(&root, &catalog, &audio, &name, &images, &lyrics) {
+                Ok((Placed::Duplicate, _)) => outcome.duplicates += 1,
+                Ok((Placed::Added { similar, cover, lyrics }, id)) => {
+                    outcome.songs += 1;
+                    outcome.similar += usize::from(similar);
+                    outcome.images += usize::from(cover);
+                    outcome.lyrics += usize::from(lyrics);
+                    outcome.track_ids.push(id);
+                }
+                Err(error) => outcome.errors.push(format!("{name}: {error}")),
+            }
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    remember_import(&app, "phone", "Selected folder", &outcome);
+    outcome.state = playlists::refresh(&app, &store);
+    Ok(Some(outcome))
+}
+
+/// Imports the music the phone already holds from its standard music folders.
 #[cfg(target_os = "android")]
 #[tauri::command(async)]
 pub fn scan_phone_music(app: AppHandle) -> Result<ImportOutcome, String> {
@@ -324,18 +413,24 @@ fn stage_picked(app: &AppHandle, uri: &str, name: &str) -> Result<PathBuf, Strin
     fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     let staged = dir.join(picked_name(name));
 
+    stage_picked_at(app, uri, &staged)?;
+    Ok(staged)
+}
+
+fn stage_picked_at(app: &AppHandle, uri: &str, staged: &Path) -> Result<(), String> {
     let mut options = OpenOptions::new();
     options.read(true);
-    let picked = FilePath::from_str(uri).expect("a URI or a path is always a file path");
+    let picked = FilePath::from_str(uri).map_err(|e| format!("invalid file path: {e}"))?;
     let mut source = app
         .fs()
         .open(picked, options)
-        .map_err(|e| format!("could not read {name}: {e}"))?;
-    let mut target = fs::File::create(&staged)
+        .map_err(|e| format!("could not read the selected file: {e}"))?;
+    let mut target = fs::File::create(staged)
         .map_err(|e| format!("could not write {}: {e}", staged.display()))?;
 
-    std::io::copy(&mut source, &mut target).map_err(|e| format!("could not copy {name}: {e}"))?;
-    Ok(staged)
+    std::io::copy(&mut source, &mut target)
+        .map_err(|e| format!("could not copy the selected file: {e}"))?;
+    Ok(())
 }
 
 pub fn import_into_library(
@@ -543,7 +638,10 @@ fn import_one(
     // Covers and lyrics are matched by name here and only here: this is a folder
     // Wave has never seen, and its file names are all there is to go on.
     let stem = library::file_stem_lower(source);
-    let cover = match artwork_index.resolve(&stem, file_name) {
+    let wave_folder = stem == library::AUDIO_STEM;
+    let cover = match artwork_index.resolve(&stem, file_name).or_else(|| {
+        wave_folder.then(|| source.parent().and_then(library::cover_in)).flatten()
+    }) {
         Some(image) => {
             let extension = image
                 .extension()
@@ -560,6 +658,7 @@ fn import_one(
     let lyrics = match lyrics_index
         .resolve(&stem, file_name)
         .or_else(|| sidecar_beside(source))
+        .or_else(|| wave_folder.then(|| source.parent().and_then(library::lyrics_in)).flatten())
     {
         Some(text) => {
             let target = lyrics_path(root, &id);
@@ -808,5 +907,39 @@ mod tests {
 
         assert_eq!(path.extension().unwrap(), "mp3");
         assert!(path.parent().unwrap().is_dir());
+    }
+
+    #[test]
+    fn imports_wave_song_folder_with_its_cover_and_lyrics() {
+        let root = scratch("wave-folder");
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        let audio = source.join("audio.wav");
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&38u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&8000u32.to_le_bytes());
+        wav.extend_from_slice(&16000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&2u32.to_le_bytes());
+        wav.extend_from_slice(&[0, 0]);
+        fs::write(&audio, wav).unwrap();
+        fs::write(source.join("cover.jpg"), b"cover").unwrap();
+        fs::write(source.join("lyrics.lrc"), "[00:01.00]words").unwrap();
+
+        let catalog = Catalog::in_memory().unwrap();
+        let (placed, id) = import_one(
+            &root, &catalog, &audio, "audio.wav", &SidecarIndex::default(), &SidecarIndex::default(),
+        ).unwrap();
+        assert!(matches!(placed, Placed::Added { cover: true, lyrics: true, .. }));
+        assert_eq!(fs::read(cover_path(&root, &id, "jpg")).unwrap(), b"cover");
+        assert_eq!(fs::read_to_string(lyrics_path(&root, &id)).unwrap(), "[00:01.00]words");
+        assert!(audio.is_file());
     }
 }

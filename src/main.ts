@@ -81,10 +81,11 @@ function mountStatus(): void {
   let timer: number | null = null;
 
   const render = (): void => {
-    const { analysing, notice, ready, scanning, tracks } = getState();
+    const { analysing, folderImport, notice, ready, scanning, tracks } = getState();
 
     const message =
       notice ??
+      folderImport ??
       (scanning
         ? "Scanning your library..."
         : analysing

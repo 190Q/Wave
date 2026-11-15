@@ -624,6 +624,28 @@ impl Catalog {
         Ok(id)
     }
 
+    pub fn resolve_imported_pending(
+        &self,
+        playlist_id: &str,
+        matches: &[(String, String)],
+    ) -> Result<(), String> {
+        let mut connection = self.guard();
+        let transaction = connection
+            .transaction()
+            .map_err(|e| format!("could not start a catalog write: {e}"))?;
+        for (pending_id, track_id) in matches {
+            transaction.execute(
+                "UPDATE playlist_tracks SET track_id = ?3 WHERE playlist_id = ?1 AND track_id = ?2",
+                params![playlist_id, pending_id, track_id],
+            ).map_err(|e| format!("could not resolve a playlist entry: {e}"))?;
+            transaction.execute(
+                "DELETE FROM pending_tracks WHERE playlist_id = ?1 AND id = ?2 AND source = 'wavelist'",
+                params![playlist_id, pending_id],
+            ).map_err(|e| format!("could not remove a waiting song: {e}"))?;
+        }
+        transaction.commit().map_err(|e| format!("could not finish a catalog write: {e}"))
+    }
+
     pub fn rename_playlist(&self, id: &str, name: &str) -> Result<(), String> {
         let changed = self
             .guard()
@@ -715,6 +737,26 @@ impl Catalog {
         entries: &[String],
         pending: &[PendingTrack],
     ) -> Result<String, String> {
+        self.create_playlist_with_pending(name, GENERATED_KIND, entries, pending)
+    }
+
+    #[cfg(any(target_os = "android", test))]
+    pub fn create_imported_playlist(
+        &self,
+        name: &str,
+        entries: &[String],
+        pending: &[PendingTrack],
+    ) -> Result<String, String> {
+        self.create_playlist_with_pending(name, crate::state::CUSTOM_KIND, entries, pending)
+    }
+
+    fn create_playlist_with_pending(
+        &self,
+        name: &str,
+        kind: &str,
+        entries: &[String],
+        pending: &[PendingTrack],
+    ) -> Result<String, String> {
         let id = identity::new_id();
         let now = identity::now_ms();
         let mut connection = self.guard();
@@ -726,7 +768,7 @@ impl Catalog {
             .execute(
                 "INSERT INTO playlists (id, name, kind, created_at, updated_at) \
                  VALUES (?1, ?2, ?3, ?4, ?4)",
-                params![id, name, GENERATED_KIND, now],
+                params![id, name, kind, now],
             )
             .map_err(|e| format!("could not create the playlist: {e}"))?;
 
@@ -859,6 +901,12 @@ impl Catalog {
         }
 
         if removed > 0 {
+            for track_id in track_ids {
+                transaction.execute(
+                    "DELETE FROM pending_tracks WHERE playlist_id = ?1 AND id = ?2",
+                    params![id, track_id],
+                ).map_err(|e| format!("could not remove a waiting song: {e}"))?;
+            }
             transaction
                 .execute(
                     "UPDATE playlists SET updated_at = ?2 WHERE id = ?1",

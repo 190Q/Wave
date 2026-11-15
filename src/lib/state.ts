@@ -141,6 +141,7 @@ export interface AppState {
   lyricsTrackId: string | null;
   /** Transient message shown in the status strip. */
   notice: string | null;
+  folderImport: string | null;
   /** What the import dialog shows about the Spotify credentials. */
   spotify: SpotifyStatus | null;
   spotifyChecking: boolean;
@@ -237,6 +238,7 @@ const state: AppState = {
   lyrics: [],
   lyricsTrackId: null,
   notice: null,
+  folderImport: null,
   spotify: null,
   spotifyChecking: false,
   deezer: null,
@@ -841,7 +843,10 @@ async function readLibraryInfo(): Promise<void> {
   }
 }
 
+let scanSequence = 0;
+
 export async function rescan(forceFull = false): Promise<void> {
+  const sequence = ++scanSequence;
   state.scanning = true;
   emit();
 
@@ -849,11 +854,20 @@ export async function rescan(forceFull = false): Promise<void> {
     const known = state.libraryInfo?.tracks;
     const full =
       forceFull || state.tracksById.size === 0 || (known !== undefined && state.tracksById.size !== known);
-    await applyScan(await ipc.scanLibrary(full));
+    const summary = await ipc.scanLibrary(full);
+    if (sequence !== scanSequence) {
+      return;
+    }
+    await applyScan(summary, full, sequence);
   } catch (error) {
-    state.scanErrors = [describe(error)];
+    if (sequence === scanSequence) {
+      state.scanErrors = [describe(error)];
+    }
   }
 
+  if (sequence !== scanSequence) {
+    return;
+  }
   state.scanning = false;
   emit();
 
@@ -865,11 +879,11 @@ export async function rescan(forceFull = false): Promise<void> {
  * Applies a scan's summary, whether the window ran the scan or the local API
  * did. Shared so the two paths can never drift apart.
  */
-async function applyScan(summary: ScanSummary): Promise<void> {
+async function applyScan(summary: ScanSummary, full = false, sequence?: number): Promise<void> {
   // Only what moved is merged in, so a scan that changed nothing does not have
   // to rebuild the whole listing.
-  if (summary.changed.length > 0 || summary.removed.length > 0) {
-    const byId = new Map(state.tracksById);
+  if (full || summary.changed.length > 0 || summary.removed.length > 0) {
+    const byId = full && summary.errors.length === 0 ? new Map<string, Track>() : new Map(state.tracksById);
     for (const id of summary.removed) {
       byId.delete(id);
     }
@@ -889,12 +903,19 @@ async function applyScan(summary: ScanSummary): Promise<void> {
   state.skipped = summary.skipped;
   state.scanErrors = summary.errors;
   await readLibraryInfo();
+  if (sequence !== undefined && sequence !== scanSequence) {
+    return;
+  }
   refreshCollections();
   repairQueue();
   if (summary.changed.length > 0) {
     rememberTracks(summary.changed);
   }
-  applyPersisted(await ipc.loadState());
+  const persisted = await ipc.loadState();
+  if (sequence !== undefined && sequence !== scanSequence) {
+    return;
+  }
+  applyPersisted(persisted);
   adoptSource();
 }
 
@@ -969,10 +990,12 @@ async function completeImport(outcome: ImportOutcome): Promise<string> {
 }
 
 /** The one-line summary both import paths finish with. */
-function importSummary(outcome: ImportOutcome): string {
+function importSummary(outcome: ImportOutcome, waitingForAudio = false): string {
   const parts = [`${plural(outcome.songs, "song")} imported`];
   if (outcome.duplicates > 0) {
-    parts.push(`${plural(outcome.duplicates, "duplicate")} skipped`);
+    parts.push(waitingForAudio
+      ? `${plural(outcome.duplicates, "song")} already in your library`
+      : `${plural(outcome.duplicates, "duplicate")} skipped`);
   }
   if (outcome.similar > 0) {
     parts.push(`${plural(outcome.similar, "song")} sharing a title`);
@@ -985,6 +1008,9 @@ function importSummary(outcome: ImportOutcome): string {
   }
   if (outcome.playlist) {
     parts.push(`playlist "${outcome.playlist}" created`);
+  }
+  if (waitingForAudio && outcome.skipped > 0) {
+    parts.push(`${plural(outcome.skipped, "song")} waiting for audio`);
   }
   if (outcome.errors.length > 0) {
     parts.push(`${outcome.errors.length} failed`);
@@ -1025,11 +1051,34 @@ export async function importPickedFiles(): Promise<void> {
     setNotice("Importing...");
     const outcome = await ipc.importPickedFiles(paths);
     applyPersisted(outcome.state);
-    await rescan();
+    await rescan(true);
     const found = await completeImport(outcome);
     setNotice([importSummary(outcome), found].filter(Boolean).join(", "));
   } catch (error) {
     setNotice(describe(error));
+  }
+}
+
+export async function importPhoneFolder(): Promise<void> {
+  if (state.folderImport !== null) {
+    return;
+  }
+  state.folderImport = "Choose a music folder to import...";
+  setNotice(null);
+  try {
+    const outcome = await ipc.importPhoneFolder();
+    if (!outcome) {
+      return;
+    }
+    applyPersisted(outcome.state);
+    await rescan(true);
+    const failure = outcome.errors[0];
+    setNotice(`${importSummary(outcome)}${failure ? `. ${failure}` : ""}`);
+  } catch (error) {
+    setNotice(describe(error));
+  } finally {
+    state.folderImport = null;
+    emit();
   }
 }
 
@@ -1039,7 +1088,7 @@ export async function importPhoneMusic(): Promise<void> {
     setNotice("Looking through your music folders...");
     const outcome = await ipc.scanPhoneMusic();
     applyPersisted(outcome.state);
-    await rescan();
+    await rescan(true);
     const found = await completeImport(outcome);
     setNotice([importSummary(outcome), found].filter(Boolean).join(", "));
   } catch (error) {
@@ -1068,7 +1117,7 @@ export async function importWaveList(): Promise<void> {
     const outcome = await ipc.importWaveList(path);
     applyPersisted(outcome.state);
     await rescan();
-    const message = importSummary(outcome);
+    const message = importSummary(outcome, isAndroidPlatform);
     setNotice(message);
     state.transferProgress = {
       phase: outcome.errors.length ? "failed" : "done",
@@ -1776,6 +1825,7 @@ export async function deleteTracks(trackIds: string[]): Promise<void> {
 
   try {
     applyPersisted(await ipc.deleteTracks(trackIds));
+    scanSequence += 1;
     const removed = new Set(trackIds);
     state.tracks = state.tracks.filter((track) => !removed.has(track.id));
     state.tracksById = new Map(state.tracks.map((track) => [track.id, track]));
@@ -1784,6 +1834,7 @@ export async function deleteTracks(trackIds: string[]): Promise<void> {
     for (const id of trackIds) {
       player.removeFromQueue(id);
     }
+    emit();
     await rescan();
     setNotice(title ? `Deleted "${title}".` : `${plural(trackIds.length, "song")} deleted.`);
   } catch (error) {
@@ -1991,6 +2042,12 @@ let configTimer: number | null = null;
 
 /** Follows the link import and the config file, for the dialog. */
 function watchSources(): void {
+  void listen<string>("phone-folder-import", (event) => {
+    if (state.folderImport !== null) {
+      state.folderImport = event.payload;
+      scheduleEmit();
+    }
+  }).catch(() => {});
   void listen<ImportProgress>("wavelist-import", (event) => {
     state.transferProgress = event.payload;
     scheduleEmit();

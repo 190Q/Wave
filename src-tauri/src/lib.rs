@@ -283,6 +283,8 @@ pub fn run() {
             import::import_picked_files,
             #[cfg(target_os = "android")]
             import::scan_phone_music,
+            #[cfg(target_os = "android")]
+            import::import_phone_folder,
             transfer::export_wavelist,
             transfer::import_wavelist,
             playlists::create_playlist,

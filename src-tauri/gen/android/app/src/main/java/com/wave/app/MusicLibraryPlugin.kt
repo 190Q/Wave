@@ -3,11 +3,15 @@ package com.wave.app
 import android.Manifest
 import android.app.Activity
 import android.content.ContentResolver
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import androidx.activity.result.ActivityResult
 import app.tauri.PermissionState
+import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.Permission
@@ -24,14 +28,11 @@ class UriList {
   lateinit var uris: MutableList<String>
 }
 
-/**
- * What the phone already holds, which is the only music a phone can be given
- * without a download: there is no folder picker to point Wave at a library.
- *
- * It asks for the audio permission, says where the standard music folders are,
- * and puts the name the system keeps for a picked file onto the URI the picker
- * handed back, which is where the file's extension comes from.
- */
+@InvokeArg
+class FolderUri {
+  lateinit var uri: String
+}
+
 @TauriPlugin(
   permissions = [
     Permission(alias = "audio", strings = [Manifest.permission.READ_MEDIA_AUDIO]),
@@ -71,6 +72,75 @@ class MusicLibraryPlugin(private val activity: Activity) : Plugin(activity) {
     val result = JSObject()
     result.put("names", jsArray(args.uris.map { displayName(it) }))
     invoke.resolve(result)
+  }
+
+  @Command
+  fun pickFolder(invoke: Invoke) {
+    try {
+      val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+      intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      startActivityForResult(invoke, intent, "folderResult")
+    } catch (error: Exception) {
+      invoke.reject(error.message ?: "Could not open the folder picker")
+    }
+  }
+
+  @ActivityCallback
+  fun folderResult(invoke: Invoke, result: ActivityResult) {
+    val answer = JSObject()
+    answer.put("uri", if (result.resultCode == Activity.RESULT_OK) result.data?.data?.toString() else null)
+    invoke.resolve(answer)
+  }
+
+  @Command
+  fun folderFiles(invoke: Invoke) {
+    Thread {
+      try {
+        val tree = Uri.parse(invoke.parseArgs(FolderUri::class.java).uri)
+        val pending = ArrayDeque<String>()
+        val visited = mutableSetOf<String>()
+        val files = JSArray()
+        pending.add(DocumentsContract.getTreeDocumentId(tree))
+        val columns = arrayOf(
+          DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+          DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+          DocumentsContract.Document.COLUMN_MIME_TYPE
+        )
+        val extensions = setOf(
+          "mp3", "flac", "m4a", "m4b", "aac", "ogg", "opus", "wav", "aiff", "aif", "wma",
+          "jpg", "jpeg", "png", "webp", "gif", "bmp", "lrc"
+        )
+
+        while (pending.isNotEmpty()) {
+          val parent = pending.removeFirst()
+          if (!visited.add(parent)) continue
+          val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parent)
+          val cursor = activity.contentResolver.query(children, columns, null, null, null)
+            ?: throw IllegalStateException("Could not read a folder")
+          cursor.use {
+            while (it.moveToNext()) {
+              val id = it.getString(0) ?: continue
+              val name = it.getString(1) ?: continue
+              val mime = it.getString(2)
+              if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                pending.add(id)
+              } else if (name.substringAfterLast('.', "").lowercase() in extensions) {
+                val file = JSObject()
+                file.put("uri", DocumentsContract.buildDocumentUriUsingTree(tree, id).toString())
+                file.put("parent", parent)
+                file.put("name", name)
+                files.put(file)
+              }
+            }
+          }
+        }
+        val answer = JSObject()
+        answer.put("files", files)
+        invoke.resolve(answer)
+      } catch (error: Exception) {
+        invoke.reject(error.message ?: "Could not read the selected folder")
+      }
+    }.start()
   }
 
   /**

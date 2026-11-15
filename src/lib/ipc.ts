@@ -315,10 +315,7 @@ export async function pickFolder(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
-/**
- * Native picker for audio files. Android has no folder picker, so the phone
- * imports this way instead, and hands back `content://` URIs rather than paths.
- */
+/** Native picker for audio files, returning `content://` URIs on Android. */
 export async function pickAudioFiles(): Promise<string[] | null> {
   const selected = await open({
     multiple: true,
@@ -344,6 +341,10 @@ export function importPickedFiles(paths: string[]): Promise<ImportOutcome> {
 /** Walks the phone's own music folders and imports what it finds. */
 export function scanPhoneMusic(): Promise<ImportOutcome> {
   return invoke("scan_phone_music");
+}
+
+export function importPhoneFolder(): Promise<ImportOutcome | null> {
+  return invoke("import_phone_folder");
 }
 
 /** Raw artwork bytes, delivered over IPC rather than as a file URL. */

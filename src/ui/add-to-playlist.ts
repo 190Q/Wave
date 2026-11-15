@@ -1,3 +1,4 @@
+import { insets, isTouch } from "../lib/device";
 import { escapeHtml, songCount } from "../lib/format";
 import { scoreItems } from "../lib/search";
 import {
@@ -270,27 +271,30 @@ export function openAddToPlaylist(anchor: HTMLElement, trackIds: string[]): void
   window.addEventListener("scroll", onScroll, true);
   window.addEventListener("resize", close);
 
-  search.focus();
+  if (!isTouch()) {
+    search.focus();
+  }
 }
 
 /** Opens beside the button, or on its other side when the edge is too close. */
 function place(panel: HTMLElement, anchor: HTMLElement): void {
   const margin = 8;
+  const safe = insets();
   const rect = anchor.getBoundingClientRect();
   const width = panel.offsetWidth;
   const height = panel.offsetHeight;
+  const minLeft = margin + safe.left;
+  const maxLeft = Math.max(minLeft, window.innerWidth - width - margin - safe.right);
+  const minTop = margin + safe.top;
+  const maxTop = Math.max(minTop, window.innerHeight - height - margin - safe.bottom);
 
   let left = rect.right + margin;
-  if (left + width > window.innerWidth - margin) {
+  if (left > maxLeft) {
     left = rect.left - width - margin;
   }
-  left = Math.min(Math.max(margin, left), Math.max(margin, window.innerWidth - width - margin));
+  left = Math.min(Math.max(minLeft, left), maxLeft);
 
-  let top = rect.top;
-  if (top + height > window.innerHeight - margin) {
-    top = window.innerHeight - height - margin;
-  }
-  top = Math.max(margin, top);
+  const top = Math.min(Math.max(minTop, rect.top), maxTop);
 
   panel.style.left = `${Math.round(left)}px`;
   panel.style.top = `${Math.round(top)}px`;

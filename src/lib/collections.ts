@@ -54,13 +54,14 @@ export function buildCollections(tracks: Track[], playlists: Playlist[], likes: 
       continue;
     }
 
+    const entries = generatedEntries(playlist, heldIds);
     collections.push({
       id: playlist.id,
       kind: "playlist",
       name: playlist.name,
-      subtitle: `Playlist, ${songCount(ids.length)}`,
+      subtitle: `Playlist, ${songCount(entries.length)}`,
       trackIds: ids,
-      entries: ids,
+      entries,
     });
   }
 

@@ -324,6 +324,7 @@ const handlers: Record<string, Handler> = {
 
   import_folder: () => importOutcome(["The simulator does not import from disk."]),
   import_picked_files: () => importOutcome(["The simulator does not import from disk."]),
+  import_phone_folder: () => null,
   scan_phone_music: () => importOutcome(["The simulator does not import from disk."]),
   spotify_status: () => spotifyStatus(),
   open_spotify_config: () => undefined,

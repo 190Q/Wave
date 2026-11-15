@@ -1,5 +1,5 @@
 import { COLLECTION_FILTERS, filterCollections, isPinned } from "../lib/collections";
-import { isTouch } from "../lib/device";
+import { device, isTouch } from "../lib/device";
 import { escapeHtml, formatDuration, formatTotalDuration, plural, songCount } from "../lib/format";
 import { bounce, reduceMotionActive } from "../lib/motion";
 import {
@@ -198,7 +198,7 @@ export function mountLibrary(): void {
     }
 
     const ids = selectedTrackIds();
-    if (ids.length === 0) {
+    if (ids.length === 0 || isTouch()) {
       bar.hidden = true;
       bar.innerHTML = "";
       return;
@@ -620,12 +620,16 @@ export function mountLibrary(): void {
     }
     event.preventDefault();
 
-    // Right-clicking outside the selection acts on that row alone.
-    if (!selection.has(trackId)) {
+    if (!isTouch() && !selection.has(trackId)) {
       selectOnly(trackId);
     }
 
-    openTrackMenu(row, openCollectionId, selectedTrackIds(), { x: event.clientX, y: event.clientY });
+    const ids = isTouch() && selection.size === 0 ? [trackId] : selectedTrackIds();
+    openTrackMenu(row, openCollectionId, ids, { x: event.clientX, y: event.clientY },
+      isTouch() ? {
+        selectAll: () => runSelectAction("all", openCollectionId ?? ""),
+        clear: selection.size > 0 ? clearSelection : undefined,
+      } : undefined);
   });
 
   list.addEventListener("keydown", (event) => {
@@ -822,7 +826,7 @@ export function mountLibrary(): void {
 
       // A generated playlist mixes waiting rows with downloaded ones, which are
       // not the same height, so it is drawn whole instead.
-      if (collection.kind !== "generated") {
+      if (collection.kind !== "generated" && !collection.entries.some((id) => state.pendingById.has(id))) {
         detailWindow = new WindowedList({
           scroller: list,
           host,
@@ -1026,7 +1030,7 @@ function swipePanel(root: HTMLElement, direction: 1 | -1): void {
 
 /** The ids the detail pane draws, in the order it draws them. */
 function detailIds(state: AppState, collection: Collection): string[] {
-  if (collection.kind === "generated") {
+  if (collection.kind === "generated" || collection.kind === "playlist") {
     return collection.entries;
   }
   return collection.trackIds.filter((id) => state.tracksById.has(id));
@@ -1176,28 +1180,27 @@ function renderList(
 
 function renderDetail(state: AppState, collection: Collection): string {
   const generated = collection.kind === "generated";
+  const hasPending = collection.entries.some((id) => state.pendingById.has(id));
   const tracks = collection.trackIds
     .map((id) => state.tracksById.get(id))
     .filter((track): track is Track => track !== undefined);
   const totalMs = tracks.reduce((sum, track) => sum + track.durationMs, 0);
-  const pendingCount = generated
-    ? collection.entries.filter((id) => state.pendingById.has(id)).length
-    : 0;
+  const pendingCount = collection.entries.filter((id) => state.pendingById.has(id)).length;
 
   const summary = [
     songCount(collection.entries.length),
     totalMs > 0 ? formatTotalDuration(totalMs) : null,
-    pendingCount > 0 ? `${pendingCount} to download` : null,
+    pendingCount > 0 ? `${pendingCount} ${device() === "android" ? "waiting for audio" : "to download"}` : null,
   ]
     .filter((part): part is string => part !== null)
     .join(", ");
 
-  const rows = generated
+  const rows = generated || hasPending
     ? collection.entries
         .map((id, index) => {
           const track = state.tracksById.get(id);
           if (track) {
-            return trackRowHtml(state, track, index, false);
+            return trackRowHtml(state, track, index, collection.kind === "playlist" && !hasPending);
           }
           const pending = state.pendingById.get(id);
           return pending ? pendingRowHtml(pending, index) : "";
@@ -1275,7 +1278,7 @@ function detailActions(collection: Collection, pendingCount: number): string {
     ? `<button class="pill icon-only" type="button" data-menu="${id}" aria-label="Playlist actions">...</button>`
     : "";
 
-  if (collection.kind === "generated" && pendingCount > 0) {
+  if (collection.kind === "generated" && pendingCount > 0 && device() !== "android") {
     return `
             <button class="pill pill-strong" type="button" data-download="${id}">
               <span class="btn-icon" data-icon="import"></span>
@@ -1285,11 +1288,11 @@ function detailActions(collection: Collection, pendingCount: number): string {
   }
 
   return `
-            <button class="pill pill-strong" type="button" data-play="${id}">
+            <button class="pill pill-strong" type="button" data-play="${id}"${collection.trackIds.length === 0 ? " disabled" : ""}>
               <span class="btn-icon" data-icon="play"></span>
               <span>Play</span>
             </button>
-            <button class="pill" type="button" data-shuffle="${id}">
+            <button class="pill" type="button" data-shuffle="${id}"${collection.trackIds.length === 0 ? " disabled" : ""}>
               <span class="btn-icon" data-icon="shuffle"></span>
               <span>Shuffle</span>
             </button>
@@ -1654,6 +1657,7 @@ function openTrackMenu(
   collectionId: string,
   trackIds: string[],
   at: MenuPoint,
+  touch?: { selectAll: () => void; clear?: () => void },
 ): void {
   const state = getState();
   const collection = collectionById(collectionId);
@@ -1666,6 +1670,10 @@ function openTrackMenu(
 
   const items: MenuItem[] = [];
 
+  if (touch && trackIds.length === 1 && everyHeld) {
+    items.push({ label: "Play", action: () => playFromCollection(collectionId, trackIds[0]) });
+  }
+
   if (everyHeld) {
     items.push({
       label: `${allLiked ? "Unlike" : "Like"}${many ? ` ${count}` : ""}`,
@@ -1677,7 +1685,7 @@ function openTrackMenu(
     items.push({ label: "Add to playlist", action: () => openAddToPlaylist(addAnchor(row), trackIds) });
   }
 
-  if (everyPending) {
+  if (everyPending && device() !== "android") {
     items.push({
       label: many ? `Download ${count}` : "Download",
       action: () => void downloadPending(collectionId, trackIds),
@@ -1685,7 +1693,7 @@ function openTrackMenu(
   }
 
   // Only a playlist the user made can drop a song; a generated one cannot.
-  if (collection?.kind === "playlist" && everyHeld) {
+  if (collection?.kind === "playlist") {
     items.push({
       label: many ? `Remove ${count} from this playlist` : "Remove from this playlist",
       action: () => void removeFromPlaylist(collection.id, trackIds),
@@ -1698,6 +1706,13 @@ function openTrackMenu(
       danger: true,
       action: () => void removeTracks(trackIds),
     });
+  }
+
+  if (touch) {
+    items.push({ label: "Select all", action: touch.selectAll });
+    if (touch.clear) {
+      items.push({ label: "Clear selection", action: touch.clear });
+    }
   }
 
   openMenu(row, items, at);
@@ -1764,9 +1779,9 @@ function bounceHearts(row: HTMLElement, trackIds: string[]): void {
   }
 }
 
-/** The panel hangs off the row's add button, the way the click path opens it. */
+/** Touch hides the add button, so the visible row anchors the panel instead. */
 function addAnchor(row: HTMLElement): HTMLElement {
-  return row.querySelector<HTMLElement>("[data-track-add]") ?? row;
+  return isTouch() ? row : row.querySelector<HTMLElement>("[data-track-add]") ?? row;
 }
 
 /** Takes songs out of the playlist on screen. A batch is asked about first. */

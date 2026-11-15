@@ -11,6 +11,7 @@ import {
   getState,
   importFolder,
   importLogPath,
+  importPhoneFolder,
   importPhoneMusic,
   importPickedFiles,
   importWaveList,
@@ -365,6 +366,10 @@ export function mountImportDialog(): void {
         close();
         void importPhoneMusic();
         return;
+      case "phone-folder":
+        close();
+        void importPhoneFolder();
+        return;
       case "fix":
         close();
         void fixTagsAndCovers();
@@ -561,9 +566,11 @@ function localSection(): string {
   if (device() === "android") {
     return section(
       "Import from this phone",
-      `<p class="import-hint">Pick audio files with the system picker, or let Wave read the music folders on the phone. A file with no tags of its own is named after its file name, so Artist - Title.mp3 comes in with both. Fix tags and covers then looks the artist, album and cover up for everything still missing them.</p>
+      `<p class="import-hint">Pick audio files or a folder, including a copied Wave songs folder, or scan the phone's music folders. Import songs before importing a Wave playlist to match its tracks.</p>
       <div class="import-actions">
         <button class="pill" type="button" data-import="files">Import files</button>
+        <button class="pill" type="button" data-import="phone-folder">Import folder</button>
+        <button class="pill" type="button" data-import="wavelist">Import Wave playlist</button>
         <button class="pill" type="button" data-import="phone">Scan my phone's music</button>
         <button class="pill" type="button" data-import="fix">Fix tags and covers</button>
       </div>
@@ -884,6 +891,8 @@ function dropRowsHtml(state: AppState): string {
     device() === "android"
       ? [
           dropRow("files", "import", "Import files"),
+          dropRow("phone-folder", "folder", "Import folder"),
+          dropRow("wavelist", "import", "Import Wave playlist"),
           dropRow("phone", "library", "Scan my phone's music"),
           dropRow("fix", "covers", "Fix tags and covers"),
         ]

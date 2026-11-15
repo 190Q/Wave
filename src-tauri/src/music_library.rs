@@ -38,6 +38,28 @@ struct Uris<'a> {
     uris: &'a [String],
 }
 
+#[derive(Debug, Deserialize)]
+struct Folder {
+    uri: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FolderFiles {
+    files: Vec<FolderFile>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FolderFile {
+    pub uri: String,
+    pub parent: String,
+    pub name: String,
+}
+
+#[derive(Serialize)]
+struct UriArg<'a> {
+    uri: &'a str,
+}
+
 /// The Rust half of the Kotlin plugin.
 #[derive(Clone)]
 pub struct MusicLibrary(PluginHandle<Wry>);
@@ -68,6 +90,20 @@ impl MusicLibrary {
             .run_mobile_plugin::<Names>("names", Uris { uris })
             .map(|found| found.names)
             .map_err(|error| format!("the picked files could not be read: {error}"))
+    }
+
+    pub fn pick_folder(&self) -> Result<Option<String>, String> {
+        self.0
+            .run_mobile_plugin::<Folder>("pickFolder", ())
+            .map(|answer| answer.uri)
+            .map_err(|error| format!("the folder picker could not be opened: {error}"))
+    }
+
+    pub fn folder_files(&self, uri: &str) -> Result<Vec<FolderFile>, String> {
+        self.0
+            .run_mobile_plugin::<FolderFiles>("folderFiles", UriArg { uri })
+            .map(|answer| answer.files)
+            .map_err(|error| format!("the selected folder could not be read: {error}"))
     }
 }
 

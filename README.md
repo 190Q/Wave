@@ -71,18 +71,21 @@ What the phone does differently:
 - Dragging the progress bar upwards brings the lyrics in and pushes the queue and the
   progress bar out of frame below the top bar. Dragging the panel back down puts them
   back. It only works when the song has lyrics.
-- Every dialog, the equaliser and the library fill the screen, and the top and bottom of
-  the layout are padded by the window insets the system reports, so nothing sits under
-  the camera or the gesture bar.
+- The library, equaliser and larger dialogs fill the screen; confirmations and update
+  notices stay compact. The layout respects the system insets around the camera and
+  gesture bar.
 - The equaliser keeps its right column only: the level, the saved curves, and the rules
   that follow what plays and which output is in use. The curve graph and the band list
   are desktop only.
 - The song appears in the notification shade and on the lock screen, with play, pause,
   next, previous and a seek button. A foreground service of type `mediaPlayback` holds
   the process and a wake lock, so playback carries on while the app is in the background.
-- Import is from the phone itself: pick audio files with the system picker, or let Wave
-  read the music folders on the device. Spotify, Deezer and YouTube link import needs
-  yt-dlp, ffmpeg and Deno, which cannot run on Android, so those are not offered.
+- Import audio files or a folder with the system picker, including a copied Wave `songs`
+  folder with its artwork and lyrics, or let Wave read the phone's music folders.
+  Import a `.wavelist` playlist separately: it matches songs already in the library and
+  keeps missing entries until their audio is imported. A `.wavelist` contains metadata,
+  not audio. Spotify, Deezer and YouTube link import needs yt-dlp, ffmpeg and Deno,
+  which cannot run on Android, so those are not offered.
 - Updates come from the release page, not from a store. The same check Wave makes on the
   desktop finds a newer release, and **Settings → Updates** downloads the APK and hands
   it to the system installer, which asks you to confirm; Android also asks once for

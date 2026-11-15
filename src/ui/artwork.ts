@@ -4,9 +4,9 @@ import { escapeHtml } from "../lib/format";
 import { artworkUrlFor, colourFor, type ArtworkTier } from "../lib/state";
 import type { Collection, Track } from "../types";
 
-export function coverStyle(track: Track, tier: ArtworkTier = "background"): string {
+export function coverStyle(track: Track, tier: ArtworkTier = "background", reveal = true): string {
   const colour = colourFor(track);
-  const url = artworkUrlFor(track, tier);
+  const url = reveal ? artworkUrlFor(track, tier) : null;
   if (!url) {
     return `background-color: ${colour}; background-image: ${cardGradient(colour)};`;
   }

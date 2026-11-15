@@ -40,12 +40,13 @@ import type {
   YoutubeStatus,
 } from "../types";
 import { flushAnalytics, mountAnalytics, notePlaybackError, noteTrackEnded, recordEvent, rememberTracks } from "./analytics";
+import { nearbyArtwork } from "./artwork-priority";
 import { AudioEngine, assetUrl } from "./audio";
 import { mountAudioWatchdog } from "./audio-watchdog";
 import type { EqProfile } from "./autoeq";
 import { COLLECTION_FILTERS, buildCollections, findCollection, isUnknownCollection, sortAlbumTracks } from "./collections";
 import { FALLBACK_COLOUR, colourFromId, isUsableAccent } from "./colour";
-import { isAndroidPlatform } from "./device";
+import { device, isAndroidPlatform } from "./device";
 import { DEFAULT_EQ_BANDS, EqChain } from "./eq";
 import * as ipc from "./ipc";
 import { plural } from "./format";
@@ -271,6 +272,7 @@ const colourQueue: string[] = [];
 let drainingColours = false;
 
 export type ArtworkTier = "now" | "queue" | "background" | "prefetch" | "idle";
+type ArtworkWorkTier = ArtworkTier | "priority";
 
 const TIER_PRIORITY: Record<ArtworkTier, number> = { now: 0, queue: 1, background: 2, prefetch: 3, idle: 4 };
 const TIER_CONCURRENCY: Record<ArtworkTier, number> = { now: 1, queue: 7, background: 2, prefetch: 2, idle: 0 };
@@ -279,6 +281,8 @@ const artworkUrls = new Map<string, string>();
 const artworkPending = new Map<string, ArtworkTier>();
 const artworkInFlight = new Set<string>();
 const artworkRunning: Record<ArtworkTier, number> = { now: 0, queue: 0, background: 0, prefetch: 0, idle: 0 };
+let artworkPriority = new Set<string>();
+let artworkPriorityNeedsRender = false;
 /** Tracks whose artwork could not be read; not retried this session. */
 const artworkFailed = new Set<string>();
 
@@ -508,11 +512,39 @@ export function artworkUrlFor(track: Track, tier: ArtworkTier = "background"): s
 
 export function pruneArtworkQueue(window: Set<string>, queue: Set<string>): void {
   for (const [id, tier] of artworkPending) {
-    const wanted = tier === "queue" ? window.has(id) : tier === "prefetch" ? queue.has(id) : true;
+    const wanted = artworkPriority.has(id) ||
+      (tier === "queue" ? window.has(id) : tier === "prefetch" ? queue.has(id) : true);
     if (!wanted) {
       artworkPending.delete(id);
     }
   }
+}
+
+export function prioritizeNearbyArtwork(order: readonly string[], cursor: number, looping: boolean): void {
+  artworkPriority = new Set(nearbyArtwork(order, cursor, looping));
+  let waiting = false;
+  for (const id of artworkPriority) {
+    const track = state.tracksById.get(id);
+    if (!track?.artworkPath || artworkUrls.has(id) || artworkFailed.has(id)) {
+      continue;
+    }
+    waiting = true;
+    if (!artworkInFlight.has(id) && !artworkPending.has(id)) {
+      artworkPending.set(id, "queue");
+    }
+  }
+  if (waiting) {
+    artworkPriorityNeedsRender = true;
+  } else if (artworkPriority.size === 0) {
+    artworkPriorityNeedsRender = false;
+  } else if (artworkPriorityNeedsRender) {
+    scheduleEmit();
+  }
+  pumpArtwork();
+}
+
+export function mayRevealArtwork(trackId: string): boolean {
+  return !artworkPriorityNeedsRender || artworkPriority.has(trackId);
 }
 
 export function prefetchArtwork(trackIds: readonly string[]): void {
@@ -579,6 +611,18 @@ function retainArtwork(): void {
 
 /** Starts as many pending reads as the per-tier limits allow, best tier first. */
 function pumpArtwork(): void {
+  for (const id of artworkPriority) {
+    if (artworkPending.has(id)) {
+      artworkPending.delete(id);
+      startArtwork(id, "priority");
+    }
+  }
+
+  if (artworkPriorityNeedsRender ||
+      [...artworkPriority].some((id) => artworkPending.has(id) || artworkInFlight.has(id))) {
+    return;
+  }
+
   for (;;) {
     let chosen: string | null = null;
     let chosenTier: ArtworkTier = "background";
@@ -602,28 +646,42 @@ function pumpArtwork(): void {
   }
 }
 
-function startArtwork(trackId: string, tier: ArtworkTier): void {
+function startArtwork(trackId: string, tier: ArtworkWorkTier): void {
   const path = state.tracksById.get(trackId)?.artworkPath;
   if (!path) {
+    if (artworkPriority.has(trackId)) {
+      scheduleEmit();
+    }
     return;
   }
 
   artworkInFlight.add(trackId);
-  artworkRunning[tier] += 1;
+  if (tier !== "priority") {
+    artworkRunning[tier] += 1;
+  }
 
   void ipc
     .artworkBytes(path)
     .then((buffer) => {
       artworkUrls.set(trackId, URL.createObjectURL(new Blob([buffer], { type: imageMime(path) })));
+      if (artworkPriority.has(trackId)) {
+        artworkPriorityNeedsRender = true;
+      }
       scheduleEmit();
     })
     .catch(() => {
       // Recorded so a failed read is not retried on every re-render.
       artworkFailed.add(trackId);
+      if (artworkPriority.has(trackId)) {
+        artworkPriorityNeedsRender = true;
+        scheduleEmit();
+      }
     })
     .finally(() => {
       artworkInFlight.delete(trackId);
-      artworkRunning[tier] -= 1;
+      if (tier !== "priority") {
+        artworkRunning[tier] -= 1;
+      }
       pumpArtwork();
     });
 }
@@ -779,6 +837,12 @@ function scheduleEmit(): void {
   window.setTimeout(() => {
     emitScheduled = false;
     emit();
+    if (artworkPriorityNeedsRender &&
+        ![...artworkPriority].some((id) => artworkPending.has(id) || artworkInFlight.has(id))) {
+      artworkPriorityNeedsRender = false;
+      pumpArtwork();
+      scheduleEmit();
+    }
   }, 150);
 }
 
@@ -809,9 +873,14 @@ export async function init(): Promise<void> {
     seedEqOrigin();
     applySession(persisted.session);
     player.setVolume(state.settings.volume);
-    await rescan();
+    const deferQueueRepair = device() !== "desktop" && state.settings.resumeOnLaunch &&
+      (persisted.session?.playback?.order.length ?? 0) > 0;
+    await rescan(false, deferQueueRepair);
     if (state.settings.resumeOnLaunch) {
       restorePlayback(persisted.session?.playback);
+    }
+    if (deferQueueRepair && !player.currentId) {
+      repairQueue();
     }
     wirePersistence();
     state.ready = true;
@@ -847,7 +916,7 @@ async function readLibraryInfo(): Promise<void> {
 let scanSequence = 0;
 let loudnessDuringScan: Map<string, { lufs: number; peak: number }> | null = null;
 
-export async function rescan(forceFull = false): Promise<void> {
+export async function rescan(forceFull = false, deferQueueRepair = false): Promise<void> {
   const sequence = ++scanSequence;
   loudnessDuringScan = new Map();
   state.scanning = true;
@@ -869,7 +938,7 @@ export async function rescan(forceFull = false): Promise<void> {
       }
     }
     loudnessDuringScan = null;
-    await applyScan(summary, full, sequence);
+    await applyScan(summary, full, sequence, deferQueueRepair);
   } catch (error) {
     if (sequence === scanSequence) {
       state.scanErrors = [describe(error)];
@@ -892,7 +961,12 @@ export async function rescan(forceFull = false): Promise<void> {
  * Applies a scan's summary, whether the window ran the scan or the local API
  * did. Shared so the two paths can never drift apart.
  */
-async function applyScan(summary: ScanSummary, full = false, sequence?: number): Promise<void> {
+async function applyScan(
+  summary: ScanSummary,
+  full = false,
+  sequence?: number,
+  deferQueueRepair = false,
+): Promise<void> {
   // Only what moved is merged in, so a scan that changed nothing does not have
   // to rebuild the whole listing.
   if (full || summary.changed.length > 0 || summary.removed.length > 0) {
@@ -920,7 +994,9 @@ async function applyScan(summary: ScanSummary, full = false, sequence?: number):
     return;
   }
   refreshCollections();
-  repairQueue();
+  if (!deferQueueRepair) {
+    repairQueue();
+  }
   if (summary.changed.length > 0) {
     rememberTracks(summary.changed);
   }

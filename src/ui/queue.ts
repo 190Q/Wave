@@ -1,11 +1,14 @@
+import { device } from "../lib/device";
 import { escapeHtml } from "../lib/format";
 import {
   artworkUrlFor,
   colourFor,
   ensureColour,
   getState,
+  mayRevealArtwork,
   player,
   prefetchArtwork,
+  prioritizeNearbyArtwork,
   pruneArtworkQueue,
   stepTrack,
   subscribe,
@@ -186,14 +189,15 @@ export function mountQueue(): void {
     }
 
     const tier: ArtworkTier = visible ? "queue" : "idle";
+    const reveal = mayRevealArtwork(track.id);
     const card = document.createElement("article");
     card.className = "card";
     card.dataset.slot = String(slot);
     card.dataset.index = String(index);
-    card.dataset.artwork = artworkUrlFor(track, tier) ?? "";
+    card.dataset.artwork = reveal ? artworkUrlFor(track, tier) ?? "" : "";
     card.dataset.colour = colourFor(track);
     card.innerHTML = `
-      <div class="card-body" style="${coverStyle(track, tier)}">
+      <div class="card-body" style="${coverStyle(track, tier, reveal)}">
         <div class="card-text">
           <p class="card-title">${escapeHtml(track.title)}</p>
           <p class="card-artist">${escapeHtml(track.artist ?? "Unknown artist")}</p>
@@ -467,6 +471,10 @@ export function mountQueue(): void {
         artist.textContent = artistName;
       }
 
+      if (!mayRevealArtwork(track.id)) {
+        continue;
+      }
+
       const visible = Math.abs(Number(card.dataset.offset ?? 0)) <= VISIBLE_RANGE;
       const tier: ArtworkTier = visible ? "queue" : "idle";
       const signature = artworkUrlFor(track, tier) ?? "";
@@ -686,6 +694,12 @@ export function mountQueue(): void {
     const looping = snapshot.repeat !== "off";
     const total = snapshot.order.length;
     const signature = snapshot.order.join("|");
+
+    if (device() !== "desktop") {
+      prioritizeNearbyArtwork(snapshot.order, snapshot.cursor, looping);
+    } else {
+      prioritizeNearbyArtwork([], 0, false);
+    }
 
     stage.classList.toggle("queue-open", queueShown(isCramped()));
 

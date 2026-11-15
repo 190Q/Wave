@@ -35,10 +35,19 @@ export class AudioEngine {
   /** Whether the element in hand got as far as reporting its metadata. */
   private elementLoaded = false;
 
+  private readonly retiring = new Map<HTMLAudioElement, number>();
+
   constructor(handlers: AudioEngineHandlers = {}) {
     this.handlers = handlers;
     this.el = this.create();
+    document.addEventListener("visibilitychange", this.releaseIfHidden);
   }
+
+  private readonly releaseIfHidden = (): void => {
+    if (document.hidden) {
+      this.finishTransitions();
+    }
+  };
 
   /** Whether a file is loaded, so a reload has something to ask for again. */
   get hasFile(): boolean {
@@ -138,6 +147,14 @@ export class AudioEngine {
     this.el.pause();
   }
 
+  finishTransitions(): void {
+    for (const [el, frame] of this.retiring) {
+      window.cancelAnimationFrame(frame);
+      this.release(el);
+    }
+    this.retiring.clear();
+  }
+
   /** Moves the playhead, now or as soon as the element can be moved. */
   seek(positionMs: number): void {
     const ms = Math.max(positionMs, 0);
@@ -186,7 +203,7 @@ export class AudioEngine {
     this.forget(el);
 
     const from = el.volume;
-    if (el.paused || from <= 0) {
+    if (el.paused || from <= 0 || document.hidden) {
       this.release(el);
       return;
     }
@@ -197,12 +214,13 @@ export class AudioEngine {
       el.volume = from * (1 - smoothstep(progress));
 
       if (progress < 1) {
-        requestAnimationFrame(step);
+        this.retiring.set(el, requestAnimationFrame(step));
         return;
       }
+      this.retiring.delete(el);
       this.release(el);
     };
-    requestAnimationFrame(step);
+    this.retiring.set(el, requestAnimationFrame(step));
   }
 
   /** Stops listening to an element that is on its way out. */

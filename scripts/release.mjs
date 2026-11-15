@@ -80,7 +80,7 @@ const BINARY = "wave";
 const MUSL_DIR = join(TARGET_DIR, "musl");
 
 const ANDROID_DIR = join(TARGET_DIR, "android");
-const APK_BUILD = join(
+const APK_OUTPUT_DIR = join(
   root,
   "src-tauri",
   "gen",
@@ -90,8 +90,6 @@ const APK_BUILD = join(
   "outputs",
   "apk",
   "universal",
-  "release",
-  "app-universal-release.apk",
 );
 
 
@@ -654,27 +652,34 @@ function commandUploadMusl(tag) {
   gh(["release", "upload", tag, path, "--clobber"]);
 }
 
-/** What the APK is called in a release, which is the name the app looks for. */
-function apkName(version) {
-  return `Wave_${version}_arm64.apk`;
+/** The release filename is also the name the app looks for when updating. */
+function apkName(version, debug = false) {
+  return `Wave_${version}_arm64${debug ? "-debug" : ""}.apk`;
 }
 
-/**
- * Builds the APK a phone updates from, and names it for the release. It is
- * signed with the keystore build.gradle.kts picks, which has to be the one the
- * copy on the phone was built with or Android will refuse the update.
- */
-function commandApk() {
+function commandApk(debug = false) {
   const version = readVersion();
-  shell("npx tauri android build --apk -t aarch64");
+  const buildType = debug ? "debug" : "release";
+  const apkBuild = join(APK_OUTPUT_DIR, buildType, `app-universal-${buildType}.apk`);
+  shell(`npx tauri android build --apk ${debug ? "--debug " : ""}-t aarch64`);
 
-  if (!existsSync(APK_BUILD)) {
-    fail("the android build produced no signed APK; is the signing keystore there?");
+  if (!existsSync(apkBuild)) {
+    fail(`the Android build produced no ${buildType} APK; is the signing keystore there?`);
+  }
+
+  let metadata;
+  try {
+    metadata = JSON.parse(readFileSync(join(dirname(apkBuild), "output-metadata.json"), "utf8"));
+  } catch {
+    fail("the Android build produced no readable APK metadata");
+  }
+  if (!metadata.elements?.some((item) => item.outputFile === basename(apkBuild) && item.versionName === version)) {
+    fail(`the Android APK does not match VERSION ${version} or was not signed; check the build output and version sync`);
   }
 
   mkdirSync(ANDROID_DIR, { recursive: true });
-  const target = join(ANDROID_DIR, apkName(version));
-  copyFileSync(APK_BUILD, target);
+  const target = join(ANDROID_DIR, apkName(version, debug));
+  copyFileSync(apkBuild, target);
   say(`\nWrote ${target}`);
 }
 
@@ -711,6 +716,9 @@ function setBody(tag, body, features) {
 }
 
 function commandPublish(options) {
+  if (options.android && !options.local) fail("--android requires --local; CI already builds Android");
+  if (options.android && options.noPublish) fail("--android cannot be used with --no-publish");
+
   const version = readVersion();
   const tag = `v${version}`;
   const features = options.features;
@@ -722,7 +730,7 @@ function commandPublish(options) {
   plan.push(`tag ${tag} and push it with the branch`);
   if (options.noPublish) plan.push("stop there");
   else if (ci) plan.push("dispatch the release workflow, which builds both platforms and publishes both builds");
-  else plan.push("build the full and the slim installers here and publish the release from them");
+  else plan.push(`build the full and the slim installers${options.android ? " and the Android APK" : ""} here and publish the release from them`);
 
   say(`Publishing ${tag}\n`);
   for (const step of plan) say(`  - ${step}`);
@@ -784,6 +792,10 @@ function commandPublish(options) {
 
   const assets = localAssets(version);
   if (assets.length === 0) fail("the build produced no installers to upload");
+  if (options.android) {
+    commandApk();
+    assets.push(join(ANDROID_DIR, apkName(version)));
+  }
   say(`\nUploading ${assets.length} installer(s).`);
 
   requireGh();
@@ -823,6 +835,8 @@ function parse(argv) {
       case "--draft": options.draft = true; break;
       case "--publish": options.publish = true; break;
       case "--local": options.local = true; break;
+      case "--android": options.android = true; break;
+      case "--debug": options.debug = true; break;
       case "--dry-run": options.dryRun = true; break;
       case "--yes": options.yes = true; break;
       case "--no-publish": options.noPublish = true; break;
@@ -862,7 +876,8 @@ Releases
   publish [options]               Sync, commit, tag, push, and publish
   slim                            Build the slim installers and rename them
   musl                            Build the aarch64 musl package, on Alpine
-  apk                             Build the signed Android APK and name it
+  android [debug]                 Build an arm64 Android APK (debug for testing)
+  apk [debug]                     Alias for android
   upload <tag> <file...>          Add assets to a release
   upload-slim <tag>               Add the slim installers to a release
   upload-musl <tag>               Add the musl package to a release
@@ -877,6 +892,7 @@ publish options
   --draft           Create it as a draft
   --notes <text>    Release notes (default: the installers blurb, then the commits)
   --local           Build the installers here instead of waiting for CI
+  --android         Include an Android APK when publishing with --local
   --no-publish      Stop after pushing the tag
   --dry-run         Print the plan and change nothing
 
@@ -888,6 +904,9 @@ function main() {
   const [command, ...argv] = process.argv.slice(2);
   const options = parse(argv);
   const [first, ...more] = options.rest;
+
+  if (options.android && command !== "publish") fail("--android is only available for publish");
+  if (options.debug && command !== "android" && command !== "apk") fail("--debug is only available for android or apk");
 
   switch (command) {
     case "status":
@@ -902,7 +921,10 @@ function main() {
     case "assets": return commandAssets(first);
     case "slim": return commandSlim();
     case "musl": return commandMusl();
-    case "apk": return commandApk();
+    case "android":
+    case "apk":
+      if ((first && first !== "debug") || more.length > 0) fail(`${command} only accepts debug`);
+      return commandApk(options.debug || first === "debug");
     case "upload": return commandUpload(first, more);
     case "upload-slim": return commandUploadSlim(first);
     case "upload-musl": return commandUploadMusl(first);

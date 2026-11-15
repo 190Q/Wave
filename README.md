@@ -171,7 +171,8 @@ npx tauri android dev      # Run on an Android device or emulator
 
 `npm run tauri build` fetches the bundled download tools as needed. Run
 `node scripts/release.mjs slim` for a desktop build without them. For an
-Android debug APK, use `npx tauri android build --apk --debug -t aarch64`.
+Android APK, run `npm run release -- android` (or add `debug` for a debug build).
+The APK is written to `src-tauri/target/android/`.
 
 ### CLI and API
 

@@ -14,6 +14,7 @@ import {
   playFromCollection,
   playTrackInContext,
   refreshRecommendStatus,
+  replaceTrackCover,
   removeTracksFromPlaylist,
   renamePlaylist,
   reorderPlaylist,
@@ -189,77 +190,15 @@ export function mountLibrary(): void {
         selection.delete(id);
       }
     }
-    syncSelectionBar();
   };
 
-  const syncSelectionBar = (): void => {
-    const bar = listPane.querySelector<HTMLElement>("#selection-bar");
-    if (!bar) {
-      return;
+  const selectAll = (): void => {
+    selection.clear();
+    for (const id of shownTrackIds()) {
+      selection.add(id);
     }
-
-    const ids = selectedTrackIds();
-    if (ids.length === 0 || isTouch()) {
-      bar.hidden = true;
-      bar.innerHTML = "";
-      return;
-    }
-
-    const state = getState();
-    const everyHeld = ids.every((id) => state.tracksById.has(id));
-    const everyLiked = ids.every((id) => state.likes.has(id));
-    const removable = collectionById(openCollectionId ?? "")?.kind === "playlist";
-
-    bar.hidden = false;
-    bar.innerHTML = `
-      <span class="selection-count">${escapeHtml(plural(ids.length, "song"))}</span>
-      <div class="selection-actions">
-        <button class="pill" type="button" data-select="all">Select all</button>
-        ${
-          everyHeld
-            ? `<button class="pill" type="button" data-select="like">${everyLiked ? "Unlike" : "Like"}</button>
-               <button class="pill" type="button" data-select="add">Add to playlist</button>
-               ${removable ? `<button class="pill" type="button" data-select="remove">Remove</button>` : ""}
-               <button class="pill pill-danger" type="button" data-select="delete">Delete</button>`
-            : ""
-        }
-        <button class="pill" type="button" data-select="clear">Clear</button>
-      </div>`;
-  };
-
-  const runSelectAction = (action: string, collectionId: string): void => {
-    const ids = selectedTrackIds();
-
-    switch (action) {
-      case "all": {
-        selection.clear();
-        for (const id of shownTrackIds()) {
-          selection.add(id);
-        }
-        selectAnchor = null;
-        syncSelection();
-        return;
-      }
-      case "clear":
-        clearSelection();
-        return;
-      case "like": {
-        const everyLiked = ids.every((id) => getState().likes.has(id));
-        void setTracksLiked(ids, !everyLiked);
-        return;
-      }
-      case "add":
-        openAddToPlaylist(listPane, ids);
-        return;
-      case "delete":
-        void removeTracks(ids);
-        return;
-      case "remove":
-        void removeFromPlaylist(collectionId, ids);
-        return;
-      default:
-        return;
-    }
+    selectAnchor = null;
+    syncSelection();
   };
 
   /** The selected songs, in the order they appear in the list. */
@@ -564,12 +503,6 @@ export function mountLibrary(): void {
       return;
     }
 
-    const selectAction = target.closest<HTMLElement>("[data-select]");
-    if (selectAction?.dataset.select && openCollectionId) {
-      runSelectAction(selectAction.dataset.select, openCollectionId);
-      return;
-    }
-
     const trackRow = target.closest<HTMLElement>("[data-track]");
     if (trackRow?.dataset.track && openCollectionId) {
       const trackId = trackRow.dataset.track;
@@ -628,7 +561,7 @@ export function mountLibrary(): void {
     const ids = isTouch() && selection.size === 0 ? [trackId] : selectedTrackIds();
     openTrackMenu(row, openCollectionId, ids, { x: event.clientX, y: event.clientY },
       isTouch() ? {
-        selectAll: () => runSelectAction("all", openCollectionId ?? ""),
+        selectAll,
         clear: selection.size > 0 ? clearSelection : undefined,
       } : undefined);
   });
@@ -1224,7 +1157,6 @@ function renderDetail(state: AppState, collection: Collection): string {
         </div>
       </div>
       ${generated ? `<div class="detail-progress" id="detail-progress"></div>` : ""}
-      <div class="selection-bar" id="selection-bar" hidden></div>
       ${collection.entries.length > 0 ? `<ol class="tracks">${rows}</ol>` : `<p class="empty">Nothing in here yet.</p>`}
     </div>`;
 }
@@ -1695,6 +1627,7 @@ export function openTrackMenu(
     items.push({ label: "Add to playlist", action: () => openAddToPlaylist(addAnchor(row), trackIds) });
     if (!many) {
       items.push({ label: "Edit song", action: () => openTrackEditor(trackIds[0]) });
+      items.push({ label: "Replace cover", action: () => void replaceTrackCover(trackIds[0]) });
     }
   }
 

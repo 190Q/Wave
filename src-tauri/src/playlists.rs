@@ -3,13 +3,25 @@ use tauri::{AppHandle, Manager, Runtime, State};
 use crate::catalog::Catalog;
 use crate::state::{PersistedState, Store};
 
-pub fn refresh<R: Runtime>(app: &AppHandle<R>, store: &Store) -> PersistedState {
-    let playlists = app
-        .try_state::<Catalog>()
-        .and_then(|catalog| catalog.playlists().ok())
-        .unwrap_or_default();
+pub fn refresh<R: Runtime>(app: &AppHandle<R>, store: &Store) -> Result<PersistedState, String> {
+    let catalog = app.try_state::<Catalog>()
+        .ok_or_else(|| "the library catalog is not available".to_string())?;
+    refresh_with(store, || catalog.playlists())
+}
 
-    store.update(|state| state.playlists = playlists)
+pub(crate) fn refresh_with(
+    store: &Store,
+    read: impl FnOnce() -> Result<Vec<crate::state::Playlist>, String>,
+) -> Result<PersistedState, String> {
+    store.try_update(|state| {
+        state.playlists = read()?;
+        Ok(())
+    })
+}
+
+pub fn refresh_saved<R: Runtime>(app: &AppHandle<R>, store: &Store) -> Result<PersistedState, String> {
+    refresh(app, store)
+        .map_err(|error| format!("The changes were saved, but the playlists could not be refreshed: {error}"))
 }
 
 /// Creates a playlist and fills it, for the imports that already know what
@@ -46,7 +58,7 @@ pub fn create_playlist(
     }
 
     catalog.create_playlist(&name)?;
-    Ok(refresh(&app, &store))
+    refresh_saved(&app, &store)
 }
 
 #[tauri::command(async)]
@@ -66,7 +78,7 @@ pub fn rename_playlist(
     }
 
     catalog.rename_playlist(&id, &name)?;
-    Ok(refresh(&app, &store))
+    refresh_saved(&app, &store)
 }
 
 #[tauri::command(async)]
@@ -77,7 +89,7 @@ pub fn delete_playlist(
     id: String,
 ) -> Result<PersistedState, String> {
     catalog.delete_playlist(&id)?;
-    Ok(refresh(&app, &store))
+    refresh_saved(&app, &store)
 }
 
 #[tauri::command(async)]
@@ -89,7 +101,7 @@ pub fn add_to_playlist(
     track_ids: Vec<String>,
 ) -> Result<PersistedState, String> {
     catalog.add_to_playlist(&id, &track_ids)?;
-    Ok(refresh(&app, &store))
+    refresh_saved(&app, &store)
 }
 
 #[tauri::command(async)]
@@ -101,7 +113,7 @@ pub fn remove_from_playlist(
     track_ids: Vec<String>,
 ) -> Result<PersistedState, String> {
     catalog.remove_from_playlist(&id, &track_ids)?;
-    Ok(refresh(&app, &store))
+    refresh_saved(&app, &store)
 }
 
 #[tauri::command(async)]
@@ -112,6 +124,6 @@ pub fn reorder_playlist(
     id: String,
     track_ids: Vec<String>,
 ) -> Result<PersistedState, String> {
-    catalog.set_playlist_entries(&id, &track_ids)?;
-    Ok(refresh(&app, &store))
+    catalog.reorder_playlist(&id, &track_ids)?;
+    refresh_saved(&app, &store)
 }

@@ -505,7 +505,7 @@ fn generate_inner(
     let playlist_id = catalog.create_generated_playlist(&name, &entries, &pending)?;
 
     let store = app.state::<Store>();
-    let state = playlists::refresh(app, &store);
+    let state = playlists::refresh_saved(app, &store)?;
 
     report.phase("done", &format!("Added {} songs to {name}.", entries.len()));
 
@@ -545,7 +545,7 @@ fn pool(
     taste: &Taste,
     genres: &[deezer::Genre],
     artists: &[String],
-    held: &HashMap<String, String>,
+    held: &import_source::TrackIndex,
     report: &mut Reporter,
     rng: &mut Rng,
 ) -> Vec<Candidate> {
@@ -580,7 +580,7 @@ fn pool(
 fn artist_pool(
     taste: &Taste,
     weight: f64,
-    held: &HashMap<String, String>,
+    held: &import_source::TrackIndex,
     report: &mut Reporter,
     rng: &mut Rng,
 ) -> Vec<Candidate> {
@@ -610,7 +610,7 @@ fn artist_songs(
     name: &str,
     weight: f64,
     genre: Option<&str>,
-    held: &HashMap<String, String>,
+    held: &import_source::TrackIndex,
     report: &mut Reporter,
     rng: &mut Rng,
 ) -> Vec<Candidate> {
@@ -664,7 +664,7 @@ fn chart_pool(
     genre: &str,
     genres: &[deezer::Genre],
     weight: f64,
-    held: &HashMap<String, String>,
+    held: &import_source::TrackIndex,
     report: &mut Reporter,
 ) -> Vec<Candidate> {
     let Some(id) = genre_id(genres, genre) else {
@@ -687,7 +687,7 @@ fn genre_pool(
     genres: &[deezer::Genre],
     artists: &[String],
     weight: f64,
-    held: &HashMap<String, String>,
+    held: &import_source::TrackIndex,
     report: &mut Reporter,
     rng: &mut Rng,
 ) -> Vec<Candidate> {
@@ -797,7 +797,7 @@ fn entries_pool(
     entries: Vec<deezer::Entry>,
     weight: f64,
     genre: Option<&str>,
-    held: &HashMap<String, String>,
+    held: &import_source::TrackIndex,
 ) -> Vec<Candidate> {
     entries
         .into_iter()

@@ -31,6 +31,7 @@ export interface PlayerSource {
 
 type ChangeListener = (snapshot: PlayerSnapshot) => void;
 type ProgressListener = (positionMs: number, durationMs: number) => void;
+type ListeningListener = (elapsedMs: number) => void;
 
 export const MIN_VOLUME = 0;
 export const MAX_VOLUME = 100;
@@ -40,6 +41,7 @@ export const MAX_GAIN = 0.7;
 const END_SLACK_MS = 200;
 
 const CLOCK_LEAD_MS = 400;
+const MEDIA_CLOCK_SLACK_MS = 250;
 
 export class Player {
   private readonly engine: AudioEngine;
@@ -65,6 +67,8 @@ export class Player {
   /** The position the element last reported, and the moment it did. */
   private reportedMs = 0;
   private reportedAt = 0;
+  private listenedPositionMs = 0;
+  private listenedAt = 0;
 
   private playing = false;
   private shuffle = false;
@@ -82,6 +86,7 @@ export class Player {
 
   private readonly changeListeners = new Set<ChangeListener>();
   private readonly progressListeners = new Set<ProgressListener>();
+  private readonly listeningListeners = new Set<ListeningListener>();
 
   constructor(engine: AudioEngine, sourceOf: (trackId: string) => PlayerSource | undefined) {
     this.engine = engine;
@@ -205,6 +210,7 @@ export class Player {
     this.shuffle = playback.shuffle;
     this.repeat = playback.repeat === "all" ? "all" : "off";
     this.muted = playback.muted;
+    this.sampleListening();
     this.playing = false;
     this.level = 0;
     this.applyLevel();
@@ -257,10 +263,36 @@ export class Player {
     this.emitChange();
   }
 
+  onListening(listener: ListeningListener): () => void {
+    this.listeningListeners.add(listener);
+    return () => this.listeningListeners.delete(listener);
+  }
+
+  sampleListening(): void {
+    const at = performance.now();
+    const position = this.engine.positionMs;
+    const elapsed = Math.max(0, at - this.listenedAt);
+    const advanced = position - this.listenedPositionMs;
+    const element = this.engine.element;
+    const heard = this.playing && !element.seeking && (this.engine.isPlaying || element.ended) &&
+      advanced > 0 && advanced <= elapsed + MEDIA_CLOCK_SLACK_MS ? advanced : 0;
+    this.listenedPositionMs = position;
+    this.listenedAt = at;
+    for (const listener of this.listeningListeners) {
+      listener(heard);
+    }
+  }
+
+  private resetListeningClock(): void {
+    this.listenedPositionMs = this.engine.positionMs;
+    this.listenedAt = performance.now();
+  }
+
   pause(): void {
     if (!this.playing) {
       return;
     }
+    this.sampleListening();
     this.playing = false;
     this.startFade(0);
     this.emitChange();
@@ -313,9 +345,11 @@ export class Player {
   }
 
   seek(positionMs: number): void {
+    this.sampleListening();
     const duration = this.currentDurationMs;
     const limit = duration > 0 ? duration : positionMs;
     this.engine.seek(Math.min(Math.max(positionMs, 0), limit));
+    this.resetListeningClock();
     this.emitProgress();
   }
 
@@ -398,6 +432,9 @@ export class Player {
       return;
     }
     const wasCurrent = index === this.cursor;
+    if (wasCurrent) {
+      this.sampleListening();
+    }
     this.order.splice(index, 1);
     this.sourceOrder = this.sourceOrder.filter((id) => id !== trackId);
 
@@ -437,9 +474,11 @@ export class Player {
     }
 
     const position = this.positionMs;
+    this.sampleListening();
     this.stopFade();
     this.level = 0;
     this.engine.reload(this.playing, position);
+    this.resetListeningClock();
 
     if (this.playing) {
       this.startClock();
@@ -457,6 +496,7 @@ export class Player {
 
   /** The current track could not be played. */
   handleError(): void {
+    this.sampleListening();
     this.stopFade();
     this.playing = false;
     this.level = 0;
@@ -481,6 +521,7 @@ export class Player {
   }
 
   private loadCurrent(autoplay: boolean, positionMs = 0): void {
+    this.sampleListening();
     const id = this.currentId;
     const source = id ? this.sourceOf(id) : undefined;
 
@@ -492,11 +533,13 @@ export class Player {
       this.playing = false;
       this.stopClock();
       this.engine.unload();
+      this.resetListeningClock();
       return;
     }
 
     this.loadedId = id;
     this.engine.load(source.path, { autoplay, positionMs });
+    this.resetListeningClock();
 
     if (autoplay) {
       this.startClock();
@@ -650,6 +693,7 @@ export class Player {
     // Playback starts here, so the reading picked up next is measured from now.
     this.reportedMs = this.engine.positionMs;
     this.reportedAt = performance.now();
+    this.resetListeningClock();
     if (this.clockFrame === null) {
       this.clockFrame = requestAnimationFrame(this.tick);
     }
@@ -680,6 +724,7 @@ export class Player {
   }
 
   private emitProgress(): void {
+    this.sampleListening();
     const duration = this.currentDurationMs;
     for (const listener of this.progressListeners) {
       listener(this.positionMs, duration);

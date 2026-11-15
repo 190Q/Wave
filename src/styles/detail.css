@@ -4,6 +4,10 @@
   gap: 1rem;
 }
 
+.detail-rename {
+  width: 100%;
+}
+
 .detail-head {
   display: flex;
   align-items: center;

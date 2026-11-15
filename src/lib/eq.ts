@@ -77,6 +77,8 @@ export class EqChain {
 
   private readonly elements = new Set<HTMLAudioElement>();
   private readonly sources = new Map<HTMLAudioElement, MediaElementAudioSourceNode>();
+  private readonly statusListeners = new Set<() => void>();
+  private lastLive = false;
 
   private settings: Settings | null = null;
   private blocked: EqBlocked = null;
@@ -96,9 +98,37 @@ export class EqChain {
     return this.blocked;
   }
 
+  private routePending(): void {
+    for (const element of this.elements) {
+      this.route(element);
+    }
+    this.notifyStatus();
+  }
+
   /** True while the curve is being applied rather than passed through. */
   get live(): boolean {
+    return this.enabled && this.context?.state === "running" &&
+      this.elements.size > 0 && [...this.elements].every((element) => this.sources.has(element));
+  }
+
+  private get enabled(): boolean {
     return this.blocked === null && this.settings?.eqEnabled === true;
+  }
+
+  onStatusChange(listener: () => void): () => void {
+    this.statusListeners.add(listener);
+    return () => this.statusListeners.delete(listener);
+  }
+
+  private notifyStatus(): void {
+    const live = this.live;
+    if (live === this.lastLive) {
+      return;
+    }
+    this.lastLive = live;
+    for (const listener of this.statusListeners) {
+      listener();
+    }
   }
 
   /** The preamp actually applied, in decibels, negative where it is trimming. */
@@ -132,6 +162,7 @@ export class EqChain {
     // rather than being taken apart.
     this.rebuild();
     this.applyPreamp();
+    this.notifyStatus();
   }
 
   /** Points the graph at an output, where the engine supports choosing one. */
@@ -149,18 +180,21 @@ export class EqChain {
   /** Wakes the context, which a browser may have started suspended. */
   resume(): void {
     const context = this.context;
-    if (!context || context.state === "running") {
+    if (!context) {
       return;
     }
-    void context.resume().catch(() => {
-      // Nothing to do; the element plays on its own output meanwhile.
-    });
+    if (context.state === "running") {
+      this.routePending();
+      return;
+    }
+    void context.resume().then(() => this.routePending()).catch(() => {});
   }
 
   /** Takes a new element into the graph, where the equaliser is wanted. */
   attach(element: HTMLAudioElement): void {
     this.elements.add(element);
     this.route(element);
+    this.notifyStatus();
   }
 
   /** Lets go of an element the engine has finished with. */
@@ -171,18 +205,20 @@ export class EqChain {
       source.disconnect();
       this.sources.delete(element);
     }
+    this.notifyStatus();
   }
 
   /** Applies the settings, rebuilding only what has changed shape. */
   apply(settings: Settings): void {
     this.settings = settings;
 
-    if (!this.live) {
+    if (!this.enabled) {
       // Still worth rebuilding, so a curve switched off goes flat.
       if (this.context) {
         this.rebuild();
         this.applyPreamp();
       }
+      this.notifyStatus();
       return;
     }
 
@@ -194,6 +230,11 @@ export class EqChain {
     this.rebuild();
     this.applyPreamp();
     this.setOutput(settings.eqOutputId);
+    this.routePending();
+    this.notifyStatus();
+    if (this.context?.state !== "running") {
+      this.resume();
+    }
   }
 
   /** The combined band response in decibels, one entry per frequency. */
@@ -208,7 +249,7 @@ export class EqChain {
     db.fill(0);
 
     const settings = this.settings;
-    if (!this.live || !settings) {
+    if (!this.enabled || !settings) {
       return db;
     }
 
@@ -230,7 +271,7 @@ export class EqChain {
 
   /** The automatic preamp figure alone, in decibels, as a negative number. */
   autoPreampDb(): number {
-    if (!this.live) {
+    if (!this.enabled) {
       return 0;
     }
     let peak = 0;
@@ -293,11 +334,14 @@ export class EqChain {
     this.preamp = preamp;
     this.limiter = limiter;
     this.analyser = analyser;
+    context.onstatechange = () => {
+      if (context.state === "running") {
+        this.routePending();
+      }
+      this.notifyStatus();
+    };
 
     this.buildGrid(context);
-    for (const element of this.elements) {
-      this.route(element);
-    }
     return true;
   }
 
@@ -318,7 +362,7 @@ export class EqChain {
 
   /** Builds a source node for an element, once, and feeds it into the chain. */
   private route(element: HTMLAudioElement): void {
-    if (!this.live || !this.start()) {
+    if (!this.enabled || !this.start()) {
       return;
     }
     if (this.sources.has(element)) {
@@ -329,13 +373,14 @@ export class EqChain {
     if (!context || !input) {
       return;
     }
-    if (context.state !== "running") {
+    if (context.state !== "running" || element.crossOrigin !== "anonymous") {
       return;
     }
     try {
       const source = context.createMediaElementSource(element);
       source.connect(input);
       this.sources.set(element, source);
+      this.notifyStatus();
     } catch {
       // Already routed, or the element cannot be read; it plays on its own.
     }
@@ -372,8 +417,8 @@ export class EqChain {
       return;
     }
 
-    const bands = this.live ? (settings?.eqBands ?? []).filter((band) => band.enabled) : [];
-    const limiterOn = this.live && settings?.eqLimiter !== false;
+    const bands = this.enabled ? (settings?.eqBands ?? []).filter((band) => band.enabled) : [];
+    const limiterOn = this.enabled && settings?.eqLimiter !== false;
     const signature = `${bands.map((band) => `${band.id}:${band.kind}`).join(",")}|${limiterOn}`;
     const moved = signature !== this.wiring;
 
@@ -436,7 +481,7 @@ export class EqChain {
       return;
     }
 
-    if (!this.live) {
+    if (!this.enabled) {
       this.preampDbValue = 0;
       preamp.gain.value = 1;
       return;

@@ -51,7 +51,7 @@ export function mountDock(): void {
   }
 
   mountTouch();
-  const sheet: LyricsSheet | null = device() === "android" ? mountLyricsSheet() : null;
+  const sheet: LyricsSheet | null = device() !== "desktop" ? mountLyricsSheet() : null;
 
   let scrubbing = false;
   let scrubFraction = 0;
@@ -169,6 +169,9 @@ export function mountDock(): void {
 
     const dragged = sheet?.owned() ?? false;
     const sought = scrubbing && !dragged;
+    if (dragged && commit) {
+      suppressControlClick = true;
+    }
     sheet?.release();
 
     if (!scrubbing) {

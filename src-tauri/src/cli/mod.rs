@@ -120,7 +120,11 @@ pub fn run(context: tauri::Context, args: &[String]) -> i32 {
         }
     };
 
-    crate::prepare(app.handle());
+    if let Err(error) = crate::prepare(app.handle()) {
+        eprintln!("error: {error}");
+        app.cleanup_before_exit();
+        return 1;
+    }
 
     let code = match dispatch(app.handle(), &command) {
         Ok(()) => 0,

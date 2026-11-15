@@ -75,6 +75,11 @@ struct Queue<'a> {
     tracks: &'a [QueueTrack],
 }
 
+#[derive(serde::Serialize)]
+struct Controls {
+    enabled: bool,
+}
+
 /// What `startEvents` is called with.
 #[derive(serde::Serialize)]
 struct Events {
@@ -152,6 +157,15 @@ impl Session {
             .run_mobile_plugin::<serde_json::Value>("setQueue", payload)
         {
             eprintln!("the phone's media session could not be given the queue: {error}");
+        }
+    }
+
+    pub fn set_controls(&self, enabled: bool) {
+        if let Err(error) = self
+            .0
+            .run_mobile_plugin::<serde_json::Value>("setControls", Controls { enabled })
+        {
+            eprintln!("the phone's media controls could not be changed: {error}");
         }
     }
 

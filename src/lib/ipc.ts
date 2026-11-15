@@ -67,6 +67,10 @@ export function saveSettings(settings: Settings): Promise<PersistedState> {
   return invoke("set_settings", { settings });
 }
 
+export function patchSettings(patch: Partial<Settings>): Promise<PersistedState> {
+  return invoke("patch_settings", { patch });
+}
+
 /** Persists the playback and browsing session. */
 export function saveSession(session: Session): Promise<PersistedState> {
   return invoke("set_session", { session });
@@ -275,7 +279,7 @@ export function importWaveList(path: string): Promise<ImportOutcome> {
   return invoke("import_wavelist", { path });
 }
 
-export async function exportWaveList(name: string, trackIds: string[]): Promise<number | null> {
+export async function exportWaveList(name: string, trackIds: string[], playlistId: string | null = null): Promise<number | null> {
   const safeName = name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/[. ]+$/, "") || "Playlist";
   const path = await save({
     title: "Export a Wave playlist",
@@ -285,7 +289,7 @@ export async function exportWaveList(name: string, trackIds: string[]): Promise<
   if (!path) {
     return null;
   }
-  return invoke("export_wavelist", { path, name, trackIds });
+  return invoke("export_wavelist", { path, name, trackIds, playlistId });
 }
 
 /** Looks lyrics up for the given songs and files them with the library. */

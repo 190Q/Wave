@@ -1208,6 +1208,8 @@ export function mountEq(): void {
     }
   };
 
+  eqChain.onStatusChange(paint);
+
   // Opening and closing.
 
   const finishClose = (): void => {

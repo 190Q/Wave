@@ -28,8 +28,6 @@ interface ListenDraft {
   startedAt: number;
   /** Wall-clock milliseconds actually heard, which is not the playhead. */
   msPlayed: number;
-  /** When the last frame was counted, `null` while paused. */
-  lastTickAt: number | null;
   /** Set when the song ran to its end, which is what makes it a stream. */
   ended: boolean;
   sourceId: string | null;
@@ -52,9 +50,6 @@ const FLUSH_DELAY_MS = 2_000;
 /** How often a listen still running is written down, so a crash costs little. */
 const CHECKPOINT_MS = 30_000;
 
-/** A frame gap longer than this is a stall, not listening. */
-const MAX_TICK_MS = 1_000;
-
 /** Below this, nothing was really heard and no record is worth keeping. */
 const MIN_LISTEN_MS = 1_000;
 
@@ -65,7 +60,6 @@ let context: AnalyticsContext | null = null;
 let draft: ListenDraft | null = null;
 let queued: PlayRecord[] = [];
 let lastId: string | null = null;
-let lastPlaying = false;
 let flushTimer: number | null = null;
 let checkpointTimer: number | null = null;
 let counter = 0;
@@ -77,9 +71,8 @@ export function mountAnalytics(next: AnalyticsContext): void {
   }
   context = next;
   next.player.onChange(handleChange);
-  next.player.onProgress(handleProgress);
+  next.player.onListening(handleProgress);
   lastId = next.player.currentId;
-  lastPlaying = next.player.snapshot().playing;
   // A window that is going away may never see another change event.
   window.addEventListener("pagehide", () => void flushAnalytics());
 }
@@ -116,6 +109,7 @@ export function recordEvent(kind: AnalyticsEventKind, options: EventOptions = {}
 
 /** The current song ran to its end, so its listen is finished. */
 export function noteTrackEnded(): void {
+  context?.player.sampleListening();
   if (!draft) {
     return;
   }
@@ -125,6 +119,7 @@ export function noteTrackEnded(): void {
 
 /** The current song could not be played. */
 export function notePlaybackError(): void {
+  context?.player.sampleListening();
   close("error");
 }
 
@@ -141,6 +136,7 @@ export function forgetCaptured(): void {
 /** Writes everything outstanding. Awaited before the window is allowed to go. */
 export async function flushAnalytics(): Promise<void> {
   if (context?.enabled()) {
+    context.player.sampleListening();
     // Whatever was still running is written as it stands.
     close("stopped");
   } else {
@@ -163,19 +159,12 @@ function handleChange(snapshot: PlayerSnapshot): void {
     lastId = snapshot.currentId;
   }
 
-  if (snapshot.playing !== lastPlaying) {
-    lastPlaying = snapshot.playing;
-    if (draft) {
-      draft.lastTickAt = snapshot.playing ? now() : null;
-    }
-  }
-
   if (snapshot.playing && snapshot.currentId && !draft && context?.enabled()) {
     open(snapshot);
   }
 }
 
-function handleProgress(): void {
+function handleProgress(elapsedMs: number): void {
   if (!draft) {
     return;
   }
@@ -186,13 +175,7 @@ function handleProgress(): void {
     scheduleFlush();
     return;
   }
-  if (draft.lastTickAt === null) {
-    return;
-  }
-
-  const at = now();
-  draft.msPlayed += Math.min(Math.max(at - draft.lastTickAt, 0), MAX_TICK_MS);
-  draft.lastTickAt = at;
+  draft.msPlayed += elapsedMs;
 }
 
 function open(snapshot: PlayerSnapshot): void {
@@ -207,7 +190,6 @@ function open(snapshot: PlayerSnapshot): void {
     trackId: track.id,
     startedAt: at,
     msPlayed: 0,
-    lastTickAt: at,
     ended: false,
     sourceId: snapshot.sourceId,
     sourceName: snapshot.sourceName || null,
@@ -270,6 +252,7 @@ function stopCheckpoint(): void {
 
 /** Writes the listen in progress as it stands, so a crash loses little of it. */
 async function checkpoint(): Promise<void> {
+  context?.player.sampleListening();
   const current = draft;
   if (!current || !context?.enabled()) {
     return;

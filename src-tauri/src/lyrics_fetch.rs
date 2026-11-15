@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::thread::sleep;
 use std::time::Duration;
@@ -117,15 +118,16 @@ fn run_inner(
             continue;
         }
 
-        match look_up(track) {
+        match look_up(&root, &catalog, track) {
             Ok(Some(found)) => {
                 match file_lyrics(&root, &catalog, track, &found) {
-                    Ok(()) => {
+                    Ok(true) => {
                         if !found.synced_lyrics.trim().is_empty() {
                             outcome.synced += 1;
                         }
                         outcome.fetched += 1;
                     }
+                    Ok(false) => outcome.skipped += 1,
                     Err(error) => {
                         outcome.errors.push(format!("{label}: {error}"));
                         report.fail(format!("{label}: {error}"));
@@ -146,11 +148,21 @@ fn run_inner(
 }
 
 /// Writes what was found: timings beside the song, plain text inside it.
-fn file_lyrics(root: &Path, catalog: &Catalog, track: &Track, found: &Found) -> Result<(), String> {
+fn file_lyrics(root: &Path, catalog: &Catalog, track: &Track, found: &Found) -> Result<bool, String> {
+    let _operation = catalog.library_operation();
+    let known = crate::import::fetched_track(root, catalog, track)?;
+    let dir = library::track_dir(root, &track.id);
+    if known.lyrics_path.as_deref().is_some_and(|path| root.join(path).is_file())
+        || library::lyrics_in(&dir).is_some()
+    {
+        return Ok(false);
+    }
     let synced = found.synced_lyrics.trim();
     if !synced.is_empty() {
         let target = lyrics_path(root, &track.id);
-        fs::write(&target, synced)
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&target)
+            .map_err(|e| format!("could not write {}: {e}", target.display()))?;
+        file.write_all(synced.as_bytes())
             .map_err(|e| format!("could not write {}: {e}", target.display()))?;
         if let Some(relative) = library::relative(root, &target) {
             catalog.set_lyrics(&track.id, Some(&relative))?;
@@ -159,10 +171,13 @@ fn file_lyrics(root: &Path, catalog: &Catalog, track: &Track, found: &Found) -> 
 
     let plain = found.plain_lyrics.trim();
     if !plain.is_empty() {
-        embed(&track.path, plain)?;
+        let written = embed(&track.path, plain);
+        let refreshed = crate::import::refresh_after_tags(root, catalog, &known);
+        written?;
+        refreshed?;
     }
 
-    Ok(())
+    Ok(true)
 }
 
 /// Adds the plain lyrics to the file's own tags, keeping everything else.
@@ -216,8 +231,12 @@ impl Source {
     }
 }
 
-fn look_up(track: &Track) -> Result<Option<Found>, String> {
-    let length = song_length(track);
+fn look_up(root: &Path, catalog: &Catalog, track: &Track) -> Result<Option<Found>, String> {
+    let length = {
+        let _operation = catalog.library_operation();
+        crate::import::fetched_track(root, catalog, track)?;
+        song_length(track)
+    };
     let mut refusals: Vec<String> = Vec::new();
 
     for source in SOURCES {
@@ -586,6 +605,28 @@ pub async fn fetch_lyrics(app: AppHandle, track_ids: Vec<String>) -> Result<Lyri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fetched_lyrics_do_not_replace_new_lyrics_or_recreate_deleted_tracks() {
+        let root = std::env::temp_dir().join(format!("wave-lyrics-fetch-{}", uuid::Uuid::new_v4()));
+        let id = uuid::Uuid::new_v4().to_string();
+        let dir = library::track_dir(&root, &id);
+        fs::create_dir_all(&dir).unwrap();
+        let audio = library::audio_path(&root, &id, "wav");
+        fs::write(&audio, b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x40\x1f\0\0\x80\x3e\0\0\x02\0\x10\0data\x02\0\0\0\0\0").unwrap();
+        let catalog = Catalog::in_memory().unwrap();
+        let row = library::describe(&root, &id, &audio, "Song.wav", None).unwrap();
+        catalog.upsert_track(&row).unwrap();
+        let track = library::to_track(&row, &root);
+        let lyrics = lyrics_path(&root, &id);
+        fs::write(&lyrics, "user lyrics").unwrap();
+        let found = Found { synced_lyrics: "[00:01]fetched".into(), ..Found::default() };
+        assert!(!file_lyrics(&root, &catalog, &track, &found).unwrap());
+        assert_eq!(fs::read_to_string(&lyrics).unwrap(), "user lyrics");
+        catalog.delete_tracks(&[id]).unwrap();
+        assert!(file_lyrics(&root, &catalog, &track, &found).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn counts_a_result_with_either_kind_of_lyrics() {

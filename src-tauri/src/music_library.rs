@@ -1,5 +1,4 @@
-//! The phone's own music: the permission to read it, the folders songs live
-//! in, and the names behind the `content://` URIs the picker hands back.
+//! The phone's own music, permissions, and content URI metadata.
 //!
 //! All of that is behind Android's own APIs, so it lives in a Kotlin plugin
 //! beside the app, at gen/android/app/src/main/java/com/wave/app/
@@ -22,8 +21,15 @@ struct Granted {
 }
 
 #[derive(Debug, Deserialize)]
-struct Directories {
-    directories: Vec<String>,
+struct MusicFiles {
+    files: Vec<MusicFile>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MusicFile {
+    pub uri: String,
+    pub name: String,
+    pub mime: Option<String>,
 }
 
 /// The names of the picked files, in the order they were asked about.
@@ -75,12 +81,11 @@ impl MusicLibrary {
             .map_err(|error| format!("the audio permission could not be asked for: {error}"))
     }
 
-    /// The standard music folders the phone has, in the order to import them.
-    pub fn music_directories(&self) -> Result<Vec<String>, String> {
+    pub fn music_files(&self) -> Result<Vec<MusicFile>, String> {
         self.0
-            .run_mobile_plugin::<Directories>("musicDirectories", ())
-            .map(|found| found.directories)
-            .map_err(|error| format!("the music folders could not be read: {error}"))
+            .run_mobile_plugin::<MusicFiles>("musicFiles", ())
+            .map(|found| found.files)
+            .map_err(|error| format!("the phone's music index could not be read: {error}"))
     }
 
     /// What the system calls each picked file, so the library can name the

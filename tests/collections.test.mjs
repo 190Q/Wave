@@ -8,7 +8,8 @@ const vite = await createServer({
   root: fileURLToPath(new URL("..", import.meta.url)),
   appType: "custom",
   logLevel: "silent",
-  server: { middlewareMode: true },
+  optimizeDeps: { noDiscovery: true },
+  server: { middlewareMode: true, watch: null },
 });
 after(() => vite.close());
 

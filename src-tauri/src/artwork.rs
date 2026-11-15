@@ -11,7 +11,7 @@ use tauri_plugin_fs::{FilePath, FsExt, OpenOptions};
 
 use crate::catalog::Catalog;
 use crate::library;
-use crate::state::{self, Store};
+use crate::state::Store;
 
 /// How long between writes of the colour cache. Colours arrive as covers scroll
 /// into view, so without this a browse through a large library rewrites
@@ -201,7 +201,7 @@ pub fn artwork_colour(
     // The colour is in memory either way. The file is only written every so
     // often, and failing to cache is not a reason to withhold it.
     if colour_write_due() {
-        let _ = state::save(&app, &store.snapshot());
+        let _ = store.save(&app);
     }
     Ok(colour)
 }
@@ -229,10 +229,12 @@ pub fn replace_cover(
     let _guard = COLOUR_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let root = library::library_root(&app)?;
     let track = library::replace_cover(&root, &catalog, &track_id, &bytes)?;
-    let next = store.update(|state| {
+    if store.update_saved(&app, |state| {
         state.artwork_colours.remove(&track_id);
-    });
-    let _ = state::save(&app, &next);
+    }).is_err() {
+        // The cover already changed, so its cached colour cannot stay in memory.
+        store.edit(|state| { state.artwork_colours.remove(&track_id); });
+    }
     Ok(track)
 }
 

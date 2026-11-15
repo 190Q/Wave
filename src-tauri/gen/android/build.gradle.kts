@@ -16,6 +16,13 @@ allprojects {
     }
 }
 
+subprojects {
+    if (!projectDir.toPath().normalize().startsWith(rootProject.projectDir.toPath().normalize())) {
+        // Keep dependency build outputs local to this Android project.
+        layout.buildDirectory.set(rootProject.layout.buildDirectory.dir("tauri-plugins/$name"))
+    }
+}
+
 tasks.register("clean").configure {
     delete("build")
 }

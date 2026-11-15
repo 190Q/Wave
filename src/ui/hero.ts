@@ -35,7 +35,7 @@ export function mountHero(): void {
     return;
   }
 
-  const android = device() === "android";
+  const phone = device() !== "desktop";
 
   const COVER_MAX_REM = 24;
   const COVER_MIN_REM = 6;
@@ -96,7 +96,7 @@ export function mountHero(): void {
   };
 
   const layout = (): void => {
-    if (!android) {
+    if (!phone) {
       fitCover();
       fitText();
     }
@@ -104,7 +104,7 @@ export function mountHero(): void {
   };
 
   if (typeof ResizeObserver !== "undefined") {
-    new ResizeObserver(layout).observe(android ? panel : hero);
+    new ResizeObserver(layout).observe(phone ? panel : hero);
   }
   narrowLayout.addEventListener("change", layout);
   void document.fonts?.ready.then(layout);

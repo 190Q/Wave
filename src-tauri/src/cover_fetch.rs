@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 use lofty::config::WriteOptions;
@@ -131,20 +132,19 @@ fn run_inner(
             match named_by_title(&track.title, track.artist.as_deref()) {
                 Ok(Some(named)) => {
                     match write_tags(&root, &catalog, &track, &named) {
-                        Ok(true) => outcome.tagged += 1,
+                        Ok(true) => {
+                            outcome.tagged += 1;
+                            if let Some(row) = catalog.track(&track.id)? {
+                                track = library::to_track(&row, &root);
+                            }
+                        }
                         Ok(false) => {}
-                        Err(error) => outcome.errors.push(format!("{label}: {error}")),
+                        Err(error) => {
+                            outcome.errors.push(format!("{label}: {error}"));
+                            continue;
+                        }
                     }
 
-                    if blank(track.artist.as_deref()) && !named.artist.trim().is_empty() {
-                        track.artist = Some(named.artist.clone());
-                    }
-                    if blank(track.album.as_deref()) && !named.album.trim().is_empty() {
-                        track.album = Some(named.album.clone());
-                    }
-                    if blank(track.genre.as_deref()) && !named.genre.trim().is_empty() {
-                        track.genre = Some(named.genre.clone());
-                    }
                     hint = named.cover;
                 }
                 Ok(None) => {}
@@ -157,9 +157,9 @@ fn run_inner(
             continue;
         }
 
-        match find_cover(token.as_deref(), &track, hint.as_deref()) {
+        match find_cover(&root, &catalog, token.as_deref(), &track, hint.as_deref()) {
             Ok(Some(found)) => match write_cover(&root, &catalog, &track, &found.bytes) {
-                Ok(()) => {
+                Ok(true) => {
                     outcome.restored += 1;
                     if found.from_file {
                         outcome.embedded += 1;
@@ -167,6 +167,7 @@ fn run_inner(
                         outcome.online += 1;
                     }
                 }
+                Ok(false) => outcome.skipped += 1,
                 Err(error) => {
                     outcome.errors.push(format!("{label}: {error}"));
                     report.fail(format!("{label}: {error}"));
@@ -189,8 +190,13 @@ fn run_inner(
     Ok(outcome)
 }
 
-fn find_cover(token: Option<&str>, track: &Track, hint: Option<&str>) -> Result<Option<Found>, String> {
-    if let Some(bytes) = embedded(track) {
+fn find_cover(root: &Path, catalog: &Catalog, token: Option<&str>, track: &Track, hint: Option<&str>) -> Result<Option<Found>, String> {
+    let embedded_cover = {
+        let _operation = catalog.library_operation();
+        crate::import::fetched_track(root, catalog, track)?;
+        embedded(track)
+    };
+    if let Some(bytes) = embedded_cover {
         return Ok(Some(Found {
             bytes,
             from_file: true,
@@ -374,23 +380,15 @@ fn write_tags(
     track: &Track,
     named: &Named,
 ) -> Result<bool, String> {
+    let _operation = catalog.library_operation();
+    let known = crate::import::fetched_track(root, catalog, track)?;
     let path = Path::new(&track.path);
-    if !write_tags_to_file(path, named)? {
+    let written = write_tags_to_file(path, named);
+    let refreshed = crate::import::refresh_after_tags(root, catalog, &known);
+    if !written? {
         return Ok(false);
     }
-
-    if let Some(known) = catalog.track(&track.id)? {
-        let mut row = library::describe(
-            root,
-            &track.id,
-            path,
-            &known.original_name,
-            known.content_hash.as_deref(),
-        )?;
-        row.added_at = known.added_at;
-        catalog.upsert_track(&row)?;
-    }
-
+    refreshed?;
     Ok(true)
 }
 
@@ -431,7 +429,15 @@ fn embedded(track: &Track) -> Option<Vec<u8>> {
     tag.pictures().first().map(|picture| picture.data().to_vec())
 }
 
-fn write_cover(root: &Path, catalog: &Catalog, track: &Track, bytes: &[u8]) -> Result<(), String> {
+fn write_cover(root: &Path, catalog: &Catalog, track: &Track, bytes: &[u8]) -> Result<bool, String> {
+    let _operation = catalog.library_operation();
+    let known = crate::import::fetched_track(root, catalog, track)?;
+    let dir = library::track_dir(root, &track.id);
+    if known.cover_path.as_deref().is_some_and(|path| root.join(path).is_file())
+        || library::cover_in(&dir).is_some()
+    {
+        return Ok(false);
+    }
     // The extension follows the bytes, so the image is served as what it is.
     let (extension, mime) = if is_png(bytes) {
         ("png", MimeType::Png)
@@ -440,14 +446,17 @@ fn write_cover(root: &Path, catalog: &Catalog, track: &Track, bytes: &[u8]) -> R
     };
 
     let target = library::cover_path(root, &track.id, extension);
-    fs::write(&target, bytes).map_err(|e| format!("could not write {}: {e}", target.display()))?;
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&target)
+        .map_err(|e| format!("could not write {}: {e}", target.display()))?;
+    file.write_all(bytes).map_err(|e| format!("could not write {}: {e}", target.display()))?;
 
     if let Some(relative) = library::relative(root, &target) {
         catalog.set_cover(&track.id, Some(&relative))?;
     }
 
     let _ = embed(&track.path, bytes, mime);
-    Ok(())
+    crate::import::refresh_after_tags(root, catalog, &known)?;
+    Ok(true)
 }
 
 fn embed(path: &str, bytes: &[u8], mime: MimeType) -> Result<(), String> {
@@ -761,6 +770,33 @@ pub async fn fetch_covers(app: AppHandle, track_ids: Vec<String>) -> Result<Cove
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fetched_tags_refresh_hash_and_do_not_replace_a_new_cover() {
+        let root = std::env::temp_dir().join(format!("wave-fetch-test-{}", uuid::Uuid::new_v4()));
+        let id = uuid::Uuid::new_v4().to_string();
+        let dir = library::track_dir(&root, &id);
+        fs::create_dir_all(&dir).unwrap();
+        let path = library::audio_path(&root, &id, "wav");
+        fs::write(&path, b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x40\x1f\0\0\x80\x3e\0\0\x02\0\x10\0data\x02\0\0\0\0\0").unwrap();
+        let catalog = Catalog::in_memory().unwrap();
+        let row = library::describe(&root, &id, &path, "Song.wav", None).unwrap();
+        catalog.upsert_track(&row).unwrap();
+        let track = library::to_track(&row, &root);
+        let named = Named { artist: "Artist".into(), album: "Album".into(), genre: "Rock".into(), cover: None };
+        assert!(write_tags(&root, &catalog, &track, &named).unwrap());
+        let updated = catalog.track(&id).unwrap().unwrap();
+        assert_ne!(row.content_hash, updated.content_hash);
+        assert_eq!(updated.content_hash.as_deref(), Some(crate::identity::content_hash(&path).unwrap().as_str()));
+        let track = library::to_track(&updated, &root);
+        let cover = library::cover_path(&root, &id, "jpg");
+        fs::write(&cover, b"user cover").unwrap();
+        assert!(!write_cover(&root, &catalog, &track, b"fetched cover").unwrap());
+        assert_eq!(fs::read(&cover).unwrap(), b"user cover");
+        catalog.delete_tracks(&[id]).unwrap();
+        assert!(write_cover(&root, &catalog, &track, b"fetched cover").is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn a_featured_recording_requires_matching_title_and_credits() {

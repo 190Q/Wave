@@ -182,6 +182,76 @@ export interface AppState {
   updateError: string | null;
 }
 
+function applyLikes(likes: string[]): void {
+  if (!sameLikes(state.likes, likes)) {
+    state.likes = new Set(likes);
+    refreshCollections();
+  }
+}
+
+function settingsReadable(): boolean {
+  return settingsPending === 0 && eqSaving === 0;
+}
+
+function persistedReadToken(): {
+  id: number; settings: number; likes: number; playlists: number;
+  settingsReadable: boolean; likesClean: boolean; playlistsClean: boolean;
+} {
+  return {
+    id: ++persistedRead,
+    settings: settingsEpoch,
+    likes: likesEpoch,
+    playlists: playlistsEpoch,
+    settingsReadable: settingsReadable(),
+    likesClean: likesPending === 0,
+    playlistsClean: playlistsPending === 0,
+  };
+}
+
+function applyReadState(next: PersistedState, token: ReturnType<typeof persistedReadToken>): void {
+  if (token.id !== persistedRead) {
+    return;
+  }
+  const settings = token.settingsReadable && settingsReadable() && token.settings === settingsEpoch;
+  const likes = token.likesClean && likesPending === 0 && token.likes === likesEpoch;
+  const playlists = token.playlistsClean && playlistsPending === 0 && token.playlists === playlistsEpoch;
+  refreshSettingsAfterWrites ||= !settings;
+  refreshLikesAfterWrites ||= !likes;
+  refreshPlaylistsAfterWrites ||= !playlists;
+  applyPersisted(next, settings, likes, playlists);
+  refreshAfterWrites();
+}
+
+function refreshAfterWrites(): void {
+  let refresh = false;
+  if (refreshSettingsAfterWrites && settingsReadable()) {
+    refreshSettingsAfterWrites = false;
+    refresh = true;
+  }
+  if (refreshLikesAfterWrites && likesPending === 0) {
+    refreshLikesAfterWrites = false;
+    refresh = true;
+  }
+  if (refreshPlaylistsAfterWrites && playlistsPending === 0) {
+    refreshPlaylistsAfterWrites = false;
+    refresh = true;
+  }
+  if (refresh) {
+    void refreshPersistedState();
+  }
+}
+
+async function refreshPersistedState(): Promise<void> {
+  const token = persistedReadToken();
+  try {
+    const next = await ipc.loadState();
+    applyReadState(next, token);
+    emit();
+  } catch {
+    // The next event or scan can retry.
+  }
+}
+
 const state: AppState = {
   ready: false,
   appVersion: "",
@@ -265,6 +335,127 @@ const state: AppState = {
 };
 
 const listeners = new Set<() => void>();
+
+let confirmedSettings: Settings | null = null;
+let settingsWrites: Promise<void> = Promise.resolve();
+let settingsPending = 0;
+let settingsEpoch = 0;
+let settingsVersion = 0;
+const settingVersions: Partial<Record<keyof Settings, number>> = {};
+let likesWrites: Promise<void> = Promise.resolve();
+let likesPending = 0;
+let likesEpoch = 0;
+let playlistsWrites: Promise<void> = Promise.resolve();
+let playlistsPending = 0;
+let playlistsEpoch = 0;
+let persistedRead = 0;
+let refreshSettingsAfterWrites = false;
+let refreshLikesAfterWrites = false;
+let refreshPlaylistsAfterWrites = false;
+
+function markSettingsPatch(patch: Partial<Settings>): Partial<Record<keyof Settings, number>> {
+  const versions: Partial<Record<keyof Settings, number>> = {};
+  for (const key of Object.keys(patch) as (keyof Settings)[]) {
+    const version = ++settingsVersion;
+    settingVersions[key] = version;
+    versions[key] = version;
+  }
+  settingsEpoch += 1;
+  return versions;
+}
+
+function currentSettingVersions(patch: Partial<Settings>): Partial<Record<keyof Settings, number>> {
+  const versions: Partial<Record<keyof Settings, number>> = {};
+  for (const key of Object.keys(patch) as (keyof Settings)[]) {
+    versions[key] = settingVersions[key];
+  }
+  return versions;
+}
+
+function applySettingsFields(
+  settings: Settings,
+  versions: Partial<Record<keyof Settings, number>>,
+): void {
+  const patch: Partial<Settings> = {};
+  for (const key of Object.keys(versions) as (keyof Settings)[]) {
+    if (settingVersions[key] === versions[key]) {
+      Object.assign(patch, { [key]: settings[key] });
+    }
+  }
+  state.settings = { ...state.settings, ...patch };
+  eq.apply(state.settings);
+  void syncEqReading();
+}
+
+function applyPlaylists(playlists: Playlist[]): void {
+  if (!samePlaylists(state.playlists, playlists)) {
+    state.playlists = playlists;
+    state.pendingById = indexPending(playlists);
+    refreshCollections();
+  }
+}
+
+function queueSettingsWrite(
+  patch: Partial<Settings>,
+  versions = markSettingsPatch(patch),
+  save: (patch: Partial<Settings>) => Promise<PersistedState> = ipc.patchSettings,
+  restoreOnFailure = true,
+): Promise<void> {
+  settingsPending += 1;
+  settingsEpoch += 1;
+  const operation = settingsWrites.then(async () => {
+    try {
+      const next = await save(patch);
+      confirmedSettings = next.settings;
+      applySettingsFields(next.settings, versions);
+      emit();
+    } catch (error) {
+      if (restoreOnFailure && confirmedSettings) {
+        applySettingsFields(confirmedSettings, versions);
+        emit();
+      }
+      throw error;
+    }
+  }).finally(() => {
+    settingsPending -= 1;
+    settingsEpoch += 1;
+    refreshAfterWrites();
+  });
+  settingsWrites = operation.catch(() => {});
+  return operation;
+}
+
+function queueLikesWrite(write: () => Promise<PersistedState>): Promise<PersistedState> {
+  likesPending += 1;
+  likesEpoch += 1;
+  const operation = likesWrites.then(async () => {
+    const next = await write();
+    applyLikes(next.likes ?? []);
+    return next;
+  }).finally(() => {
+    likesPending -= 1;
+    likesEpoch += 1;
+    refreshAfterWrites();
+  });
+  likesWrites = operation.then(() => {}, () => {});
+  return operation;
+}
+
+function queuePlaylistWrite(write: () => Promise<PersistedState>): Promise<PersistedState> {
+  playlistsPending += 1;
+  playlistsEpoch += 1;
+  const operation = playlistsWrites.then(async () => {
+    const next = await write();
+    applyPlaylists(next.playlists ?? []);
+    return next;
+  }).finally(() => {
+    playlistsPending -= 1;
+    playlistsEpoch += 1;
+    refreshAfterWrites();
+  });
+  playlistsWrites = operation.then(() => {}, () => {});
+  return operation;
+}
 
 /** Ids whose colour has been requested but not resolved yet. */
 const coloursInFlight = new Set<string>();
@@ -890,7 +1081,7 @@ export async function init(): Promise<void> {
       }
     }
     const persisted = await ipc.loadState();
-    applyPersisted(persisted);
+    applyPersisted(persisted, true, true, true);
     seedEqOrigin();
     applySession(persisted.session);
     player.setVolume(state.settings.volume);
@@ -1021,11 +1212,12 @@ async function applyScan(
   if (summary.changed.length > 0) {
     rememberTracks(summary.changed);
   }
+  const token = persistedReadToken();
   const persisted = await ipc.loadState();
   if (sequence !== undefined && sequence !== scanSequence) {
     return;
   }
-  applyPersisted(persisted);
+  applyReadState(persisted, token);
   adoptSource();
 }
 
@@ -1128,6 +1320,13 @@ function importSummary(outcome: ImportOutcome, waitingForAudio = false): string 
   return parts.join(", ");
 }
 
+function importNotice(outcome: ImportOutcome, found = ""): string {
+  const message = [importSummary(outcome), found].filter(Boolean).join(", ");
+  const failure = outcome.errors.find((error) => error.includes("playlists could not be refreshed:")) ??
+    outcome.errors[0];
+  return `${message}${failure ? `. ${failure}` : ""}`;
+}
+
 export async function importFolder(choose: () => Promise<boolean | null>): Promise<void> {
   try {
     const folder = await ipc.pickFolder();
@@ -1144,7 +1343,7 @@ export async function importFolder(choose: () => Promise<boolean | null>): Promi
     applyPersisted(outcome.state);
     await rescan();
     const found = await completeImport(outcome);
-    setNotice([importSummary(outcome), found].filter(Boolean).join(", "));
+    setNotice(importNotice(outcome, found));
   } catch (error) {
     setNotice(describe(error));
   }
@@ -1163,7 +1362,7 @@ export async function importPickedFiles(): Promise<void> {
     applyPersisted(outcome.state);
     await rescan(true);
     const found = await completeImport(outcome);
-    setNotice([importSummary(outcome), found].filter(Boolean).join(", "));
+    setNotice(importNotice(outcome, found));
   } catch (error) {
     setNotice(describe(error));
   }
@@ -1182,8 +1381,7 @@ export async function importPhoneFolder(): Promise<void> {
     }
     applyPersisted(outcome.state);
     await rescan(true);
-    const failure = outcome.errors[0];
-    setNotice(`${importSummary(outcome)}${failure ? `. ${failure}` : ""}`);
+    setNotice(importNotice(outcome));
   } catch (error) {
     setNotice(describe(error));
   } finally {
@@ -1200,7 +1398,7 @@ export async function importPhoneMusic(): Promise<void> {
     applyPersisted(outcome.state);
     await rescan(true);
     const found = await completeImport(outcome);
-    setNotice([importSummary(outcome), found].filter(Boolean).join(", "));
+    setNotice(importNotice(outcome, found));
   } catch (error) {
     setNotice(describe(error));
   }
@@ -1250,12 +1448,13 @@ let exporting = false;
 
 export async function exportCollection(collectionId: string): Promise<void> {
   const collection = collectionById(collectionId);
-  if (!collection || !collection.trackIds.length || exporting) {
+  if (!collection || !collection.entries.length || exporting) {
     return;
   }
   exporting = true;
   try {
-    const count = await ipc.exportWaveList(collection.name, collection.trackIds);
+    const playlistId = collection.kind === "playlist" || collection.kind === "generated" ? collection.id : null;
+    const count = await ipc.exportWaveList(collection.name, collection.entries, playlistId);
     if (count !== null) {
       setNotice(`Exported ${plural(count, "song")} to a Wave playlist.`);
     }
@@ -1858,7 +2057,7 @@ export function shuffleCollection(id: string): void {
 
 export async function toggleLikeTrack(trackId: string): Promise<void> {
   try {
-    applyPersisted(await ipc.toggleLike(trackId));
+    await queueLikesWrite(() => ipc.toggleLike(trackId));
     recordEvent(state.likes.has(trackId) ? "like" : "unlike", { trackIds: [trackId] });
     emit();
   } catch (error) {
@@ -1873,7 +2072,7 @@ export async function setTracksLiked(trackIds: string[], liked: boolean): Promis
   }
 
   try {
-    applyPersisted(await ipc.setLikes(trackIds, liked));
+    await queueLikesWrite(() => ipc.setLikes(trackIds, liked));
     recordEvent(liked ? "like" : "unlike", { trackIds });
     emit();
   } catch (error) {
@@ -1883,7 +2082,7 @@ export async function setTracksLiked(trackIds: string[], liked: boolean): Promis
 
 export async function createPlaylist(name: string): Promise<void> {
   try {
-    applyPersisted(await ipc.createPlaylist(name));
+    await queuePlaylistWrite(() => ipc.createPlaylist(name));
     emit();
   } catch (error) {
     setNotice(describe(error));
@@ -1892,13 +2091,22 @@ export async function createPlaylist(name: string): Promise<void> {
 
 export async function createPlaylistWithTracks(name: string, trackIds: string[]): Promise<void> {
   try {
-    const before = new Set(state.playlists.map((playlist) => playlist.id));
-    applyPersisted(await ipc.createPlaylist(name));
-    const created = state.playlists.find((playlist) => !before.has(playlist.id));
-    if (created && trackIds.length > 0) {
-      applyPersisted(await ipc.addToPlaylist(created.id, trackIds));
-      recordEvent("playlist_add", { trackIds, playlistId: created.id, value: created.name });
-    }
+    await queuePlaylistWrite(async () => {
+      const before = new Set(state.playlists.map((playlist) => playlist.id));
+      const next = await ipc.createPlaylist(name);
+      const created = next.playlists.find((playlist) => !before.has(playlist.id));
+      if (created && trackIds.length > 0) {
+        try {
+          const added = await ipc.addToPlaylist(created.id, trackIds);
+          recordEvent("playlist_add", { trackIds, playlistId: created.id, value: created.name });
+          return added;
+        } catch (error) {
+          applyPlaylists(next.playlists);
+          throw error;
+        }
+      }
+      return next;
+    });
     emit();
   } catch (error) {
     setNotice(describe(error));
@@ -1907,7 +2115,7 @@ export async function createPlaylistWithTracks(name: string, trackIds: string[])
 
 export async function renamePlaylist(id: string, name: string): Promise<void> {
   try {
-    applyPersisted(await ipc.renamePlaylist(id, name));
+    await queuePlaylistWrite(() => ipc.renamePlaylist(id, name));
     emit();
   } catch (error) {
     setNotice(describe(error));
@@ -1917,13 +2125,28 @@ export async function renamePlaylist(id: string, name: string): Promise<void> {
 export async function deletePlaylist(id: string): Promise<void> {
   const name = state.playlists.find((playlist) => playlist.id === id)?.name ?? null;
   try {
-    applyPersisted(await ipc.deletePlaylist(id));
+    await queuePlaylistWrite(() => ipc.deletePlaylist(id));
     recordEvent("playlist_remove", { playlistId: id, value: name });
     state.recents = state.recents.filter((entry) => entry !== id);
     emit();
   } catch (error) {
     setNotice(describe(error));
   }
+}
+
+function removeDeletedTracks(trackIds: string[]): void {
+  scanSequence += 1;
+  const removed = new Set(trackIds);
+  likesEpoch += 1;
+  applyLikes([...state.likes].filter((id) => !removed.has(id)));
+  state.tracks = state.tracks.filter((track) => !removed.has(track.id));
+  state.tracksById = new Map(state.tracks.map((track) => [track.id, track]));
+  retainArtwork();
+  refreshCollections();
+  for (const id of trackIds) {
+    player.removeFromQueue(id);
+  }
+  emit();
 }
 
 export async function deleteTracks(trackIds: string[]): Promise<void> {
@@ -1934,21 +2157,24 @@ export async function deleteTracks(trackIds: string[]): Promise<void> {
   const title = trackIds.length === 1 ? state.tracksById.get(trackIds[0])?.title : undefined;
 
   try {
-    applyPersisted(await ipc.deleteTracks(trackIds));
-    scanSequence += 1;
-    const removed = new Set(trackIds);
-    state.tracks = state.tracks.filter((track) => !removed.has(track.id));
-    state.tracksById = new Map(state.tracks.map((track) => [track.id, track]));
-    retainArtwork();
-    refreshCollections();
-    for (const id of trackIds) {
-      player.removeFromQueue(id);
-    }
-    emit();
+    await queuePlaylistWrite(() => queueLikesWrite(() => ipc.deleteTracks(trackIds)));
+    removeDeletedTracks(trackIds);
     await rescan();
     setNotice(title ? `Deleted "${title}".` : `${plural(trackIds.length, "song")} deleted.`);
   } catch (error) {
-    setNotice(describe(error));
+    const message = describe(error);
+    if (message.startsWith("The changes were saved, but the playlists could not be refreshed:")) {
+      removeDeletedTracks(trackIds);
+    }
+    const before = [...state.tracksById.keys()];
+    await rescan(true);
+    for (const id of before) {
+      if (!state.tracksById.has(id)) {
+        player.removeFromQueue(id);
+      }
+    }
+    const scanFailure = state.scanErrors[0];
+    setNotice(scanFailure ? `${message} Library rescan: ${scanFailure}` : message);
   }
 }
 
@@ -2005,7 +2231,7 @@ export async function replaceTrackCover(trackId: string): Promise<void> {
 
 export async function addTracksToPlaylist(id: string, trackIds: string[]): Promise<void> {
   try {
-    applyPersisted(await ipc.addToPlaylist(id, trackIds));
+    await queuePlaylistWrite(() => ipc.addToPlaylist(id, trackIds));
     recordEvent("playlist_add", {
       trackIds,
       playlistId: id,
@@ -2019,7 +2245,7 @@ export async function addTracksToPlaylist(id: string, trackIds: string[]): Promi
 
 export async function removeTracksFromPlaylist(id: string, trackIds: string[]): Promise<void> {
   try {
-    applyPersisted(await ipc.removeFromPlaylist(id, trackIds));
+    await queuePlaylistWrite(() => ipc.removeFromPlaylist(id, trackIds));
     recordEvent("playlist_remove", {
       trackIds,
       playlistId: id,
@@ -2033,7 +2259,7 @@ export async function removeTracksFromPlaylist(id: string, trackIds: string[]): 
 
 export async function reorderPlaylist(id: string, trackIds: string[]): Promise<void> {
   try {
-    applyPersisted(await ipc.reorderPlaylist(id, trackIds));
+    await queuePlaylistWrite(() => ipc.reorderPlaylist(id, trackIds));
     emit();
   } catch (error) {
     setNotice(describe(error));
@@ -2072,7 +2298,8 @@ export async function generatePlaylist(mode: PlaylistMode, genre: string | null)
   try {
     const outcome = await ipc.generatePlaylist(mode, genre);
     applyPersisted(outcome.state);
-    const playlist = state.playlists.find((entry) => entry.id === outcome.playlistId);
+    await refreshPersistedState();
+    const playlist = outcome.state.playlists.find((entry) => entry.id === outcome.playlistId);
     setNotice(
       playlist
         ? `Created "${playlist.name}" with ${plural(playlist.entries.length, "song")}.`
@@ -2145,20 +2372,30 @@ export async function downloadPending(playlistId: string, entryIds: string[]): P
   }
 }
 
+let queuedRecentColours: string[] | null = null;
+let themesPending = 0;
+
 export async function setTheme(theme: string): Promise<void> {
+  const previous = queuedRecentColours ?? state.settings.recentColours;
   const recentColours =
     theme === ADAPTIVE_THEME
-      ? state.settings.recentColours
-      : [theme, ...state.settings.recentColours.filter((colour) => colour !== theme)].slice(
+      ? previous
+      : [theme, ...previous.filter((colour) => colour !== theme)].slice(
           0,
           RECENT_THEME_LIMIT,
         );
 
+  queuedRecentColours = recentColours;
+  themesPending += 1;
   try {
-    applyPersisted(await ipc.saveSettings({ ...state.settings, theme, recentColours }));
-    emit();
+    await queueSettingsWrite({ theme, recentColours });
   } catch (error) {
     setNotice(describe(error));
+  } finally {
+    themesPending -= 1;
+    if (themesPending === 0) {
+      queuedRecentColours = null;
+    }
   }
 }
 
@@ -2183,8 +2420,7 @@ export async function toggleMiniPlayer(corner?: number): Promise<void> {
 
   if (miniPlayer && corner !== undefined) {
     try {
-      applyPersisted(await ipc.placeMiniPlayer(corner));
-      emit();
+      await queueSettingsWrite({ miniCorner: corner }, undefined, () => ipc.placeMiniPlayer(corner));
     } catch (error) {
       setNotice(describe(error));
     }
@@ -2326,14 +2562,8 @@ function watchLoudness(): void {
 }
 
 function watchSettings(): void {
-  void listen<Settings>(SETTINGS_EVENT, (event) => {
-    state.settings = event.payload;
-    if (event.payload.volume !== player.snapshot().volume) {
-      player.setVolume(event.payload.volume);
-    }
-    eq.apply(state.settings);
-    void syncEqReading();
-    emit();
+  void listen<Settings>(SETTINGS_EVENT, () => {
+    void refreshPersistedState();
   }).catch(() => {
     // Not running inside Tauri, for example `npm run dev` in a browser.
   });
@@ -2350,9 +2580,8 @@ function watchApi(): void {
     // Not running inside Tauri, for example `npm run dev` in a browser.
   });
 
-  void listen<PersistedState>(STATE_CHANGED_EVENT, (event) => {
-    applyPersisted(event.payload);
-    emit();
+  void listen<PersistedState>(STATE_CHANGED_EVENT, () => {
+    void refreshPersistedState();
   }).catch(() => {
     // Same as above.
   });
@@ -2368,7 +2597,7 @@ export function cycleAccent(): void {
 
 export async function updateSettings(patch: Partial<Settings>): Promise<boolean> {
   try {
-    applyPersisted(await ipc.saveSettings({ ...state.settings, ...patch }));
+    await queueSettingsWrite(patch);
     if (patch.normalizeVolume !== undefined) {
       // The song playing right now should follow the switch, not the next one.
       player.refreshGain();
@@ -2469,6 +2698,7 @@ let volumeUnsaved = false;
 /** The volume is written once, after a burst of changes has settled. */
 function scheduleVolumeSave(): void {
   volumeUnsaved = true;
+  markSettingsPatch({ volume: player.snapshot().volume });
   if (volumeTimer !== null) {
     window.clearTimeout(volumeTimer);
   }
@@ -2478,16 +2708,23 @@ function scheduleVolumeSave(): void {
   }, VOLUME_SAVE_MS);
 }
 
-async function saveVolume(): Promise<void> {
+async function saveVolume(): Promise<boolean> {
   if (!volumeUnsaved) {
-    return;
+    await settingsWrites;
+    return true;
   }
+  const patch = { volume: player.snapshot().volume };
+  const versions = currentSettingVersions(patch);
   try {
-    applyPersisted(await ipc.saveSettings({ ...state.settings, volume: player.snapshot().volume }));
-    volumeUnsaved = false;
-    emit();
+    await queueSettingsWrite(patch, versions, ipc.patchSettings, false);
+    if (settingVersions.volume === versions.volume) {
+      volumeUnsaved = false;
+    }
+    refreshAfterWrites();
+    return true;
   } catch {
     // Volume is cosmetic; a failed write is not worth interrupting playback.
+    return false;
   }
 }
 
@@ -2522,6 +2759,8 @@ export function stepVolume(direction: number): void {
   volumeRamp = requestAnimationFrame(run);
 }
 
+let lyricsSequence = 0;
+
 /**
  * Reads the lyrics for a track. The backend resolves the file it recorded, or a
  * sidecar sitting beside the audio. Empty when there is neither.
@@ -2532,6 +2771,7 @@ export async function ensureLyrics(track: Track | undefined): Promise<void> {
     return;
   }
 
+  const sequence = ++lyricsSequence;
   state.lyricsTrackId = trackId;
   state.lyrics = [];
   emit();
@@ -2542,30 +2782,40 @@ export async function ensureLyrics(track: Track | undefined): Promise<void> {
 
   try {
     const raw = await ipc.loadLyrics(track.id);
-    if (state.lyricsTrackId !== trackId) {
+    if (sequence !== lyricsSequence) {
       return; // a newer track was requested while this one was loading
     }
     state.lyrics = raw ? parseLrc(raw) : [];
   } catch {
+    if (sequence !== lyricsSequence) {
+      return;
+    }
     state.lyrics = [];
   }
   emit();
 }
 
-function applyPersisted(next: PersistedState): void {
-  state.settings = next.settings ?? state.settings;
+function applyPersisted(next: PersistedState, settings = false, likes = false, playlists = false): void {
+  if (settings && next.settings) {
+    confirmedSettings = next.settings;
+    state.settings = {
+      ...next.settings,
+      ...eqUnsaved,
+      ...(volumeUnsaved ? { volume: player.snapshot().volume } : {}),
+    };
+    if (!volumeUnsaved && next.settings.volume !== player.snapshot().volume) {
+      player.setVolume(next.settings.volume);
+    }
+  }
 
   // Replacing these only when they actually moved is what lets the collections
   // below be left alone, so a volume save does not re-group the library.
-  const playlists = next.playlists ?? [];
-  if (!samePlaylists(state.playlists, playlists)) {
-    state.playlists = playlists;
-    state.pendingById = indexPending(playlists);
+  if (playlists) {
+    applyPlaylists(next.playlists ?? []);
   }
 
-  const likes = next.likes ?? [];
-  if (!sameLikes(state.likes, likes)) {
-    state.likes = new Set(likes);
+  if (likes) {
+    applyLikes(next.likes ?? []);
   }
 
   state.windowSlots = next.windowSlots ?? [];
@@ -2734,6 +2984,7 @@ let persistenceWired = false;
 
 /** The session as it was last written, so an unchanged one is not rewritten. */
 let savedSession: string | null = null;
+let sessionWrites: Promise<void> = Promise.resolve();
 
 /** Persists the session on every playback change, and on a slow timer. */
 function wirePersistence(): void {
@@ -2786,7 +3037,7 @@ function currentSession(): Session {
       repeat: snapshot.repeat,
       muted: snapshot.muted,
     },
-    recents: state.recents,
+    recents: [...state.recents],
     filter: state.filter,
     sort: state.sort,
     queueOpen: state.queueOpen,
@@ -2799,15 +3050,19 @@ async function persistSession(): Promise<void> {
   }
   const session = currentSession();
   const encoded = JSON.stringify(session);
-  if (encoded === savedSession) {
-    return;
-  }
-  try {
-    await ipc.saveSession(session);
-    savedSession = encoded;
-  } catch {
-    // Persistence is best-effort; a failed write must not disturb playback.
-  }
+  const operation = sessionWrites.then(async () => {
+    if (encoded === savedSession) {
+      return;
+    }
+    try {
+      await ipc.saveSession(session);
+      savedSession = encoded;
+    } catch {
+      // Persistence is best-effort; a failed write must not disturb playback.
+    }
+  });
+  sessionWrites = operation;
+  await operation;
 }
 
 export async function flushSession(): Promise<void> {
@@ -2823,7 +3078,16 @@ export async function flushSession(): Promise<void> {
     window.clearInterval(autosaveTimer);
     autosaveTimer = null;
   }
-  await saveVolume();
+  while (volumeUnsaved) {
+    if (!(await saveVolume())) {
+      break;
+    }
+    if (volumeTimer !== null) {
+      window.clearTimeout(volumeTimer);
+      volumeTimer = null;
+    }
+  }
+  await settingsWrites;
   await persistSession();
   await flushEq();
   // The listen still running is written down before the window goes.
@@ -2843,6 +3107,7 @@ let eqOutputsKnown: EqOutput[] = [];
 const EQ_SAVE_MS = 400;
 let eqTimer: number | null = null;
 let eqUnsaved: Partial<Settings> | null = null;
+let eqSaving = 0;
 let eqWired = false;
 
 /** Where the curve in force came from, so the overlay can say what picked it. */
@@ -2878,6 +3143,7 @@ export function eqStatus(): EqStatus {
 
 /** Changes the curve, applies it at once and writes it a moment later. */
 function applyEqPatch(patch: Partial<Settings>): void {
+  markSettingsPatch(patch);
   state.settings = { ...state.settings, ...patch };
   eq.apply(state.settings);
   void syncEqReading();
@@ -2896,17 +3162,33 @@ function scheduleEqSave(patch: Partial<Settings>): void {
   }, EQ_SAVE_MS);
 }
 
-async function saveEq(): Promise<void> {
+async function saveEq(): Promise<boolean> {
   const patch = eqUnsaved;
   eqUnsaved = null;
   if (!patch) {
-    return;
+    await settingsWrites;
+    return true;
   }
+  const versions = currentSettingVersions(patch);
+  eqSaving += 1;
   try {
-    applyPersisted(await ipc.saveSettings({ ...state.settings, ...patch }));
-    emit();
+    await queueSettingsWrite(patch, versions, ipc.patchSettings, false);
+    return true;
   } catch {
     // The curve matters less than playback, so a failed write is not announced.
+    const retry: Partial<Settings> = {};
+    for (const key of Object.keys(patch) as (keyof Settings)[]) {
+      if (settingVersions[key] === versions[key]) {
+        Object.assign(retry, { [key]: patch[key] });
+      }
+    }
+    if (Object.keys(retry).length > 0) {
+      eqUnsaved = Object.assign({}, retry, eqUnsaved);
+    }
+    return false;
+  } finally {
+    eqSaving -= 1;
+    refreshAfterWrites();
   }
 }
 
@@ -2916,7 +3198,18 @@ async function flushEq(): Promise<void> {
     window.clearTimeout(eqTimer);
     eqTimer = null;
   }
-  await saveEq();
+  await settingsWrites;
+  await Promise.resolve();
+  while (eqUnsaved !== null) {
+    if (!(await saveEq())) {
+      break;
+    }
+    if (eqTimer !== null) {
+      window.clearTimeout(eqTimer);
+      eqTimer = null;
+    }
+  }
+  await settingsWrites;
 }
 
 /** Follows what is playing and what is plugged in, so a rule can pick a curve. */

@@ -54,8 +54,6 @@ export function mountCollectionPicker(
     const collection = proposals[index];
     if (!collection) return;
     choose(collection);
-    const button = body.querySelector<HTMLButtonElement>('[data-command="export-playlist"]');
-    if (button) button.disabled = collection.trackIds.length === 0;
     close();
   };
   const open = (field: HTMLInputElement): void => {

@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
+const port = 1420;
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
@@ -12,14 +13,14 @@ export default defineConfig(() => ({
   clearScreen: false,
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
-    port: 1420,
+    port,
     strictPort: true,
     host: host || false,
     hmr: host
       ? {
           protocol: "ws",
           host,
-          port: 1421,
+          clientPort: port,
         }
       : undefined,
     watch: {

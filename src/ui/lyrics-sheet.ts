@@ -39,9 +39,10 @@ export function mountLyricsSheet(): LyricsSheet | null {
   const topbar = document.querySelector<HTMLElement>(".topbar");
   const panel = document.getElementById("lyrics-panel");
   const grab = document.getElementById("lyrics-grab");
+  const dockGrab = document.getElementById("dock-grab");
   const root = document.documentElement;
 
-  if (!stage || !topbar || !panel || !grab) {
+  if (!stage || !topbar || !panel || !grab || !dockGrab) {
     return null;
   }
 
@@ -51,6 +52,9 @@ export function mountLyricsSheet(): LyricsSheet | null {
   /** True while the dock's drag is the sheet's rather than the seek bar's. */
   let owns = false;
   let dragging = false;
+  let grabMoved = false;
+  let suppressOpenClick = false;
+  let suppressCloseClick = false;
   let settleTimer: number | null = null;
   let originX = 0;
   let originY = 0;
@@ -66,6 +70,8 @@ export function mountLyricsSheet(): LyricsSheet | null {
 
   const paint = (): void => {
     stage.style.setProperty("--sheet-travel", `${Math.round(travel)}px`);
+    panel.inert = !open;
+    dockGrab.setAttribute("aria-expanded", String(open));
   };
 
   const dragTo = (next: number): void => {
@@ -112,6 +118,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
   };
 
   const press = (event: PointerEvent): void => {
+    suppressOpenClick = false;
     if (open || !wanted()) {
       return;
     }
@@ -146,8 +153,22 @@ export function mountLyricsSheet(): LyricsSheet | null {
       return;
     }
     owns = false;
+    suppressOpenClick = true;
     settle();
   };
+
+  dockGrab.addEventListener("click", (event) => {
+    if (event.detail !== 0 && suppressOpenClick) {
+      suppressOpenClick = false;
+      return;
+    }
+    if (!open && wanted()) {
+      settleTo(true);
+      if (event.detail === 0) {
+        grab.focus({ preventScroll: true });
+      }
+    }
+  });
 
   // The handle is the sheet's own, and the only thing left to drag once it is
   // up: the lyrics below it are the scrub, so they cannot move the sheet too.
@@ -156,6 +177,8 @@ export function mountLyricsSheet(): LyricsSheet | null {
       return;
     }
     dragging = true;
+    grabMoved = false;
+    suppressCloseClick = false;
     originY = event.clientY;
     originTravel = travel;
     startedAt = performance.now();
@@ -164,7 +187,10 @@ export function mountLyricsSheet(): LyricsSheet | null {
 
   grab.addEventListener("pointermove", (event) => {
     if (dragging) {
-      travelTo(event.clientY);
+      grabMoved ||= Math.abs(event.clientY - originY) >= DRAG_SLOP_PX;
+      if (grabMoved) {
+        travelTo(event.clientY);
+      }
     }
   });
 
@@ -176,11 +202,26 @@ export function mountLyricsSheet(): LyricsSheet | null {
     if (grab.hasPointerCapture(event.pointerId)) {
       grab.releasePointerCapture(event.pointerId);
     }
-    settle();
+    if (grabMoved) {
+      suppressCloseClick = event.type !== "pointercancel";
+      settle();
+    }
   };
 
   grab.addEventListener("pointerup", endGrabDrag);
   grab.addEventListener("pointercancel", endGrabDrag);
+  grab.addEventListener("click", (event) => {
+    if (event.detail !== 0 && suppressCloseClick) {
+      suppressCloseClick = false;
+      return;
+    }
+    if (open) {
+      settleTo(false);
+      if (event.detail === 0) {
+        dockGrab.focus({ preventScroll: true });
+      }
+    }
+  });
 
   /** The sheet follows the top bar, which moves with the notch and the rotation. */
   const refit = (): void => {

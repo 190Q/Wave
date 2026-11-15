@@ -3,11 +3,13 @@ package com.wave.app
 import android.Manifest
 import android.app.Activity
 import android.content.ContentResolver
+import android.content.ContentUris
 import android.content.Intent
+import android.database.Cursor
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import androidx.activity.result.ActivityResult
 import app.tauri.PermissionState
@@ -31,6 +33,44 @@ class UriList {
 @InvokeArg
 class FolderUri {
   lateinit var uri: String
+}
+
+internal data class IndexedMusicFile(val uri: String, val name: String, val mime: String?)
+
+internal fun indexedMusic(resolver: ContentResolver): List<IndexedMusicFile> =
+  indexedMusic { uri, columns -> resolver.query(uri, columns, null, null, null) }
+
+internal fun indexedMusic(query: (Uri, Array<String>) -> Cursor?): List<IndexedMusicFile> {
+  val files = mutableListOf<IndexedMusicFile>()
+  val collections = listOf(
+    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+    MediaStore.Audio.Media.INTERNAL_CONTENT_URI
+  )
+  for (collection in collections) {
+    val columns = mutableListOf(
+      MediaStore.Audio.Media._ID,
+      MediaStore.Audio.Media.DISPLAY_NAME,
+      MediaStore.Audio.Media.MIME_TYPE
+    )
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      columns.add(MediaStore.MediaColumns.VOLUME_NAME)
+    }
+    val cursor = query(collection, columns.toTypedArray())
+      ?: throw IllegalStateException("Could not read the music index")
+    cursor.use {
+      while (it.moveToNext()) {
+        val id = it.getLong(0)
+        val volume = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) it.getString(3) else null
+        val base = if (volume.isNullOrEmpty()) collection else MediaStore.Audio.Media.getContentUri(volume)
+        files.add(IndexedMusicFile(
+          ContentUris.withAppendedId(base, id).toString(),
+          it.getString(1) ?: "track-$id",
+          it.getString(2)
+        ))
+      }
+    }
+  }
+  return files
 }
 
 @TauriPlugin(
@@ -60,10 +100,24 @@ class MusicLibraryPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   @Command
-  fun musicDirectories(invoke: Invoke) {
-    val result = JSObject()
-    result.put("directories", jsArray(folders()))
-    invoke.resolve(result)
+  fun musicFiles(invoke: Invoke) {
+    Thread {
+      try {
+        val files = JSArray()
+        for (entry in indexedMusic(activity.contentResolver)) {
+          val file = JSObject()
+          file.put("uri", entry.uri)
+          file.put("name", entry.name)
+          file.put("mime", entry.mime)
+          files.put(file)
+        }
+        val result = JSObject()
+        result.put("files", files)
+        invoke.resolve(result)
+      } catch (error: Exception) {
+        invoke.reject(error.message ?: "Could not read the music index")
+      }
+    }.start()
   }
 
   @Command
@@ -157,16 +211,6 @@ class MusicLibraryPlugin(private val activity: Activity) : Plugin(activity) {
     val result = JSObject()
     result.put("granted", value)
     return result
-  }
-
-  /** The standard places a phone keeps its music, in the order to import them. */
-  private fun folders(): List<String> {
-    val kinds = listOf(Environment.DIRECTORY_MUSIC, Environment.DIRECTORY_DOWNLOADS)
-
-    return kinds
-      .mapNotNull { Environment.getExternalStoragePublicDirectory(it) }
-      .filter { it.isDirectory }
-      .map { it.absolutePath }
   }
 
   /**

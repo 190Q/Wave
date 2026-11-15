@@ -1,6 +1,5 @@
 use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Manager};
 
@@ -9,7 +8,6 @@ use crate::download;
 use crate::download_log;
 use crate::import::{self, ImportOutcome};
 use crate::import_source::{self, PROGRESS_EVENT};
-use crate::playlists;
 use crate::progress::{Output, Reporter};
 use crate::source::{read_env, TrackMeta};
 use crate::state::{PendingTrack, PersistedState, Store};
@@ -106,7 +104,7 @@ fn run_inner(
         .map(|(position, want)| download::Job {
             key: position,
             meta: &want.meta,
-            dir: staging.join(want.place.to_string()),
+            dir: staging.path().join(want.place.to_string()),
             cover: want.cover.clone(),
         })
         .collect();
@@ -159,27 +157,18 @@ fn run_inner(
         state: PersistedState::default(),
     };
 
-    // A song that would not download keeps its place, so it stays waiting.
-    let next = rewritten(&entries, &landed);
-    let done: Vec<String> = landed.keys().cloned().collect();
+    let done: Vec<(String, String)> = landed.into_iter().collect();
     if !done.is_empty() {
-        catalog.resolve_pending(playlist_id, &next, &done)?;
+        catalog.resolve_pending(playlist_id, &done)?;
     }
 
     import::remember_import(app, "playlist", &name, &outcome);
     let mut outcome = outcome;
-    outcome.state = playlists::refresh(app, &store);
-
+    if outcome.errors.is_empty() {
+        staging.cleanup();
+    }
+    outcome.refresh_state(app, &store);
     Ok(outcome)
-}
-
-/// The playlist's entries with every download in the place its waiting song
-/// held.
-fn rewritten(entries: &[String], landed: &HashMap<String, String>) -> Vec<String> {
-    entries
-        .iter()
-        .map(|entry| landed.get(entry).cloned().unwrap_or_else(|| entry.clone()))
-        .collect()
 }
 
 fn playlist_name(catalog: &Catalog, id: &str) -> String {
@@ -202,15 +191,16 @@ fn download_message(total: usize) -> String {
     format!("Downloading {total} songs.")
 }
 
-fn staging_dir(app: &AppHandle, playlist_id: &str) -> Result<PathBuf, String> {
-    let dir = app
+fn staging_dir_at(root: &Path, playlist_id: &str) -> Result<import_source::DownloadStaging, String> {
+    import_source::reserve_staging(&root.join(STAGING).join(playlist_id))
+}
+
+fn staging_dir(app: &AppHandle, playlist_id: &str) -> Result<import_source::DownloadStaging, String> {
+    let root = app
         .path()
         .app_data_dir()
-        .map_err(|e| format!("could not resolve the app data directory: {e}"))?
-        .join(STAGING)
-        .join(playlist_id);
-    fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-    Ok(dir)
+        .map_err(|e| format!("could not resolve the app data directory: {e}"))?;
+    staging_dir_at(&root, playlist_id)
 }
 
 #[tauri::command]
@@ -241,24 +231,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn says_how_many_songs_it_is_fetching() {
-        assert_eq!(download_message(1), "Downloading 1 song.");
-        assert_eq!(download_message(7), "Downloading 7 songs.");
+    fn concurrent_playlist_downloads_do_not_share_job_files() {
+        let root = std::env::temp_dir().join(format!("wave-playlist-staging-{}", crate::identity::new_id()));
+        let first = staging_dir_at(&root, "same-playlist").unwrap();
+        let second = staging_dir_at(&root, "same-playlist").unwrap();
+        assert_ne!(first.path(), second.path());
+        for (stage, contents) in [(&first, b"first"), (&second, b"other")] {
+            std::fs::create_dir(stage.path().join("0")).unwrap();
+            std::fs::write(stage.path().join("0").join("audio.mp3"), contents).unwrap();
+        }
+        first.cleanup();
+        assert_eq!(std::fs::read(second.path().join("0").join("audio.mp3")).unwrap(), b"other");
+        let retained = second.path().to_path_buf();
+        drop(second);
+        assert!(retained.join("0").join("audio.mp3").is_file());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn a_download_takes_the_place_its_waiting_song_held() {
-        let entries = vec![
-            "one".to_string(),
-            "waiting-a".to_string(),
-            "waiting-b".to_string(),
-        ];
-        // Only the first waiting song landed, so the other keeps its place.
-        let landed = HashMap::from([("waiting-a".to_string(), "two".to_string())]);
-
-        assert_eq!(
-            rewritten(&entries, &landed),
-            vec!["one".to_string(), "two".to_string(), "waiting-b".to_string()]
-        );
+    fn says_how_many_songs_it_is_fetching() {
+        assert_eq!(download_message(1), "Downloading 1 song.");
+        assert_eq!(download_message(7), "Downloading 7 songs.");
     }
 }

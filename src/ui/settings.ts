@@ -95,6 +95,8 @@ export function mountSettings(): void {
     ?? getState().collections[0];
   const exportPicker = mountCollectionPicker(body, "[data-export-collection]", (collection) => {
     exportId = collection.id;
+    const button = body.querySelector<HTMLButtonElement>('[data-command="export-playlist"]');
+    if (button) button.disabled = collection.entries.length === 0;
   }, selectedExport);
 
   /** What the Wave Swell section shows. Read afresh whenever the panel opens. */
@@ -668,21 +670,17 @@ function libraryHtml(state: AppState, exportId: string): string {
       ${storage}
       ${errors}
     </div>
-    ${
-      android
-        ? ""
-        : `<div class="settings-row is-stacked">
+    <div class="settings-row is-stacked">
       <span class="settings-label">Export playlist</span>
-      <p class="settings-hint">Save an ordered song list with its tags and genres as a .wavelist file. Import it in Wave to download the audio, covers and lyrics. Only the list itself is saved.</p>
+      <p class="settings-hint">Save an ordered song list, including songs waiting for audio, with its tags and genres as a .wavelist file. Only the list itself is saved.</p>
       <div class="import-field">
         <input class="import-combo" type="text" data-export-collection
           value="${escapeHtml(collection?.name ?? "")}"
           placeholder="Collection name" aria-label="Collection to export"
           aria-expanded="false" autocomplete="off" spellcheck="false" />
-        <button class="pill" type="button" data-command="export-playlist"${collection?.trackIds.length ? "" : " disabled"}>Export</button>
+        <button class="pill" type="button" data-command="export-playlist"${collection?.entries.length ? "" : " disabled"}>Export</button>
       </div>
-    </div>`
-    }`,
+    </div>`,
   );
 }
 

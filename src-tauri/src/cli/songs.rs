@@ -93,8 +93,10 @@ pub fn scan(app: &AppHandle) -> Result<(), String> {
     let catalog = app.state::<Catalog>();
     let store = app.state::<Store>();
 
-    let summary = library::scan(app, &catalog, false);
-    let _ = crate::playlists::refresh(app, &store);
+    let mut summary = library::scan(app, &catalog, false);
+    if let Err(error) = crate::playlists::refresh(app, &store) {
+        summary.errors.push(error);
+    }
 
     for error in &summary.errors {
         eprintln!("failed: {error}");
@@ -158,7 +160,7 @@ pub fn set_liked(app: &AppHandle, options: &Pick, liked: bool) -> Result<(), Str
     let store = app.state::<Store>();
     let ids: HashSet<String> = tracks.iter().map(|track| track.id.clone()).collect();
 
-    let next = store.update(|state| {
+    store.update_saved(app, |state| {
         let mut held: HashSet<String> = state.likes.iter().cloned().collect();
         if liked {
             for id in &ids {
@@ -172,8 +174,7 @@ pub fn set_liked(app: &AppHandle, options: &Pick, liked: bool) -> Result<(), Str
             }
             state.likes.retain(|id| held.contains(id));
         }
-    });
-    crate::state::save(app, &next)?;
+    })?;
 
     println!(
         "{} {}.",

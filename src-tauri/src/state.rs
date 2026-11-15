@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 #[cfg(desktop)]
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 #[cfg(desktop)]
 use tauri::{Emitter, Monitor, PhysicalSize, WebviewWindow};
 use tauri::{AppHandle, Manager, Runtime, State};
@@ -408,16 +409,18 @@ pub struct PersistedState {
 /// In-memory copy of [`PersistedState`], guarded for the command handlers.
 pub struct Store {
     inner: Mutex<PersistedState>,
+    settings_operation: Mutex<()>,
 }
 
 impl Store {
-    pub fn load<R: Runtime>(app: &AppHandle<R>) -> Self {
+    pub fn load<R: Runtime>(app: &AppHandle<R>) -> Result<Self, String> {
         note_min_frame(app);
-        let mut state = read_state(app).unwrap_or_default();
+        let mut state = read_state(app)?;
         sanitise_geometries(&mut state);
-        Self {
+        Ok(Self {
             inner: Mutex::new(state),
-        }
+            settings_operation: Mutex::new(()),
+        })
     }
 
     /// A clone of the current state.
@@ -430,16 +433,71 @@ impl Store {
         self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Applies `edit` and returns the resulting state.
-    pub fn update(&self, edit: impl FnOnce(&mut PersistedState)) -> PersistedState {
+    fn settings_operation(&self) -> MutexGuard<'_, ()> {
+        self.settings_operation.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn try_update(
+        &self,
+        edit: impl FnOnce(&mut PersistedState) -> Result<(), String>,
+    ) -> Result<PersistedState, String> {
         let mut guard = self.guard();
-        edit(&mut guard);
-        guard.clone()
+        edit(&mut guard)?;
+        Ok(guard.clone())
     }
 
     pub fn edit(&self, edit: impl FnOnce(&mut PersistedState)) {
         let mut guard = self.guard();
         edit(&mut guard);
+    }
+
+    pub fn update_saved<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        edit: impl FnOnce(&mut PersistedState),
+    ) -> Result<PersistedState, String> {
+        self.update_at_path(&state_path(app)?, edit)
+    }
+
+    fn update_at_path(
+        &self,
+        path: &Path,
+        edit: impl FnOnce(&mut PersistedState),
+    ) -> Result<PersistedState, String> {
+        self.try_update_at_path(path, |state| {
+            edit(state);
+            Ok::<_, String>(())
+        }).map(|(_, state)| state)
+    }
+
+    fn try_update_at_path<T, E: From<String>>(
+        &self,
+        path: &Path,
+        edit: impl FnOnce(&mut PersistedState) -> Result<T, E>,
+    ) -> Result<(T, PersistedState), E> {
+        let mut guard = self.guard();
+        let previous = guard.clone();
+        let result = match edit(&mut guard) {
+            Ok(result) => result,
+            Err(error) => {
+                *guard = previous;
+                return Err(error);
+            }
+        };
+        if let Err(error) = write_state(path, &guard) {
+            *guard = previous;
+            return Err(error.into());
+        }
+        Ok((result, guard.clone()))
+    }
+
+    pub fn save<R: Runtime>(&self, app: &AppHandle<R>) -> Result<(), String> {
+        let path = state_path(app)?;
+        self.save_at_path(&path)
+    }
+
+    fn save_at_path(&self, path: &Path) -> Result<(), String> {
+        write_state(path, &self.guard())
     }
 }
 
@@ -457,43 +515,42 @@ pub fn state_file<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
 }
 
 fn read_state<R: Runtime>(app: &AppHandle<R>) -> Result<PersistedState, String> {
-    let path = state_path(app)?;
-    if !path.exists() {
-        return Ok(PersistedState::default());
-    }
-    let raw = fs::read_to_string(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
-    if raw.trim().is_empty() {
-        return Ok(PersistedState::default());
-    }
+    read_state_at_path(&state_path(app)?)
+}
+
+fn read_state_at_path(path: &Path) -> Result<PersistedState, String> {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(PersistedState::default());
+        }
+        Err(error) => return Err(format!("could not read {}: {error}", path.display())),
+    };
     serde_json::from_str(&raw).map_err(|e| format!("{} is not valid state: {e}", path.display()))
 }
 
 /// Writes via a temp file so a crash mid-write cannot truncate the real one.
-fn write_state<R: Runtime>(app: &AppHandle<R>, state: &PersistedState) -> Result<(), String> {
-    let path = state_path(app)?;
+fn write_state(path: &Path, state: &PersistedState) -> Result<(), String> {
+    write_state_with(path, state, |temp, path| fs::rename(temp, path))
+}
+
+fn write_state_with(
+    path: &Path,
+    state: &PersistedState,
+    replace: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<(), String> {
     let json = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
-    let temp = path.with_extension("json.tmp");
-    fs::write(&temp, json).map_err(|e| format!("could not write {}: {e}", temp.display()))?;
-    // `rename` replaces the target, so the swap is one step and a power cut
-    // cannot leave the file missing. Where it is refused, clear the target.
-    if fs::rename(&temp, &path).is_err() {
-        if path.exists() {
-            let _ = fs::remove_file(&path);
-        }
-        fs::rename(&temp, &path)
-            .map_err(|e| format!("could not replace {}: {e}", path.display()))?;
+    let temp = path.with_extension(format!("json.{}.tmp", identity::new_id()));
+    if let Err(error) = fs::write(&temp, json) {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("could not write {}: {error}", temp.display()));
     }
-    Ok(())
-}
-
-fn commit<R: Runtime>(app: &AppHandle<R>, state: PersistedState) -> Result<PersistedState, String> {
-    write_state(app, &state)?;
-    Ok(state)
-}
-
-/// Persists a snapshot produced by [`Store::update`].
-pub fn save<R: Runtime>(app: &AppHandle<R>, state: &PersistedState) -> Result<(), String> {
-    write_state(app, state)
+    let result = replace(&temp, path)
+        .map_err(|e| format!("could not replace {}: {e}", path.display()));
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
 }
 
 pub fn remap_ids<R: Runtime>(
@@ -506,7 +563,7 @@ pub fn remap_ids<R: Runtime>(
         return Ok(());
     }
 
-    let next = store.update(|state| {
+    store.update_saved(app, |state| {
         state.likes = remap(&std::mem::take(&mut state.likes), tracks);
 
         state.artwork_colours = std::mem::take(&mut state.artwork_colours)
@@ -528,9 +585,7 @@ pub fn remap_ids<R: Runtime>(
                 state.session.playback.source_id = Some(id.clone());
             }
         }
-    });
-
-    save(app, &next)
+    }).map(|_| ())
 }
 
 fn remap(ids: &[String], map: &HashMap<String, String>) -> Vec<String> {
@@ -542,18 +597,86 @@ fn remap(ids: &[String], map: &HashMap<String, String>) -> Vec<String> {
 /// Pushes an import onto the history and writes it, newest first.
 pub fn remember_import<R: Runtime>(app: &AppHandle<R>, record: ImportRecord) {
     let store = app.state::<Store>();
-    let next = store.update(|state| {
+    let _ = store.update_saved(app, |state| {
         state.recent_imports.insert(0, record);
         state.recent_imports.truncate(RECENT_IMPORT_LIMIT);
     });
-    // The history is a nicety; a failed write must not fail the import.
-    let _ = write_state(app, &next);
 }
 
 #[tauri::command(async)]
-pub fn get_state(app: AppHandle, store: State<'_, Store>) -> PersistedState {
+pub fn get_state(app: AppHandle, store: State<'_, Store>) -> Result<PersistedState, String> {
     // Playlists live in the catalog, so the cached copy is refreshed on read.
     playlists::refresh(&app, &store)
+}
+
+#[derive(Debug)]
+pub(crate) enum SettingsPatchError {
+    Invalid(String),
+    Failed(String),
+}
+
+impl From<String> for SettingsPatchError {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
+
+impl std::fmt::Display for SettingsPatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid(error) | Self::Failed(error) => f.write_str(error),
+        }
+    }
+}
+
+fn merge_settings(current: &Settings, patch: Map<String, Value>) -> Result<Settings, SettingsPatchError> {
+    let mut merged = serde_json::to_value(current)
+        .map_err(|error| SettingsPatchError::Failed(format!("the settings could not be read: {error}")))?;
+    let fields = merged.as_object_mut()
+        .ok_or_else(|| SettingsPatchError::Failed("the settings could not be read".to_string()))?;
+    for (name, value) in patch {
+        if fields.contains_key(&name) {
+            fields.insert(name, value);
+        } else {
+            return Err(SettingsPatchError::Invalid(format!("there is no {name} setting")));
+        }
+    }
+    serde_json::from_value(merged)
+        .map_err(|error| SettingsPatchError::Invalid(format!("the settings could not be read: {error}")))
+}
+
+fn patch_settings_at_path(
+    store: &Store,
+    path: &Path,
+    patch: Map<String, Value>,
+) -> Result<(Settings, PersistedState), SettingsPatchError> {
+    store.try_update_at_path(path, |state| {
+        let before = state.settings.clone();
+        state.settings = merge_settings(&before, patch)?;
+        Ok(before)
+    })
+}
+
+pub(crate) fn patch_settings_with(
+    app: &AppHandle,
+    store: &Store,
+    patch: Map<String, Value>,
+    notify: impl FnOnce(&PersistedState),
+) -> Result<PersistedState, SettingsPatchError> {
+    let _operation = store.settings_operation();
+    let (before, committed) = patch_settings_at_path(store, &state_path(app)?, patch)?;
+    apply_settings_changes(app, store, &before, &committed.settings);
+    notify(&committed);
+    Ok(committed)
+}
+
+#[tauri::command(async)]
+pub fn patch_settings(
+    app: AppHandle,
+    store: State<'_, Store>,
+    patch: Map<String, Value>,
+) -> Result<PersistedState, String> {
+    patch_settings_with(&app, &store, patch, |_| {}).map_err(|error| error.to_string())
 }
 
 #[tauri::command(async)]
@@ -562,48 +685,55 @@ pub fn set_settings(
     store: State<'_, Store>,
     settings: Settings,
 ) -> Result<PersistedState, String> {
-    let before = store.snapshot().settings;
-    let next = store.update(|state| state.settings = settings);
-    let committed = commit(&app, next)?;
+    let _operation = store.settings_operation();
+    let (before, committed) = store.try_update_at_path(&state_path(&app)?, |state| {
+        let before = state.settings.clone();
+        state.settings = settings;
+        Ok::<_, String>(before)
+    })?;
+    apply_settings_changes(&app, &store, &before, &committed.settings);
+    Ok(committed)
+}
 
+fn apply_settings_changes(app: &AppHandle, store: &Store, before: &Settings, after: &Settings) {
+    #[cfg(not(desktop))]
+    let _ = store;
     #[cfg(desktop)]
-    if before.mini_player != committed.settings.mini_player
-        || before.mini_corner != committed.settings.mini_corner
+    if before.mini_player != after.mini_player
+        || before.mini_corner != after.mini_corner
     {
-        apply_window_settings(&app, &store, before.mini_player);
-    } else if before.always_on_top != committed.settings.always_on_top {
+        apply_window_settings(app, store, before.mini_player);
+    } else if before.always_on_top != after.always_on_top {
         // Only the stacking changed, so the window is left where it stands.
         if let Some(window) = app.get_webview_window("main") {
             let _ = window
-                .set_always_on_top(committed.settings.mini_player || committed.settings.always_on_top);
+                .set_always_on_top(after.mini_player || after.always_on_top);
         }
     }
 
-    if before.system_media_controls != committed.settings.system_media_controls
-        || before.discord_presence != committed.settings.discord_presence
+    if before.system_media_controls != after.system_media_controls
+        || before.discord_presence != after.discord_presence
     {
         if let Some(presence) = app.try_state::<crate::presence::Presence>() {
             presence.set_enabled(
-                committed.settings.system_media_controls,
-                committed.settings.discord_presence,
+                after.system_media_controls,
+                after.discord_presence,
             );
         }
     }
-
-    Ok(committed)
 }
 
 /// Puts the mini player in a corner, for the `m + 1..4` shortcuts.
 #[cfg(desktop)]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn place_mini_player(
     app: AppHandle,
     store: State<'_, Store>,
     corner: u8,
 ) -> Result<PersistedState, String> {
+    let _operation = store.settings_operation();
     let corner = corner.clamp(1, MINI_CORNER_COUNT);
-    let next = store.update(|state| state.settings.mini_corner = corner);
-    let committed = commit(&app, next)?;
+    let committed = store.update_saved(&app, |state| state.settings.mini_corner = corner)?;
 
     apply_window_settings(&app, &store, committed.settings.mini_player);
     Ok(committed)
@@ -611,15 +741,15 @@ pub fn place_mini_player(
 
 /// There is no mini player on a phone, and nothing to put in a corner.
 #[cfg(not(desktop))]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn place_mini_player(
     app: AppHandle,
     store: State<'_, Store>,
     corner: u8,
 ) -> Result<PersistedState, String> {
+    let _operation = store.settings_operation();
     let _ = corner;
-    let next = store.update(|state| state.settings.mini_corner = DEFAULT_MINI_CORNER);
-    commit(&app, next)
+    store.update_saved(&app, |state| state.settings.mini_corner = DEFAULT_MINI_CORNER)
 }
 
 /// The floor a frame is clamped to, which the window config decides.
@@ -937,11 +1067,12 @@ fn note_resized<R: Runtime>(app: &AppHandle<R>, size: PhysicalSize<u32>) {
         return;
     };
 
-    let next = store.update(|state| state.settings.mini_player = false);
-    if save(app, &next).is_ok() {
+    if let Ok(next) = store.update_saved(app, |state| state.settings.mini_player = false) {
         let _ = app.emit(SETTINGS_EVENT, next.settings.clone());
+        let _ = window.set_always_on_top(next.settings.always_on_top);
+    } else {
+        let _ = window.set_always_on_top(store.snapshot().settings.always_on_top);
     }
-    let _ = window.set_always_on_top(next.settings.always_on_top);
 }
 
 #[cfg(desktop)]
@@ -1030,16 +1161,14 @@ pub fn save_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<(
     if current.window.as_ref() == Some(&geometry) {
         return Ok(());
     }
-    let next = store.update(|state| state.window = Some(geometry));
-    save(&app, &next)
+    store.update_saved(&app, |state| state.window = Some(geometry)).map(|_| ())
 }
 
 /// Forgets the remembered geometry, so the next launch uses the defaults.
 #[cfg(desktop)]
 #[tauri::command]
 pub fn reset_window_geometry(app: AppHandle, store: State<'_, Store>) -> Result<(), String> {
-    let next = store.update(|state| state.window = None);
-    save(&app, &next)
+    store.update_saved(&app, |state| state.window = None).map(|_| ())
 }
 
 /// Remembers the window's current frame against a `Ctrl+Shift+1..9` slot.
@@ -1062,13 +1191,12 @@ pub fn save_window_slot(
         return Err("the window frame could not be read".to_string());
     };
 
-    let next = store.update(|state| {
+    store.update_saved(&app, |state| {
         while state.window_slots.len() < SLOT_COUNT {
             state.window_slots.push(None);
         }
         state.window_slots[slot] = Some(geometry);
-    });
-    commit(&app, next)
+    })
 }
 
 /// Snaps the window back to the frame saved against a slot.
@@ -1138,8 +1266,7 @@ pub fn set_session(
     store: State<'_, Store>,
     session: Session,
 ) -> Result<PersistedState, String> {
-    let next = store.update(|state| state.session = session);
-    commit(&app, next)
+    store.update_saved(&app, |state| state.session = session)
 }
 
 #[tauri::command(async)]
@@ -1148,14 +1275,13 @@ pub fn toggle_like(
     store: State<'_, Store>,
     track_id: String,
 ) -> Result<PersistedState, String> {
-    let next = store.update(|state| {
+    store.update_saved(&app, |state| {
         if let Some(index) = state.likes.iter().position(|t| *t == track_id) {
             state.likes.remove(index);
         } else {
             state.likes.push(track_id);
         }
-    });
-    commit(&app, next)
+    })
 }
 
 /// Likes or unlikes several songs at once, for a selection.
@@ -1166,7 +1292,7 @@ pub fn set_likes(
     track_ids: Vec<String>,
     liked: bool,
 ) -> Result<PersistedState, String> {
-    let next = store.update(|state| {
+    store.update_saved(&app, |state| {
         let mut held: HashSet<String> = state.likes.iter().cloned().collect();
         if liked {
             for track_id in track_ids {
@@ -1180,13 +1306,319 @@ pub fn set_likes(
             }
             state.likes.retain(|id| held.contains(id));
         }
-    });
-    commit(&app, next)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("wave-state-{}", identity::new_id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn test_store(state: PersistedState) -> Store {
+        Store { inner: Mutex::new(state), settings_operation: Mutex::new(()) }
+    }
+
+    fn patch(value: Value) -> Map<String, Value> {
+        value.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn concurrent_settings_patches_merge_against_the_committed_state() {
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+
+        let dir = scratch();
+        let path = dir.join(STATE_FILE);
+        let store = Arc::new(test_store(PersistedState::default()));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+
+        let first_store = Arc::clone(&store);
+        let first_path = path.clone();
+        let first = std::thread::spawn(move || {
+            first_store.try_update_at_path(&first_path, |state| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                state.settings = merge_settings(&state.settings, patch(serde_json::json!({
+                    "theme": "first"
+                })))?;
+                Ok::<_, SettingsPatchError>(())
+            }).unwrap();
+        });
+        entered_rx.recv().unwrap();
+
+        let second_store = Arc::clone(&store);
+        let second_path = path.clone();
+        let second = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            patch_settings_at_path(&second_store, &second_path, patch(serde_json::json!({
+                "volume": 42
+            }))).unwrap();
+            finished_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(finished_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        release_tx.send(()).unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+        finished_rx.recv().unwrap();
+
+        for settings in [store.snapshot().settings, read_state_at_path(&path).unwrap().settings] {
+            assert_eq!(settings.theme, "first");
+            assert_eq!(settings.volume, 42);
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_settings_patches_do_not_change_memory_or_disk() {
+        let dir = scratch();
+        let path = dir.join(STATE_FILE);
+        let store = test_store(PersistedState::default());
+        store.save_at_path(&path).unwrap();
+        let original = fs::read(&path).unwrap();
+
+        for value in [
+            serde_json::json!({ "theme": "first", "unknownSetting": true }),
+            serde_json::json!({ "theme": "first", "volume": "bad" }),
+        ] {
+            let error = patch_settings_at_path(&store, &path, patch(value)).unwrap_err();
+            assert!(matches!(error, SettingsPatchError::Invalid(_)));
+            assert_eq!(store.snapshot().settings.theme, "adaptive");
+            assert_eq!(store.snapshot().settings.volume, 70);
+            assert_eq!(fs::read(&path).unwrap(), original);
+        }
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_patch_supports_nullable_and_nested_fields() {
+        let dir = scratch();
+        let path = dir.join(STATE_FILE);
+        let mut initial = PersistedState::default();
+        initial.settings.show_titlebar = Some(true);
+        let store = test_store(initial);
+        let (_, result) = patch_settings_at_path(&store, &path, patch(serde_json::json!({
+            "showTitlebar": null,
+            "eqDeviceRules": { "device": "preset" }
+        }))).unwrap();
+        assert_eq!(result.settings.show_titlebar, None);
+        assert_eq!(result.settings.eq_device_rules.get("device").map(String::as_str), Some("preset"));
+        assert_eq!(result.settings.volume, 70);
+        let saved = read_state_at_path(&path).unwrap();
+        assert_eq!(saved.settings.show_titlebar, None);
+        assert_eq!(saved.settings.eq_device_rules.get("device").map(String::as_str), Some("preset"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_settings_file_preserves_memory_and_disk_on_patch_failure() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = scratch();
+        let path = dir.join(STATE_FILE);
+        let store = test_store(PersistedState::default());
+        store.save_at_path(&path).unwrap();
+        let original = fs::read(&path).unwrap();
+        let locked = fs::OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+        let error = patch_settings_at_path(&store, &path, patch(serde_json::json!({
+            "volume": 42
+        }))).unwrap_err();
+        assert!(matches!(error, SettingsPatchError::Failed(_)));
+        assert_eq!(store.snapshot().settings.volume, 70);
+        drop(locked);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_settings_patch_restores_memory_and_preserves_disk() {
+        let dir = scratch();
+        let path = dir.join(STATE_FILE);
+        let store = test_store(PersistedState::default());
+        store.save_at_path(&path).unwrap();
+        let original = fs::read(&path).unwrap();
+        let missing = dir.join("missing").join(STATE_FILE);
+
+        let error = patch_settings_at_path(&store, &missing, patch(serde_json::json!({
+            "volume": 42, "theme": "changed"
+        }))).unwrap_err();
+        assert!(matches!(error, SettingsPatchError::Failed(_)));
+        assert_eq!(store.snapshot().settings.volume, 70);
+        assert_eq!(store.snapshot().settings.theme, "adaptive");
+        assert_eq!(fs::read(&path).unwrap(), original);
+
+        let error = store.try_update_at_path(&path, |state| {
+            state.settings.volume = 42;
+            Err::<(), _>(SettingsPatchError::Invalid("bad patch".into()))
+        }).unwrap_err();
+        assert!(matches!(error, SettingsPatchError::Invalid(_)));
+        assert_eq!(store.snapshot().settings.volume, 70);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_edits_and_delayed_saves_preserve_the_latest_state() {
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+
+        let dir = scratch();
+        let path = dir.join(STATE_FILE);
+        let store = Arc::new(test_store(PersistedState::default()));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (second_tx, second_rx) = mpsc::channel();
+        let first_store = Arc::clone(&store);
+        let first_path = path.clone();
+        let first = std::thread::spawn(move || {
+            first_store.update_at_path(&first_path, |state| {
+                state.likes.push("first".into());
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            }).unwrap();
+        });
+        entered_rx.recv().unwrap();
+        let second_store = Arc::clone(&store);
+        let second_path = path.clone();
+        let second = std::thread::spawn(move || {
+            second_store.update_at_path(&second_path, |state| {
+                second_tx.send(()).unwrap();
+                state.likes.push("second".into());
+            }).unwrap();
+        });
+        assert!(second_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        release_tx.send(()).unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+        second_rx.recv().unwrap();
+
+        store.edit(|state| state.settings.volume = 42);
+        store.save_at_path(&path).unwrap();
+        let saved = read_state_at_path(&path).unwrap();
+        assert_eq!(saved.likes, vec!["first", "second"]);
+        assert_eq!(saved.settings.volume, 42);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn playlist_refresh_reads_and_publishes_in_the_same_order() {
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+
+        let store = Arc::new(test_store(PersistedState::default()));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (second_tx, second_rx) = mpsc::channel();
+        let first_store = Arc::clone(&store);
+        let first = std::thread::spawn(move || {
+            crate::playlists::refresh_with(&first_store, || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(vec![Playlist { id: "old".into(), ..Playlist::default() }])
+            }).unwrap();
+        });
+        entered_rx.recv().unwrap();
+        let second_store = Arc::clone(&store);
+        let second = std::thread::spawn(move || {
+            crate::playlists::refresh_with(&second_store, || {
+                second_tx.send(()).unwrap();
+                Ok(vec![Playlist { id: "new".into(), ..Playlist::default() }])
+            }).unwrap();
+        });
+        assert!(second_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        release_tx.send(()).unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+        second_rx.recv().unwrap();
+        assert_eq!(store.snapshot().playlists[0].id, "new");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_locked_state_is_never_deleted_when_replacement_fails() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = scratch();
+        let path = dir.join(STATE_FILE);
+        let original = b"{\"settings\":{\"volume\":12}}";
+        fs::write(&path, original).unwrap();
+        let locked = fs::OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+        assert!(write_state(&path, &PersistedState::default()).is_err());
+        drop(locked);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_replacement_keeps_the_existing_file_and_cleans_the_temp() {
+        let dir = scratch();
+        let path = dir.join(STATE_FILE);
+        let original = b"{\"settings\":{\"volume\":12}}";
+        fs::write(&path, original).unwrap();
+
+        let error = write_state_with(&path, &PersistedState::default(), |temp, target| {
+            assert!(temp.is_file());
+            assert_eq!(target, path);
+            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "locked"))
+        }).unwrap_err();
+        assert!(error.contains("could not replace"));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_save_rolls_back_the_in_memory_edit() {
+        let dir = scratch();
+        let path = dir.join("missing").join(STATE_FILE);
+        let store = test_store(PersistedState::default());
+        assert!(store.update_at_path(&path, |state| state.likes.push("unsaved".into())).is_err());
+        assert!(store.snapshot().likes.is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_playlist_refresh_preserves_the_cached_playlists() {
+        let dir = scratch();
+        let path = dir.join(STATE_FILE);
+        let store = test_store(PersistedState {
+            playlists: vec![Playlist { id: "kept".into(), name: "Kept".into(), ..Playlist::default() }],
+            ..PersistedState::default()
+        });
+        let error = crate::playlists::refresh_with(&store, || Err("catalog unavailable".into())).unwrap_err();
+        assert_eq!(error, "catalog unavailable");
+        assert_eq!(store.snapshot().playlists[0].id, "kept");
+        store.save_at_path(&path).unwrap();
+        assert_eq!(read_state_at_path(&path).unwrap().playlists[0].id, "kept");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_state_defaults_but_invalid_existing_state_is_preserved() {
+        let dir = scratch();
+        let path = dir.join(STATE_FILE);
+        assert_eq!(read_state_at_path(&path).unwrap().settings.volume, 70);
+        for raw in ["", "not json", "{"] {
+            fs::write(&path, raw).unwrap();
+            assert!(read_state_at_path(&path).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+        }
+        assert!(read_state_at_path(&dir).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn titlebar_setting_defaults_to_automatic_and_round_trips() {

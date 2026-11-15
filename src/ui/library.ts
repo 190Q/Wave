@@ -554,7 +554,7 @@ export function mountLibrary(): void {
     }
     event.preventDefault();
 
-    if (!isTouch() && !selection.has(trackId)) {
+    if (!selection.has(trackId) && (!isTouch() || selection.size > 0)) {
       selectOnly(trackId);
     }
 
@@ -737,7 +737,7 @@ export function mountLibrary(): void {
   const paintDetail = (collection: Collection | undefined): void => {
     const state = getState();
     const signature = collection
-      ? `${collection.id}\u0000${state.collectionsRevision}`
+      ? `${collection.id}\u0000${state.collectionsRevision}\u0000${renaming === collection.id}`
       : "";
 
     if (listPane.dataset.detail === signature) {
@@ -748,7 +748,7 @@ export function mountLibrary(): void {
 
     delete listPane.dataset.swell;
     listPane.dataset.detail = signature;
-    listPane.innerHTML = collection ? renderDetail(state, collection) : "";
+    listPane.innerHTML = collection ? renderDetail(state, collection, renaming === collection.id) : "";
 
     detailWindow?.destroy();
     detailWindow = null;
@@ -781,6 +781,11 @@ export function mountLibrary(): void {
     fillIcons(listPane);
     hydrateCovers(listPane);
     syncProgress(listPane, state, collection);
+    if (collection && renaming === collection.id) {
+      const input = listPane.querySelector<HTMLInputElement>(".detail-rename");
+      input?.focus();
+      input?.select();
+    }
   };
 
   const render = (): void => {
@@ -904,6 +909,11 @@ export function mountLibrary(): void {
       count.textContent = listCount;
       folders.innerHTML = renderLibrary(state);
       list.scrollTop = listScroll;
+      if ((creating || renaming) && !listRows.contains(document.activeElement)) {
+        const input = listRows.querySelector<HTMLInputElement>(".entry-editor input");
+        input?.focus();
+        input?.select();
+      }
     }
 
     if (swipe !== 0) {
@@ -1112,7 +1122,7 @@ function renderList(
   return rows.join("");
 }
 
-function renderDetail(state: AppState, collection: Collection): string {
+function renderDetail(state: AppState, collection: Collection, renaming = false): string {
   const generated = collection.kind === "generated";
   const hasPending = collection.entries.some((id) => state.pendingById.has(id));
   const tracks = collection.trackIds
@@ -1151,7 +1161,9 @@ function renderDetail(state: AppState, collection: Collection): string {
         </span>
         <div class="detail-meta">
           <p class="detail-kind">${escapeHtml(kindLabel(collection.kind))}</p>
-          <h3 class="detail-name">${escapeHtml(collection.name)}</h3>
+          ${renaming
+            ? `<input class="search detail-rename" type="text" value="${escapeHtml(collection.name)}" aria-label="Rename playlist">`
+            : `<h3 class="detail-name">${escapeHtml(collection.name)}</h3>`}
           <p class="detail-sub">${escapeHtml(summary)}</p>
           <div class="detail-actions">${detailActions(collection, pendingCount)}</div>
         </div>

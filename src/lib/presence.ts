@@ -2,6 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type { MediaControl, NowPlaying } from "../types";
+import { isAndroidPlatform } from "./device";
 import { setNowPlaying, setQueue, showMainWindow } from "./ipc";
 import {
   colourFor,
@@ -32,24 +33,47 @@ const QUEUE_LIMIT = 50;
 /** Keeps the system's own media controls, and Discord, in step with the player. */
 export function mountPresence(): void {
   /** What was last sent, so a song that has not moved is not sent again. */
-  let sent: NowPlaying | null = null;
+  let sent: NowPlaying | null | undefined;
+  let pending: { song: NowPlaying | null } | null = null;
+  let sending = false;
+  let retryNeeded = false;
+
+  const send = async (): Promise<void> => {
+    sending = true;
+    while (pending !== null) {
+      const { song } = pending;
+      pending = null;
+      try {
+        await setNowPlaying(song);
+      } catch {
+        if (pending === null && sent === song) {
+          retryNeeded = true;
+        }
+      }
+    }
+    sending = false;
+  };
 
   const push = (): void => {
     if (!showing()) {
       // Nothing is watching, so nothing is sent. Whatever comes next, or
       // whichever switch is turned back on, starts from nothing.
       sent = null;
+      pending = null;
+      retryNeeded = false;
       return;
     }
 
     const song = nowPlaying();
-    if (!worthSending(song, sent)) {
+    if (sent !== undefined && !worthSending(song, sent)) {
       return;
     }
     sent = song;
-    void setNowPlaying(song).catch(() => {
-      // Not running inside Tauri, or the backend is no longer there.
-    });
+    retryNeeded = false;
+    pending = { song };
+    if (!sending) {
+      void send();
+    }
   };
 
   /** The queue revision last handed over, so an order that has not moved is left alone. */
@@ -92,9 +116,11 @@ export function mountPresence(): void {
   subscribe(push);
   subscribe(pushQueue);
   window.setInterval(() => {
-    if (player.snapshot().playing) {
-      push();
+    if (retryNeeded) {
+      sent = undefined;
+      retryNeeded = false;
     }
+    push();
   }, POSITION_INTERVAL_MS);
 
   void listen<MediaControl>(CONTROL_EVENT, (event) => apply(event.payload)).catch(() => {
@@ -102,10 +128,10 @@ export function mountPresence(): void {
   });
 }
 
-/** True while either surface is switched on. */
+/** Android also needs playback updates for its foreground service. */
 function showing(): boolean {
   const { systemMediaControls, discordPresence } = getState().settings;
-  return systemMediaControls || discordPresence;
+  return isAndroidPlatform || systemMediaControls || discordPresence;
 }
 
 /** The song as the two surfaces want it, or `null` when nothing is loaded. */

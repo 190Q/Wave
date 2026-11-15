@@ -62,12 +62,21 @@ object MediaPlayback {
   private var session: MediaSessionCompat? = null
   private var notification: Notification? = null
   private var artwork: Bitmap? = null
-  private var artworkPath = ""
+  private val artworkCache = ArtworkCache { path ->
+    if (File(path).isFile) BitmapFactory.decodeFile(path) else null
+  }
   private var tile: Bitmap? = null
   private var tileKey = ""
   private var requests = 0
 
   private var lastSong: Song? = null
+
+  @Volatile
+  var playing = false
+    private set
+
+  @Volatile
+  private var controlsEnabled = true
 
   private var queue: List<QueueTrack> = emptyList()
 
@@ -83,6 +92,8 @@ object MediaPlayback {
   fun show(context: Context, song: Song) {
     val session = session(context)
     lastSong = song
+    playing = song.playing
+    MediaPlaybackService.syncPlayback()
     session.setPlaybackState(state(song))
 
     val wanted = Shown.of(song)
@@ -92,14 +103,18 @@ object MediaPlayback {
     }
 
     if (wanted != shown) {
-      artwork = artworkFor(song.artworkPath.orEmpty())
+      artwork = artworkCache.get(song.artworkPath.orEmpty())
       session.setMetadata(metadata(song))
-      session.isActive = true
+      session.isActive = controlsEnabled
 
       // The foreground service needs a notification before it starts.
       val built = build(context, song)
       notification = built
-      NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, built)
+      try {
+        NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, built)
+      } catch (error: SecurityException) {
+        Log.w("Wave", "the playback notification could not be shown", error)
+      }
       shown = wanted
     }
 
@@ -107,11 +122,21 @@ object MediaPlayback {
     keptAt = SystemClock.elapsedRealtime()
   }
 
+  fun setControls(context: Context, enabled: Boolean) {
+    if (controlsEnabled == enabled) return
+    controlsEnabled = enabled
+    session?.isActive = enabled && lastSong != null
+    shown = null
+    lastSong?.let { show(context, it) }
+  }
+
   /** Takes the notification down and stops holding the process up. */
   fun clear(context: Context) {
     shown = null
     notification = null
     lastSong = null
+    playing = false
+    MediaPlaybackService.syncPlayback()
     session?.isActive = false
     NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
     keepAlive(context, false)
@@ -126,6 +151,7 @@ object MediaPlayback {
 
   /** Hands a button press to whoever is listening for one. */
   fun press(action: String?, value: Double?) {
+    if (!controlsEnabled) return
     val press = action ?: return
     onControl?.invoke(press, value)
   }
@@ -179,7 +205,7 @@ object MediaPlayback {
         }
       }
     )
-    created.isActive = true
+    created.isActive = controlsEnabled
     session = created
     return created
   }
@@ -230,6 +256,18 @@ object MediaPlayback {
 
   private fun build(context: Context, song: Song): Notification {
     notificationChannel(context)
+
+    if (!controlsEnabled) {
+      return NotificationCompat.Builder(context, CHANNEL_ID)
+        .setSmallIcon(R.drawable.ic_wave_notification)
+        .setContentTitle("Wave")
+        .setContentText(if (song.playing) "Playback active" else "Playback paused")
+        .setContentIntent(open(context))
+        .setOnlyAlertOnce(true)
+        .setShowWhen(false)
+        .setOngoing(song.playing)
+        .build()
+    }
 
     val colour = colourOf(song)
     val builder = NotificationCompat.Builder(context, CHANNEL_ID)
@@ -419,20 +457,6 @@ object MediaPlayback {
     )
     channel.setShowBadge(false)
     manager.createNotificationChannel(channel)
-  }
-
-  /** Caches decoded artwork while the same song is reported. */
-  private fun artworkFor(path: String): Bitmap? {
-    if (path.isEmpty()) {
-      return null
-    }
-    if (path == artworkPath) {
-      return artwork
-    }
-
-    artworkPath = path
-    artwork = if (File(path).isFile) BitmapFactory.decodeFile(path) else null
-    return artwork
   }
 
   private data class Shown(

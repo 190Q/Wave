@@ -225,9 +225,27 @@ export function openAddToPlaylist(anchor: HTMLElement, trackIds: string[]): void
     close();
   };
 
+  const onResize = (): void => {
+    if (isTouch()) {
+      place(panel, anchor);
+    } else {
+      close();
+    }
+  };
+  const viewport = window.visualViewport;
+  const onViewportChange = (): void => {
+    if (isTouch()) {
+      place(panel, anchor);
+    }
+  };
+
   // Scrolling the library moves the anchor, but scrolling the panel must not.
   const onScroll = (event: Event): void => {
     if (event.target instanceof Node && panel.contains(event.target)) {
+      return;
+    }
+    if (isTouch() && document.activeElement && panel.contains(document.activeElement)) {
+      place(panel, anchor);
       return;
     }
     close();
@@ -244,7 +262,9 @@ export function openAddToPlaylist(anchor: HTMLElement, trackIds: string[]): void
     document.removeEventListener("pointerdown", onPointerDown, true);
     document.removeEventListener("keydown", onKeyDown, true);
     window.removeEventListener("scroll", onScroll, true);
-    window.removeEventListener("resize", close);
+    window.removeEventListener("resize", onResize);
+    viewport?.removeEventListener("resize", onViewportChange);
+    viewport?.removeEventListener("scroll", onViewportChange);
     unsubscribe();
     panel.remove();
     if (dismiss === close) {
@@ -282,7 +302,9 @@ export function openAddToPlaylist(anchor: HTMLElement, trackIds: string[]): void
   }, 0);
   document.addEventListener("keydown", onKeyDown, true);
   window.addEventListener("scroll", onScroll, true);
-  window.addEventListener("resize", close);
+  window.addEventListener("resize", onResize);
+  viewport?.addEventListener("resize", onViewportChange);
+  viewport?.addEventListener("scroll", onViewportChange);
 
   if (!isTouch()) {
     search.focus();
@@ -293,13 +315,22 @@ export function openAddToPlaylist(anchor: HTMLElement, trackIds: string[]): void
 function place(panel: HTMLElement, anchor: HTMLElement): void {
   const margin = 8;
   const safe = insets();
+  const viewport = isTouch() ? window.visualViewport : null;
+  const viewportLeft = viewport?.offsetLeft ?? 0;
+  const viewportTop = viewport?.offsetTop ?? 0;
+  const viewportWidth = viewport?.width ?? window.innerWidth;
+  const viewportHeight = viewport?.height ?? window.innerHeight;
+  if (isTouch()) {
+    panel.style.maxWidth = `${Math.max(0, viewportWidth - margin * 2 - safe.left - safe.right)}px`;
+    panel.style.maxHeight = `${Math.max(0, viewportHeight - margin * 2 - safe.top - safe.bottom)}px`;
+  }
   const rect = anchor.getBoundingClientRect();
   const width = panel.offsetWidth;
   const height = panel.offsetHeight;
-  const minLeft = margin + safe.left;
-  const maxLeft = Math.max(minLeft, window.innerWidth - width - margin - safe.right);
-  const minTop = margin + safe.top;
-  const maxTop = Math.max(minTop, window.innerHeight - height - margin - safe.bottom);
+  const minLeft = viewportLeft + margin + safe.left;
+  const maxLeft = Math.max(minLeft, viewportLeft + viewportWidth - width - margin - safe.right);
+  const minTop = viewportTop + margin + safe.top;
+  const maxTop = Math.max(minTop, viewportTop + viewportHeight - height - margin - safe.bottom);
 
   let left = rect.right + margin;
   if (left > maxLeft) {

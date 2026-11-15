@@ -602,8 +602,7 @@ pub async fn spotify_status(app: AppHandle) -> Result<SpotifyStatus, String> {
 
         // Remembered so the next launch can show it before the check comes back.
         let store = handle.state::<Store>();
-        let next = store.update(|state| state.spotify = Some(status.clone()));
-        let _ = crate::state::save(&handle, &next);
+        let _ = store.update_saved(&handle, |state| state.spotify = Some(status.clone()));
 
         Ok(status)
     })

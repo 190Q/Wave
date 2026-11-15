@@ -1,15 +1,14 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use crate::catalog::Catalog;
+use crate::catalog::{Catalog, TrackRow};
 use crate::download;
 use crate::download_log;
 use crate::import::{self, ImportOutcome};
-use crate::library;
 use crate::playlists;
 use crate::progress::{Output, Reporter};
 use crate::source::{read_env, TrackMeta};
@@ -192,7 +191,7 @@ fn run_inner(
             None => jobs.push(download::Job {
                 key: index,
                 meta,
-                dir: staging.join(index.to_string()),
+                dir: staging.path().join(index.to_string()),
                 cover: None,
             }),
         }
@@ -261,7 +260,10 @@ fn run_inner(
     import::remember_import(app, source, &history, &outcome);
 
     let mut outcome = outcome;
-    outcome.state = playlists::refresh(app, &app.state::<Store>());
+    if outcome.errors.is_empty() {
+        staging.cleanup();
+    }
+    outcome.refresh_state(app, &app.state::<Store>());
     Ok(outcome)
 }
 
@@ -272,58 +274,80 @@ fn download_message(todo: usize, duplicates: usize) -> String {
     format!("Downloading {todo} tracks. {duplicates} already in your library.")
 }
 
-/// Every library track, by the three fields a duplicate is judged on.
-fn library_index(app: &AppHandle) -> HashMap<String, String> {
-    let catalog = app.state::<Catalog>();
-    let mut index = HashMap::new();
-
-    for track in library::all_tracks(app, &catalog).unwrap_or_default() {
-        remember(
-            &mut index,
-            &track.id,
-            &track.title,
-            track.artist.as_deref().unwrap_or_default(),
-            track.album.as_deref().unwrap_or_default(),
-        );
-    }
-
-    index
+#[derive(Default)]
+pub(crate) struct TrackIndex {
+    candidates: HashMap<String, Vec<TrackRow>>,
 }
 
-pub(crate) fn catalog_index(catalog: &Catalog) -> Result<HashMap<String, String>, String> {
-    let mut index = HashMap::new();
+fn library_index(app: &AppHandle) -> TrackIndex {
+    let catalog = app.state::<Catalog>();
+    catalog_index(&catalog).unwrap_or_default()
+}
+
+pub(crate) fn catalog_index(catalog: &Catalog) -> Result<TrackIndex, String> {
+    let mut index = TrackIndex::default();
 
     for row in catalog.tracks()? {
-        remember(
-            &mut index,
-            &row.id,
-            &row.title,
-            row.artist.as_deref().unwrap_or_default(),
-            row.album.as_deref().unwrap_or_default(),
-        );
+        remember(&mut index, row);
     }
 
     Ok(index)
 }
 
-fn remember(index: &mut HashMap<String, String>, id: &str, title: &str, artist: &str, album: &str) {
-    index
-        .entry(track_key(title, artist, album))
-        .or_insert_with(|| id.to_string());
-    index
-        .entry(loose_key(title, artist))
-        .or_insert_with(|| id.to_string());
+fn remember(index: &mut TrackIndex, row: TrackRow) {
+    let artist = row.artist.as_deref().unwrap_or_default();
+    if fold(&row.title).is_empty() || fold(main_artist(artist)).is_empty() {
+        return;
+    }
+    index.candidates.entry(loose_key(&row.title, artist)).or_default().push(row);
 }
 
-pub(crate) fn meta_key(meta: &TrackMeta) -> String {
+#[cfg(test)]
+fn meta_key(meta: &TrackMeta) -> String {
     track_key(&meta.title, &meta.artists.join(", "), &meta.album)
 }
 
 /// The library song this track answers to, if the library holds one.
-pub(crate) fn held<'a>(index: &'a HashMap<String, String>, meta: &TrackMeta) -> Option<&'a String> {
-    index
-        .get(&meta_key(meta))
-        .or_else(|| index.get(&loose_key(&meta.title, &meta.artists.join(", "))))
+pub(crate) fn held<'a>(index: &'a TrackIndex, meta: &TrackMeta) -> Option<&'a String> {
+    let artist = meta.artists.join(", ");
+    if fold(&meta.title).is_empty() || fold(main_artist(&artist)).is_empty() {
+        return None;
+    }
+    let mut matches = index.candidates.get(&loose_key(&meta.title, &artist))?
+        .iter().filter(|row| compatible(row, meta));
+    let first = matches.next()?;
+    if matches.next().is_some() { None } else { Some(&first.id) }
+}
+
+fn compatible(row: &TrackRow, meta: &TrackMeta) -> bool {
+    fn same_if_known(left: &str, right: &str) -> bool {
+        let left = fold(left);
+        let right = fold(right);
+        left.is_empty() || right.is_empty() || left == right
+    }
+    fn number_if_known<T: Eq + Copy + Default>(left: Option<T>, right: Option<T>) -> bool {
+        let left = left.filter(|value| *value != T::default());
+        let right = right.filter(|value| *value != T::default());
+        left.is_none() || right.is_none() || left == right
+    }
+
+    let credits = |value: &str| {
+        let mut names: Vec<_> = value.split([',', ';']).map(fold).filter(|name| !name.is_empty()).collect();
+        names.sort();
+        names.dedup();
+        names
+    };
+    let library_artists = credits(row.artist.as_deref().unwrap_or_default());
+    let source_artists = credits(&meta.artists.join(", "));
+    let year = meta.release_date.split('-').next().and_then(|value| value.parse::<u16>().ok());
+    (library_artists.len() < 2 || source_artists.len() < 2 || library_artists == source_artists)
+        && same_if_known(row.album.as_deref().unwrap_or_default(), &meta.album)
+        && same_if_known(row.album_artist.as_deref().unwrap_or_default(), &meta.album_artist)
+        && number_if_known(row.track_no, meta.track_number)
+        && number_if_known(row.disc_no, meta.disc_number)
+        && number_if_known(row.year, year)
+        && (row.duration_ms == 0 || meta.duration_ms.filter(|value| *value > 0)
+            .is_none_or(|duration| row.duration_ms.abs_diff(duration) <= 5_000))
 }
 
 /// Folded so case and stray spacing do not stand in for a different song.
@@ -398,15 +422,43 @@ fn plain(character: char) -> char {
     }
 }
 
-fn staging_dir(app: &AppHandle, source: &str, id: &str) -> Result<PathBuf, String> {
-    let dir = app
+pub(crate) struct DownloadStaging {
+    dir: PathBuf,
+}
+
+impl DownloadStaging {
+    pub(crate) fn path(&self) -> &Path {
+        &self.dir
+    }
+
+    pub(crate) fn cleanup(self) {
+        let _ = fs::remove_dir_all(self.dir);
+    }
+}
+
+pub(crate) fn reserve_staging(parent: &Path) -> Result<DownloadStaging, String> {
+    fs::create_dir_all(parent)
+        .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+    loop {
+        let dir = parent.join(crate::identity::new_id());
+        match fs::create_dir(&dir) {
+            Ok(()) => return Ok(DownloadStaging { dir }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("could not create {}: {error}", dir.display())),
+        }
+    }
+}
+
+fn staging_dir_at(root: &Path, source: &str, id: &str) -> Result<DownloadStaging, String> {
+    reserve_staging(&root.join(source).join(id))
+}
+
+fn staging_dir(app: &AppHandle, source: &str, id: &str) -> Result<DownloadStaging, String> {
+    let root = app
         .path()
         .app_data_dir()
-        .map_err(|e| format!("could not resolve the app data directory: {e}"))?
-        .join(source)
-        .join(id);
-    fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-    Ok(dir)
+        .map_err(|e| format!("could not resolve the app data directory: {e}"))?;
+    staging_dir_at(&root, source, id)
 }
 
 /// How a track is named in the readout and the history.
@@ -457,6 +509,16 @@ pub fn plan(
 mod tests {
     use super::*;
 
+    fn row(id: &str, title: &str, artist: &str, album: &str) -> TrackRow {
+        TrackRow {
+            id: id.into(),
+            title: title.into(),
+            artist: Some(artist.into()),
+            album: Some(album.into()),
+            ..TrackRow::default()
+        }
+    }
+
     #[test]
     fn matches_a_track_on_title_artist_and_album() {
         let meta = TrackMeta {
@@ -480,27 +542,25 @@ mod tests {
 
     #[test]
     fn a_song_the_library_holds_under_another_spelling_is_still_that_song() {
-        let mut index = HashMap::new();
-        remember(&mut index, "id", "Eyeless", "Slipknot", "Slipknot");
+        let mut index = TrackIndex::default();
+        remember(&mut index, row("id", "Eyeless", "Slipknot", "Slipknot"));
 
-        // The same song, on another album edition.
         let edition = TrackMeta {
             title: "Eyeless".to_string(),
             artists: vec!["Slipknot".to_string()],
             album: "Slipknot (10th Anniversary Edition)".to_string(),
             ..TrackMeta::default()
         };
-        assert_eq!(held(&index, &edition).map(String::as_str), Some("id"));
+        assert!(held(&index, &edition).is_none());
 
         // A credit that names one artist where the library names three.
-        let mut credited = HashMap::new();
-        remember(
-            &mut credited,
+        let mut credited = TrackIndex::default();
+        remember(&mut credited, row(
             "j",
             "Joseph",
             "Falling In Reverse, Corey Taylor, Serj Tankian",
             "Joseph",
-        );
+        ));
         let listed = TrackMeta {
             title: "Joseph".to_string(),
             artists: vec!["Falling In Reverse".to_string()],
@@ -510,8 +570,8 @@ mod tests {
         assert_eq!(held(&credited, &listed).map(String::as_str), Some("j"));
 
         // The spelling a source uses for the artist.
-        let mut spelled = HashMap::new();
-        remember(&mut spelled, "k", "Freak On a Leash", "Korn", "Follow The Leader");
+        let mut spelled = TrackIndex::default();
+        remember(&mut spelled, row("k", "Freak On a Leash", "Korn", "Follow The Leader"));
         let decorated = TrackMeta {
             title: "Freak On a Leash".to_string(),
             artists: vec!["KoЯn".to_string()],
@@ -521,8 +581,8 @@ mod tests {
         assert_eq!(held(&spelled, &decorated).map(String::as_str), Some("k"));
 
         // Another song with the same title is another song.
-        let mut hostage = HashMap::new();
-        remember(&mut hostage, "h", "Hostage", "Chelsea Grin", "Eternal Nightmare");
+        let mut hostage = TrackIndex::default();
+        remember(&mut hostage, row("h", "Hostage", "Chelsea Grin", "Eternal Nightmare"));
         let other = TrackMeta {
             title: "Hostage".to_string(),
             artists: vec!["Jane & The Boy".to_string()],
@@ -530,6 +590,56 @@ mod tests {
             ..TrackMeta::default()
         };
         assert!(held(&hostage, &other).is_none());
+    }
+
+    #[test]
+    fn rejects_conflicting_recording_details_even_when_title_and_album_match() {
+        let mut indexed = row("one", "Song", "Artist, Guest", "Album");
+        indexed.album_artist = Some("Artist".into());
+        indexed.track_no = Some(3);
+        indexed.disc_no = Some(1);
+        indexed.year = Some(2020);
+        indexed.duration_ms = 200_000;
+        let mut index = TrackIndex::default();
+        remember(&mut index, indexed);
+        let base = TrackMeta {
+            title: "Song".into(), artists: vec!["Artist".into()], album: "Album".into(),
+            album_artist: "Artist".into(), track_number: Some(3), disc_number: Some(1),
+            release_date: "2020-05-10".into(), duration_ms: Some(203_000),
+            ..TrackMeta::default()
+        };
+        assert_eq!(held(&index, &base).map(String::as_str), Some("one"));
+        for other in [
+            TrackMeta { artists: vec!["Artist".into(), "Someone else".into()], ..base.clone() },
+            TrackMeta { album: "Live".into(), ..base.clone() },
+            TrackMeta { album_artist: "Someone else".into(), ..base.clone() },
+            TrackMeta { track_number: Some(4), ..base.clone() },
+            TrackMeta { disc_number: Some(2), ..base.clone() },
+            TrackMeta { release_date: "2021".into(), ..base.clone() },
+            TrackMeta { duration_ms: Some(230_000), ..base.clone() },
+        ] {
+            assert!(held(&index, &other).is_none());
+        }
+        assert_eq!(held(&index, &TrackMeta {
+            artists: vec!["Artist".into(), "Guest".into()], ..base.clone()
+        }).map(String::as_str), Some("one"));
+    }
+
+    #[test]
+    fn missing_metadata_only_matches_when_the_candidate_is_unambiguous() {
+        let mut index = TrackIndex::default();
+        remember(&mut index, row("studio", "Song", "Artist", "Studio"));
+        remember(&mut index, row("live", "Song", "Artist", "Live"));
+        let mut meta = TrackMeta {
+            title: "Song".into(), artists: vec!["Artist".into()], ..TrackMeta::default()
+        };
+        assert!(held(&index, &meta).is_none());
+        meta.album = "Live".into();
+        assert_eq!(held(&index, &meta).map(String::as_str), Some("live"));
+        remember(&mut index, row("live-copy", "Song", "Artist", "Live"));
+        assert!(held(&index, &meta).is_none());
+        meta.artists.clear();
+        assert!(held(&index, &meta).is_none());
     }
 
     #[test]
@@ -549,5 +659,41 @@ mod tests {
             ..TrackMeta::default()
         };
         assert_eq!(track_label(&meta), "The Beatles, Someone - Hey Jude");
+    }
+
+    #[test]
+    fn concurrent_source_imports_reserve_private_staging() {
+        let root = std::env::temp_dir().join(format!("wave-source-staging-{}", crate::identity::new_id()));
+        let parent = root.join("spotify").join("same-id");
+        fs::create_dir_all(parent.join("0")).unwrap();
+        fs::write(parent.join("0").join("audio.mp3"), b"old download").unwrap();
+        let stages = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8).map(|_| {
+                let root = &root;
+                scope.spawn(move || staging_dir_at(root, "spotify", "same-id").unwrap())
+            }).collect();
+            handles.into_iter().map(|handle| handle.join().unwrap()).collect::<Vec<_>>()
+        });
+        let distinct: std::collections::HashSet<_> = stages.iter().map(|stage| stage.path().to_path_buf()).collect();
+        assert_eq!(distinct.len(), 8);
+        for (index, stage) in stages.iter().enumerate() {
+            fs::create_dir(stage.path().join("0")).unwrap();
+            fs::write(stage.path().join("0").join("audio.mp3"), index.to_string()).unwrap();
+        }
+        let mut stages = stages.into_iter();
+        let first = stages.next().unwrap();
+        let first_path = first.path().to_path_buf();
+        first.cleanup();
+        assert!(!first_path.exists());
+        let retained = stages.next().unwrap();
+        let retained_path = retained.path().to_path_buf();
+        drop(retained);
+        assert!(retained_path.join("0").join("audio.mp3").is_file());
+        for stage in stages {
+            assert!(stage.path().join("0").join("audio.mp3").is_file());
+            stage.cleanup();
+        }
+        assert_eq!(fs::read(parent.join("0").join("audio.mp3")).unwrap(), b"old download");
+        fs::remove_dir_all(root).unwrap();
     }
 }

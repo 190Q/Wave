@@ -16,7 +16,7 @@ use crate::analytics::Analytics;
 use crate::catalog::Catalog;
 use crate::library::{self, ScanSummary, Track};
 use crate::search;
-use crate::state::{self, PersistedState, Playlist, Settings, Store};
+use crate::state::{self, PersistedState, Playlist, SettingsPatchError, Store};
 use crate::tools;
 
 use super::player::{Bridge, Command, Report};
@@ -623,35 +623,27 @@ fn settings(call: &Call) -> Outcome {
 
 fn patch_settings(call: &Call) -> Outcome {
     let patch = call.body.patch()?;
-    let current = call.app.state::<Store>().snapshot().settings;
-
-    // Merged field by field onto the settings as they stand, so a patch only
-    // has to carry what it changes.
-    let mut merged = serde_json::to_value(&current)?;
-    let Some(fields) = merged.as_object_mut() else {
-        return Err(Failure::failed("the settings could not be read"));
-    };
-    for (name, value) in patch {
-        if fields.contains_key(&name) {
-            fields.insert(name, value);
-        } else {
-            return Err(Failure::bad(format!("there is no {name} setting")));
-        }
-    }
-
-    let settings: Settings = serde_json::from_value(merged)
-        .map_err(|error| Failure::bad(format!("the settings could not be read: {error}")))?;
-    let next = state::set_settings(call.app.clone(), call.app.state::<Store>(), settings)?;
-
-    // The window follows a setting from its own event, and the agreed contract
-    // also says a write to settings announces the whole state, so both are sent.
-    let _ = call.app.emit(state::SETTINGS_EVENT, &next.settings);
-    announce_state(call, &next);
+    let next = state::patch_settings_with(
+        call.app,
+        &call.app.state::<Store>(),
+        patch,
+        |next| {
+            let _ = call.app.emit(state::SETTINGS_EVENT, &next.settings);
+            announce_state(call, next);
+        },
+    ).map_err(settings_patch_failure)?;
     Ok(serde_json::to_value(next)?)
 }
 
+fn settings_patch_failure(error: SettingsPatchError) -> Failure {
+    match error {
+        SettingsPatchError::Invalid(message) => Failure::bad(message),
+        SettingsPatchError::Failed(message) => Failure::failed(message),
+    }
+}
+
 fn persisted_state(call: &Call) -> Outcome {
-    let state = state::get_state(call.app.clone(), call.app.state::<Store>());
+    let state = state::get_state(call.app.clone(), call.app.state::<Store>())?;
     Ok(serde_json::to_value(state)?)
 }
 
@@ -772,4 +764,19 @@ fn announce_library(call: &Call, removed: &[String]) {
 fn path_text(path: Result<PathBuf, String>) -> String {
     path.map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_patch_reports_validation_and_storage_statuses() {
+        let invalid = settings_patch_failure(SettingsPatchError::Invalid("invalid".into()));
+        assert_eq!(invalid.status, 400);
+        assert_eq!(invalid.message, "invalid");
+        let failed = settings_patch_failure(SettingsPatchError::Failed("storage".into()));
+        assert_eq!(failed.status, 500);
+        assert_eq!(failed.message, "storage");
+    }
 }

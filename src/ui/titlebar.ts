@@ -1,6 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { setIcon } from "../assets/icons/index";
+import { isAndroidPlatform } from "../lib/device";
 import { resetWindowGeometry, saveWindowGeometry } from "../lib/ipc";
 import { flushSession, getState, subscribe } from "../lib/state";
 
@@ -70,12 +71,14 @@ export function mountTitlebar(): void {
         // `destroy` can be denied; fall back to a normal close, now unguarded.
         await appWindow.close();
       }
-    });
+    }).catch(() => {});
 
-    void appWindow.isMaximized().then(paintMaximise);
-    void appWindow.onResized(() => {
-      void appWindow.isMaximized().then(paintMaximise);
-    });
+    if (!isAndroidPlatform) {
+      void appWindow.isMaximized().then(paintMaximise).catch(() => {});
+      void appWindow.onResized(() => {
+        void appWindow.isMaximized().then(paintMaximise).catch(() => {});
+      }).catch(() => {});
+    }
   } catch {
     // Not running inside Tauri, for example `npm run dev` in a browser.
   }

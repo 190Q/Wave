@@ -9,13 +9,13 @@
 
 /* How far the dock and the queue have been pushed up by the sheet drag, in
    pixels. src/ui/lyrics-sheet.ts owns the value. */
-[data-device="android"] .stage {
+:is([data-device="android"], [data-device="linuxPhone"]) .stage {
   --sheet-travel: 0px;
 }
 
 /* The notch and the gesture bar. The insets are whatever the system
    reported, so nothing here is a fixed size. */
-[data-device="android"] .topbar {
+:is([data-device="android"], [data-device="linuxPhone"]) .topbar {
   position: relative;
   z-index: 4;
   padding-top: calc(1rem + var(--inset-top));
@@ -31,22 +31,22 @@
 
 /* The hero takes no room of its own, so its children join the stage's
    column. The lyrics panel is the one that stays. */
-[data-device="android"] .hero {
+:is([data-device="android"], [data-device="linuxPhone"]) .hero {
   display: contents;
 }
 
-[data-device="android"] .now-cover,
-[data-device="android"] .now {
+:is([data-device="android"], [data-device="linuxPhone"]) .now-cover,
+:is([data-device="android"], [data-device="linuxPhone"]) .now {
   display: none;
 }
 
-/* hero.ts leaves is-short off on Android, but nothing may hang off it either
+/* hero.ts leaves is-short off on phones, but nothing may hang off it either
    way, so the library button stays put. */
-[data-device="android"].is-short #library-open {
+:is([data-device="android"], [data-device="linuxPhone"]).is-short #library-open {
   display: inline-grid;
 }
 
-html[data-device="android"] {
+html:is([data-device="android"], [data-device="linuxPhone"]) {
   --card-size: min(74vw, calc((100vh - 17rem) / 1.29), 20rem);
   --card-height: calc(var(--card-size) * 1.29);
   --carousel-space: var(--card-height);
@@ -56,11 +56,11 @@ html[data-device="android"] {
 /* The queue is a block in the column, centred between the top bar and the
    dock, rather than a carousel hanging off the bottom of the stage. It is
    always shown, since the dock no longer carries a queue button. */
-[data-device="android"] .carousel-space {
+:is([data-device="android"], [data-device="linuxPhone"]) .carousel-space {
   display: none;
 }
 
-[data-device="android"] .carousel {
+:is([data-device="android"], [data-device="linuxPhone"]) .carousel {
   position: relative;
   left: auto;
   bottom: auto;
@@ -78,18 +78,18 @@ html[data-device="android"] {
 
 /* The cards were laid out around a zero width carousel; now they are laid out
    around the middle of a full width block. */
-[data-device="android"] .carousel-live,
-[data-device="android"] .carousel-wash {
+:is([data-device="android"], [data-device="linuxPhone"]) .carousel-live,
+:is([data-device="android"], [data-device="linuxPhone"]) .carousel-wash {
   width: 100%;
   height: 100%;
 }
 
-[data-device="android"] .card {
+:is([data-device="android"], [data-device="linuxPhone"]) .card {
   left: calc(50% - var(--card-size) / 2);
 }
 
 /* The dock is a bar along the bottom edge, and the sheet drag lifts it. */
-[data-device="android"] .dock {
+:is([data-device="android"], [data-device="linuxPhone"]) .dock {
   position: relative;
   order: 2;
   z-index: 3;
@@ -105,7 +105,7 @@ html[data-device="android"] {
   overflow: visible;
 }
 
-[data-device="android"] .dock-grab {
+:is([data-device="android"], [data-device="linuxPhone"]) .dock-grab {
   position: absolute;
   top: 0;
   left: 50%;
@@ -121,7 +121,7 @@ html[data-device="android"] {
   touch-action: none;
 }
 
-[data-device="android"] .dock-grab-bar {
+:is([data-device="android"], [data-device="linuxPhone"]) .dock-grab-bar {
   width: 3rem;
   height: 0.25rem;
   border-radius: 62rem;
@@ -129,35 +129,35 @@ html[data-device="android"] {
   transition: background 0.2s;
 }
 
-[data-device="android"] .dock-grab:active .dock-grab-bar {
+:is([data-device="android"], [data-device="linuxPhone"]) .dock-grab:active .dock-grab-bar {
   background: rgb(255 255 255 / 0.75);
 }
 
-[data-device="android"] .dock-row {
+:is([data-device="android"], [data-device="linuxPhone"]) .dock-row {
   gap: 0.15rem;
 }
 
-[data-device="android"] .dock-row .buttons {
+:is([data-device="android"], [data-device="linuxPhone"]) .dock-row .buttons {
   grid-row: 1;
   justify-content: center;
   gap: 0.15rem;
 }
 
-[data-device="android"] .dock-row .buttons .icon,
-[data-device="android"] .dock-row .buttons .icon-pill {
+:is([data-device="android"], [data-device="linuxPhone"]) .dock-row .buttons .icon,
+:is([data-device="android"], [data-device="linuxPhone"]) .dock-row .buttons .icon-pill {
   width: clamp(2rem, 10vw, 3rem);
   height: clamp(2rem, 10vw, 3rem);
 }
 
-[data-device="android"] .dock-side:not(.dock-end) {
+:is([data-device="android"], [data-device="linuxPhone"]) .dock-side:not(.dock-end) {
   display: contents;
 }
 
-[data-device="android"] .dock-end {
+:is([data-device="android"], [data-device="linuxPhone"]) .dock-end {
   display: none;
 }
 
-[data-device="android"] #like {
+:is([data-device="android"], [data-device="linuxPhone"]) #like {
   grid-column: 1;
   grid-row: 1;
   justify-self: start;
@@ -165,14 +165,14 @@ html[data-device="android"] {
   height: 2.25rem;
 }
 
-[data-device="android"] .dock-position {
+:is([data-device="android"], [data-device="linuxPhone"]) .dock-position {
   grid-column: 3;
   grid-row: 1;
   justify-self: end;
   max-width: 100%;
 }
 
-[data-device="android"] #like svg {
+:is([data-device="android"], [data-device="linuxPhone"]) #like svg {
   width: var(--control-glyph);
   height: var(--control-glyph);
 }
@@ -180,7 +180,7 @@ html[data-device="android"] {
 /* The lyrics panel is the sheet the dock drag pulls up. It fills the frame
    from under the top bar down, starts just below the bottom edge, and rides
    behind the dock and the queue. */
-[data-device="android"] .lyrics {
+:is([data-device="android"], [data-device="linuxPhone"]) .lyrics {
   position: absolute;
   top: var(--phone-topbar, 0px);
   right: 0;
@@ -189,21 +189,26 @@ html[data-device="android"] {
   z-index: 1;
   display: block;
   height: auto;
+  mask-image: none;
   transform: translateY(calc(100% - var(--sheet-travel)));
 }
 
-[data-device="android"] .lyrics-track {
+:is([data-device="android"], [data-device="linuxPhone"]) .lyrics[hidden] {
+  display: none;
+}
+
+:is([data-device="android"], [data-device="linuxPhone"]) .lyrics-track {
   right: calc(1.5rem + var(--inset-right));
   left: calc(1.5rem + var(--inset-left));
 }
 
 /* The lyrics are centred in the sheet, rather than ranged left in a column. */
-[data-device="android"] .lyric {
+:is([data-device="android"], [data-device="linuxPhone"]) .lyric {
   justify-content: center;
   text-align: center;
 }
 
-[data-device="android"] .lyrics-grab {
+:is([data-device="android"], [data-device="linuxPhone"]) .lyrics-grab {
   position: absolute;
   top: 0;
   left: 50%;
@@ -220,7 +225,11 @@ html[data-device="android"] {
   touch-action: none;
 }
 
-[data-device="android"] .lyrics-grab-bar {
+:is([data-device="android"], [data-device="linuxPhone"]) .dock-grab[hidden] {
+  display: none;
+}
+
+:is([data-device="android"], [data-device="linuxPhone"]) .lyrics-grab-bar {
   width: 3rem;
   height: 0.25rem;
   border-radius: 62rem;
@@ -228,19 +237,19 @@ html[data-device="android"] {
   transition: background 0.2s;
 }
 
-[data-device="android"] .lyrics-grab:active .lyrics-grab-bar {
+:is([data-device="android"], [data-device="linuxPhone"]) .lyrics-grab:active .lyrics-grab-bar {
   background: rgb(255 255 255 / 0.75);
 }
 
 /* A settled sheet travels over the same transition a drag would not. */
-[data-device="android"] .stage.is-sheet-settling .lyrics,
-[data-device="android"] .stage.is-sheet-settling .carousel,
-[data-device="android"] .stage.is-sheet-settling .dock {
+:is([data-device="android"], [data-device="linuxPhone"]) .stage.is-sheet-settling .lyrics,
+:is([data-device="android"], [data-device="linuxPhone"]) .stage.is-sheet-settling .carousel,
+:is([data-device="android"], [data-device="linuxPhone"]) .stage.is-sheet-settling .dock {
   transition: transform 0.34s var(--ease);
 }
 
 /* The library is the whole screen. */
-[data-device="android"] .sheet {
+:is([data-device="android"], [data-device="linuxPhone"]) .sheet {
   width: 100%;
   border-right: 0;
   padding: calc(1.25rem + var(--inset-top)) calc(1rem + var(--inset-right))

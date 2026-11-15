@@ -112,14 +112,14 @@ pub fn export(app: &AppHandle, name: &str, file: &Path) -> Result<(), String> {
     let catalog = app.state::<Catalog>();
     let playlist = find(&catalog, name)?;
 
-    if playlist.track_ids.is_empty() {
+    if catalog.playlist_entries(&playlist.id)?.is_empty() {
         return Err(format!(
-            "{} holds no songs the library has, so there is nothing to write",
+            "{} holds no songs, so there is nothing to write",
             playlist.name
         ));
     }
 
-    let written = crate::transfer::export(app, file, playlist.name.clone(), &playlist.track_ids)?;
+    let written = crate::transfer::export_playlist(app, file, &playlist.id)?;
 
     println!(
         "Wrote {} to {}.",

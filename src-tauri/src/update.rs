@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::state::{self, Store};
+use crate::state::Store;
 
 /// The latest release, from the public releases API.
 const RELEASES_URL: &str = "https://api.github.com/repos/190Q/Wave/releases/latest";
@@ -106,8 +106,7 @@ fn check(app: &AppHandle) -> Result<Option<UpdateInfo>, String> {
 
     if !is_newer(&version, &current) {
         // The app has caught up, so the offer no longer stands.
-        let next = store.update(|state| state.update = None);
-        state::save(app, &next)?;
+        store.update_saved(app, |state| state.update = None)?;
         return Ok(None);
     }
 
@@ -134,8 +133,7 @@ fn check(app: &AppHandle) -> Result<Option<UpdateInfo>, String> {
         }
     }
 
-    let next = store.update(|state| state.update = Some(info.clone()));
-    state::save(app, &next)?;
+    store.update_saved(app, |state| state.update = Some(info.clone()))?;
     Ok(Some(info))
 }
 
@@ -159,8 +157,7 @@ pub fn update_status(app: AppHandle, store: State<'_, Store>) -> Option<UpdateIn
         return Some(stored);
     }
 
-    let next = store.update(|state| state.update = None);
-    let _ = state::save(&app, &next);
+    let _ = store.update_saved(&app, |state| state.update = None);
     None
 }
 

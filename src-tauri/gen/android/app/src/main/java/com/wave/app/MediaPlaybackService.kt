@@ -14,14 +14,30 @@ import androidx.core.app.ServiceCompat
  *
  * Android stops an app that has nothing in the foreground, and the webview and
  * its audio element go with it. This service holds the media playback slot and
- * a partial wake lock for as long as a song is loaded, so the audio survives
+ * a partial wake lock while a song is playing, so the audio survives
  * the app being backgrounded and the screen going off.
  *
  * It is also where the notification's own buttons land, since it is the part of
  * the app that is still there when the rest of it is not.
  */
 class MediaPlaybackService : Service() {
+  companion object {
+    @Volatile
+    private var instance: MediaPlaybackService? = null
+
+    fun syncPlayback() {
+      instance?.syncWakeLock()
+    }
+  }
+
   private var wakeLock: PowerManager.WakeLock? = null
+  private val wakeLockController = PlaybackWakeLock(::hold, ::release)
+  private var foregroundActive = false
+
+  override fun onCreate() {
+    super.onCreate()
+    instance = this
+  }
 
   override fun onBind(intent: Intent?): IBinder? = null
 
@@ -35,17 +51,27 @@ class MediaPlaybackService : Service() {
       MediaPlayback.press(intent.getStringExtra(MediaPlayback.EXTRA_PRESS), value)
     }
 
-    foreground()
-    hold()
+    setForegroundActive(foreground())
     // Nothing to resume from: the queue lives in the webview, which is gone if
     // this process was killed.
     return START_NOT_STICKY
   }
 
+  @Synchronized
+  private fun setForegroundActive(active: Boolean) {
+    foregroundActive = active
+    syncWakeLock()
+  }
+
+  @Synchronized
+  private fun syncWakeLock() {
+    wakeLockController.sync(foregroundActive, MediaPlayback.playing)
+  }
+
   override fun onDestroy() {
     Log.i("Wave", "the playback service stopped")
-    wakeLock?.let { if (it.isHeld) it.release() }
-    wakeLock = null
+    if (instance === this) instance = null
+    setForegroundActive(false)
     ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
     super.onDestroy()
   }
@@ -55,13 +81,13 @@ class MediaPlaybackService : Service() {
    * this within a few seconds of the service being started, so it is the first
    * thing done here.
    */
-  private fun foreground() {
+  private fun foreground(): Boolean {
     val notification = MediaPlayback.current
     if (notification == null) {
       // Nothing is loaded, so there is nothing to be in the foreground for.
       Log.i("Wave", "the playback service stopped: nothing is loaded")
       stopSelf()
-      return
+      return false
     }
 
     val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -73,10 +99,12 @@ class MediaPlaybackService : Service() {
     try {
       ServiceCompat.startForeground(this, MediaPlayback.NOTIFICATION_ID, notification, type)
       Log.i("Wave", "the playback service is in the foreground")
+      return true
     } catch (error: Exception) {
       Log.i("Wave", "the playback service could not go to the foreground")
       Log.w("Wave", "the playback service could not go to the foreground", error)
       stopSelf()
+      return false
     }
   }
 
@@ -91,5 +119,10 @@ class MediaPlaybackService : Service() {
       setReferenceCounted(false)
       acquire()
     }
+  }
+
+  private fun release() {
+    wakeLock?.let { if (it.isHeld) it.release() }
+    wakeLock = null
   }
 }

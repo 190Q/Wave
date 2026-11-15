@@ -121,8 +121,8 @@ fn reveal_main_window(app: &tauri::AppHandle) {
 
 /// The store, the listening record and the catalog, which the window and the
 /// command line both work from.
-fn prepare(app: &tauri::AppHandle) {
-    app.manage(state::Store::load(app));
+fn prepare(app: &tauri::AppHandle) -> Result<(), String> {
+    app.manage(state::Store::load(app)?);
 
     let analytics = match analytics::Analytics::open(app) {
         Ok(analytics) => analytics,
@@ -134,31 +134,25 @@ fn prepare(app: &tauri::AppHandle) {
     app.manage(analytics);
 
     // Last, because the upgrade renumbers both of the above.
-    app.manage(open_catalog(app));
+    app.manage(open_catalog(app)?);
+    Ok(())
 }
 
-fn open_catalog(app: &tauri::AppHandle) -> catalog::Catalog {
-    let opened = library::library_root(app).and_then(|root| catalog::Catalog::open(&root));
-
-    match opened {
-        Ok(catalog) => {
-            let store = app.state::<state::Store>();
-            match migrate::run(app, &catalog, &store) {
-                Ok(Some(report)) => eprintln!(
-                    "the library was upgraded: {} songs, {} playlists, {} covers, {} lyrics. \
-                     The old records are in {}",
-                    report.songs, report.playlists, report.covers, report.lyrics, report.backup
-                ),
-                Ok(None) => {}
-                Err(error) => eprintln!("the library could not be upgraded: {error}"),
-            }
-            catalog
-        }
-        Err(error) => {
-            eprintln!("the library cannot be opened, so nothing will be kept: {error}");
-            catalog::Catalog::in_memory().expect("an in-memory catalog always opens")
-        }
+fn open_catalog(app: &tauri::AppHandle) -> Result<catalog::Catalog, String> {
+    let root = library::library_root(app)?;
+    let catalog = catalog::Catalog::open(&root)
+        .map_err(|error| format!("the library cannot be opened: {error}"))?;
+    let store = app.state::<state::Store>();
+    match migrate::run(app, &catalog, &store) {
+        Ok(Some(report)) => eprintln!(
+            "the library was upgraded: {} songs, {} playlists, {} covers, {} lyrics. \
+             The old records are in {}",
+            report.songs, report.playlists, report.covers, report.lyrics, report.backup
+        ),
+        Ok(None) => {}
+        Err(error) => eprintln!("the library could not be upgraded: {error}"),
     }
+    Ok(catalog)
 }
 
 #[cfg(target_os = "android")]
@@ -213,7 +207,7 @@ pub fn run() {
 
     let app = builder
         .setup(|app| {
-            prepare(app.handle());
+            prepare(app.handle()).map_err(std::io::Error::other)?;
 
             #[cfg(target_os = "android")]
             match audio_stream::AudioStream::start(app.handle()) {
@@ -260,6 +254,7 @@ pub fn run() {
             show_main_window,
             state::get_state,
             state::set_settings,
+            state::patch_settings,
             state::set_session,
             state::save_window_geometry,
             state::reset_window_geometry,

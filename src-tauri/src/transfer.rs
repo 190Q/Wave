@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -11,7 +12,7 @@ use tauri_plugin_fs::{FilePath, FsExt, OpenOptions};
 #[cfg(target_os = "android")]
 use std::{io::Write, str::FromStr};
 
-use crate::catalog::Catalog;
+use crate::catalog::{Catalog, TrackRow};
 use crate::download;
 use crate::download_log;
 use crate::import::{self, ImportOutcome};
@@ -19,8 +20,7 @@ use crate::import_source;
 use crate::library;
 use crate::playlists;
 use crate::progress::{Output, Reporter};
-use crate::source::{now_ms, read_env, TrackMeta};
-#[cfg(any(target_os = "android", test))]
+use crate::source::{read_env, TrackMeta};
 use crate::state::PendingTrack;
 use crate::state::{PersistedState, Store};
 use crate::tools;
@@ -30,7 +30,6 @@ const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024;
 const VERSION: u32 = 2;
 
 pub const PROGRESS_EVENT: &str = "wavelist-import";
-static NEXT_JOB: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -110,6 +109,21 @@ fn read_list(file: impl Read) -> Result<WaveList, String> {
     Ok(list)
 }
 
+fn track_meta(track: &TrackRow) -> TrackMeta {
+    TrackMeta {
+        title: track.title.clone(),
+        artists: track.artist.clone().into_iter().collect(),
+        album: track.album.clone().unwrap_or_default(),
+        album_artist: track.album_artist.clone().unwrap_or_default(),
+        release_date: track.year.map(|year| year.to_string()).unwrap_or_default(),
+        track_number: track.track_no,
+        disc_number: track.disc_no,
+        genres: track.genre.clone().into_iter().collect(),
+        duration_ms: Some(track.duration_ms),
+        ..TrackMeta::default()
+    }
+}
+
 pub(crate) fn export(
     app: &AppHandle,
     path: &Path,
@@ -117,30 +131,38 @@ pub(crate) fn export(
     ids: &[String],
 ) -> Result<usize, String> {
     let catalog = app.state::<Catalog>();
-    let tracks: HashMap<_, _> = library::all_tracks(app, &catalog)?
-        .into_iter()
+    let list = export_list(&catalog, name, ids)?;
+    write_list(app, path, &list)
+}
+
+pub(crate) fn export_playlist(app: &AppHandle, path: &Path, playlist_id: &str) -> Result<usize, String> {
+    let catalog = app.state::<Catalog>();
+    let list = playlist_export_list(&catalog, playlist_id)?;
+    write_list(app, path, &list)
+}
+
+fn playlist_export_list(catalog: &Catalog, playlist_id: &str) -> Result<WaveList, String> {
+    let playlist = catalog.playlists()?.into_iter()
+        .find(|playlist| playlist.id == playlist_id)
+        .ok_or("That playlist is no longer available.")?;
+    export_list(catalog, playlist.name, &catalog.playlist_entries(playlist_id)?)
+}
+
+fn export_list(catalog: &Catalog, name: String, ids: &[String]) -> Result<WaveList, String> {
+    let tracks = catalog.tracks_by_ids(ids)?;
+    let pending: HashMap<String, PendingTrack> = catalog.playlists()?.into_iter()
+        .flat_map(|playlist| playlist.pending)
         .map(|track| (track.id.clone(), track))
         .collect();
-
-    let mut entries = Vec::with_capacity(ids.len());
-    for id in ids {
-        let track = tracks
-            .get(id)
-            .ok_or("A selected song is no longer in the library.")?;
-        entries.push(TrackMeta {
-            title: track.title.clone(),
-            artists: track.artist.clone().into_iter().collect(),
-            album: track.album.clone().unwrap_or_default(),
-            album_artist: track.album_artist.clone().unwrap_or_default(),
-            release_date: track.year.map(|year| year.to_string()).unwrap_or_default(),
-            track_number: track.track_no,
-            disc_number: track.disc_no,
-            genres: track.genre.clone().into_iter().collect(),
-            duration_ms: Some(track.duration_ms),
-            ..TrackMeta::default()
-        });
-    }
-
+    let entries = ids.iter().map(|id| {
+        if let Some(track) = pending.get(id) {
+            Ok(track.meta())
+        } else if let Some(track) = tracks.get(id) {
+            Ok(track_meta(track))
+        } else {
+            Err(format!("A selected song is no longer in the library: {id}"))
+        }
+    }).collect::<Result<Vec<_>, _>>()?;
     let list = WaveList {
         format: "wave-playlist".into(),
         version: VERSION,
@@ -148,7 +170,10 @@ pub(crate) fn export(
         tracks: entries,
     };
     list.validate()?;
+    Ok(list)
+}
 
+fn write_list(_app: &AppHandle, path: &Path, list: &WaveList) -> Result<usize, String> {
     let bytes = serde_json::to_vec(&list).map_err(|e| e.to_string())?;
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Err("The playlist export is too large to save.".into());
@@ -158,7 +183,7 @@ pub(crate) fn export(
         let target = FilePath::from_str(&path.to_string_lossy()).map_err(|e| e.to_string())?;
         let mut options = OpenOptions::new();
         options.write(true).truncate(true);
-        let mut file = app.fs().open(target, options)
+        let mut file = _app.fs().open(target, options)
             .map_err(|e| format!("Could not save the export: {e}"))?;
         file.write_all(&bytes).map_err(|e| format!("Could not save the export: {e}"))?;
         return Ok(list.tracks.len());
@@ -167,15 +192,13 @@ pub(crate) fn export(
     Ok(list.tracks.len())
 }
 
-fn staging_dir(app: &AppHandle, job: &str) -> Result<PathBuf, String> {
+fn staging_dir(app: &AppHandle) -> Result<import_source::DownloadStaging, String> {
     let dir = app
         .path()
         .app_cache_dir()
         .map_err(|e| e.to_string())?
-        .join("transfer")
-        .join(job);
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
+        .join("transfer");
+    import_source::reserve_staging(&dir)
 }
 
 pub(crate) fn run(
@@ -206,8 +229,7 @@ pub(crate) fn run(
         log.link(&list.name, list.tracks.len());
     }
 
-    let job = format!("{}-{}", now_ms(), NEXT_JOB.fetch_add(1, Ordering::Relaxed));
-    let staging = staging_dir(app, &job)?;
+    let staging = staging_dir(app)?;
 
     let result = (|| {
         report.phase("downloading", "Downloading the audio. Spotify is not needed.");
@@ -235,7 +257,7 @@ pub(crate) fn run(
             let file = match download::download(
                 tools.as_ref().ok_or("Download tools are unavailable.")?,
                 meta,
-                &staging.join(position.to_string()),
+                &staging.path().join(position.to_string()),
                 None,
             ) {
                 Ok(file) => file,
@@ -281,18 +303,18 @@ pub(crate) fn run(
         outcome.errors.extend_from_slice(report.failures());
         import::remember_import(app, "wavelist", &list.name, &outcome);
         library::scan(app, &catalog, false);
-        outcome.state = playlists::refresh(app, &app.state::<Store>());
+        outcome.refresh_state(app, &app.state::<Store>());
         Ok(outcome)
     })();
 
-    let _ = fs::remove_dir_all(&staging);
+    staging.cleanup();
     result
 }
 
 #[cfg(any(target_os = "android", test))]
 fn imported_entries(
     tracks: &[TrackMeta],
-    existing: &HashMap<String, String>,
+    existing: &import_source::TrackIndex,
 ) -> (Vec<String>, Vec<PendingTrack>, usize) {
     let mut entries = Vec::with_capacity(tracks.len());
     let mut pending = Vec::new();
@@ -330,7 +352,7 @@ fn run_phone(app: &AppHandle, path: &str, report: &mut Reporter) -> Result<Impor
         ..ImportOutcome::default()
     };
     import::remember_import(app, "wavelist", &list.name, &outcome);
-    outcome.state = playlists::refresh(app, &app.state::<Store>());
+    outcome.refresh_state(app, &app.state::<Store>());
     Ok(outcome)
 }
 
@@ -356,8 +378,17 @@ pub(crate) fn resolve_imported(catalog: &Catalog) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn export_wavelist(app: AppHandle, path: String, name: String, track_ids: Vec<String>) -> Result<usize, String> {
-    tauri::async_runtime::spawn_blocking(move || export(&app, Path::new(&path), name, &track_ids))
+pub async fn export_wavelist(
+    app: AppHandle,
+    path: String,
+    name: String,
+    track_ids: Vec<String>,
+    playlist_id: Option<String>,
+) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || match playlist_id {
+        Some(id) => export_playlist(&app, Path::new(&path), &id),
+        None => export(&app, Path::new(&path), name, &track_ids),
+    })
         .await.map_err(|e| e.to_string())?
 }
 
@@ -463,6 +494,53 @@ mod tests {
     }
 
     #[test]
+    fn exports_all_playlist_entries_in_order_with_pending_metadata() {
+        let catalog = Catalog::in_memory().unwrap();
+        catalog.upsert_track(&TrackRow {
+            id: "held".into(), rel_path: "held.mp3".into(), title: "Held".into(),
+            artist: Some("Artist".into()), album: Some("Album".into()),
+            duration_ms: 180_000, ..TrackRow::default()
+        }).unwrap();
+        catalog.upsert_track(&TrackRow {
+            id: "missing".into(), rel_path: "missing.mp3".into(), title: "Missing audio".into(),
+            missing: true, ..TrackRow::default()
+        }).unwrap();
+        let meta = TrackMeta {
+            title: "Waiting".into(), artists: vec!["One".into(), "Two".into()],
+            album: "Release".into(), album_artist: "One".into(), release_date: "2022-03-05".into(),
+            track_number: Some(4), disc_number: Some(2), genres: vec!["Rock".into(), "Metal".into()],
+            isrc: "USABC1234567".into(), cover_url: Some("https://example.org/cover.jpg".into()),
+            duration_ms: Some(215_000), ..TrackMeta::default()
+        };
+        let pending = PendingTrack::from_meta(&meta, "deezer", "source");
+        let ids = vec![pending.id.clone(), "held".into(), "missing".into(), pending.id.clone()];
+        let id = catalog.create_generated_playlist("Mixed", &ids, &[pending]).unwrap();
+
+        let exported = playlist_export_list(&catalog, &id).unwrap();
+        let parsed = read_list(serde_json::to_vec(&exported).unwrap().as_slice()).unwrap();
+        assert_eq!(parsed.name, "Mixed");
+        assert_eq!(parsed.tracks.iter().map(|track| track.title.as_str()).collect::<Vec<_>>(),
+            ["Waiting", "Held", "Missing audio", "Waiting"]);
+        assert_eq!(serde_json::to_value(&parsed.tracks[0]).unwrap(), serde_json::to_value(&meta).unwrap());
+        assert_eq!(serde_json::to_value(&parsed.tracks[3]).unwrap(), serde_json::to_value(&meta).unwrap());
+    }
+
+    #[test]
+    fn exports_pending_only_and_rejects_unresolvable_entries() {
+        let catalog = Catalog::in_memory().unwrap();
+        let pending = PendingTrack::from_meta(&list().tracks[0], "wavelist", "");
+        let id = catalog.create_generated_playlist("Waiting", &[pending.id.clone()], &[pending.clone()]).unwrap();
+        let exported = playlist_export_list(&catalog, &id).unwrap();
+        assert_eq!(exported.tracks.len(), 1);
+        assert_eq!(exported.tracks[0].title, "Song");
+        assert_eq!(export_list(&catalog, "Selection".into(), &[pending.id]).unwrap().tracks.len(), 1);
+        assert!(export_list(&catalog, "Selection".into(), &["unknown".into()]).is_err());
+        catalog.set_playlist_entries(&id, &["unknown".into()]).unwrap();
+        assert!(playlist_export_list(&catalog, &id).is_err());
+        assert!(playlist_export_list(&catalog, "unknown").is_err());
+    }
+
+    #[test]
     fn imported_playlist_keeps_missing_tracks_and_resolves_them_in_order() {
         use crate::catalog::TrackRow;
 
@@ -504,7 +582,7 @@ mod tests {
     #[test]
     fn removing_a_missing_entry_does_not_restore_it_later() {
         let catalog = Catalog::in_memory().unwrap();
-        let (entries, pending, _) = imported_entries(&list().tracks, &HashMap::new());
+        let (entries, pending, _) = imported_entries(&list().tracks, &import_source::TrackIndex::default());
         let id = catalog.create_imported_playlist("Imported", &entries, &pending).unwrap();
         catalog.remove_from_playlist(&id, &entries).unwrap();
         assert!(catalog.pending_tracks(&id).unwrap().is_empty());

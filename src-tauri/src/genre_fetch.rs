@@ -57,6 +57,16 @@ pub struct GenresOutcome {
     pub errors: Vec<String>,
 }
 
+fn file_genre(root: &Path, catalog: &Catalog, track: &library::Track, genre: &str) -> Result<(), String> {
+    let _operation = catalog.library_operation();
+    let known = crate::import::fetched_track(root, catalog, track)?;
+    let written = write_genre(&track.path, genre);
+    let refreshed = crate::import::refresh_after_tags(root, catalog, &known);
+    written?;
+    refreshed?;
+    Ok(())
+}
+
 /// One iTunes song result.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -269,6 +279,7 @@ fn run_inner(
     report: &mut Reporter,
 ) -> Result<GenresOutcome, String> {
     let catalog = app.state::<Catalog>();
+    let root = library::library_root(app)?;
 
     let wanted = library::songs(app, &catalog, track_ids);
     if wanted.is_empty() {
@@ -307,7 +318,7 @@ fn run_inner(
         });
 
         match answer {
-            Ok(Some(genre)) => match write_genre(&track.path, &genre) {
+            Ok(Some(genre)) => match file_genre(&root, &catalog, track, &genre) {
                 Ok(()) => {
                     outcome.tagged += 1;
                     breaker.ok();

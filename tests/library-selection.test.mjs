@@ -19,16 +19,18 @@ const mocks = {
     export const subscribe = () => {};
     export const setTracksLiked = (ids, liked) => context.liked.push({ ids, liked });
     export const playFromCollection = (collectionId, id) => context.played.push({ collectionId, id });
-    export const createPlaylist = () => {}, deletePlaylist = () => {}, deleteTracks = () => {},
+    export const createPlaylist = () => {}, deletePlaylist = () => {},
+      deleteTracks = (ids) => context.deleted.push(ids),
       downloadPending = () => {}, generatePlaylist = () => {}, playCollection = () => {},
       playTrackInContext = () => {}, refreshRecommendStatus = () => {}, replaceTrackCover = () => {},
-      removeTracksFromPlaylist = () => {}, renamePlaylist = () => {}, reorderPlaylist = () => {},
+      removeTracksFromPlaylist = (id, ids) => context.removed.push({ id, ids }),
+      renamePlaylist = (id, name) => context.renamed.push({ id, name }), reorderPlaylist = () => {},
       setFilter = () => {}, setQuery = () => {}, setSort = () => {}, shuffleCollection = () => {},
       toggleLibrary = () => {}, toggleLikeTrack = () => {};
   `,
   "./add-to-playlist": "export const closeAddToPlaylist = () => {}, openAddToPlaylist = () => {};",
   "./artwork": 'export const collectionCoverHtml = () => "", plainCoverStyle = () => "";',
-  "./confirm": "export const confirmDialog = async () => false;",
+  "./confirm": "export const confirmDialog = async (options) => { globalThis.__librarySelectionTest.confirmed.push(options); return true; };",
   "./covers": "export const hydrateCovers = () => {};",
   "./icons": "export const fillIcons = () => {};",
   "./import-dialog": "export const openImport = () => {};",
@@ -45,7 +47,8 @@ const vite = await createServer({
   root: fileURLToPath(new URL("..", import.meta.url)),
   appType: "custom",
   logLevel: "silent",
-  server: { middlewareMode: true },
+  optimizeDeps: { noDiscovery: true },
+  server: { middlewareMode: true, watch: null },
   plugins: [{
     name: "library-selection-test-mocks",
     enforce: "pre",
@@ -83,9 +86,11 @@ class FakeElement {
   getBoundingClientRect() { return { top: 0, right: 100, bottom: 100 }; }
   querySelector() { return null; }
   querySelectorAll() { return []; }
+  contains() { return false; }
   closest(selector) {
     if (selector === "[data-track]" && this.dataset.track) return this;
     if (selector === "[data-collection]" && this.dataset.collection) return this;
+    if (selector === "[data-menu]" && this.dataset.menu) return this;
     return null;
   }
   dispatch(type, target, extra = {}) {
@@ -96,6 +101,10 @@ class FakeElement {
 }
 
 globalThis.HTMLElement = FakeElement;
+globalThis.HTMLInputElement = class extends FakeElement {
+  focus() { this.focused = true; }
+  select() { this.selected = true; }
+};
 globalThis.document = {
   addEventListener() {},
   getElementById: (id) => context.elements[id] ?? null,
@@ -113,6 +122,10 @@ function setup({ touch = false, kind = "playlist" } = {}) {
   context.menu = null;
   context.liked = [];
   context.played = [];
+  context.removed = [];
+  context.deleted = [];
+  context.renamed = [];
+  context.confirmed = [];
   context.state = {
     libraryOpen: true, filter: "playlists", query: "", sort: "name",
     settings: { searchAlgorithm: "substring" },
@@ -127,12 +140,15 @@ function setup({ touch = false, kind = "playlist" } = {}) {
   const list = context.elements.library;
   const pane = context.elements["library-pane"];
   const host = new FakeElement();
+  const renameInput = new HTMLInputElement();
   const rows = ids.map((id) => new FakeElement({ track: id }));
   list.querySelectorAll = (selector) => selector === "[data-track]" ? rows : [];
-  pane.querySelector = (selector) => selector === ".tracks" ? host : null;
+  pane.querySelector = (selector) => selector === ".tracks" ? host
+    : selector === ".detail-rename" && pane.innerHTML.includes('class="search detail-rename"') ? renameInput
+    : null;
   mountLibrary();
   list.dispatch("click", new FakeElement({ collection: collection.id }));
-  return { list, pane, rows };
+  return { list, pane, rows, renameInput };
 }
 
 function rightClick(list, row) {
@@ -190,4 +206,50 @@ test("touch selection retains Select all and Clear selection in the menu", () =>
   list.dispatch("click", rows[0]);
   list.dispatch("click", rows[0]);
   assert.deepEqual(context.played, [{ collectionId: "playlist", id: "one" }]);
+});
+
+test("long pressing an unselected song never acts on a previous selection", async () => {
+  const { list, rows } = setup({ touch: true });
+  list.dispatch("click", rows[0]);
+  rightClick(list, rows[1]);
+
+  assert.equal(rows[0].classes.has("is-selected"), false);
+  assert.equal(rows[1].classes.has("is-selected"), true);
+  context.menu.items.find(({ label }) => label === "Like").action();
+  context.menu.items.find(({ label }) => label === "Remove from this playlist").action();
+  context.menu.items.find(({ label }) => label === "Delete song").action();
+  await Promise.resolve();
+  assert.deepEqual(context.liked, [{ ids: ["two"], liked: true }]);
+  assert.deepEqual(context.removed, [{ id: "playlist", ids: ["two"] }]);
+  assert.deepEqual(context.deleted, [["two"]]);
+  assert.match(context.confirmed[0].message, /"two"/);
+});
+
+test("long pressing a selected song keeps the whole touch selection", () => {
+  const { list, rows } = setup({ touch: true });
+  list.dispatch("click", rows[0]);
+  list.dispatch("click", rows[1]);
+  rightClick(list, rows[1]);
+  context.menu.items.find(({ label }) => label === "Like 2 songs").action();
+  assert.deepEqual(context.liked, [{ ids: ["one", "two"], liked: true }]);
+});
+
+test("playlist detail rename focuses its visible editor and saves or cancels", () => {
+  const { list, pane, renameInput } = setup({ touch: true });
+  const menu = new FakeElement({ menu: "playlist" });
+  list.dispatch("click", menu);
+  context.menu.items.find(({ label }) => label === "Rename").action();
+  assert.match(pane.innerHTML, /class="search detail-rename"/);
+  assert.equal(renameInput.focused, true);
+  assert.equal(renameInput.selected, true);
+  renameInput.value = "  Renamed  ";
+  list.dispatch("keydown", renameInput, { key: "Enter" });
+  assert.deepEqual(context.renamed, [{ id: "playlist", name: "Renamed" }]);
+  assert.doesNotMatch(pane.innerHTML, /class="search detail-rename"/);
+
+  list.dispatch("click", menu);
+  context.menu.items.find(({ label }) => label === "Rename").action();
+  list.dispatch("keydown", renameInput, { key: "Escape" });
+  assert.equal(context.renamed.length, 1);
+  assert.doesNotMatch(pane.innerHTML, /class="search detail-rename"/);
 });

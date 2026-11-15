@@ -103,6 +103,8 @@ enum SystemMessage {
     /// The play order, for the phone's card, which is the only surface with one.
     #[cfg(target_os = "android")]
     Queue(Vec<QueueTrack>),
+    #[cfg(target_os = "android")]
+    Controls(bool),
     /// Takes the controls down and ends the thread.
     Stop,
     /// A button on the controls was pressed.
@@ -177,12 +179,16 @@ impl Presence {
     pub fn set_enabled(&self, system: bool, discord: bool) {
         let mut workers = self.guard();
 
-        if system {
+        if system_worker_needed(cfg!(target_os = "android"), system) {
             if workers.system.is_none() {
                 if let Some((sender, thread)) = start_system(&self.app) {
                     workers.system = Some(sender);
                     workers.system_thread = Some(thread);
                 }
+            }
+            #[cfg(target_os = "android")]
+            if let Some(sender) = workers.system.as_ref() {
+                let _ = sender.send(SystemMessage::Controls(system));
             }
         } else if let Some(sender) = workers.system.take() {
             // The worker lets go of the controls on its way out, and waiting for
@@ -245,6 +251,10 @@ impl Presence {
     fn guard(&self) -> MutexGuard<'_, Workers> {
         self.workers.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+fn system_worker_needed(android: bool, controls: bool) -> bool {
+    android || controls
 }
 
 /// Follows the config `.env`, for the Discord application id in it.
@@ -386,6 +396,7 @@ fn run_session(session: crate::media_session::Session, receiver: Receiver<System
         match receiver.recv() {
             Ok(SystemMessage::Show(song)) => session.show(song),
             Ok(SystemMessage::Queue(tracks)) => session.set_queue(&tracks),
+            Ok(SystemMessage::Controls(enabled)) => session.set_controls(enabled),
             Ok(SystemMessage::Stop) | Err(_) => break,
         }
     }
@@ -788,6 +799,14 @@ impl Drop for Apartment {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn android_playback_worker_is_independent_of_media_controls() {
+        assert!(system_worker_needed(true, false));
+        assert!(system_worker_needed(true, true));
+        assert!(!system_worker_needed(false, false));
+        assert!(system_worker_needed(false, true));
+    }
 
     fn song(title: &str, position_ms: u64, playing: bool) -> NowPlaying {
         NowPlaying {

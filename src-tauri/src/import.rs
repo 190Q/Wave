@@ -47,6 +47,35 @@ pub struct ImportOutcome {
     pub state: PersistedState,
 }
 
+impl ImportOutcome {
+    pub(crate) fn refresh_state(&mut self, app: &AppHandle, store: &Store) {
+        self.state = match playlists::refresh(app, store) {
+            Ok(state) => state,
+            Err(error) => {
+                self.errors.push(format!("Import finished, but the playlists could not be refreshed: {error}"));
+                store.snapshot()
+            }
+        };
+    }
+}
+
+struct PlacedFiles {
+    dir: PathBuf,
+    paths: Vec<PathBuf>,
+    committed: bool,
+}
+
+impl Drop for PlacedFiles {
+    fn drop(&mut self) {
+        if !self.committed {
+            for path in &self.paths {
+                let _ = fs::remove_file(path);
+            }
+            let _ = fs::remove_dir(&self.dir);
+        }
+    }
+}
+
 pub const LANDED_EVENT: &str = "library-landed";
 
 #[derive(Debug, Clone, Copy)]
@@ -87,6 +116,7 @@ pub fn land(app: &AppHandle, path: &Path) -> Result<Landed, String> {
         &file_name,
         &SidecarIndex::default(),
         &SidecarIndex::default(),
+        false,
     )?;
 
     let landed = Landed {
@@ -134,6 +164,7 @@ pub fn complete(app: &AppHandle, id: &str) -> Complete {
 pub fn refresh(app: &AppHandle, id: &str) -> Result<(), String> {
     let root = library_root(app)?;
     let catalog = app.state::<Catalog>();
+    let _operation = catalog.library_operation();
     let Some(known) = catalog.track(id)? else {
         return Ok(());
     };
@@ -144,7 +175,7 @@ pub fn refresh(app: &AppHandle, id: &str) -> Result<(), String> {
         id,
         &audio,
         &known.original_name,
-        known.content_hash.as_deref(),
+        None,
     )?;
     // A song is not newly added just because something was written into it.
     row.added_at = known.added_at;
@@ -152,6 +183,47 @@ pub fn refresh(app: &AppHandle, id: &str) -> Result<(), String> {
 
     let _ = app.emit(LANDED_EVENT, vec![library::to_track(&row, &root)]);
     Ok(())
+}
+
+pub(crate) fn fetched_track(
+    root: &Path,
+    catalog: &Catalog,
+    track: &library::Track,
+) -> Result<crate::catalog::TrackRow, String> {
+    let row = catalog.track(&track.id)?
+        .filter(|row| !row.missing)
+        .ok_or_else(|| "the song is no longer in the library".to_string())?;
+    if row.rel_path != track.relative_path
+        || Path::new(&track.path) != root.join(&row.rel_path)
+        || row.title != track.title
+        || row.artist != track.artist
+        || row.album != track.album
+        || row.album_artist != track.album_artist
+        || row.genre != track.genre
+        || row.track_no != track.track_no
+        || row.disc_no != track.disc_no
+        || row.year != track.year
+    {
+        return Err("the song changed while it was being looked up".to_string());
+    }
+    let stamp = identity::stamp_of(&root.join(&row.rel_path))?;
+    if stamp.bytes != row.bytes || stamp.modified_ms != row.modified_ms {
+        return Err("the song changed since the last scan".to_string());
+    }
+    Ok(row)
+}
+
+pub(crate) fn refresh_after_tags(
+    root: &Path,
+    catalog: &Catalog,
+    known: &crate::catalog::TrackRow,
+) -> Result<crate::catalog::TrackRow, String> {
+    let mut row = library::describe(
+        root, &known.id, &root.join(&known.rel_path), &known.original_name, None,
+    )?;
+    row.added_at = known.added_at;
+    catalog.upsert_edited_track(&row, known.bytes)?;
+    Ok(row)
 }
 
 #[tauri::command(async)]
@@ -199,15 +271,28 @@ pub fn import_picked_files(app: AppHandle, paths: Vec<String>) -> Result<ImportO
     let guard = crate::library_work::Guard::start(&app, "Importing music");
     let store = app.state::<Store>();
     let names = picked_names(&app, &paths)?;
-    let mut outcome = ImportOutcome::default();
-
-    for (index, uri) in paths.iter().enumerate() {
+    let selected = paths.into_iter().enumerate().map(|(index, uri)| {
         let name = names
             .get(index)
             .cloned()
-            .unwrap_or_else(|| picked_name(uri));
+            .unwrap_or_else(|| picked_name(&uri));
+        (uri, name)
+    });
+    let mut outcome = import_selected(&app, selected);
+    remember_import(&app, "phone", "Picked files", &outcome);
+    outcome.state = store.snapshot();
+    #[cfg(target_os = "android")]
+    crate::loudness::schedule(&app, guard);
+    Ok(outcome)
+}
 
-        let staged = match stage_picked(&app, uri, &name) {
+fn import_selected(
+    app: &AppHandle,
+    files: impl IntoIterator<Item = (String, String)>,
+) -> ImportOutcome {
+    let mut outcome = ImportOutcome::default();
+    for (uri, name) in files {
+        let staged = match stage_picked(app, &uri, &name) {
             Ok(staged) => staged,
             Err(error) => {
                 outcome.errors.push(format!("{name}: {error}"));
@@ -215,8 +300,7 @@ pub fn import_picked_files(app: AppHandle, paths: Vec<String>) -> Result<ImportO
             }
         };
 
-        let landed = land(&app, &staged);
-        let _ = fs::remove_file(&staged);
+        let landed = land(app, &staged.path);
 
         match landed {
             Ok(landed) => {
@@ -233,11 +317,7 @@ pub fn import_picked_files(app: AppHandle, paths: Vec<String>) -> Result<ImportO
         }
     }
 
-    remember_import(&app, "phone", "Picked files", &outcome);
-    outcome.state = store.snapshot();
-    #[cfg(target_os = "android")]
-    crate::loudness::schedule(&app, guard);
-    Ok(outcome)
+    outcome
 }
 
 #[cfg(target_os = "android")]
@@ -281,33 +361,31 @@ pub fn import_phone_folder(app: AppHandle) -> Result<Option<ImportOutcome>, Stri
             if processed == 1 || processed % 10 == 0 || processed == total {
                 let _ = app.emit("phone-folder-import", format!("Importing song {processed} of {total}..."));
             }
-            let dir = root.join(CONFIG_DIR).join(PICKED_DIR).join(crate::identity::new_id());
-            fs::create_dir_all(&dir).map_err(|e| format!("could not create staging folder: {e}"))?;
             let name = picked_name(&file.name);
-            let audio = dir.join(&name);
+            let staged = PickedStage::new(&root, &name)?;
+            let dir = &staged.dir;
+            let audio = &staged.path;
             if let Err(error) = stage_picked_at(&app, &file.uri, &audio) {
                 outcome.errors.push(format!("{name}: {error}"));
-                let _ = fs::remove_dir_all(&dir);
                 continue;
             }
 
             let stem = library::file_stem_lower(Path::new(&name));
             let mut associated = sidecars.get(&stem).cloned().unwrap_or_default();
-            if audio_files.len() == 1 {
-                for (key, extensions) in [("cover", IMAGE_EXTENSIONS), ("lyrics", LYRICS_EXTENSIONS)] {
-                    if stem != key {
-                        associated.extend(sidecars.get(key).into_iter().flatten()
-                            .filter(|file| has_extension(Path::new(&file.name), extensions))
-                            .copied());
-                    }
-                }
-                associated.extend(sidecars.values().flatten()
-                    .filter(|file| library::is_cover_file(Path::new(&file.name))
-                        && library::file_stem_lower(Path::new(&file.name)).starts_with("cover-"))
-                    .copied());
-            }
+            associated.extend(sidecars.values().flatten()
+                .filter(|file| library::file_stem_lower(Path::new(&file.name)) != stem
+                    && phone_generic_sidecar(&file.name, audio_files.len() == 1))
+                .copied());
             for sidecar in associated {
-                let target = dir.join(picked_name(&sidecar.name));
+                let sidecar_name = picked_name(&sidecar.name);
+                let path = Path::new(&sidecar_name);
+                let target = if library::file_stem_lower(path) == "lyrics"
+                    && has_extension(path, LYRICS_EXTENSIONS)
+                {
+                    dir.join(library::LYRICS_NAME)
+                } else {
+                    dir.join(sidecar_name)
+                };
                 if let Err(error) = stage_picked_at(&app, &sidecar.uri, &target) {
                     outcome.errors.push(format!("{}: {error}", sidecar.name));
                 }
@@ -315,7 +393,7 @@ pub fn import_phone_folder(app: AppHandle) -> Result<Option<ImportOutcome>, Stri
 
             let images = SidecarIndex::build(&dir, IMAGE_EXTENSIONS);
             let lyrics = SidecarIndex::build(&dir, LYRICS_EXTENSIONS);
-            match import_one(&root, &catalog, &audio, &name, &images, &lyrics) {
+            match import_one(&root, &catalog, audio, &name, &images, &lyrics, true) {
                 Ok((Placed::Duplicate, _)) => outcome.duplicates += 1,
                 Ok((Placed::Added { similar, cover, lyrics }, id)) => {
                     outcome.songs += 1;
@@ -326,17 +404,24 @@ pub fn import_phone_folder(app: AppHandle) -> Result<Option<ImportOutcome>, Stri
                 }
                 Err(error) => outcome.errors.push(format!("{name}: {error}")),
             }
-            let _ = fs::remove_dir_all(&dir);
         }
     }
 
     remember_import(&app, "phone", "Selected folder", &outcome);
-    outcome.state = playlists::refresh(&app, &store);
+    outcome.refresh_state(&app, &store);
     crate::loudness::schedule(&app, guard);
     Ok(Some(outcome))
 }
 
-/// Imports the music the phone already holds from its standard music folders.
+#[cfg(any(target_os = "android", test))]
+fn phone_generic_sidecar(name: &str, single_song: bool) -> bool {
+    let path = Path::new(name);
+    library::is_cover_file(path)
+        || (single_song && library::file_stem_lower(path) == "lyrics"
+            && has_extension(path, LYRICS_EXTENSIONS))
+}
+
+/// Imports indexed audio accessible to the phone.
 #[cfg(target_os = "android")]
 #[tauri::command(async)]
 pub fn scan_phone_music(app: AppHandle) -> Result<ImportOutcome, String> {
@@ -350,27 +435,20 @@ pub fn scan_phone_music(app: AppHandle) -> Result<ImportOutcome, String> {
     }
 
     let guard = crate::library_work::Guard::start(&app, "Importing music");
-    let folders = library.music_directories()?;
+    let files = library.music_files()?;
     let store = app.state::<Store>();
-    let mut outcome = ImportOutcome::default();
-    let mut scanned = 0usize;
-
-    for folder in folders {
-        let path = PathBuf::from(&folder);
-        if !path.is_dir() {
-            continue;
+    let mut skipped = 0;
+    let selected = files.into_iter().filter_map(|file| {
+        match indexed_audio_name(&file.name, file.mime.as_deref()) {
+            Some(name) => Some((file.uri, name)),
+            None => {
+                skipped += 1;
+                None
+            }
         }
-        scanned += 1;
-
-        match import_into_library(&app, &path, true, None) {
-            Ok(found) => merge(&mut outcome, found),
-            Err(error) => outcome.errors.push(format!("{folder}: {error}")),
-        }
-    }
-
-    if scanned == 0 {
-        return Err("this phone has no music folders to scan".to_string());
-    }
+    }).collect::<Vec<_>>();
+    let mut outcome = import_selected(&app, selected);
+    outcome.skipped = skipped;
 
     remember_import(&app, "phone", "This phone's music", &outcome);
     outcome.state = store.snapshot();
@@ -378,17 +456,25 @@ pub fn scan_phone_music(app: AppHandle) -> Result<ImportOutcome, String> {
     Ok(outcome)
 }
 
-/// Folds one folder's outcome into the pass as a whole.
-#[cfg(target_os = "android")]
-fn merge(into: &mut ImportOutcome, one: ImportOutcome) {
-    into.songs += one.songs;
-    into.images += one.images;
-    into.lyrics += one.lyrics;
-    into.skipped += one.skipped;
-    into.duplicates += one.duplicates;
-    into.similar += one.similar;
-    into.track_ids.extend(one.track_ids);
-    into.errors.extend(one.errors);
+#[cfg(any(target_os = "android", test))]
+fn indexed_audio_name(name: &str, mime: Option<&str>) -> Option<String> {
+    let name = picked_name(name);
+    if has_extension(Path::new(&name), AUDIO_EXTENSIONS) {
+        return Some(name);
+    }
+    let extension = match mime?.to_ascii_lowercase().as_str() {
+        "audio/mpeg" | "audio/mp3" => "mp3",
+        "audio/mp4" | "audio/x-m4a" => "m4a",
+        "audio/flac" | "audio/x-flac" => "flac",
+        "audio/aac" | "audio/aacp" => "aac",
+        "audio/ogg" | "application/ogg" => "ogg",
+        "audio/opus" => "opus",
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
+        "audio/aiff" | "audio/x-aiff" => "aiff",
+        "audio/x-ms-wma" => "wma",
+        _ => return None,
+    };
+    Some(format!("{name}.{extension}"))
 }
 
 /// What the system calls each picked file. Android is the one platform where
@@ -423,13 +509,36 @@ fn picked_name(path: &str) -> String {
 /// Copies a picked file into the library, so the tagging pass has a real path
 /// to read. The fs plugin is what opens a `content://` URI; a plain path goes
 /// straight through it.
-fn stage_picked(app: &AppHandle, uri: &str, name: &str) -> Result<PathBuf, String> {
-    let root = library_root(app)?;
-    let dir = root.join(CONFIG_DIR).join(PICKED_DIR);
-    fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-    let staged = dir.join(picked_name(name));
+struct PickedStage {
+    dir: PathBuf,
+    path: PathBuf,
+}
 
-    stage_picked_at(app, uri, &staged)?;
+impl PickedStage {
+    fn new(root: &Path, name: &str) -> Result<Self, String> {
+        let parent = root.join(CONFIG_DIR).join(PICKED_DIR);
+        fs::create_dir_all(&parent).map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+        loop {
+            let dir = parent.join(identity::new_id());
+            match fs::create_dir(&dir) {
+                Ok(()) => return Ok(Self { path: dir.join(picked_name(name)), dir }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(format!("could not create {}: {error}", dir.display())),
+            }
+        }
+    }
+}
+
+impl Drop for PickedStage {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn stage_picked(app: &AppHandle, uri: &str, name: &str) -> Result<PickedStage, String> {
+    let root = library_root(app)?;
+    let staged = PickedStage::new(&root, name)?;
+    stage_picked_at(app, uri, &staged.path)?;
     Ok(staged)
 }
 
@@ -441,7 +550,7 @@ fn stage_picked_at(app: &AppHandle, uri: &str, staged: &Path) -> Result<(), Stri
         .fs()
         .open(picked, options)
         .map_err(|e| format!("could not read the selected file: {e}"))?;
-    let mut target = fs::File::create(staged)
+    let mut target = fs::OpenOptions::new().write(true).create_new(true).open(staged)
         .map_err(|e| format!("could not write {}: {e}", staged.display()))?;
 
     std::io::copy(&mut source, &mut target)
@@ -468,8 +577,6 @@ pub fn import_into_library(
         None => SidecarIndex::default(),
     };
 
-    clear_staging(&root);
-
     let mut playlist_tracks: Vec<String> = Vec::new();
     let mut landed: Vec<String> = Vec::new();
     let mut songs = 0usize;
@@ -494,6 +601,7 @@ pub fn import_into_library(
             &file_name,
             &artwork_index,
             &lyrics_index,
+            false,
         );
 
         match outcome {
@@ -544,7 +652,7 @@ pub fn import_into_library(
         None
     };
 
-    let outcome = ImportOutcome {
+    let mut outcome = ImportOutcome {
         songs,
         images,
         lyrics,
@@ -554,9 +662,10 @@ pub fn import_into_library(
         playlist,
         track_ids: landed,
         errors,
-        state: playlists::refresh(app, &store),
+        state: PersistedState::default(),
     };
 
+    outcome.refresh_state(app, &store);
     Ok(outcome)
 }
 
@@ -619,6 +728,7 @@ fn import_one(
     file_name: &str,
     artwork_index: &SidecarIndex,
     lyrics_index: &SidecarIndex,
+    generic_sidecars: bool,
 ) -> Result<(Placed, String), String> {
     let extension = source
         .extension()
@@ -626,66 +736,64 @@ fn import_one(
         .map(|value| value.to_lowercase())
         .ok_or_else(|| "that file has no extension".to_string())?;
 
-    let staged = staging_path(root, &extension)?;
-    let hash = copy_and_hash(source, &staged)?;
+    let staged_path = staging_path(root, &extension)?;
+    let hash = copy_and_hash(source, &staged_path)?;
+    let staged = StagedFile(staged_path);
+    let _operation = catalog.library_operation();
 
     // The same audio is the same song. A row whose file is gone is adopted
     // instead, so a song deleted outside Wave comes back to its likes.
     let known = catalog.find_by_hash(&hash)?;
     if let Some(row) = &known {
         if !row.missing {
-            let _ = fs::remove_file(&staged);
             return Ok((Placed::Duplicate, row.id.clone()));
         }
     }
-    let id = known
-        .map(|row| row.id)
-        .unwrap_or_else(|| identity::id_for_hash(&hash));
-
-    let dir = library::track_dir(root, &id);
-    fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    let (id, dir) = reserve_track_dir(root, catalog, known.as_ref(), &hash)?;
+    let mut created = PlacedFiles { dir: dir.clone(), paths: Vec::new(), committed: false };
 
     let target = audio_path(root, &id, &extension);
-    if target.exists() {
-        let _ = fs::remove_file(&target);
-    }
-    move_file(&staged, &target)?;
+    copy_new(&staged.0, &target)?;
+    created.paths.push(target.clone());
 
     // Covers and lyrics are matched by name here and only here: this is a folder
     // Wave has never seen, and its file names are all there is to go on.
     let stem = library::file_stem_lower(source);
     let wave_folder = stem == library::AUDIO_STEM;
     let cover = match artwork_index.resolve(&stem, file_name).or_else(|| {
-        wave_folder.then(|| source.parent().and_then(library::cover_in)).flatten()
+        (wave_folder || generic_sidecars).then(|| source.parent().and_then(library::cover_in)).flatten()
     }) {
-        Some(image) => {
+        Some(image) if library::cover_in(&dir).is_none() => {
             let extension = image
                 .extension()
                 .and_then(|value| value.to_str())
                 .unwrap_or("jpg")
                 .to_lowercase();
             let target = cover_path(root, &id, &extension);
-            fs::copy(&image, &target).map_err(|e| format!("could not copy a cover: {e}"))?;
+            copy_new(&image, &target)?;
+            created.paths.push(target);
             true
         }
-        None => false,
+        _ => false,
     };
 
     let lyrics = match lyrics_index
         .resolve(&stem, file_name)
         .or_else(|| sidecar_beside(source))
-        .or_else(|| wave_folder.then(|| source.parent().and_then(library::lyrics_in)).flatten())
+        .or_else(|| (wave_folder || generic_sidecars).then(|| source.parent().and_then(library::lyrics_in)).flatten())
     {
-        Some(text) => {
+        Some(text) if library::lyrics_in(&dir).is_none() => {
             let target = lyrics_path(root, &id);
-            fs::copy(&text, &target).map_err(|e| format!("could not copy lyrics: {e}"))?;
+            copy_new(&text, &target)?;
+            created.paths.push(target);
             true
         }
-        None => false,
+        _ => false,
     };
 
     let row = library::describe(root, &id, &target, file_name, Some(&hash))?;
     catalog.upsert_track(&row)?;
+    created.committed = true;
 
     // Another recording of the same song is not a duplicate, but it is worth
     // saying so rather than letting it look like one.
@@ -712,56 +820,120 @@ fn import_one(
 fn copy_and_hash(from: &Path, to: &Path) -> Result<String, String> {
     let mut source =
         fs::File::open(from).map_err(|e| format!("could not read {}: {e}", from.display()))?;
-    let mut target =
-        fs::File::create(to).map_err(|e| format!("could not write {}: {e}", to.display()))?;
+    let mut target = fs::OpenOptions::new().write(true).create_new(true).open(to)
+        .map_err(|e| format!("could not write {}: {e}", to.display()))?;
     let mut hasher = identity::Hasher::new();
     let mut buffer = vec![0u8; COPY_BUFFER];
 
-    loop {
-        let read = source
-            .read(&mut buffer)
-            .map_err(|e| format!("could not read {}: {e}", from.display()))?;
-        if read == 0 {
-            break;
+    let copied = (|| {
+        loop {
+            let read = source
+                .read(&mut buffer)
+                .map_err(|e| format!("could not read {}: {e}", from.display()))?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+            target
+                .write_all(&buffer[..read])
+                .map_err(|e| format!("could not write {}: {e}", to.display()))?;
         }
-        hasher.update(&buffer[..read]);
         target
-            .write_all(&buffer[..read])
-            .map_err(|e| format!("could not write {}: {e}", to.display()))?;
+            .flush()
+            .map_err(|e| format!("could not write {}: {e}", to.display()))
+    })();
+    drop(target);
+    if let Err(error) = copied {
+        let _ = fs::remove_file(to);
+        return Err(error);
     }
-
-    target
-        .flush()
-        .map_err(|e| format!("could not write {}: {e}", to.display()))?;
     Ok(hasher.finish())
 }
 
-/// A rename where that works, and a copy where it does not, so a library on
-/// another volume is still importable.
-fn move_file(from: &Path, to: &Path) -> Result<(), String> {
-    if fs::rename(from, to).is_ok() {
-        return Ok(());
+fn copy_new(from: &Path, to: &Path) -> Result<(), String> {
+    let mut source = fs::File::open(from)
+        .map_err(|e| format!("could not read {}: {e}", from.display()))?;
+    let mut target = fs::OpenOptions::new().write(true).create_new(true).open(to)
+        .map_err(|e| format!("could not create {}: {e}", to.display()))?;
+    if let Err(error) = std::io::copy(&mut source, &mut target) {
+        drop(target);
+        let _ = fs::remove_file(to);
+        return Err(format!("could not write {}: {error}", to.display()));
     }
-    fs::copy(from, to).map_err(|e| format!("could not file {}: {e}", to.display()))?;
-    let _ = fs::remove_file(from);
     Ok(())
+}
+
+fn reserve_track_dir(
+    root: &Path,
+    catalog: &Catalog,
+    missing: Option<&crate::catalog::TrackRow>,
+    hash: &str,
+) -> Result<(String, PathBuf), String> {
+    let songs = root.join(library::SONGS_DIR);
+    fs::create_dir_all(&songs).map_err(|e| format!("could not create {}: {e}", songs.display()))?;
+
+    if let Some(row) = missing {
+        let dir = library::track_dir(root, &row.id);
+        let recorded_exists = root.join(&row.rel_path).try_exists()
+            .map_err(|e| format!("could not check {}: {e}", row.rel_path))?;
+        if !recorded_exists && recovery_dir_available(&dir)? {
+            match fs::create_dir(&dir) {
+                Ok(()) => return Ok((row.id.clone(), dir)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if recovery_dir_available(&dir)? {
+                        return Ok((row.id.clone(), dir));
+                    }
+                }
+                Err(error) => return Err(format!("could not create {}: {error}", dir.display())),
+            }
+        }
+    }
+
+    let mut id = identity::id_for_hash(hash);
+    loop {
+        let dir = library::track_dir(root, &id);
+        if catalog.track(&id)?.is_none() {
+            match fs::create_dir(&dir) {
+                Ok(()) => return Ok((id, dir)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(format!("could not create {}: {error}", dir.display())),
+            }
+        }
+        id = identity::new_id();
+    }
+}
+
+fn recovery_dir_available(dir: &Path) -> Result<bool, String> {
+    let metadata = match fs::symlink_metadata(dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => return Err(format!("could not check {}: {error}", dir.display())),
+    };
+    if !metadata.is_dir() {
+        return Ok(false);
+    }
+    let entries = fs::read_dir(dir).map_err(|e| format!("could not read {}: {e}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("could not read {}: {e}", dir.display()))?;
+        if has_extension(&entry.path(), AUDIO_EXTENSIONS) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+struct StagedFile(PathBuf);
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
 }
 
 fn staging_path(root: &Path, extension: &str) -> Result<PathBuf, String> {
     let dir = root.join(CONFIG_DIR).join(STAGING_DIR);
     fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     Ok(dir.join(format!("{}.{extension}", identity::new_id())))
-}
-
-/// Drops whatever a previous import left behind.
-fn clear_staging(root: &Path) {
-    let dir = root.join(CONFIG_DIR).join(STAGING_DIR);
-    let Ok(entries) = fs::read_dir(&dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let _ = fs::remove_file(entry.path());
-    }
 }
 
 pub fn remember_import(app: &AppHandle, source: &str, name: &str, outcome: &ImportOutcome) {
@@ -894,16 +1066,19 @@ mod tests {
     }
 
     #[test]
-    fn a_staging_directory_is_emptied_before_each_import() {
-        let root = scratch("staging");
-        let dir = root.join(CONFIG_DIR).join(STAGING_DIR);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("leftover.mp3"), b"half a song").unwrap();
-
-        clear_staging(&root);
-
-        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
-        clear_staging(&scratch("staging-fresh"));
+    fn picked_staging_is_private_and_only_cleans_its_own_files() {
+        let root = scratch("picked-staging");
+        let first = PickedStage::new(&root, "Song.mp3").unwrap();
+        let second = PickedStage::new(&root, "Song.mp3").unwrap();
+        fs::write(&first.path, b"first").unwrap();
+        fs::write(&second.path, b"second").unwrap();
+        assert_ne!(first.path, second.path);
+        drop(first);
+        assert_eq!(fs::read(&second.path).unwrap(), b"second");
+        assert!(second.dir.is_dir());
+        let dir = second.dir.clone();
+        drop(second);
+        assert!(!dir.exists());
     }
 
     #[test]
@@ -956,6 +1131,7 @@ mod tests {
         let catalog = Catalog::in_memory().unwrap();
         let (placed, id) = import_one(
             &root, &catalog, &audio, "audio.wav", &SidecarIndex::default(), &SidecarIndex::default(),
+            false,
         ).unwrap();
         assert!(matches!(placed, Placed::Added { cover: true, lyrics: true, .. }));
         assert_eq!(fs::read(cover_path(&root, &id, "jpg")).unwrap(), b"cover");
@@ -990,8 +1166,247 @@ mod tests {
         let catalog = Catalog::in_memory().unwrap();
         let (placed, id) = import_one(
             &root, &catalog, &audio, "audio.wav", &SidecarIndex::default(), &SidecarIndex::default(),
+            false,
         ).unwrap();
         assert!(matches!(placed, Placed::Added { cover: true, .. }));
         assert_eq!(fs::read(cover_path(&root, &id, "png")).unwrap(), b"replaced cover");
+    }
+
+    fn import_test_song(root: &Path, catalog: &Catalog, source: &Path, generic: bool) -> (Placed, String) {
+        let index = SidecarIndex::build(source.parent().unwrap(), IMAGE_EXTENSIONS);
+        let lyrics = SidecarIndex::build(source.parent().unwrap(), LYRICS_EXTENSIONS);
+        import_one(root, catalog, source, "Song.wav", &index, &lyrics, generic).unwrap()
+    }
+
+    #[test]
+    fn reimport_after_edit_does_not_replace_the_edited_record_or_file() {
+        use lofty::config::WriteOptions;
+        use lofty::file::FileType;
+        use lofty::prelude::{Accessor, TagExt};
+        use lofty::tag::Tag;
+
+        let root = scratch("edited-collision");
+        let source = root.join("Song.wav");
+        write_test_wave(&source);
+        let catalog = Catalog::in_memory().unwrap();
+        let (_, original_id) = import_test_song(&root, &catalog, &source, false);
+        let path = audio_path(&root, &original_id, "wav");
+        let old = catalog.track(&original_id).unwrap().unwrap();
+        let mut tag = Tag::new(FileType::Wav.primary_tag_type());
+        tag.set_title("Edited title".to_string());
+        tag.save_to_path(&path, WriteOptions::default()).unwrap();
+        let mut edited = library::describe(&root, &original_id, &path, "Song.wav", None).unwrap();
+        edited.added_at = old.added_at;
+        catalog.upsert_edited_track(&edited, old.bytes).unwrap();
+        let edited_bytes = fs::read(&path).unwrap();
+
+        let (placed, new_id) = import_test_song(&root, &catalog, &source, false);
+        assert!(matches!(placed, Placed::Added { .. }));
+        assert_ne!(new_id, original_id);
+        assert_eq!(fs::read(&path).unwrap(), edited_bytes);
+        assert_eq!(catalog.track(&original_id).unwrap().unwrap().title, "Edited title");
+        assert_eq!(fs::read(audio_path(&root, &new_id, "wav")).unwrap(), fs::read(&source).unwrap());
+        assert!(matches!(import_test_song(&root, &catalog, &source, false).0, Placed::Duplicate));
+    }
+
+    #[test]
+    fn concurrent_imports_choose_one_new_track_after_an_id_collision() {
+        use std::sync::{Arc, Barrier};
+        let root = scratch("concurrent-collision");
+        let source = root.join("Song.wav");
+        write_test_wave(&source);
+        let hash = identity::content_hash(&source).unwrap();
+        let old_id = identity::id_for_hash(&hash);
+        let occupied = library::track_dir(&root, &old_id);
+        fs::create_dir_all(&occupied).unwrap();
+        fs::write(occupied.join("audio.mp3"), b"existing audio").unwrap();
+        let catalog = Arc::new(Catalog::in_memory().unwrap());
+        let barrier = Arc::new(Barrier::new(8));
+        let threads: Vec<_> = (0..8).map(|_| {
+            let (root, source, catalog, barrier) = (root.clone(), source.clone(), catalog.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                barrier.wait();
+                import_test_song(&root, &catalog, &source, false)
+            })
+        }).collect();
+        let results: Vec<_> = threads.into_iter().map(|thread| thread.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|(placed, _)| matches!(placed, Placed::Added { .. })).count(), 1);
+        assert_eq!(results.iter().filter(|(placed, _)| matches!(placed, Placed::Duplicate)).count(), 7);
+        assert!(results.iter().all(|(_, id)| id == &results[0].1));
+        assert_ne!(results[0].1, old_id);
+        assert_eq!(fs::read(occupied.join("audio.mp3")).unwrap(), b"existing audio");
+        assert_eq!(catalog.tracks().unwrap().len(), 1);
+        assert_eq!(fs::read_dir(root.join(CONFIG_DIR).join(STAGING_DIR)).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_catalog_id_collision_without_a_directory_is_not_overwritten() {
+        let root = scratch("catalog-collision");
+        let source = root.join("Song.wav");
+        write_test_wave(&source);
+        let id = identity::id_for_hash(&identity::content_hash(&source).unwrap());
+        let catalog = Catalog::in_memory().unwrap();
+        let old = crate::catalog::TrackRow {
+            id: id.clone(),
+            rel_path: format!("songs/{id}/audio.mp3"),
+            content_hash: Some("different".into()),
+            title: "Existing".into(),
+            ..Default::default()
+        };
+        catalog.upsert_track(&old).unwrap();
+        let (_, new_id) = import_test_song(&root, &catalog, &source, false);
+        assert_ne!(id, new_id);
+        assert_eq!(catalog.track(&id).unwrap().unwrap().title, "Existing");
+    }
+
+    #[test]
+    fn missing_track_recovery_preserves_existing_sidecars_and_other_audio() {
+        let root = scratch("missing-recovery");
+        let source = root.join("Song.wav");
+        write_test_wave(&source);
+        let catalog = Catalog::in_memory().unwrap();
+        let (_, id) = import_test_song(&root, &catalog, &source, false);
+        let dir = library::track_dir(&root, &id);
+        fs::remove_file(audio_path(&root, &id, "wav")).unwrap();
+        fs::write(dir.join("cover.jpg"), b"kept cover").unwrap();
+        fs::write(dir.join("lyrics.lrc"), b"kept lyrics").unwrap();
+        fs::write(root.join("Song.jpg"), b"new cover").unwrap();
+        fs::write(root.join("Song.lrc"), b"new lyrics").unwrap();
+        catalog.sync_scan(&[], &[], std::slice::from_ref(&id)).unwrap();
+        let (_, restored) = import_test_song(&root, &catalog, &source, false);
+        assert_eq!(restored, id);
+        assert_eq!(fs::read(dir.join("cover.jpg")).unwrap(), b"kept cover");
+        assert_eq!(fs::read(dir.join("lyrics.lrc")).unwrap(), b"kept lyrics");
+
+        fs::remove_file(audio_path(&root, &id, "wav")).unwrap();
+        fs::write(dir.join("renamed.mp3"), b"other audio").unwrap();
+        catalog.sync_scan(&[], &[], std::slice::from_ref(&id)).unwrap();
+        let (_, new_id) = import_test_song(&root, &catalog, &source, false);
+        assert_ne!(new_id, id);
+        assert_eq!(fs::read(dir.join("renamed.mp3")).unwrap(), b"other audio");
+    }
+
+    #[test]
+    fn generic_sidecars_belong_only_to_a_single_song_folder() {
+        let root = scratch("generic-sidecars");
+        let source_dir = root.join("source");
+        fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("Song.wav");
+        write_test_wave(&source);
+        fs::write(source_dir.join("cover.jpg"), b"generic cover").unwrap();
+        fs::write(source_dir.join("lyrics.lrc"), b"generic lyrics").unwrap();
+        let catalog = Catalog::in_memory().unwrap();
+
+        let (placed, id) = import_test_song(&root, &catalog, &source, true);
+        assert!(matches!(placed, Placed::Added { cover: true, lyrics: true, .. }));
+        assert_eq!(fs::read(cover_path(&root, &id, "jpg")).unwrap(), b"generic cover");
+        assert_eq!(fs::read(lyrics_path(&root, &id)).unwrap(), b"generic lyrics");
+
+        let other_root = scratch("generic-sidecars-multiple");
+        let other_catalog = Catalog::in_memory().unwrap();
+        let (placed, _) = import_test_song(&other_root, &other_catalog, &source, false);
+        assert!(matches!(placed, Placed::Added { cover: false, lyrics: false, .. }));
+        fs::write(source_dir.join("Song.jpg"), b"song cover").unwrap();
+        fs::write(source_dir.join("Song.lrc"), b"song lyrics").unwrap();
+        let named_root = scratch("named-sidecars");
+        let named_catalog = Catalog::in_memory().unwrap();
+        let (placed, id) = import_test_song(&named_root, &named_catalog, &source, true);
+        assert!(matches!(placed, Placed::Added { cover: true, lyrics: true, .. }));
+        assert_eq!(fs::read(cover_path(&named_root, &id, "jpg")).unwrap(), b"song cover");
+        assert_eq!(fs::read(lyrics_path(&named_root, &id)).unwrap(), b"song lyrics");
+    }
+
+    #[test]
+    fn phone_folder_shares_covers_but_not_ambiguous_generic_lyrics() {
+        let versioned = format!("cover-{:020}-{}.png", 1, identity::new_id());
+        assert!(phone_generic_sidecar("COVER.JPG", false));
+        assert!(phone_generic_sidecar(&versioned, false));
+        assert!(!phone_generic_sidecar("cover-other.jpg", false));
+        assert!(!phone_generic_sidecar("lyrics.lrc", false));
+        assert!(phone_generic_sidecar("LYRICS.LRC", true));
+        assert!(!phone_generic_sidecar("lyrics.txt", true));
+    }
+
+    #[test]
+    fn phone_folder_import_prefers_named_art_and_shares_versioned_art() {
+        let source = scratch("phone-album-source");
+        let versioned = format!("cover-{:020}-{}.png", 1, identity::new_id());
+        for (name, data) in [
+            ("cover.jpg", b"album cover".as_slice()),
+            (versioned.as_str(), b"new album cover".as_slice()),
+            ("First.jpg", b"song cover".as_slice()),
+            ("First.lrc", b"song lyrics".as_slice()),
+            ("lyrics.lrc", b"ambiguous lyrics".as_slice()),
+        ] {
+            fs::write(source.join(name), data).unwrap();
+        }
+        for (name, cover_extension, cover, has_lyrics) in [
+            ("First.wav", "jpg", b"song cover".as_slice(), true),
+            ("Second.wav", "png", b"new album cover".as_slice(), false),
+        ] {
+            let root = scratch(&format!("phone-album-{name}"));
+            let stage = root.join("source");
+            fs::create_dir_all(&stage).unwrap();
+            let audio = stage.join(name);
+            write_test_wave(&audio);
+            let stem = library::file_stem_lower(&audio);
+            for entry in fs::read_dir(&source).unwrap() {
+                let entry = entry.unwrap();
+                let sidecar = entry.file_name().to_string_lossy().into_owned();
+                if library::file_stem_lower(Path::new(&sidecar)) == stem
+                    || phone_generic_sidecar(&sidecar, false)
+                {
+                    fs::copy(entry.path(), stage.join(sidecar)).unwrap();
+                }
+            }
+            let catalog = Catalog::in_memory().unwrap();
+            let images = SidecarIndex::build(&stage, IMAGE_EXTENSIONS);
+            let lyrics = SidecarIndex::build(&stage, LYRICS_EXTENSIONS);
+            let (placed, id) = import_one(&root, &catalog, &audio, name, &images, &lyrics, true).unwrap();
+            assert!(matches!(placed, Placed::Added { cover: true, .. }));
+            assert_eq!(fs::read(cover_path(&root, &id, cover_extension)).unwrap(), cover);
+            assert_eq!(lyrics_path(&root, &id).exists(), has_lyrics);
+            if has_lyrics {
+                assert_eq!(fs::read(lyrics_path(&root, &id)).unwrap(), b"song lyrics");
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_audio_uses_names_or_known_mime_types() {
+        assert_eq!(indexed_audio_name("Song.MP3", None).as_deref(), Some("Song.MP3"));
+        assert_eq!(indexed_audio_name("Song", Some("audio/flac")).as_deref(), Some("Song.flac"));
+        assert_eq!(indexed_audio_name("nested/Song", Some("audio/mpeg")).as_deref(), Some("Song.mp3"));
+        assert_eq!(indexed_audio_name("Movie.mp4", Some("video/mp4")), None);
+        assert_eq!(indexed_audio_name("unknown", None), None);
+    }
+
+    #[test]
+    fn fetched_writes_reject_stale_rows_and_refresh_the_audio_hash() {
+        use lofty::config::WriteOptions;
+        use lofty::file::FileType;
+        use lofty::prelude::{Accessor, TagExt};
+        use lofty::tag::Tag;
+
+        let root = scratch("fetched-refresh");
+        let source = root.join("Song.wav");
+        write_test_wave(&source);
+        let catalog = Catalog::in_memory().unwrap();
+        let (_, id) = import_test_song(&root, &catalog, &source, false);
+        let before = catalog.track(&id).unwrap().unwrap();
+        let snapshot = library::to_track(&before, &root);
+        assert!(fetched_track(&root, &catalog, &snapshot).is_ok());
+        let mut tag = Tag::new(FileType::Wav.primary_tag_type());
+        tag.set_title("Updated".to_string());
+        tag.save_to_path(&snapshot.path, WriteOptions::default()).unwrap();
+        assert!(fetched_track(&root, &catalog, &snapshot).is_err());
+
+        let after = refresh_after_tags(&root, &catalog, &before).unwrap();
+        assert_eq!(after.title, "Updated");
+        assert_ne!(before.content_hash, after.content_hash);
+        assert_eq!(catalog.track(&id).unwrap().unwrap().content_hash, after.content_hash);
+        assert!(fetched_track(&root, &catalog, &snapshot).is_err());
+        catalog.delete_tracks(&[id]).unwrap();
+        assert!(fetched_track(&root, &catalog, &snapshot).is_err());
     }
 }

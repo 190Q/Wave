@@ -12,7 +12,6 @@ import android.os.Build
 import android.provider.DocumentsContract
 import android.util.Log
 import android.view.View
-import android.view.WindowManager
 import android.webkit.WebView
 import android.widget.ScrollView
 import android.widget.TextView
@@ -71,6 +70,11 @@ class QueueArgs {
 }
 
 @InvokeArg
+class ControlsArgs {
+  var enabled: Boolean = true
+}
+
+@InvokeArg
 class EventsArgs {
   lateinit var channel: Channel
 }
@@ -116,6 +120,12 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
     watchInsets()
   }
 
+  @Command
+  fun setControls(invoke: Invoke) {
+    MediaPlayback.setControls(activity, invoke.parseArgs(ControlsArgs::class.java).enabled)
+    invoke.resolve()
+  }
+
   override fun onResume(activity: AppCompatActivity) {
     // The page is up by now, so this is the push that lands: the listener's
     // first pass usually runs before the page exists at all.
@@ -145,7 +155,6 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
     if (song == null) {
       playing = false
       keepAliveLogged = false
-      keepDisplayAwake(false)
       MediaPlayback.clear(activity)
       invoke.resolve()
       return
@@ -153,7 +162,6 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
 
     val wasPlaying = playing
     playing = song.playing
-    keepDisplayAwake(playing)
 
     if (song.playing) {
       askForNotifications()
@@ -181,7 +189,6 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
   fun stopSession(invoke: Invoke) {
     playing = false
     keepAliveLogged = false
-    keepDisplayAwake(false)
     MediaPlayback.clear(activity)
     invoke.resolve()
   }
@@ -308,17 +315,11 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
       view.onResume()
       view.resumeTimers()
       view.postDelayed({
-        view.onResume()
-        view.resumeTimers()
+        if (playing) {
+          view.onResume()
+          view.resumeTimers()
+        }
       }, KEEP_ALIVE_RETRY_MS)
-    }
-  }
-
-  private fun keepDisplayAwake(wanted: Boolean) {
-    if (wanted) {
-      activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-    } else {
-      activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
   }
 
@@ -337,18 +338,26 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
    * waited for: a refused notification costs the notification, nothing else.
    */
   private fun askForNotifications() {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-      return
+    activity.runOnUiThread {
+      val preferences = activity.getSharedPreferences("wave-media", Activity.MODE_PRIVATE)
+      val requested = preferences.getBoolean("notifications-requested", false)
+      val deniedBefore = ActivityCompat.shouldShowRequestPermissionRationale(
+        activity, Manifest.permission.POST_NOTIFICATIONS
+      )
+      if (notificationPermissionNeeded(
+          Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU,
+          getPermissionState("notifications") == PermissionState.GRANTED,
+          requested,
+          deniedBefore
+        )) {
+        preferences.edit().putBoolean("notifications-requested", true).apply()
+        ActivityCompat.requestPermissions(
+          activity,
+          arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+          0
+        )
+      }
     }
-    if (getPermissionState("notifications") == PermissionState.GRANTED) {
-      return
-    }
-
-    ActivityCompat.requestPermissions(
-      activity,
-      arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-      0
-    )
   }
 
   private fun watchInsets() {

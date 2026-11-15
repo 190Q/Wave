@@ -59,6 +59,7 @@ class FakeElement {
     this.rect = rect;
     this.listeners = new Map();
     this.properties = new Map();
+    this.attributes = new Map();
     this.classes = new Set();
     this.style = {
       setProperty: (name, value) => this.properties.set(name, value),
@@ -84,6 +85,7 @@ class FakeElement {
   }
 
   dispatch(name, event = {}) {
+    event.type = name;
     for (const callback of this.listeners.get(name) ?? []) callback(event);
   }
 
@@ -92,7 +94,8 @@ class FakeElement {
   setPointerCapture(id) { this.captured = id; }
   hasPointerCapture(id) { return this.captured === id; }
   releasePointerCapture() { this.captured = null; }
-  setAttribute() {}
+  setAttribute(name, value) { this.attributes.set(name, value); }
+  focus() { document.activeElement = this; }
   toggleAttribute() {}
   append() {}
   replaceChildren() {}
@@ -148,7 +151,8 @@ const vite = await createServer({
   root: fileURLToPath(new URL("..", import.meta.url)),
   appType: "custom",
   logLevel: "silent",
-  server: { middlewareMode: true },
+  optimizeDeps: { noDiscovery: true },
+  server: { middlewareMode: true, watch: null },
   plugins: [{
     name: "dock-test-mocks",
     enforce: "pre",
@@ -313,4 +317,76 @@ test("desktop mouse seeking still works across the dock", () => {
   elements.dock.dispatch("pointerdown", pointer(elements.dock, 300, 150));
   windowEvents.dispatch("pointerup");
   assert.deepEqual(context.seeks, [0.75]);
+});
+
+test("phone lyrics buttons activate on tap and keyboard", () => {
+  for (const kind of ["android", "linuxPhone"]) {
+    const { elements, stage } = setup(kind);
+    mountDock();
+    const open = elements["dock-grab"];
+    const close = elements["lyrics-grab"];
+    const panel = elements["lyrics-panel"];
+    assert.equal(panel.inert, true);
+    assert.equal(open.attributes.get("aria-expanded"), "false");
+
+    open.dispatch("click", { detail: 1 });
+    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "500px");
+    assert.equal(panel.inert, false);
+    assert.equal(open.attributes.get("aria-expanded"), "true");
+    close.dispatch("pointerdown", pointer(close, 200, 100));
+    close.dispatch("pointerup", pointer(close, 200, 100));
+    close.dispatch("click", { detail: 1 });
+    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "0px");
+
+    open.dispatch("click", { detail: 0 });
+    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "500px");
+    assert.equal(document.activeElement, close);
+    close.dispatch("click", { detail: 0 });
+    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "0px");
+    assert.equal(panel.inert, true);
+    assert.equal(document.activeElement, open);
+  }
+});
+
+test("lyrics drags do not turn their trailing click into a button activation", () => {
+  for (const kind of ["android", "linuxPhone"]) {
+    const { elements, stage, windowEvents } = setup(kind);
+    mountDock();
+    const open = elements["dock-grab"];
+    const close = elements["lyrics-grab"];
+
+    elements.dock.dispatch("pointerdown", pointer(open, 200, 110));
+    windowEvents.dispatch("pointermove", pointer(open, 200, 90));
+    windowEvents.dispatch("pointerup");
+    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "0px");
+    open.dispatch("click", { detail: 1 });
+    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "0px");
+
+    open.dispatch("click", { detail: 0 });
+    close.dispatch("pointerdown", pointer(close, 200, 100));
+    close.dispatch("pointermove", pointer(close, 200, 120));
+    close.dispatch("pointerup", pointer(close, 200, 120));
+    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "500px");
+    close.dispatch("click", { detail: 1 });
+    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "500px");
+    close.dispatch("click", { detail: 0 });
+    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "0px");
+  }
+});
+
+test("a swipe started on a phone transport control does not click it", () => {
+  const { elements, stage, windowEvents } = setup("linuxPhone");
+  mountDock();
+  elements.dock.dispatch("pointerdown", pointer(elements.play, 200, 150));
+  windowEvents.dispatch("pointermove", pointer(elements.play, 200, 80));
+  windowEvents.dispatch("pointerup");
+  let prevented = false;
+  elements.dock.dispatch("click", {
+    target: elements.play,
+    detail: 1,
+    preventDefault: () => { prevented = true; },
+    stopPropagation() {},
+  });
+  assert.equal(prevented, true);
+  assert.equal(stage.style.getPropertyValue("--sheet-travel"), "500px");
 });

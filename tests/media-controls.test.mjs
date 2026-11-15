@@ -17,8 +17,12 @@ const mocks = {
   "./device": "export const isAndroidPlatform = false;",
   "android-device": "export const isAndroidPlatform = true;",
   "./ipc": `
-    export const setNowPlaying = async () => {};
-    export const setQueue = async () => {};
+    export const setNowPlaying = (song) => {
+      const context = globalThis.__mediaControlTest;
+      context.songs.push(song);
+      return context.sendSong ? context.sendSong(song) : Promise.resolve();
+    };
+    export const setQueue = async (queue) => globalThis.__mediaControlTest.queues.push(queue);
     export const showMainWindow = async () => {};
   `,
   "./state": `
@@ -29,7 +33,7 @@ const mocks = {
         return typeof value === "function" ? value.bind(context.player) : value;
       }
     });
-    export const getState = () => ({ settings: { systemMediaControls: true, discordPresence: false } });
+    export const getState = () => ({ settings: context.settings });
     export const currentTrack = () => trackById(context.player.currentId);
     export const trackById = (id) => id ? { id, title: id, durationMs: 120000 } : undefined;
     export const colourFor = () => "#123456";
@@ -44,14 +48,15 @@ const vite = await createServer({
   root: fileURLToPath(new URL("..", import.meta.url)),
   appType: "custom",
   logLevel: "silent",
-  server: { middlewareMode: true },
+  optimizeDeps: { noDiscovery: true },
+  server: { middlewareMode: true, watch: null },
   ssr: { noExternal: ["@tauri-apps/api"] },
   plugins: [{
     name: "media-control-test-mocks",
     enforce: "pre",
     resolveId(source, importer) {
       if (!importer || !source || !(source in mocks)) return;
-      if (source === "./device" && /player\.ts\?android/.test(importer)) {
+      if (source === "./device" && /(player|presence)\.ts\?android/.test(importer)) {
         return "\0media-control-test:android-device";
       }
       if (/[\\/]src[\\/]lib[\\/](presence|player)\.ts/.test(importer)) {
@@ -69,6 +74,7 @@ const { AudioEngine } = await vite.ssrLoadModule("/src/lib/audio.ts");
 const { Player } = await vite.ssrLoadModule("/src/lib/player.ts");
 const { Player: AndroidPlayer } = await vite.ssrLoadModule("/src/lib/player.ts?android");
 const { mountPresence } = await vite.ssrLoadModule("/src/lib/presence.ts");
+const { mountPresence: mountAndroidPresence } = await vite.ssrLoadModule("/src/lib/presence.ts?android");
 
 class FakeAudio {
   constructor() {
@@ -90,11 +96,15 @@ class FakeAudio {
   load() {}
 }
 
-function setup(PlayerClass = Player) {
+function setup(PlayerClass = Player, mount = mountPresence, controls = true, sendSong = null) {
   context.elements = [];
   context.frames = new Map();
   context.nextFrame = 1;
   context.control = null;
+  context.songs = [];
+  context.sendSong = sendSong;
+  context.queues = [];
+  context.settings = { systemMediaControls: controls, discordPresence: false };
 
   const listeners = new Map();
   globalThis.document = {
@@ -110,7 +120,7 @@ function setup(PlayerClass = Player) {
   };
   globalThis.window = {
     cancelAnimationFrame: (id) => context.frames.delete(id),
-    setInterval: () => 0,
+    setInterval: (callback) => { context.interval = callback; return 0; },
   };
   globalThis.requestAnimationFrame = (callback) => {
     const id = context.nextFrame++;
@@ -127,7 +137,7 @@ function setup(PlayerClass = Player) {
     gain: 1,
   }));
   context.player = player;
-  mountPresence();
+  mount();
   player.setQueue("queue", "Queue", ["one", "two", "three"]);
   player.play();
   player.finishTransitions();
@@ -137,6 +147,116 @@ function setup(PlayerClass = Player) {
 function press(action, value) {
   context.control({ payload: { action, value } });
 }
+
+test("Android forwards play, pause and queue updates with both optional surfaces disabled", async () => {
+  const { player } = setup(AndroidPlayer, mountAndroidPresence, false);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(context.songs.some((song) => song?.playing === true));
+  assert.equal(context.queues.at(-1).length, 3);
+  player.pause();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.songs.at(-1).playing, false);
+  player.next();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.songs.at(-1).title, "two");
+  assert.equal(context.songs.at(-1).playing, true);
+});
+
+test("delayed playback updates cannot overtake a pause", async () => {
+  const requests = [];
+  const { player } = setup(AndroidPlayer, mountAndroidPresence, false, () => new Promise((resolve, reject) => {
+    requests.push({ resolve, reject });
+  }));
+  assert.equal(context.songs.length, 1);
+  requests[0].resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.songs.at(-1).playing, true);
+
+  player.seek(30000);
+  player.pause();
+  assert.equal(context.songs.length, 2);
+  requests[1].reject(new Error("temporary IPC failure"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.songs.length, 3);
+  assert.equal(context.songs.at(-1).playing, false);
+  assert.equal(context.songs.at(-1).positionMs, 30000);
+  requests[2].resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
+test("a failed pause update is retried while playback remains paused", async () => {
+  let failPause = false;
+  const { player } = setup(AndroidPlayer, mountAndroidPresence, false, (song) => {
+    if (failPause && song?.playing === false) {
+      failPause = false;
+      return Promise.reject(new Error("temporary IPC failure"));
+    }
+    return Promise.resolve();
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  failPause = true;
+  player.pause();
+  await new Promise((resolve) => setImmediate(resolve));
+  const count = context.songs.length;
+  assert.equal(context.songs.at(-1).playing, false);
+  player.handleLoaded();
+  assert.equal(context.songs.length, count);
+  context.interval();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.songs.length, count + 1);
+  assert.equal(context.songs.at(-1).playing, false);
+});
+
+test("a failed clear is retried until acknowledged", async () => {
+  let failClear = true;
+  const { player } = setup(AndroidPlayer, mountAndroidPresence, false, (song) => {
+    if (song === null && failClear) {
+      failClear = false;
+      return Promise.reject(new Error("temporary IPC failure"));
+    }
+    return Promise.resolve();
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  player.setQueue("empty", "Empty", []);
+  await new Promise((resolve) => setImmediate(resolve));
+  const count = context.songs.length;
+  assert.equal(context.songs.at(-1), null);
+  context.interval();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.songs.length, count + 1);
+  assert.equal(context.songs.at(-1), null);
+  context.interval();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.songs.length, count + 1);
+});
+
+test("a newer playing state supersedes a failed clear", async () => {
+  let rejectClear;
+  const { player } = setup(AndroidPlayer, mountAndroidPresence, false, (song) => {
+    if (song === null) {
+      return new Promise((_resolve, reject) => { rejectClear = reject; });
+    }
+    return Promise.resolve();
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  player.setQueue("empty", "Empty", []);
+  player.setQueue("new", "New", ["two"]);
+  player.play();
+  rejectClear(new Error("temporary IPC failure"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.songs.at(-1).title, "two");
+  assert.equal(context.songs.at(-1).playing, true);
+  const count = context.songs.length;
+  context.interval();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.songs.length, count);
+});
+
+test("desktop does not send presence when both surfaces are disabled", () => {
+  setup(Player, mountPresence, false);
+  assert.deepEqual(context.songs, []);
+  assert.deepEqual(context.queues, []);
+});
 
 for (const [platform, PlayerClass] of [["Linux", Player], ["Android", AndroidPlayer]]) {
   test(`${platform}: system next, pause, previous and pause do not leave an old song playing`, () => {

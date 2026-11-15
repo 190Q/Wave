@@ -138,6 +138,7 @@ pub struct Catalog {
     root: PathBuf,
     path: PathBuf,
     connection: Mutex<Connection>,
+    library_operation: Mutex<()>,
 }
 
 impl Catalog {
@@ -156,13 +157,75 @@ impl Catalog {
             root: root.to_path_buf(),
             path,
             connection: Mutex::new(connection),
+            library_operation: Mutex::new(()),
         };
         catalog.create_schema()?;
         Ok(catalog)
     }
 
-    /// A throwaway catalog, so the app still runs when the real one cannot be
-    /// opened. Nothing written to it is kept.
+    pub fn reorder_playlist(&self, id: &str, entries: &[String]) -> Result<(), String> {
+        let mut connection = self.guard();
+        let transaction = connection
+            .transaction()
+            .map_err(|e| format!("could not start a catalog write: {e}"))?;
+        let present = present_ids(&transaction)?;
+        let mut pending = HashSet::new();
+        {
+            let mut statement = transaction
+                .prepare("SELECT id FROM pending_tracks WHERE playlist_id = ?1")
+                .map_err(|e| format!("could not read the waiting songs: {e}"))?;
+            let rows = statement
+                .query_map(params![id], |row| row.get::<_, String>(0))
+                .map_err(|e| format!("could not read the waiting songs: {e}"))?;
+            for row in rows {
+                pending.insert(row.map_err(|e| format!("could not read a waiting song: {e}"))?);
+            }
+        }
+        let mut stored = Vec::new();
+        {
+            let mut statement = transaction
+                .prepare("SELECT track_id FROM playlist_tracks WHERE playlist_id = ?1 ORDER BY position")
+                .map_err(|e| format!("could not read the playlist: {e}"))?;
+            let rows = statement
+                .query_map(params![id], |row| row.get::<_, String>(0))
+                .map_err(|e| format!("could not read the playlist: {e}"))?;
+            for row in rows {
+                stored.push(row.map_err(|e| format!("could not read a playlist entry: {e}"))?);
+            }
+        }
+        let visible = |entry: &String| present.contains(entry) || pending.contains(entry);
+        let mut counts = HashMap::new();
+        for entry in stored.iter().filter(|entry| visible(entry)) {
+            *counts.entry(entry.as_str()).or_insert(0usize) += 1;
+        }
+        for entry in entries {
+            match counts.get_mut(entry.as_str()) {
+                Some(count) if *count > 0 => *count -= 1,
+                _ => return Err("the playlist changed; refresh it and try again".to_string()),
+            }
+        }
+        if counts.values().any(|count| *count != 0) {
+            return Err("the playlist changed; refresh it and try again".to_string());
+        }
+        let mut reordered = entries.iter();
+        for entry in &mut stored {
+            if visible(entry) {
+                *entry = reordered.next().expect("visible entries were checked").clone();
+            }
+        }
+        write_entries(&transaction, id, &stored)?;
+        transaction
+            .execute(
+                "UPDATE playlists SET updated_at = ?2 WHERE id = ?1",
+                params![id, identity::now_ms()],
+            )
+            .map_err(|e| format!("could not stamp the playlist: {e}"))?;
+        transaction
+            .commit()
+            .map_err(|e| format!("could not finish a catalog write: {e}"))
+    }
+
+    #[cfg(test)]
     pub fn in_memory() -> Result<Self, String> {
         let connection =
             Connection::open_in_memory().map_err(|e| format!("could not open a catalog: {e}"))?;
@@ -174,6 +237,7 @@ impl Catalog {
             root: PathBuf::new(),
             path: PathBuf::new(),
             connection: Mutex::new(connection),
+            library_operation: Mutex::new(()),
         };
         catalog.create_schema()?;
         Ok(catalog)
@@ -417,7 +481,12 @@ impl Catalog {
     /// Brings the catalog in line with a scan: only the rows that actually
     /// changed are written, and a song the scan did not see is marked gone. A
     /// song that is still there and unchanged keeps its row untouched.
-    pub fn sync_scan(&self, changed: &[TrackRow], seen: &[String]) -> Result<(), String> {
+    pub fn sync_scan(
+        &self,
+        changed: &[TrackRow],
+        seen: &[String],
+        known: &[String],
+    ) -> Result<(), String> {
         let mut connection = self.guard();
         let transaction = connection
             .transaction()
@@ -428,7 +497,8 @@ impl Catalog {
         transaction
             .execute_batch(
                 "CREATE TEMP TABLE IF NOT EXISTS scan_seen (id TEXT PRIMARY KEY); \
-                 DELETE FROM scan_seen;",
+                 CREATE TEMP TABLE IF NOT EXISTS scan_known (id TEXT PRIMARY KEY); \
+                 DELETE FROM scan_seen; DELETE FROM scan_known;",
             )
             .map_err(|e| format!("could not prepare the scan: {e}"))?;
         {
@@ -441,10 +511,21 @@ impl Catalog {
                     .map_err(|e| format!("could not note a scanned song: {e}"))?;
             }
         }
+        {
+            let mut statement = transaction
+                .prepare("INSERT OR IGNORE INTO scan_known (id) VALUES (?1)")
+                .map_err(|e| format!("could not prepare the scan: {e}"))?;
+            for id in known {
+                statement
+                    .execute(params![id])
+                    .map_err(|e| format!("could not note a known song: {e}"))?;
+            }
+        }
 
         transaction
             .execute(
                 "UPDATE tracks SET missing = 1 WHERE missing = 0 \
+                 AND id IN (SELECT id FROM scan_known) \
                  AND id NOT IN (SELECT id FROM scan_seen)",
                 [],
             )
@@ -651,14 +732,18 @@ impl Catalog {
             .transaction()
             .map_err(|e| format!("could not start a catalog write: {e}"))?;
         for (pending_id, track_id) in matches {
-            transaction.execute(
-                "UPDATE playlist_tracks SET track_id = ?3 WHERE playlist_id = ?1 AND track_id = ?2",
+            let changed = transaction.execute(
+                "UPDATE playlist_tracks SET track_id = ?3 WHERE playlist_id = ?1 AND track_id = ?2 \
+                 AND EXISTS (SELECT 1 FROM pending_tracks WHERE playlist_id = ?1 AND id = ?2 AND source = 'wavelist') \
+                 AND EXISTS (SELECT 1 FROM tracks WHERE id = ?3 AND missing = 0)",
                 params![playlist_id, pending_id, track_id],
             ).map_err(|e| format!("could not resolve a playlist entry: {e}"))?;
-            transaction.execute(
-                "DELETE FROM pending_tracks WHERE playlist_id = ?1 AND id = ?2 AND source = 'wavelist'",
-                params![playlist_id, pending_id],
-            ).map_err(|e| format!("could not remove a waiting song: {e}"))?;
+            if changed > 0 {
+                transaction.execute(
+                    "DELETE FROM pending_tracks WHERE playlist_id = ?1 AND id = ?2 AND source = 'wavelist'",
+                    params![playlist_id, pending_id],
+                ).map_err(|e| format!("could not remove a waiting song: {e}"))?;
+            }
         }
         transaction.commit().map_err(|e| format!("could not finish a catalog write: {e}"))
     }
@@ -704,6 +789,12 @@ impl Catalog {
         Ok(tracks)
     }
 
+
+    pub fn library_operation(&self) -> MutexGuard<'_, ()> {
+        self.library_operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
     pub fn set_playlist_entries(&self, id: &str, track_ids: &[String]) -> Result<(), String> {
         let mut connection = self.guard();
         let transaction = connection
@@ -800,28 +891,34 @@ impl Catalog {
         Ok(id)
     }
 
-    /// Rewrites a playlist's entries and drops the waiting songs they no longer
-    /// need, in one write.
+    /// Replaces waiting entries without overwriting concurrent playlist edits.
     pub fn resolve_pending(
         &self,
         id: &str,
-        entries: &[String],
-        resolved: &[String],
+        resolved: &[(String, String)],
     ) -> Result<(), String> {
         let mut connection = self.guard();
         let transaction = connection
             .transaction()
             .map_err(|e| format!("could not start a catalog write: {e}"))?;
 
-        write_entries(&transaction, id, entries)?;
-
-        for pending_id in resolved {
-            transaction
+        for (pending_id, track_id) in resolved {
+            let changed = transaction
                 .execute(
-                    "DELETE FROM pending_tracks WHERE playlist_id = ?1 AND id = ?2",
-                    params![id, pending_id],
+                    "UPDATE playlist_tracks SET track_id = ?3 WHERE playlist_id = ?1 AND track_id = ?2 \
+                     AND EXISTS (SELECT 1 FROM pending_tracks WHERE playlist_id = ?1 AND id = ?2) \
+                     AND EXISTS (SELECT 1 FROM tracks WHERE id = ?3 AND missing = 0)",
+                    params![id, pending_id, track_id],
                 )
-                .map_err(|e| format!("could not drop a waiting song: {e}"))?;
+                .map_err(|e| format!("could not resolve a playlist entry: {e}"))?;
+            if changed > 0 {
+                transaction
+                    .execute(
+                        "DELETE FROM pending_tracks WHERE playlist_id = ?1 AND id = ?2",
+                        params![id, pending_id],
+                    )
+                    .map_err(|e| format!("could not drop a waiting song: {e}"))?;
+            }
         }
 
         transaction
@@ -1287,6 +1384,57 @@ mod tests {
     }
 
     #[test]
+    fn reordering_visible_entries_keeps_missing_entries_and_duplicates() {
+        let catalog = Catalog::in_memory().unwrap();
+        for id in ["one", "two", "missing"] {
+            catalog.upsert_track(&song(id, id, id)).unwrap();
+        }
+        let id = catalog.create_generated_playlist(
+            "Ordered",
+            &["one".into(), "missing".into(), "waiting".into(), "two".into(), "one".into()],
+            &[waiting("waiting", "Waiting")],
+        ).unwrap();
+        catalog.sync_scan(
+            &[],
+            &["one".into(), "two".into()],
+            &["one".into(), "two".into(), "missing".into()],
+        ).unwrap();
+
+        catalog.reorder_playlist(&id, &["two".into(), "one".into(), "waiting".into(), "one".into()]).unwrap();
+        assert_eq!(catalog.playlist_entries(&id).unwrap(), vec!["two", "missing", "one", "waiting", "one"]);
+        assert_eq!(one_playlist(&catalog, &id).entries, vec!["two", "one", "waiting", "one"]);
+        catalog.upsert_track(&song("missing", "missing", "missing")).unwrap();
+        assert_eq!(one_playlist(&catalog, &id).entries, vec!["two", "missing", "one", "waiting", "one"]);
+
+        let before = catalog.playlist_entries(&id).unwrap();
+        assert!(catalog.reorder_playlist(&id, &["two".into(), "one".into()]).is_err());
+        assert!(catalog.reorder_playlist(&id, &["two".into(), "missing".into(), "one".into(), "waiting".into(), "waiting".into()]).is_err());
+        assert_eq!(catalog.playlist_entries(&id).unwrap(), before);
+    }
+
+    #[test]
+    fn scan_never_marks_rows_created_after_its_snapshot_missing() {
+        let catalog = Catalog::in_memory().unwrap();
+        catalog.upsert_track(&song("old", "Old", "old")).unwrap();
+        let known: Vec<String> = catalog.rows_by_id().unwrap().into_keys().collect();
+        catalog.upsert_track(&song("new", "New", "new")).unwrap();
+        catalog.sync_scan(&[], &[], &known).unwrap();
+        assert!(catalog.track("old").unwrap().unwrap().missing);
+        assert!(!catalog.track("new").unwrap().unwrap().missing);
+    }
+
+    #[test]
+    fn opening_an_invalid_catalog_fails_without_replacing_it() {
+        let root = scratch("invalid-catalog");
+        let dir = root.join(CONFIG_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(CATALOG_FILE);
+        std::fs::write(&path, b"not a database").unwrap();
+        assert!(Catalog::open(&root).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), b"not a database");
+    }
+
+    #[test]
     fn round_trips_a_track() {
         let root = scratch("round-trip");
         let catalog = Catalog::open(&root).unwrap();
@@ -1341,7 +1489,7 @@ mod tests {
         let catalog = Catalog::open(&root).unwrap();
         catalog.upsert_track(&song("one", "One", "h")).unwrap();
 
-        catalog.sync_scan(&[], &[]).unwrap();
+        catalog.sync_scan(&[], &[], &["one".into()]).unwrap();
         assert!(catalog.tracks().unwrap().is_empty());
         assert_eq!(catalog.counts(), (0, 1));
         assert!(catalog.track("one").unwrap().is_some());
@@ -1391,7 +1539,7 @@ mod tests {
         assert_eq!(one_playlist(&catalog, &id).track_ids, vec!["three", "one", "two"]);
 
         // A song the library no longer has leaves the list but keeps its place.
-        catalog.sync_scan(&[], &[]).unwrap();
+        catalog.sync_scan(&[], &[], &["one".into(), "two".into(), "three".into()]).unwrap();
         catalog.upsert_track(&song("one", "one", "one")).unwrap();
         assert_eq!(one_playlist(&catalog, &id).track_ids, vec!["one"]);
         assert_eq!(catalog.playlist_entries(&id).unwrap().len(), 3);
@@ -1487,8 +1635,7 @@ mod tests {
         catalog
             .resolve_pending(
                 &id,
-                &["one".to_string(), "two".to_string()],
-                &["waiting".to_string()],
+                &[("waiting".to_string(), "two".to_string())],
             )
             .unwrap();
 
@@ -1501,6 +1648,54 @@ mod tests {
         // A custom playlist still says so.
         let plain = catalog.create_playlist("By hand").unwrap();
         assert_eq!(one_playlist(&catalog, &plain).kind, CUSTOM_KIND);
+    }
+
+    #[test]
+    fn pending_resolution_preserves_edits_and_other_completed_downloads() {
+        let catalog = Catalog::in_memory().unwrap();
+        for id in ["one", "two", "three"] {
+            catalog.upsert_track(&song(id, id, id)).unwrap();
+        }
+        let id = catalog.create_generated_playlist(
+            "Concurrent",
+            &["waiting-a".into(), "waiting-b".into()],
+            &[waiting("waiting-a", "A"), waiting("waiting-b", "B")],
+        ).unwrap();
+
+        catalog.add_to_playlist(&id, &["three".into()]).unwrap();
+        catalog.resolve_pending(&id, &[("waiting-b".into(), "two".into())]).unwrap();
+        catalog.resolve_pending(&id, &[("waiting-a".into(), "one".into())]).unwrap();
+        assert_eq!(catalog.playlist_entries(&id).unwrap(), vec!["one", "two", "three"]);
+
+        catalog.remove_from_playlist(&id, &["one".into()]).unwrap();
+        catalog.resolve_pending(&id, &[("waiting-a".into(), "one".into())]).unwrap();
+        assert_eq!(catalog.playlist_entries(&id).unwrap(), vec!["two", "three"]);
+    }
+
+    #[test]
+    fn pending_resolution_keeps_metadata_when_a_matching_song_is_unavailable() {
+        let catalog = Catalog::in_memory().unwrap();
+        let mut missing = song("missing", "Missing", "hash");
+        missing.missing = true;
+        catalog.upsert_track(&missing).unwrap();
+        let mut imported = waiting("imported", "Imported");
+        imported.source = "wavelist".into();
+        let id = catalog.create_generated_playlist(
+            "Pending",
+            &["downloaded".into(), "imported".into()],
+            &[waiting("downloaded", "Downloaded"), imported],
+        ).unwrap();
+
+        catalog.resolve_pending(&id, &[("downloaded".into(), "deleted".into())]).unwrap();
+        catalog.resolve_imported_pending(&id, &[("imported".into(), "missing".into())]).unwrap();
+        assert_eq!(catalog.playlist_entries(&id).unwrap(), vec!["downloaded", "imported"]);
+        assert_eq!(catalog.pending_tracks(&id).unwrap().len(), 2);
+
+        catalog.upsert_track(&song("available", "Available", "other")).unwrap();
+        catalog.resolve_pending(&id, &[("downloaded".into(), "available".into())]).unwrap();
+        catalog.resolve_imported_pending(&id, &[("imported".into(), "available".into())]).unwrap();
+        assert_eq!(catalog.playlist_entries(&id).unwrap(), vec!["available", "available"]);
+        assert!(catalog.pending_tracks(&id).unwrap().is_empty());
     }
 
     #[test]

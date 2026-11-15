@@ -15,7 +15,7 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::catalog::{Catalog, TrackRow, LAYOUT_VERSION};
 use crate::identity;
-use crate::state::{save, PersistedState, Store};
+use crate::state::{PersistedState, Store};
 
 /// `mp4`/`m4v` are deliberately absent.
 pub const AUDIO_EXTENSIONS: &[&str] = &[
@@ -222,30 +222,72 @@ fn sweep<R: Runtime>(
     let root = match library_root(app) {
         Ok(root) => root,
         Err(error) => {
+            let root = catalog.root();
+            let tracks = if full {
+                catalog.tracks().unwrap_or_default()
+                    .iter()
+                    .map(|row| to_track(row, root))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             return ScanSummary {
-                changed: Vec::new(),
+                changed: tracks,
                 removed: Vec::new(),
-                total: 0,
-                root: String::new(),
+                total: catalog.present_count().unwrap_or(0),
+                root: root.to_string_lossy().into_owned(),
                 skipped: 0,
                 errors: vec![error],
             };
         }
     };
 
-    let known = catalog.rows_by_id().unwrap_or_default();
+    sweep_root(&root, catalog, full, reread)
+}
+
+fn sweep_root(root: &Path, catalog: &Catalog, full: bool, reread: bool) -> ScanSummary {
+    let _operation = catalog.library_operation();
+    let known = match catalog.rows_by_id() {
+        Ok(known) => known,
+        Err(error) => {
+            return ScanSummary {
+                changed: Vec::new(),
+                removed: Vec::new(),
+                total: 0,
+                root: root.to_string_lossy().into_owned(),
+                skipped: 0,
+                errors: vec![error],
+            };
+        }
+    };
 
     let mut errors = Vec::new();
     let mut changed: Vec<TrackRow> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
     let mut skipped = 0usize;
+    let mut incomplete = false;
 
     let songs = root.join(SONGS_DIR);
     match fs::read_dir(&songs) {
         Ok(entries) => {
-            for entry in entries.flatten() {
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        errors.push(format!("could not read {}: {error}", songs.display()));
+                        incomplete = true;
+                        continue;
+                    }
+                };
                 let path = entry.path();
-                let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+                let is_dir = match entry.file_type() {
+                    Ok(kind) => kind.is_dir(),
+                    Err(error) => {
+                        errors.push(format!("could not read {}: {error}", path.display()));
+                        incomplete = true;
+                        continue;
+                    }
+                };
 
                 if !is_dir {
                     if has_extension(&path, AUDIO_EXTENSIONS) {
@@ -259,7 +301,7 @@ fn sweep<R: Runtime>(
                     continue;
                 }
 
-                match reconcile(&path, &root, &known, &mut errors, reread) {
+                match reconcile(&path, root, &known, &mut errors, reread) {
                     Ok(Some((row, moved))) => {
                         seen.push(row.id.clone());
                         if moved || full {
@@ -267,11 +309,17 @@ fn sweep<R: Runtime>(
                         }
                     }
                     Ok(None) => {}
-                    Err(error) => errors.push(error),
+                    Err(error) => {
+                        errors.push(error);
+                        incomplete = true;
+                    }
                 }
             }
         }
-        Err(error) => errors.push(format!("could not read {}: {error}", songs.display())),
+        Err(error) => {
+            errors.push(format!("could not read {}: {error}", songs.display()));
+            incomplete = true;
+        }
     }
 
     // A song the scan did not see is gone, which is the one change that has to
@@ -284,12 +332,34 @@ fn sweep<R: Runtime>(
         .collect();
     removed.sort();
 
-    if let Err(error) = catalog.sync_scan(&changed, &seen) {
-        errors.push(error);
+    if !incomplete {
+        let known_ids: Vec<String> = known.keys().cloned().collect();
+        if let Err(error) = catalog.sync_scan(&changed, &seen, &known_ids) {
+            errors.push(error);
+            incomplete = true;
+        }
+    }
+    if incomplete {
+        changed = if full {
+            match catalog.tracks() {
+                Ok(rows) => rows,
+                Err(error) => {
+                    errors.push(error);
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        removed.clear();
     }
 
-    let total = seen.len();
-    let mut tracks: Vec<Track> = changed.iter().map(|row| to_track(row, &root)).collect();
+    let total = if incomplete {
+        catalog.present_count().unwrap_or(0)
+    } else {
+        seen.len()
+    };
+    let mut tracks: Vec<Track> = changed.iter().map(|row| to_track(row, root)).collect();
     tracks.sort_by_key(|track| track.title.to_lowercase());
 
     ScanSummary {
@@ -545,9 +615,12 @@ fn audio_files(dir: &Path) -> Result<Vec<OsString>, String> {
     let entries = fs::read_dir(dir).map_err(|e| format!("could not read {}: {e}", dir.display()))?;
 
     let mut found: Vec<OsString> = Vec::new();
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("could not read {}: {e}", dir.display()))?;
         let path = entry.path();
-        if path.is_file() && has_extension(&path, AUDIO_EXTENSIONS) {
+        let kind = fs::metadata(&path)
+            .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+        if kind.is_file() && has_extension(&path, AUDIO_EXTENSIONS) {
             found.push(entry.file_name());
         }
     }
@@ -604,6 +677,7 @@ pub(crate) fn replace_cover(
     track_id: &str,
     bytes: &[u8],
 ) -> Result<Track, String> {
+    let _operation = catalog.library_operation();
     let mut row = catalog.track(track_id)?
         .filter(|row| !row.missing)
         .ok_or_else(|| "That song is no longer in the library.".to_string())?;
@@ -902,7 +976,9 @@ pub fn scan_library(
     if let Err(error) = crate::transfer::resolve_imported(&catalog) {
         summary.errors.push(error);
     }
-    let _ = crate::playlists::refresh(&app, &store);
+    if let Err(error) = crate::playlists::refresh(&app, &store) {
+        summary.errors.push(error);
+    }
     #[cfg(target_os = "android")]
     crate::loudness::schedule(&app, guard);
     summary
@@ -916,8 +992,10 @@ pub fn reread_tags(
 ) -> ScanSummary {
     #[cfg(target_os = "android")]
     let guard = crate::library_work::Guard::start(&app, "Reading song tags");
-    let summary = reread(&app, &catalog);
-    let _ = crate::playlists::refresh(&app, &store);
+    let mut summary = reread(&app, &catalog);
+    if let Err(error) = crate::playlists::refresh(&app, &store) {
+        summary.errors.push(error);
+    }
     #[cfg(target_os = "android")]
     crate::loudness::schedule(&app, guard);
     summary
@@ -941,6 +1019,7 @@ fn edit_metadata(
     track_id: &str,
     metadata: TrackMetadata,
 ) -> Result<TrackRow, String> {
+    let _operation = catalog.library_operation();
     let metadata = metadata.validate()?;
     let previous = catalog.track(track_id)?
         .filter(|row| !row.missing)
@@ -1087,6 +1166,7 @@ pub fn delete(
     store: &Store,
     track_ids: &[String],
 ) -> Result<PersistedState, String> {
+    let _operation = catalog.library_operation();
     let root = library_root(app)?;
     let mut removed: Vec<String> = Vec::new();
 
@@ -1116,15 +1196,14 @@ pub fn delete(
 
     catalog.delete_tracks(&removed)?;
 
-    let next = store.update(|state| {
+    store.update_saved(app, |state| {
         state.likes.retain(|id| !removed.contains(id));
         for id in &removed {
             state.artwork_colours.remove(id);
         }
-    });
-    save(app, &next)?;
+    })?;
 
-    Ok(crate::playlists::refresh(app, store))
+    crate::playlists::refresh_saved(app, store)
 }
 
 #[cfg(test)]
@@ -1161,6 +1240,74 @@ mod tests {
         catalog.upsert_track(&row).unwrap();
         catalog.set_loudness(&row.id, -12.0, 0.8, row.bytes).unwrap();
         (root, catalog, row)
+    }
+
+    #[test]
+    fn unreadable_songs_directory_does_not_mark_anything_missing() {
+        let (root, catalog, row) = editable_song("Song.wav");
+        let songs = root.join(SONGS_DIR);
+        let moved = root.join("unavailable-songs");
+        fs::rename(&songs, &moved).unwrap();
+        let summary = sweep_root(&root, &catalog, false, false);
+        assert!(!summary.errors.is_empty());
+        assert!(summary.removed.is_empty());
+        assert!(summary.changed.is_empty());
+        assert!(!catalog.track(&row.id).unwrap().unwrap().missing);
+        let full = sweep_root(&root, &catalog, true, false);
+        assert!(!full.errors.is_empty());
+        assert_eq!(full.total, 1);
+        assert_eq!(full.changed.iter().map(|track| &track.id).collect::<Vec<_>>(), vec![&row.id]);
+        assert!(full.removed.is_empty());
+        fs::rename(&moved, &songs).unwrap();
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_song_reconciliation_does_not_mark_other_tracks_missing() {
+        let (root, catalog, row) = editable_song("Song.wav");
+        let song_dir = track_dir(&root, &row.id);
+        fs::rename(&song_dir, root.join("unavailable-song")).unwrap();
+        let invalid_dir = track_dir(&root, &identity::new_id());
+        fs::create_dir_all(&invalid_dir).unwrap();
+        fs::write(invalid_dir.join("audio.wav"), b"not audio").unwrap();
+        let summary = sweep_root(&root, &catalog, false, false);
+        assert!(!summary.errors.is_empty());
+        assert!(summary.removed.is_empty());
+        assert!(!catalog.track(&row.id).unwrap().unwrap().missing);
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scan_waits_for_placement_to_finish_before_reading_the_library() {
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+
+        let (root, catalog, row) = editable_song("Song.wav");
+        let catalog = Arc::new(catalog);
+        let operation = catalog.library_operation();
+        catalog.delete_tracks(&[row.id.clone()]).unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let scan_catalog = Arc::clone(&catalog);
+        let scan_root = root.clone();
+        let scan = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let summary = sweep_root(&scan_root, &scan_catalog, false, false);
+            done_tx.send(summary).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        catalog.upsert_track(&row).unwrap();
+        drop(operation);
+        let summary = done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        scan.join().unwrap();
+        assert!(summary.errors.is_empty(), "{:?}", summary.errors);
+        assert!(summary.removed.is_empty());
+        assert!(!catalog.track(&row.id).unwrap().unwrap().missing);
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn image_bytes(format: image::ImageFormat, colour: [u8; 3]) -> Vec<u8> {

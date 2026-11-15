@@ -301,6 +301,10 @@ pub fn import_phone_folder(app: AppHandle) -> Result<Option<ImportOutcome>, Stri
                             .copied());
                     }
                 }
+                associated.extend(sidecars.values().flatten()
+                    .filter(|file| library::is_cover_file(Path::new(&file.name))
+                        && library::file_stem_lower(Path::new(&file.name)).starts_with("cover-"))
+                    .copied());
             }
             for sidecar in associated {
                 let target = dir.join(picked_name(&sidecar.name));
@@ -813,6 +817,24 @@ mod tests {
             .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
     }
 
+    fn write_test_wave(path: &Path) {
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&38u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&8000u32.to_le_bytes());
+        wav.extend_from_slice(&16000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&2u32.to_le_bytes());
+        wav.extend_from_slice(&[0, 0]);
+        fs::write(path, wav).unwrap();
+    }
+
     #[test]
     fn matches_lyrics_by_song_name() {
         let dir = scratch("lyrics-name");
@@ -927,6 +949,26 @@ mod tests {
         let source = root.join("source");
         fs::create_dir_all(&source).unwrap();
         let audio = source.join("audio.wav");
+        write_test_wave(&audio);
+        fs::write(source.join("cover.jpg"), b"cover").unwrap();
+        fs::write(source.join("lyrics.lrc"), "[00:01.00]words").unwrap();
+
+        let catalog = Catalog::in_memory().unwrap();
+        let (placed, id) = import_one(
+            &root, &catalog, &audio, "audio.wav", &SidecarIndex::default(), &SidecarIndex::default(),
+        ).unwrap();
+        assert!(matches!(placed, Placed::Added { cover: true, lyrics: true, .. }));
+        assert_eq!(fs::read(cover_path(&root, &id, "jpg")).unwrap(), b"cover");
+        assert_eq!(fs::read_to_string(lyrics_path(&root, &id)).unwrap(), "[00:01.00]words");
+        assert!(audio.is_file());
+    }
+
+    #[test]
+    fn imports_wave_song_folder_with_a_replaced_cover() {
+        let root = scratch("wave-folder-replaced-cover");
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        let audio = source.join("audio.wav");
         let mut wav = Vec::new();
         wav.extend_from_slice(b"RIFF");
         wav.extend_from_slice(&38u32.to_le_bytes());
@@ -942,16 +984,14 @@ mod tests {
         wav.extend_from_slice(&2u32.to_le_bytes());
         wav.extend_from_slice(&[0, 0]);
         fs::write(&audio, wav).unwrap();
-        fs::write(source.join("cover.jpg"), b"cover").unwrap();
-        fs::write(source.join("lyrics.lrc"), "[00:01.00]words").unwrap();
+        let cover = source.join(format!("cover-{:020}-{}.png", 1, identity::new_id()));
+        fs::write(&cover, b"replaced cover").unwrap();
 
         let catalog = Catalog::in_memory().unwrap();
         let (placed, id) = import_one(
             &root, &catalog, &audio, "audio.wav", &SidecarIndex::default(), &SidecarIndex::default(),
         ).unwrap();
-        assert!(matches!(placed, Placed::Added { cover: true, lyrics: true, .. }));
-        assert_eq!(fs::read(cover_path(&root, &id, "jpg")).unwrap(), b"cover");
-        assert_eq!(fs::read_to_string(lyrics_path(&root, &id)).unwrap(), "[00:01.00]words");
-        assert!(audio.is_file());
+        assert!(matches!(placed, Placed::Added { cover: true, .. }));
+        assert_eq!(fs::read(cover_path(&root, &id, "png")).unwrap(), b"replaced cover");
     }
 }

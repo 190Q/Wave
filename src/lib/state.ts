@@ -663,13 +663,19 @@ function startArtwork(trackId: string, tier: ArtworkWorkTier): void {
   void ipc
     .artworkBytes(path)
     .then((buffer) => {
-      artworkUrls.set(trackId, URL.createObjectURL(new Blob([buffer], { type: imageMime(path) })));
+      if (state.tracksById.get(trackId)?.artworkPath !== path) {
+        return;
+      }
+      artworkUrls.set(trackId, URL.createObjectURL(new Blob([buffer], { type: imageMime(path, buffer) })));
       if (artworkPriority.has(trackId)) {
         artworkPriorityNeedsRender = true;
       }
       scheduleEmit();
     })
     .catch(() => {
+      if (state.tracksById.get(trackId)?.artworkPath !== path) {
+        return;
+      }
       // Recorded so a failed read is not retried on every re-render.
       artworkFailed.add(trackId);
       if (artworkPriority.has(trackId)) {
@@ -681,6 +687,9 @@ function startArtwork(trackId: string, tier: ArtworkWorkTier): void {
       artworkInFlight.delete(trackId);
       if (tier !== "priority") {
         artworkRunning[tier] -= 1;
+      }
+      if (state.tracksById.get(trackId)?.artworkPath !== path && state.tracksById.has(trackId)) {
+        artworkPending.set(trackId, tier === "priority" ? "now" : tier);
       }
       pumpArtwork();
     });
@@ -768,7 +777,11 @@ function resolveCover(key: string, url: string | null): void {
   }
 }
 
-function imageMime(path: string): string {
+function imageMime(path: string, buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
   switch (path.split(".").pop()?.toLowerCase()) {
     case "png":
       return "image/png";
@@ -816,12 +829,20 @@ async function drainColours(): Promise<void> {
 
     try {
       const hex = await ipc.artworkColour(id, track.artworkPath);
-      state.colours.set(id, hex);
+      if (state.tracksById.get(id)?.artworkPath === track.artworkPath) {
+        state.colours.set(id, hex);
+      }
     } catch {
       // Session-only fallback; the failure is not persisted, so a later launch retries.
-      state.colours.set(id, FALLBACK_COLOUR);
+      if (state.tracksById.get(id)?.artworkPath === track.artworkPath) {
+        state.colours.set(id, FALLBACK_COLOUR);
+      }
     }
     coloursInFlight.delete(id);
+    const current = state.tracksById.get(id);
+    if (current && current.artworkPath !== track.artworkPath) {
+      ensureColour(current);
+    }
     scheduleEmit();
   }
 
@@ -1953,6 +1974,33 @@ export async function editTrack(trackId: string, metadata: TrackMetadata): Promi
   emit();
   await rescan();
   setNotice(`Updated "${track.title}".`);
+}
+
+export async function replaceTrackCover(trackId: string): Promise<void> {
+  try {
+    const path = await ipc.pickCover();
+    if (!path) {
+      return;
+    }
+    const track = await ipc.replaceCover(trackId, path);
+    scanSequence += 1;
+    state.tracksById = new Map(state.tracksById).set(track.id, track);
+    state.tracks = state.tracks.map((entry) => entry.id === track.id ? track : entry);
+    const oldUrl = artworkUrls.get(track.id);
+    if (oldUrl) {
+      URL.revokeObjectURL(oldUrl);
+      artworkUrls.delete(track.id);
+    }
+    artworkFailed.delete(track.id);
+    state.colours.delete(track.id);
+    refreshCollections();
+    ensureColour(track);
+    emit();
+    await rescan();
+    setNotice(`Cover updated for "${track.title}".`);
+  } catch (error) {
+    setNotice(describe(error));
+  }
 }
 
 export async function addTracksToPlaylist(id: string, trackIds: string[]): Promise<void> {

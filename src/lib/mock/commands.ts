@@ -325,6 +325,17 @@ const handlers: Record<string, Handler> = {
     return structuredClone(updated);
   },
 
+  replace_cover: ({ trackId, path }) => {
+    const track = tracks.find((entry) => entry.id === text(trackId));
+    if (!track || !text(path)) {
+      throw new Error("That song is no longer in the library.");
+    }
+    const updated = { ...track, artworkPath: `${text(path)}-${Date.now()}-${Math.random()}.jpg` };
+    tracks = tracks.map((entry) => entry.id === track.id ? updated : entry);
+    delete persisted.artworkColours[track.id];
+    return structuredClone(updated);
+  },
+
   scan_library: () => scanSummary(),
 
   // Left null, so the panels that read it take their own "could not be read" path.

@@ -208,3 +208,36 @@ test("without phone priority the normal artwork tiers remain independent", async
   assert.deepEqual(started, [order[0], order[1], order[6], order[7]]);
   assert.equal(mayRevealArtwork(order[2]), true);
 });
+
+test("an old artwork read cannot replace a newer cover", async () => {
+  const id = "replacement";
+  getState().tracksById.set(id, { id, artworkPath: "old-cover" });
+  artworkUrlFor(getState().tracksById.get(id), "now");
+  getState().tracksById.set(id, { id, artworkPath: "new-cover" });
+  await finish(["old-cover"]);
+  assert.equal(artworkUrlFor(getState().tracksById.get(id), "now"), null);
+  assert.deepEqual(started, ["old-cover", "new-cover"]);
+  await finish(["new-cover"]);
+  assert.ok(artworkUrlFor(getState().tracksById.get(id), "now"));
+});
+
+test("a JPEG thumbnail is identified by its bytes instead of the source extension", async () => {
+  const original = URL.createObjectURL;
+  let mime;
+  URL.createObjectURL = (blob) => {
+    mime = blob.type;
+    return original(blob);
+  };
+  try {
+    const track = { id: "thumbnail", artworkPath: "thumbnail.png" };
+    getState().tracksById.set(track.id, track);
+    artworkUrlFor(track, "now");
+    const request = requests.get(track.artworkPath);
+    requests.delete(track.artworkPath);
+    request.resolve(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]).buffer);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(mime, "image/jpeg");
+  } finally {
+    URL.createObjectURL = original;
+  }
+});

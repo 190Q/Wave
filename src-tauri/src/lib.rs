@@ -303,6 +303,7 @@ pub fn run() {
             download_log::import_log_path,
             download_log::open_import_log,
             artwork::artwork_colour,
+            artwork::replace_cover,
             artwork::artwork_bytes,
             artwork::cover_bytes,
             lyrics::load_lyrics,

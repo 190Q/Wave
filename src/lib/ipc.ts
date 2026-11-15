@@ -339,6 +339,19 @@ export async function pickAudioFiles(): Promise<string[] | null> {
   return Array.isArray(selected) ? selected : [selected];
 }
 
+export async function pickCover(): Promise<string | null> {
+  const selected = await open({
+    multiple: false,
+    title: "Replace cover",
+    filters: [{ name: "Images", extensions: ["jpg", "jpeg", "png", "webp", "gif", "bmp"] }],
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
+export function replaceCover(trackId: string, path: string): Promise<Track> {
+  return invoke("replace_cover", { trackId, path });
+}
+
 /** Copies files the picker handed back into the library, tags and all. */
 export function importPickedFiles(paths: string[]): Promise<ImportOutcome> {
   return invoke("import_picked_files", { paths });

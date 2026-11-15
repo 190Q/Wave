@@ -579,16 +579,82 @@ fn kept(
 
 pub(crate) fn cover_in(dir: &Path) -> Option<PathBuf> {
     let entries = fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file()
-            && has_extension(&path, IMAGE_EXTENSIONS)
-            && file_stem_lower(&path) == COVER_STEM
-        {
-            return Some(path);
+    entries.flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && is_cover_file(path))
+        .max_by_key(|path| {
+            let stem = file_stem_lower(path);
+            (stem != COVER_STEM, stem)
+        })
+}
+
+pub(crate) fn is_cover_file(path: &Path) -> bool {
+    let stem = file_stem_lower(path);
+    let versioned = stem.strip_prefix("cover-").is_some_and(|version| {
+        version.split_once('-').is_some_and(|(stamp, id)| {
+            stamp.len() == 20 && stamp.bytes().all(|byte| byte.is_ascii_digit()) && identity::is_id(id)
+        })
+    });
+    has_extension(path, IMAGE_EXTENSIONS) && (stem == COVER_STEM || versioned)
+}
+
+pub(crate) fn replace_cover(
+    root: &Path,
+    catalog: &Catalog,
+    track_id: &str,
+    bytes: &[u8],
+) -> Result<Track, String> {
+    let mut row = catalog.track(track_id)?
+        .filter(|row| !row.missing)
+        .ok_or_else(|| "That song is no longer in the library.".to_string())?;
+    let format = image::guess_format(bytes)
+        .map_err(|_| "Choose a valid JPEG, PNG, WebP, GIF or BMP image.".to_string())?;
+    let extension = match format {
+        image::ImageFormat::Jpeg => "jpg",
+        image::ImageFormat::Png => "png",
+        image::ImageFormat::WebP => "webp",
+        image::ImageFormat::Gif => "gif",
+        image::ImageFormat::Bmp => "bmp",
+        _ => return Err("Choose a valid JPEG, PNG, WebP, GIF or BMP image.".to_string()),
+    };
+    image::load_from_memory_with_format(bytes, format)
+        .map_err(|e| format!("Could not read the selected image: {e}"))?;
+
+    let dir = track_dir(root, &row.id);
+    if !root.join(&row.rel_path).is_file() || !dir.is_dir() {
+        return Err("That song is no longer in the library.".to_string());
+    }
+    let previous_stamp = row.cover_path.as_deref()
+        .and_then(|path| Path::new(path).file_stem())
+        .and_then(|stem| stem.to_str())
+        .and_then(|stem| stem.strip_prefix("cover-"))
+        .and_then(|version| version.split_once('-'))
+        .and_then(|(stamp, _)| stamp.parse::<i64>().ok())
+        .unwrap_or(0);
+    let stamp = identity::now_ms().max(previous_stamp.saturating_add(1)).max(0);
+    let target = dir.join(format!(
+        "cover-{:020}-{}.{}",
+        stamp,
+        identity::new_id(),
+        extension
+    ));
+    let staged = target.with_extension("tmp");
+    if let Err(error) = fs::write(&staged, bytes).and_then(|()| fs::rename(&staged, &target)) {
+        let _ = fs::remove_file(&staged);
+        return Err(format!("Could not save the cover: {error}"));
+    }
+    let relative = relative(root, &target).ok_or_else(|| "Could not locate the cover.".to_string())?;
+    if let Err(error) = catalog.set_cover(&row.id, Some(&relative)) {
+        let _ = fs::remove_file(&target);
+        return Err(error);
+    }
+    if let Some(previous) = row.cover_path.as_deref().map(|path| root.join(path)) {
+        if previous.parent() == Some(dir.as_path()) && is_cover_file(&previous) {
+            let _ = fs::remove_file(previous);
         }
     }
-    None
+    row.cover_path = Some(relative);
+    Ok(to_track(&row, root))
 }
 
 pub(crate) fn lyrics_in(dir: &Path) -> Option<PathBuf> {
@@ -1095,6 +1161,66 @@ mod tests {
         catalog.upsert_track(&row).unwrap();
         catalog.set_loudness(&row.id, -12.0, 0.8, row.bytes).unwrap();
         (root, catalog, row)
+    }
+
+    fn image_bytes(format: image::ImageFormat, colour: [u8; 3]) -> Vec<u8> {
+        let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 2, image::Rgb(colour)));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, format).unwrap();
+        bytes.into_inner()
+    }
+
+    #[test]
+    fn replacing_covers_accepts_supported_formats_and_survives_rereads() {
+        let (root, catalog, row) = editable_song("Song.wav");
+        let dir = track_dir(&root, &row.id);
+        let original_audio = fs::read(root.join(&row.rel_path)).unwrap();
+        let old_cover = cover_path(&root, &row.id, "jpg");
+        fs::write(&old_cover, image_bytes(image::ImageFormat::Jpeg, [50, 50, 50])).unwrap();
+        catalog.set_cover(&row.id, relative(&root, &old_cover).as_deref()).unwrap();
+        let mut previous = Some(old_cover);
+        for (format, extension) in [
+            (image::ImageFormat::Jpeg, "jpg"),
+            (image::ImageFormat::Png, "png"),
+            (image::ImageFormat::WebP, "webp"),
+            (image::ImageFormat::Gif, "gif"),
+            (image::ImageFormat::Bmp, "bmp"),
+        ] {
+            let bytes = image_bytes(format, [200, 30, 60]);
+            let track = replace_cover(&root, &catalog, &row.id, &bytes).unwrap();
+            let path = PathBuf::from(track.artwork_path.unwrap());
+            assert_eq!(path.extension().unwrap(), extension);
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert!(is_cover_file(&path));
+            assert_eq!(cover_in(&dir), Some(path.clone()));
+            if let Some(old) = previous {
+                assert!(!Path::new(&old).exists());
+            }
+            let known = catalog.rows_by_id().unwrap();
+            let (reread, _) = reconcile(&dir, &root, &known, &mut Vec::new(), true)
+                .unwrap().unwrap();
+            assert_eq!(reread.cover_path, relative(&root, &path));
+            assert_eq!(reread.lufs, row.lufs);
+            previous = Some(path);
+        }
+        assert_eq!(fs::read(root.join(&row.rel_path)).unwrap(), original_audio);
+        assert!(!is_cover_file(Path::new("cover-art.png")));
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_cover_replacements_leave_the_existing_cover_untouched() {
+        let (root, catalog, row) = editable_song("Song.wav");
+        let bytes = image_bytes(image::ImageFormat::Png, [20, 60, 200]);
+        let track = replace_cover(&root, &catalog, &row.id, &bytes).unwrap();
+        let path = PathBuf::from(track.artwork_path.unwrap());
+        assert!(replace_cover(&root, &catalog, &row.id, b"not an image").is_err());
+        assert!(replace_cover(&root, &catalog, "missing", &bytes).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(catalog.track(&row.id).unwrap().unwrap().cover_path, relative(&root, &path));
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

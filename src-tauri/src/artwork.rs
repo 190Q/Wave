@@ -1,11 +1,16 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager, State};
+use tauri_plugin_fs::{FilePath, FsExt, OpenOptions};
 
+use crate::catalog::Catalog;
+use crate::library;
 use crate::state::{self, Store};
 
 /// How long between writes of the colour cache. Colours arrive as covers scroll
@@ -14,6 +19,8 @@ use crate::state::{self, Store};
 const COLOUR_WRITE_GAP: Duration = Duration::from_secs(2);
 
 static LAST_COLOUR_WRITE: Mutex<Option<Instant>> = Mutex::new(None);
+static COLOUR_LOCK: Mutex<()> = Mutex::new(());
+const MAX_COVER_BYTES: u64 = 32 * 1024 * 1024;
 
 /// True when the colour cache is next in line to be written. Colours only ever
 /// live in memory until then, and the autosave picks up whatever is left.
@@ -166,9 +173,18 @@ fn average_hex(bucket: Bucket) -> String {
 pub fn artwork_colour(
     app: AppHandle,
     store: State<'_, Store>,
+    catalog: State<'_, Catalog>,
     track_id: String,
     path: String,
 ) -> Result<String, String> {
+    let _guard = COLOUR_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let root = library::library_root(&app)?;
+    let current = catalog.track(&track_id)?
+        .filter(|row| !row.missing)
+        .and_then(|row| library::to_track(&row, &root).artwork_path);
+    if current.as_deref() != Some(&path) {
+        return Err("The song's cover has changed.".to_string());
+    }
 
     if let Some(cached) = store.snapshot().artwork_colours.get(&track_id) {
         if brightness(cached) >= ACCENT_MIN_BRIGHTNESS {
@@ -188,6 +204,36 @@ pub fn artwork_colour(
         let _ = state::save(&app, &store.snapshot());
     }
     Ok(colour)
+}
+
+#[tauri::command(async)]
+pub fn replace_cover(
+    app: AppHandle,
+    catalog: State<'_, Catalog>,
+    store: State<'_, Store>,
+    track_id: String,
+    path: String,
+) -> Result<library::Track, String> {
+    let picked = FilePath::from_str(&path).map_err(|e| format!("Invalid image path: {e}"))?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    let source = app.fs().open(picked, options)
+        .map_err(|e| format!("Could not read the selected image: {e}"))?;
+    let mut bytes = Vec::new();
+    source.take(MAX_COVER_BYTES + 1).read_to_end(&mut bytes)
+        .map_err(|e| format!("Could not read the selected image: {e}"))?;
+    if bytes.len() as u64 > MAX_COVER_BYTES {
+        return Err("The selected image is larger than 32 MB.".to_string());
+    }
+
+    let _guard = COLOUR_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let root = library::library_root(&app)?;
+    let track = library::replace_cover(&root, &catalog, &track_id, &bytes)?;
+    let next = store.update(|state| {
+        state.artwork_colours.remove(&track_id);
+    });
+    let _ = state::save(&app, &next);
+    Ok(track)
 }
 
 const ARTWORK_MAX_EDGE: u32 = 640;

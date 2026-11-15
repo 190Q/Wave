@@ -390,7 +390,7 @@ html[data-device="android"] {
 }
 
 [data-touch="true"] .dock-row button::after {
-  inset: -0.375rem -0.1875rem;
+  inset: 0 -0.1875rem -0.375rem;
 }
 
 [data-touch="true"] .dock-grab::after {

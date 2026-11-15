@@ -5289,7 +5289,7 @@ dependencies = [
 
 [[package]]
 name = "wave"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "discord-rich-presence",

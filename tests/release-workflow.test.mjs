@@ -25,3 +25,11 @@ test("phone recovery uses tagged application source and current build tooling", 
   assert.match(musl, /CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=-crt-static"/);
   assert.match(musl, /\nldd /);
 });
+
+test("phone builds restore ownership of cached files after the container exits", () => {
+  for (const source of [workflow, recovery]) {
+    assert.match(source, /name: Build the musl package[\s\S]*name: Restore musl cache ownership\n        if: always\(\)/);
+    assert.match(source, /for path in "\$RUNNER_TEMP\/musl-cargo" src-tauri\/target\/aarch64-unknown-linux-musl/);
+    assert.match(source, /sudo chown -R "\$\(id -u\):\$\(id -g\)" "\$path"/);
+  }
+});

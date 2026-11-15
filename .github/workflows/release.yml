@@ -152,6 +152,15 @@ jobs:
             alpine:3.22 \
             sh scripts/musl-build.sh
 
+      - name: Restore musl cache ownership
+        if: always()
+        run: |
+          for path in "$RUNNER_TEMP/musl-cargo" src-tauri/target/aarch64-unknown-linux-musl; do
+            if [ -e "$path" ]; then
+              sudo chown -R "$(id -u):$(id -g)" "$path"
+            fi
+          done
+
       - name: Attach the musl package
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -13,6 +13,7 @@ function fixture(t) {
   mkdirSync(bin);
   mkdirSync(join(root, "scripts"));
   copyFileSync(fileURLToPath(new URL("../scripts/release.mjs", import.meta.url)), join(root, "scripts", "release.mjs"));
+  copyFileSync(fileURLToPath(new URL("../scripts/release-assets.mjs", import.meta.url)), join(root, "scripts", "release-assets.mjs"));
   writeFileSync(join(root, "VERSION"), "1.2.3\n");
 
   const mock = join(bin, "npx.mjs");

@@ -340,7 +340,11 @@ fn pick_asset(assets: &[Asset], names: (&str, &str)) -> Option<Asset> {
     assets
         .iter()
         .find(|asset| !preferred.is_empty() && asset.name.ends_with(preferred))
-        .or_else(|| assets.iter().find(|asset| !plain.is_empty() && asset.name.ends_with(plain)))
+        .or_else(|| {
+            assets
+                .iter()
+                .find(|asset| !plain.is_empty() && asset.name.ends_with(plain))
+        })
         .cloned()
 }
 
@@ -352,7 +356,16 @@ fn installer_names() -> (&'static str, &'static str) {
 
 #[cfg(target_os = "linux")]
 fn installer_names() -> (&'static str, &'static str) {
-    ("-slim.AppImage", ".AppImage")
+    linux_installer_names(std::env::consts::ARCH)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_installer_names(arch: &str) -> (&'static str, &'static str) {
+    match arch {
+        "x86_64" => ("_amd64-slim.AppImage", "_amd64.AppImage"),
+        "aarch64" => ("_aarch64-slim.AppImage", "_aarch64.AppImage"),
+        _ => ("", ""),
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -599,5 +612,29 @@ Installers for Windows and Linux.
         let assets = vec![asset("Wave_0.1.5_amd64.deb")];
 
         assert!(pick_asset(&assets, ("-setup-slim.exe", "-setup.exe")).is_none());
+    }
+
+    #[test]
+    fn linux_updates_match_the_running_architecture() {
+        let assets = vec![
+            asset("Wave_0.3.0_aarch64-slim.AppImage"),
+            asset("Wave_0.3.0_amd64.AppImage"),
+            asset("Wave_0.3.0_amd64-slim.AppImage"),
+            asset("Wave_0.3.0_aarch64.AppImage"),
+        ];
+
+        assert_eq!(
+            pick_asset(&assets, linux_installer_names("x86_64"))
+                .unwrap()
+                .name,
+            "Wave_0.3.0_amd64-slim.AppImage"
+        );
+        assert_eq!(
+            pick_asset(&assets, linux_installer_names("aarch64"))
+                .unwrap()
+                .name,
+            "Wave_0.3.0_aarch64-slim.AppImage"
+        );
+        assert!(pick_asset(&assets, linux_installer_names("unknown")).is_none());
     }
 }

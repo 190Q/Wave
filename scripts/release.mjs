@@ -11,14 +11,17 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { downloads, missingAssets } from "./release-assets.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION_FILE = join(root, "VERSION");
@@ -119,6 +122,54 @@ function run(file, args, { capture = false, input } = {}) {
     if (capture) fail(error.stderr?.trim() || `${file} ${args.join(" ")} failed`);
     fail(`${file} ${args.join(" ")} failed`);
   }
+}
+
+function commandRuns(id) {
+  requireGh();
+  if (!id || id === "phone") {
+    const workflow = id === "phone" ? "release-phone.yml" : "release.yml";
+    const runs = JSON.parse(gh(["run", "list", "--workflow", workflow, "--limit", "1", "--json", "databaseId"], { capture: true }));
+    if (runs.length === 0) fail(`there are no runs of ${workflow}`);
+    id = String(runs[0].databaseId);
+  }
+  const run = JSON.parse(gh(["run", "view", id, "--json", "status,conclusion,url,jobs"], { capture: true }));
+  say(`${run.url}  ${run.conclusion || run.status}`);
+  for (const job of run.jobs) {
+    const step = job.steps?.find((item) => item.status === "in_progress")
+      ?? job.steps?.find((item) => item.conclusion === "failure");
+    say(`  ${(job.conclusion || job.status).padEnd(12)} ${job.name}${step ? `: ${step.name}` : ""}`);
+  }
+}
+
+function releaseForTag(tag) {
+  if (!tag) fail("a release tag is required");
+  const version = readVersion();
+  if (tag !== `v${version}`) fail(`${tag} does not match VERSION ${version}`);
+  requireGh();
+  return version;
+}
+
+function commandPrepare(tag, options) {
+  releaseForTag(tag);
+  if (releaseExists(tag)) {
+    say(`${tag} already has a release; leaving its publication state unchanged.`);
+    return;
+  }
+  gh(["release", "create", tag, "--verify-tag", "--draft", "--title", `Wave ${tag}`, "--notes-file", "-"], {
+    input: releaseBody(options.features),
+  });
+}
+
+function commandOrganize(tag, finalize = false) {
+  const version = releaseForTag(tag);
+  const release = JSON.parse(gh(["release", "view", tag, "--json", "assets,body,isDraft"], { capture: true }));
+  if (finalize) {
+    const missing = missingAssets(version, release.assets);
+    if (missing.length > 0) fail(`the release is missing ${missing.length} asset(s):\n  ${missing.join("\n  ")}`);
+  }
+  const args = ["release", "edit", tag, "--notes-file", "-"];
+  if (finalize && release.isDraft) args.push("--draft=false");
+  gh(args, { input: withDownloads(release.body ?? "", version, release.assets) });
 }
 
 const git = (args, options) => run("git", args, options);
@@ -270,8 +321,19 @@ function withFeatures(body, features) {
 }
 
 /** The body a release is given: the feature list, then the installers blurb. */
-function releaseBody(features) {
-  return withFeatures(BODY, features);
+function releaseBody(features, assets) {
+  return withFeatures(withDownloads(BODY, readVersion(), assets), features);
+}
+
+function withDownloads(body, version, assets) {
+  const withoutDownloads = body
+    .replace(/<!-- wave-downloads:start -->[\s\S]*?<!-- wave-downloads:end -->\n*/g, "")
+    .trimStart();
+  const section = downloads(version, assets);
+  const features = withoutDownloads.match(FEATURES_SECTION);
+  if (!features) return `${section}\n\n${withoutDownloads}`;
+  const end = features.index + features[0].length;
+  return `${withoutDownloads.slice(0, end).trimEnd()}\n\n${section}\n\n${withoutDownloads.slice(end).trimStart()}`;
 }
 
 function commandStatus() {
@@ -415,9 +477,8 @@ function commandGuide(part) {
   say("");
   if (ci) {
     say("  4. Watch the build");
-    say("       gh run list");
-    say("       gh run watch --exit-status");
-    say("     The release appears once both platforms have finished.");
+    say("       node scripts/release.mjs runs");
+    say("     The release appears once all platforms have finished.");
     say("");
   }
   if (kind === "major") {
@@ -579,16 +640,32 @@ function slimAssets() {
  * Builds the slim installers, which leave out the download tools, and renames
  * them so they sit beside the full ones rather than over the top of them.
  */
-function commandSlim() {
+function commandSlim(reuseBuild = false) {
   const version = readVersion();
-  const produced = freshAssets(version, () =>
-    shell(`npx tauri build --config ${SLIM_CONFIG}`),
-  );
-
-  if (produced.length === 0) fail("the slim build produced no installers");
-
-  for (const path of produced) renameSync(path, slimName(path));
-  say(`\nRenamed ${produced.length} slim installer(s).`);
+  const full = localAssets(version).filter((path) => !basename(path).includes(SLIM_SUFFIX));
+  mkdirSync(TARGET_DIR, { recursive: true });
+  const staging = mkdtempSync(join(TARGET_DIR, "wave-full-"));
+  const saved = [];
+  try {
+    for (const [index, path] of full.entries()) {
+      const backup = join(staging, String(index));
+      renameSync(path, backup);
+      saved.push({ path, backup });
+    }
+    const command = reuseBuild ? "bundle" : "build";
+    const produced = freshAssets(version, () =>
+      shell(`npx tauri ${command} --config ${SLIM_CONFIG}`),
+    );
+    if (produced.length === 0) throw new Error("the slim build produced no installers");
+    for (const path of produced) renameSync(path, slimName(path));
+    say(`\nRenamed ${produced.length} slim installer(s).`);
+  } finally {
+    for (const { path, backup } of saved) {
+      mkdirSync(dirname(path), { recursive: true });
+      renameSync(backup, path);
+    }
+    rmSync(staging, { recursive: true, force: true });
+  }
 }
 
 function commandUploadSlim(tag) {
@@ -785,10 +862,8 @@ function commandPublish(options) {
     return;
   }
 
-  // The slim build is renamed as it goes, so it comes first: the full build
-  // writes the names the slim one has just been renamed away from.
-  commandSlim();
   shell("npx tauri build");
+  commandSlim(true);
 
   const assets = localAssets(version);
   if (assets.length === 0) fail("the build produced no installers to upload");
@@ -806,7 +881,8 @@ function commandPublish(options) {
   } else {
     // gh puts the generated commit list after the notes rather than replacing
     // them, so the blurb and the list both survive.
-    const body = options.notes ? withFeatures(options.notes, features) : releaseBody(features);
+    const local = assets.map((path) => ({ name: basename(path), size: statSync(path).size }));
+    const body = options.notes ? withFeatures(options.notes, features) : releaseBody(features, local);
     const notes = options.notes ? ["--notes", body] : ["--notes", body, "--generate-notes"];
     const draft = options.draft ? ["--draft"] : [];
     gh(["release", "create", tag, ...assets, "--title", `Wave ${version}`, ...notes, ...draft]);
@@ -837,6 +913,7 @@ function parse(argv) {
       case "--local": options.local = true; break;
       case "--android": options.android = true; break;
       case "--debug": options.debug = true; break;
+      case "--reuse-build": options.reuseBuild = true; break;
       case "--dry-run": options.dryRun = true; break;
       case "--yes": options.yes = true; break;
       case "--no-publish": options.noPublish = true; break;
@@ -872,9 +949,11 @@ Releases
   list                            List every release
   view <tag>                      Show one release
   assets <tag>                    List a release's assets
+  runs [id|phone]                 Show a compact release or phone recovery status
   body [--feature <text>...]      Print the body a release is given
   publish [options]               Sync, commit, tag, push, and publish
   slim                            Build the slim installers and rename them
+  slim --reuse-build              Bundle slim installers from an existing build
   musl                            Build the aarch64 musl package, on Alpine
   android [debug]                 Build an arm64 Android APK (debug for testing)
   apk [debug]                     Alias for android
@@ -882,6 +961,9 @@ Releases
   upload-slim <tag>               Add the slim installers to a release
   upload-musl <tag>               Add the musl package to a release
   upload-apk <tag>                Add the Android APK to a release
+  prepare <tag>                   Create a draft release if one does not exist
+  organize <tag>                  Organize download links on a release
+  finalize <tag>                  Verify assets and publish a complete release
   rm-asset <tag> <name...>        Remove assets from a release
   edit <tag> [options]            Change a release's title, notes or draft state
   delete <tag> --yes [--tag]      Delete a release, and its git tag with --tag
@@ -907,6 +989,7 @@ function main() {
 
   if (options.android && command !== "publish") fail("--android is only available for publish");
   if (options.debug && command !== "android" && command !== "apk") fail("--debug is only available for android or apk");
+  if (options.reuseBuild && command !== "slim") fail("--reuse-build is only available for slim");
 
   switch (command) {
     case "status":
@@ -919,7 +1002,8 @@ function main() {
     case "view": return commandView(first);
     case "open": return commandOpen(first);
     case "assets": return commandAssets(first);
-    case "slim": return commandSlim();
+    case "runs": return commandRuns(first);
+    case "slim": return commandSlim(options.reuseBuild);
     case "musl": return commandMusl();
     case "android":
     case "apk":
@@ -929,6 +1013,9 @@ function main() {
     case "upload-slim": return commandUploadSlim(first);
     case "upload-musl": return commandUploadMusl(first);
     case "upload-apk": return commandUploadApk(first);
+    case "prepare": return commandPrepare(first, options);
+    case "organize": return commandOrganize(first);
+    case "finalize": return commandOrganize(first, true);
     case "rm-asset": return commandRemoveAsset(first, more);
     case "delete": return commandDelete(first, options);
     case "edit": return commandEdit(first, options);

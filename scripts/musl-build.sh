@@ -22,6 +22,8 @@ apk add --no-cache \
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
   | sh -s -- -y --profile minimal --no-modify-path
 export PATH="$HOME/.cargo/bin:$PATH"
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=-crt-static"
 
 npm ci
 node scripts/release.mjs musl
+ldd "${CARGO_TARGET_DIR:-src-tauri/target}/aarch64-unknown-linux-musl/release/wave"

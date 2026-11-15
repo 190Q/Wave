@@ -1,0 +1,77 @@
+name: recover linux phone package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to repair (e.g. v0.3.0)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag }}
+  CARGO_PROFILE_RELEASE_LTO: thin
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+
+jobs:
+  musl:
+    name: recover linux phone musl package
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Use the current release tooling with the tagged source
+        run: cp .release-tools/scripts/release.mjs .release-tools/scripts/release-assets.mjs .release-tools/scripts/musl-build.sh scripts/
+
+      - name: Check the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          test "$RELEASE_TAG" = "v$(tr -d '\r\n' < VERSION)"
+          node scripts/release.mjs status
+          gh release view "$RELEASE_TAG" > /dev/null
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/musl-cargo/registry
+            ${{ runner.temp }}/musl-cargo/git
+            src-tauri/target/aarch64-unknown-linux-musl
+          key: musl-alpine322-arm64-thin16-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: musl-alpine322-arm64-thin16-
+
+      - name: Build the musl package
+        run: |
+          mkdir -p "$RUNNER_TEMP/musl-cargo"
+          docker run --rm \
+            --volume "$PWD:/wave" \
+            --volume "$RUNNER_TEMP/musl-cargo:/root/.cargo" \
+            --workdir /wave \
+            --env CARGO_PROFILE_RELEASE_LTO \
+            --env CARGO_PROFILE_RELEASE_CODEGEN_UNITS \
+            alpine:3.22 \
+            sh scripts/musl-build.sh
+
+      - name: Attach the package and organize downloads
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/release.mjs upload-musl "$RELEASE_TAG"
+          node scripts/release.mjs organize "$RELEASE_TAG"

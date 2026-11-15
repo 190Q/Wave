@@ -28,16 +28,13 @@ export function mountTouch(): void {
   mountLongPress();
 }
 
-/**
- * A touch screen has no right-click, so a finger resting on a library row asks
- * for the same menu one would have opened. The row is made undraggable for the
- * length of the press, because the WebView starts a native drag on a long press
- * of a draggable row and never lets the menu through.
- */
+/** Opens the context menu on a long press without starting a native drag. */
 function mountLongPress(): void {
   const rowAt = (node: EventTarget | null): HTMLElement | null => {
-    const row = node instanceof Element ? node.closest<HTMLElement>("[data-track]") : null;
-    return row && row.closest(".sheet") ? row : null;
+    if (!(node instanceof Element)) {
+      return null;
+    }
+    return node.closest<HTMLElement>(".sheet [data-track], .carousel-live .card");
   };
 
   /** Stops waiting, and gives the row its drag back, whichever way it ended. */
@@ -117,7 +114,12 @@ function mountLongPress(): void {
     true,
   );
 
-  document.addEventListener("contextmenu", () => (nativeMenu = true), true);
+  document.addEventListener("contextmenu", () => {
+    if (waiting) {
+      nativeMenu = true;
+      swallowClick = true;
+    }
+  }, true);
 
   document.addEventListener("pointerup", stopWaiting, true);
   document.addEventListener("pointercancel", stopWaiting, true);

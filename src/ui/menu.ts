@@ -112,7 +112,7 @@ export function openMenu(anchor: HTMLElement, items: MenuItem[], at?: MenuPoint)
   };
 
   // Deferred so the click that opened the menu does not immediately close it.
-  window.setTimeout(() => {
+  const pointerTimer = window.setTimeout(() => {
     document.addEventListener("pointerdown", onPointerDown, true);
   }, 0);
   document.addEventListener("keydown", onKeyDown, true);
@@ -120,6 +120,7 @@ export function openMenu(anchor: HTMLElement, items: MenuItem[], at?: MenuPoint)
   window.addEventListener("scroll", onScroll, true);
 
   dismiss = () => {
+    window.clearTimeout(pointerTimer);
     document.removeEventListener("pointerdown", onPointerDown, true);
     document.removeEventListener("keydown", onKeyDown, true);
     window.removeEventListener("resize", onMove);

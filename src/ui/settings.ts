@@ -1,5 +1,5 @@
 import { forgetCaptured } from "../lib/analytics";
-import { device, isAndroidPlatform } from "../lib/device";
+import { device, isAndroidPlatform, titlebarVisible } from "../lib/device";
 import { escapeHtml, formatTotalDuration, plural } from "../lib/format";
 import {
   analyticsStats,
@@ -47,6 +47,7 @@ const DIALOG_MS = 220;
 type ToggleKey =
   | "resumeOnLaunch"
   | "rememberWindow"
+  | "showTitlebar"
   | "normalizeVolume"
   | "analyticsEnabled"
   | "systemMediaControls"
@@ -253,9 +254,17 @@ export function mountSettings(): void {
     if (toggle?.dataset.toggle) {
       const key = toggle.dataset.toggle as ToggleKey;
       const next = { ...draft };
-      next[key] = !next[key];
+      if (key === "showTitlebar") {
+        const visible = !titlebarVisible(next.showTitlebar);
+        next.showTitlebar =
+          getState().settings.showTitlebar == null && visible === titlebarVisible(null)
+            ? null
+            : visible;
+      } else {
+        next[key] = !next[key];
+      }
       draft = next;
-      paintToggle(toggle, next[key]);
+      paintToggle(toggle, key === "showTitlebar" ? titlebarVisible(next.showTitlebar) : next[key]);
       paintSave();
       return;
     }
@@ -377,6 +386,10 @@ export function mountSettings(): void {
       return;
     }
     panel.dismiss();
+    if (command === "open-settings") {
+      openDialog();
+      return;
+    }
     void runCommand(command);
   });
 
@@ -548,6 +561,12 @@ function windowHtml(settings: Settings): string {
   return section(
     "Window",
     `${toggleRow(
+      "showTitlebar",
+      "Title bar",
+      "Show window controls and the draggable title bar.",
+      titlebarVisible(settings.showTitlebar),
+    )}
+    ${toggleRow(
       "rememberWindow",
       "Remember size and position",
       "Save where the window sat and restore it next launch.",
@@ -932,6 +951,15 @@ function dropRowsHtml(root: string | null): string {
     </button>`;
 
   return `
+    <button
+      class="drop-item"
+      type="button"
+      data-command="open-settings"
+      aria-label="Open settings"
+      title="Open settings"
+    >
+      <span class="btn-icon" data-icon="settings"></span>
+    </button>
     <button
       class="drop-item"
       type="button"

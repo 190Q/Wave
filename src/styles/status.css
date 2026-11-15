@@ -4,14 +4,19 @@
   top: 3.4rem;
   transform: translateX(-50%);
   z-index: 350;
+  width: max-content;
+  max-width: min(28rem, calc(100% - 2rem));
+  max-height: 5.5rem;
   padding: 0.5rem 1rem;
-  border-radius: 62rem;
+  border-radius: 0.8rem;
   font-size: 0.8rem;
   color: var(--text);
   background: rgb(0 0 0 / 0.75);
   border: 0.0625rem solid rgb(255 255 255 / 0.12);
   backdrop-filter: blur(0.75rem);
-  pointer-events: none;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  overscroll-behavior: contain;
 }
 
 .status[hidden] {

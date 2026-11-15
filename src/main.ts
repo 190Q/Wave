@@ -31,6 +31,7 @@ import { mountSettings, openSettings } from "./ui/settings";
 import { mountTheme } from "./ui/theme";
 import { mountTitlebar } from "./ui/titlebar";
 import { focusSearch, mountTopbar } from "./ui/topbar";
+import { mountTrackEditor } from "./ui/track-editor";
 import { mountUpdate } from "./ui/update";
 
 const NOTICE_TIMEOUT_MS = 6000;
@@ -48,6 +49,7 @@ function mount(): void {
   mountLibrary();
   mountImportDialog();
   mountConfirm();
+  mountTrackEditor();
   mountTheme();
   mountSettings();
   mountEq();

@@ -29,6 +29,8 @@ import type {
   SwellBucket,
   SwellSummary,
   TopSong,
+  Track,
+  TrackMetadata,
   TrackSnapshot,
   UpdateInfo,
   YoutubeStatus,
@@ -151,6 +153,10 @@ export function setLikes(trackIds: string[], liked: boolean): Promise<PersistedS
 /** Deletes songs from the library, with their copies and their playlist entries. */
 export function deleteTracks(trackIds: string[]): Promise<PersistedState> {
   return invoke("delete_tracks", { trackIds });
+}
+
+export function editTrack(trackId: string, metadata: TrackMetadata): Promise<Track> {
+  return invoke("edit_track", { trackId, metadata });
 }
 
 export function scanLibrary(full: boolean): Promise<ScanSummary> {

@@ -71,34 +71,44 @@
 }
 
 .dock-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: 0.75rem;
 }
 
 .dock-side {
-  flex: 1;
+  grid-column: 1;
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  min-width: 0;
   font-size: 0.75rem;
   color: var(--muted);
 }
 
 .dock-end {
+  grid-column: 3;
   justify-content: flex-end;
 }
 
 .dock-position {
+  min-width: 0;
+  overflow: hidden;
   font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .buttons {
+  grid-column: 2;
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+
+.dock-side .icon-pill {
+  flex: none;
 }
 
 /* Transport icons sit muted until hovered, and take the theme when toggled. */
@@ -320,9 +330,5 @@
 @media (max-width: 48rem) {
   .dock-side {
     display: none;
-  }
-
-  .dock-row {
-    justify-content: center;
   }
 }

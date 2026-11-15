@@ -25,6 +25,8 @@ mod identity;
 mod import;
 mod import_source;
 mod library;
+#[cfg(target_os = "android")]
+mod library_work;
 mod loudness;
 mod lyrics;
 mod lyrics_fetch;
@@ -205,6 +207,7 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let builder = builder
         .plugin(media_session::init())
+        .plugin(library_work::init())
         .plugin(music_library::init())
         .plugin(apk::init());
 
@@ -275,6 +278,7 @@ pub fn run() {
             update::install_update,
             library::scan_library,
             library::reread_tags,
+            library::edit_track,
             library::library_info,
             library::open_library_folder,
             library::delete_tracks,

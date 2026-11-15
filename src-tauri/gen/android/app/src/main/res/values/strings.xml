@@ -2,4 +2,7 @@
     <string name="app_name">"Wave"</string>
     <string name="main_activity_title">"Wave"</string>
     <string name="notification_channel_playback">"Playback"</string>
+    <string name="notification_channel_library">"Library work"</string>
+    <string name="library_work_title">"Working on your library"</string>
+    <string name="library_work_finishing">"Finishing..."</string>
 </resources>

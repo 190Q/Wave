@@ -136,6 +136,7 @@ pub struct Settings {
     pub resume_on_launch: bool,
     pub reduce_motion: String,
     pub remember_window: bool,
+    pub show_titlebar: Option<bool>,
     pub always_on_top: bool,
     pub mini_player: bool,
     pub mini_corner: u8,
@@ -181,6 +182,7 @@ impl Default for Settings {
             resume_on_launch: true,
             reduce_motion: "system".to_string(),
             remember_window: true,
+            show_titlebar: None,
             always_on_top: false,
             mini_player: false,
             mini_corner: DEFAULT_MINI_CORNER,
@@ -1185,6 +1187,25 @@ pub fn set_likes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn titlebar_setting_defaults_to_automatic_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{ "volume": 42 }"#).unwrap();
+        assert_eq!(old.show_titlebar, None);
+        assert_eq!(old.volume, 42);
+
+        for preference in [None, Some(true), Some(false)] {
+            let settings = Settings {
+                show_titlebar: preference,
+                volume: 42,
+                ..Settings::default()
+            };
+            let json = serde_json::to_string(&settings).unwrap();
+            let restored: Settings = serde_json::from_str(&json).unwrap();
+            assert_eq!(restored.show_titlebar, preference);
+            assert_eq!(restored.volume, 42);
+        }
+    }
 
     #[cfg(desktop)]
     fn frame(width: u32, height: u32, maximized: bool) -> WindowGeometry {

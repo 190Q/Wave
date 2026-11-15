@@ -574,9 +574,13 @@ fn summary(outcome: &LyricsOutcome) -> String {
 #[tauri::command]
 pub async fn fetch_lyrics(app: AppHandle, track_ids: Vec<String>) -> Result<LyricsOutcome, String> {
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || run(&handle, &track_ids, Output::Events))
-        .await
-        .map_err(|e| format!("the lyrics fetch stopped unexpectedly: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "android")]
+        let _guard = crate::library_work::Guard::start(&handle, "Finding lyrics");
+        run(&handle, &track_ids, Output::Events)
+    })
+    .await
+    .map_err(|e| format!("the lyrics fetch stopped unexpectedly: {e}"))?
 }
 
 #[cfg(test)]

@@ -344,6 +344,30 @@
         <div class="import-body" id="import-body"></div>
       </dialog>
 
+      <dialog class="track-editor-dialog" id="track-editor-dialog" aria-labelledby="track-editor-title">
+        <form id="track-editor-form">
+          <h2 id="track-editor-title">Edit song</h2>
+          <p class="track-editor-hint">Changes are saved to the song file.</p>
+          <div class="track-editor-fields">
+            <label>Title <input name="title" type="text" required autocomplete="off" /></label>
+            <label>Artist <input name="artist" type="text" autocomplete="off" /></label>
+            <label>Album <input name="album" type="text" autocomplete="off" /></label>
+            <label>Album artist <input name="albumArtist" type="text" autocomplete="off" /></label>
+            <label>Genre <input name="genre" type="text" autocomplete="off" /></label>
+            <div class="track-editor-numbers">
+              <label>Year <input name="year" type="number" min="1" max="9999" step="1" inputmode="numeric" /></label>
+              <label>Track <input name="trackNo" type="number" min="1" max="65535" step="1" inputmode="numeric" /></label>
+              <label>Disc <input name="discNo" type="number" min="1" max="65535" step="1" inputmode="numeric" /></label>
+            </div>
+          </div>
+          <p class="track-editor-error" id="track-editor-error" role="alert" hidden></p>
+          <div class="confirm-actions">
+            <button class="pill" id="track-editor-cancel" type="button">Cancel</button>
+            <button class="pill pill-strong" id="track-editor-save" type="submit">Save</button>
+          </div>
+        </form>
+      </dialog>
+
       <dialog
         class="confirm-dialog"
         id="confirm-dialog"

@@ -1,4 +1,5 @@
 import { cardGradient, colourFromId } from "../lib/colour";
+import { isUnknownCollection } from "../lib/collections";
 import { escapeHtml } from "../lib/format";
 import { artworkUrlFor, colourFor, type ArtworkTier } from "../lib/state";
 import type { Collection, Track } from "../types";
@@ -26,7 +27,9 @@ export function collectionCoverHtml(
   tracksById: Map<string, Track>,
   tier: ArtworkTier = "background",
 ): string {
-  const ids = collection.kind === "album" ? collection.trackIds.slice(0, 1) : collection.trackIds;
+  const ids = collection.kind === "album" && !isUnknownCollection(collection)
+    ? collection.trackIds.slice(0, 1)
+    : collection.trackIds;
   return mosaicHtml(ids, tracksById, tier);
 }
 
@@ -40,7 +43,9 @@ export function mosaicHtml(
 }
 
 export function resultCoverHtml(collection: Collection, tracksById: Map<string, Track>): string {
-  const ids = collection.kind === "album" ? collection.trackIds.slice(0, 1) : collection.trackIds;
+  const ids = collection.kind === "album" && !isUnknownCollection(collection)
+    ? collection.trackIds.slice(0, 1)
+    : collection.trackIds;
   const { tracks, marker } = mosaicTracks(ids, tracksById);
   return buildMosaic(tracks, marker, colourCoverStyle);
 }

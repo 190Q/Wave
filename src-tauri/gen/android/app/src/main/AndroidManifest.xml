@@ -18,6 +18,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Updating from a GitHub release: the download is handed to the system
@@ -65,6 +66,11 @@
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
+
+        <service
+            android:name=".LibraryWorkService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- Hardware and Bluetooth buttons. The platform looks for exactly one
              receiver handling this action, and sets none when it cannot find one. -->

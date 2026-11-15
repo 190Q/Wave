@@ -1,0 +1,56 @@
+.track-editor-dialog {
+  width: min(28rem, 92vw);
+  overflow-y: auto;
+}
+
+.track-editor-dialog h2 {
+  font-size: 1.05rem;
+}
+
+.track-editor-hint,
+.track-editor-error {
+  margin-top: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.track-editor-error {
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+.track-editor-fields {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
+
+.track-editor-fields label {
+  display: grid;
+  gap: 0.3rem;
+  min-width: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.track-editor-fields input {
+  width: 100%;
+  min-width: 0;
+  padding: 0.55rem 0.65rem;
+  border: 0.0625rem solid rgb(255 255 255 / 0.12);
+  border-radius: 0.5rem;
+  background: var(--raise);
+  color: var(--text);
+  font: inherit;
+  user-select: text;
+}
+
+.track-editor-numbers {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+[data-touch="true"] .track-editor-fields input {
+  font-size: 1rem;
+}

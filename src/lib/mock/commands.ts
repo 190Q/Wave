@@ -17,6 +17,7 @@ import type {
   SwellSummary,
   TopSong,
   Track,
+  TrackMetadata,
   UpdateInfo,
 } from "../../types";
 import { artworkJpeg, coverJpeg } from "./artwork";
@@ -312,6 +313,16 @@ const handlers: Record<string, Handler> = {
       entries: entry.entries.filter((id) => !drop.has(id)),
     }));
     return snapshot();
+  },
+
+  edit_track: ({ trackId, metadata }) => {
+    const track = tracks.find((entry) => entry.id === text(trackId));
+    if (!track || !isObject(metadata)) {
+      throw new Error("That song is no longer in the library.");
+    }
+    const updated = { ...track, ...(metadata as unknown as TrackMetadata) };
+    tracks = tracks.map((entry) => entry.id === track.id ? updated : entry);
+    return structuredClone(updated);
   },
 
   scan_library: () => scanSummary(),

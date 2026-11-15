@@ -1,4 +1,4 @@
-import { COLLECTION_FILTERS, filterCollections, isPinned } from "../lib/collections";
+import { COLLECTION_FILTERS, filterCollections, isPinned, playlistGenres } from "../lib/collections";
 import { device, isTouch } from "../lib/device";
 import { escapeHtml, formatDuration, formatTotalDuration, plural, songCount } from "../lib/format";
 import { bounce, reduceMotionActive } from "../lib/motion";
@@ -65,6 +65,7 @@ import { fillIcons } from "./icons";
 import { highlightHtml } from "./highlight";
 import { openImport } from "./import-dialog";
 import { openMenu, type MenuItem, type MenuPoint } from "./menu";
+import { openTrackEditor } from "./track-editor";
 import { WindowedList } from "./windowed";
 
 const SWIPE_TRAVEL = 1.75;
@@ -777,7 +778,7 @@ export function mountLibrary(): void {
     if (
       sheet.contains(target) ||
       target.closest(
-        ".menu, .results, .theme-dialog, .settings-dialog, .import-dialog, .confirm-dialog, .add-to",
+        ".menu, .results, .theme-dialog, .settings-dialog, .import-dialog, .confirm-dialog, .track-editor-dialog, .add-to",
       )
     ) {
       return;
@@ -888,7 +889,7 @@ export function mountLibrary(): void {
     sortLabel.textContent = SORT_LABELS[state.sort];
 
     if (!state.libraryOpen || openCollectionId === null) {
-      closeAddToPlaylist();
+      closeAddToPlaylist(true);
     }
 
     if (!state.libraryOpen) {
@@ -1652,15 +1653,15 @@ function renderLibrary(state: AppState): string {
 }
 
 /** The right-click menu for a song or a selection, opened where the pointer is. */
-function openTrackMenu(
+export function openTrackMenu(
   row: HTMLElement,
-  collectionId: string,
+  collectionId: string | null,
   trackIds: string[],
   at: MenuPoint,
-  touch?: { selectAll: () => void; clear?: () => void },
+  touch?: { selectAll?: () => void; clear?: () => void; play?: () => void },
 ): void {
   const state = getState();
-  const collection = collectionById(collectionId);
+  const collection = collectionId ? collectionById(collectionId) : undefined;
   const many = trackIds.length > 1;
   const count = `${trackIds.length} songs`;
   const allLiked = trackIds.every((id) => state.likes.has(id));
@@ -1670,8 +1671,17 @@ function openTrackMenu(
 
   const items: MenuItem[] = [];
 
-  if (touch && trackIds.length === 1 && everyHeld) {
-    items.push({ label: "Play", action: () => playFromCollection(collectionId, trackIds[0]) });
+  if (isTouch() && trackIds.length === 1 && everyHeld) {
+    items.push({
+      label: "Play",
+      action: touch?.play ?? (() => {
+        if (collectionId) {
+          playFromCollection(collectionId, trackIds[0]);
+        } else {
+          playTrackInContext(trackIds[0]);
+        }
+      }),
+    });
   }
 
   if (everyHeld) {
@@ -1683,9 +1693,12 @@ function openTrackMenu(
       },
     });
     items.push({ label: "Add to playlist", action: () => openAddToPlaylist(addAnchor(row), trackIds) });
+    if (!many) {
+      items.push({ label: "Edit song", action: () => openTrackEditor(trackIds[0]) });
+    }
   }
 
-  if (everyPending && device() !== "android") {
+  if (everyPending && collectionId && device() !== "android") {
     items.push({
       label: many ? `Download ${count}` : "Download",
       action: () => void downloadPending(collectionId, trackIds),
@@ -1708,7 +1721,7 @@ function openTrackMenu(
     });
   }
 
-  if (touch) {
+  if (touch?.selectAll) {
     items.push({ label: "Select all", action: touch.selectAll });
     if (touch.clear) {
       items.push({ label: "Clear selection", action: touch.clear });
@@ -1722,7 +1735,7 @@ function openTrackMenu(
 function openNewPlaylistMenu(anchor: HTMLElement, onEmpty: () => void): void {
   const state = getState();
   const recommend = state.recommend;
-  const genres = libraryGenres(state);
+  const genres = playlistGenres(state.collections);
 
   // Read again, so the taste entry is as current as the record allows.
   void refreshRecommendStatus();
@@ -1746,13 +1759,6 @@ function openNewPlaylistMenu(anchor: HTMLElement, onEmpty: () => void): void {
       action: () => openGenreMenu(anchor, genres),
     },
   ]);
-}
-
-/** The genres the library holds, which are the ones a genre playlist can be built from. */
-function libraryGenres(state: AppState): string[] {
-  return state.collections
-    .filter((collection) => collection.kind === "genre")
-    .map((collection) => collection.name);
 }
 
 /** The genre list hangs off the same button the menu did. */

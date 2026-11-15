@@ -15,6 +15,7 @@ import {
 import { reduceMotionActive } from "../lib/motion";
 import { stepLater } from "../lib/steps";
 import { coverStyle } from "./artwork";
+import { openTrackMenu } from "./library";
 import { coverWipe, type CoverSwap } from "./wipe";
 
 const VISIBLE_RANGE = 5;
@@ -84,6 +85,7 @@ export function mountQueue(): void {
   const remPx = parseFloat(rootStyles.fontSize) || 16;
   const spacingRem = parseFloat(rootStyles.getPropertyValue("--card-spacing")) || SPACING_REM;
   let dragging = false;
+  let dragPointerId: number | null = null;
   let dragStartX = 0;
   let dragRem = 0;
   let suppressClick = false;
@@ -542,10 +544,11 @@ export function mountQueue(): void {
   };
 
   carousel.addEventListener("pointerdown", (event) => {
-    if ((event.target as HTMLElement).closest("button")) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) {
       return;
     }
     dragging = true;
+    dragPointerId = event.pointerId;
     dragStartX = event.clientX;
     dragRem = 0;
     suppressClick = false;
@@ -565,6 +568,7 @@ export function mountQueue(): void {
       return;
     }
     dragging = false;
+    dragPointerId = null;
     carousel.classList.remove("is-dragging");
     if (dragFrame !== null) {
       window.cancelAnimationFrame(dragFrame);
@@ -579,6 +583,45 @@ export function mountQueue(): void {
 
   carousel.addEventListener("pointerup", endDrag);
   carousel.addEventListener("pointercancel", endDrag);
+
+  carousel.addEventListener("contextmenu", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const card = target?.closest<HTMLElement>(".card")
+      ?? document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>(".card");
+    const slot = Number(card?.dataset.slot);
+    if (!card || cards.get(slot) !== card) {
+      return;
+    }
+
+    const snapshot = player.snapshot();
+    const trackId = snapshot.order[Number(card.dataset.index)];
+    if (!trackId) {
+      return;
+    }
+    event.preventDefault();
+
+    if (dragging) {
+      dragging = false;
+      carousel.classList.remove("is-dragging");
+      if (dragFrame !== null) {
+        window.cancelAnimationFrame(dragFrame);
+        dragFrame = null;
+      }
+      if (dragPointerId !== null && carousel.hasPointerCapture(dragPointerId)) {
+        carousel.releasePointerCapture(dragPointerId);
+      }
+      dragPointerId = null;
+      dragRem = 0;
+      suppressClick = true;
+      render();
+    }
+
+    const source = getState().collections.find((collection) => collection.id === snapshot.sourceId);
+    const collectionId = source?.trackIds.includes(trackId) ? source.id : null;
+    openTrackMenu(card, collectionId, [trackId], { x: event.clientX, y: event.clientY }, {
+      play: () => player.playTrack(trackId),
+    });
+  });
 
   carousel.addEventListener("click", (event) => {
     if (suppressClick) {

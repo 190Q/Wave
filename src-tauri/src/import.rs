@@ -166,6 +166,8 @@ pub fn import_folder(
         return Err(format!("{folder} is not a folder"));
     }
 
+    #[cfg(target_os = "android")]
+    let guard = crate::library_work::Guard::start(&app, "Importing music");
     let mut outcome = import_into_library(&app, &source, create_playlist, playlist_name.as_deref())?;
 
     let name = outcome
@@ -176,6 +178,8 @@ pub fn import_folder(
     remember_import(&app, "folder", &name, &outcome);
 
     outcome.state = app.state::<Store>().snapshot();
+    #[cfg(target_os = "android")]
+    crate::loudness::schedule(&app, guard);
     Ok(outcome)
 }
 
@@ -191,6 +195,8 @@ pub fn import_picked_files(app: AppHandle, paths: Vec<String>) -> Result<ImportO
         return Err("nothing was picked".to_string());
     }
 
+    #[cfg(target_os = "android")]
+    let guard = crate::library_work::Guard::start(&app, "Importing music");
     let store = app.state::<Store>();
     let names = picked_names(&app, &paths)?;
     let mut outcome = ImportOutcome::default();
@@ -229,6 +235,8 @@ pub fn import_picked_files(app: AppHandle, paths: Vec<String>) -> Result<ImportO
 
     remember_import(&app, "phone", "Picked files", &outcome);
     outcome.state = store.snapshot();
+    #[cfg(target_os = "android")]
+    crate::loudness::schedule(&app, guard);
     Ok(outcome)
 }
 
@@ -239,6 +247,7 @@ pub fn import_phone_folder(app: AppHandle) -> Result<Option<ImportOutcome>, Stri
     let Some(uri) = phone.pick_folder()? else {
         return Ok(None);
     };
+    let guard = crate::library_work::Guard::start(&app, "Importing music");
     let _ = app.emit("phone-folder-import", "Reading the selected folder...");
     let files = phone.folder_files(&uri)?;
     let mut folders = std::collections::BTreeMap::new();
@@ -319,6 +328,7 @@ pub fn import_phone_folder(app: AppHandle) -> Result<Option<ImportOutcome>, Stri
 
     remember_import(&app, "phone", "Selected folder", &outcome);
     outcome.state = playlists::refresh(&app, &store);
+    crate::loudness::schedule(&app, guard);
     Ok(Some(outcome))
 }
 
@@ -335,6 +345,7 @@ pub fn scan_phone_music(app: AppHandle) -> Result<ImportOutcome, String> {
         );
     }
 
+    let guard = crate::library_work::Guard::start(&app, "Importing music");
     let folders = library.music_directories()?;
     let store = app.state::<Store>();
     let mut outcome = ImportOutcome::default();
@@ -359,6 +370,7 @@ pub fn scan_phone_music(app: AppHandle) -> Result<ImportOutcome, String> {
 
     remember_import(&app, "phone", "This phone's music", &outcome);
     outcome.state = store.snapshot();
+    crate::loudness::schedule(&app, guard);
     Ok(outcome)
 }
 

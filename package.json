@@ -8,6 +8,7 @@
     "dev": "vite",
     "dev:phone": "vite --port 5199 --strictPort --open /dev/phone/index.html",
     "build": "tsc && vite build",
+    "test": "node --test",
     "preview": "vite preview",
     "tauri": "tauri",
     "tools": "node scripts/tools.mjs",

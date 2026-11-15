@@ -14,6 +14,8 @@ const LIST_SPLIT = /\s*(?:&|;|,|\band\b)\s*/i;
 
 export const COLLECTION_FILTERS: CollectionFilter[] = ["all", "playlists", "artists", "albums", "genres"];
 
+type MetadataCollectionKind = "artist" | "album" | "genre";
+
 export function buildCollections(tracks: Track[], playlists: Playlist[], likes: Set<string>): Collection[] {
   const collections: Collection[] = [];
   const heldIds = new Set(tracks.map((track) => track.id));
@@ -65,7 +67,6 @@ export function buildCollections(tracks: Track[], playlists: Playlist[], likes: 
     });
   }
 
-  // Untagged tracks are skipped entirely rather than filed under a guess.
   for (const [, group] of groupByArtist(tracks)) {
     const ids = group.tracks.map((track) => track.id);
     collections.push({
@@ -77,6 +78,7 @@ export function buildCollections(tracks: Track[], playlists: Playlist[], likes: 
       entries: ids,
     });
   }
+  addUnknownCollection(collections, tracks, "artist");
 
   const byAlbum = groupBy(tracks, (track) => track.album);
   for (const [album, grouped] of byAlbum) {
@@ -90,8 +92,8 @@ export function buildCollections(tracks: Track[], playlists: Playlist[], likes: 
       entries: ids,
     });
   }
+  addUnknownCollection(collections, tracks, "album");
 
-  // A song with no genre tag is left out, the same way an untagged artist is.
   for (const [genre, grouped] of groupBy(tracks, (track) => track.genre)) {
     const ids = grouped.map((track) => track.id);
     collections.push({
@@ -103,8 +105,42 @@ export function buildCollections(tracks: Track[], playlists: Playlist[], likes: 
       entries: ids,
     });
   }
+  addUnknownCollection(collections, tracks, "genre");
 
   return collections;
+}
+
+function addUnknownCollection(
+  collections: Collection[],
+  tracks: Track[],
+  kind: MetadataCollectionKind,
+): void {
+  const ids = tracks.filter((track) => !track[kind]?.trim()).map((track) => track.id);
+  if (ids.length === 0) {
+    return;
+  }
+
+  collections.push({
+    id: collectionId(kind, ""),
+    kind,
+    name: `Unknown ${kind}`,
+    subtitle: `${kind[0].toUpperCase()}${kind.slice(1)}, ${songCount(ids.length)}`,
+    trackIds: ids,
+    entries: ids,
+  });
+}
+
+export function isUnknownCollection(collection: Collection): boolean {
+  return (
+    (collection.kind === "artist" || collection.kind === "album" || collection.kind === "genre") &&
+    collection.id === collectionId(collection.kind, "")
+  );
+}
+
+export function playlistGenres(collections: Collection[]): string[] {
+  return collections
+    .filter((collection) => collection.kind === "genre" && !isUnknownCollection(collection))
+    .map((collection) => collection.name);
 }
 
 /** A generated playlist's entries, keeping the ones the library or the pending list still holds. */

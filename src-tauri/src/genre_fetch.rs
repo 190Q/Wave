@@ -383,9 +383,13 @@ pub async fn fetch_genres(
     track_ids: Vec<String>,
 ) -> Result<GenresOutcome, String> {
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || run(&handle, &track_ids, Output::Events))
-        .await
-        .map_err(|e| format!("the genre lookup stopped unexpectedly: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "android")]
+        let _guard = crate::library_work::Guard::start(&handle, "Finding genres");
+        run(&handle, &track_ids, Output::Events)
+    })
+    .await
+    .map_err(|e| format!("the genre lookup stopped unexpectedly: {e}"))?
 }
 
 #[cfg(test)]

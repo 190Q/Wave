@@ -2,9 +2,19 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { setIcon } from "../assets/icons/index";
 import { resetWindowGeometry, saveWindowGeometry } from "../lib/ipc";
-import { flushSession } from "../lib/state";
+import { flushSession, getState, subscribe } from "../lib/state";
 
 export function mountTitlebar(): void {
+  const updateVisibility = (): void => {
+    const preference = getState().settings.showTitlebar;
+    const visibility = preference == null ? "auto" : preference ? "shown" : "hidden";
+    if (document.documentElement.dataset.titlebar !== visibility) {
+      document.documentElement.dataset.titlebar = visibility;
+    }
+  };
+  subscribe(updateVisibility);
+  updateVisibility();
+
   const minimise = element("window-minimise");
   const maximise = element<HTMLButtonElement>("window-maximise");
   const close = element("window-close");

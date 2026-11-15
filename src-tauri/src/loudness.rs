@@ -17,6 +17,79 @@ use crate::catalog::{Catalog, TrackRow};
 use crate::library;
 
 pub const PROGRESS_EVENT: &str = "loudness-scan";
+#[cfg(target_os = "android")]
+const FINISHED_EVENT: &str = "loudness-finished";
+
+#[cfg(any(target_os = "android", test))]
+#[derive(Default)]
+struct AnalysisQueue {
+    running: bool,
+    again: bool,
+}
+
+#[cfg(any(target_os = "android", test))]
+impl AnalysisQueue {
+    fn request(&mut self) -> bool {
+        if self.running {
+            self.again = true;
+            false
+        } else {
+            self.running = true;
+            true
+        }
+    }
+
+    fn advance(&mut self) -> bool {
+        if self.again {
+            self.again = false;
+            true
+        } else {
+            self.running = false;
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+static ANALYSIS_QUEUE: std::sync::Mutex<AnalysisQueue> =
+    std::sync::Mutex::new(AnalysisQueue { running: false, again: false });
+
+#[cfg(target_os = "android")]
+pub(crate) fn schedule(app: &AppHandle, guard: crate::library_work::Guard) {
+    let mut queue = ANALYSIS_QUEUE.lock().unwrap_or_else(|error| error.into_inner());
+    if !queue.request() {
+        return;
+    }
+    drop(queue);
+
+    guard.label("Analysing song loudness");
+    let handle = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("loudness-analysis".into())
+        .spawn(move || {
+            let _guard = guard;
+            loop {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    analyse(&handle, &[])
+                }));
+                let mut queue = ANALYSIS_QUEUE.lock().unwrap_or_else(|error| error.into_inner());
+                if result.is_err() {
+                    eprintln!("loudness analysis stopped unexpectedly");
+                    queue.again = false;
+                }
+                if !queue.advance() {
+                    let _ = handle.emit(FINISHED_EVENT, ());
+                    break;
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        let mut queue = ANALYSIS_QUEUE.lock().unwrap_or_else(|error| error.into_inner());
+        *queue = AnalysisQueue::default();
+        let _ = app.emit(FINISHED_EVENT, ());
+        eprintln!("loudness analysis could not start: {error}");
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -238,19 +311,35 @@ pub async fn analyse_loudness(app: AppHandle, track_ids: Vec<String>) -> Loudnes
     // The catalog is reached through the handle inside the blocking closure: a
     // state guard cannot cross an await.
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || analyse(&handle, &track_ids))
-        .await
-        .unwrap_or_else(|error| LoudnessOutcome {
-            measured: 0,
-            skipped: 0,
-            failures: vec![format!("the analysis stopped unexpectedly: {error}")],
-        })
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "android")]
+        let _guard = crate::library_work::Guard::start(&handle, "Analysing song loudness");
+        analyse(&handle, &track_ids)
+    })
+    .await
+    .unwrap_or_else(|error| LoudnessOutcome {
+        measured: 0,
+        skipped: 0,
+        failures: vec![format!("the analysis stopped unexpectedly: {error}")],
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn overlapping_analysis_requests_are_coalesced_and_retried() {
+        let mut queue = AnalysisQueue::default();
+        assert!(queue.request());
+        assert!(!queue.request());
+        assert!(!queue.request());
+        assert!(queue.advance());
+        assert!(!queue.advance());
+        assert!(queue.request());
+        assert!(!queue.advance());
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("wave-loudness-{name}"));

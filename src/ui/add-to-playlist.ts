@@ -18,9 +18,13 @@ let dismiss: (() => void) | null = null;
 
 /** The button it hangs off, so a second click on it takes the panel back down. */
 let source: HTMLElement | null = null;
+let sourceInLibrary = false;
 
 /** Closes the panel, if one is showing. */
-export function closeAddToPlaylist(): void {
+export function closeAddToPlaylist(libraryOnly = false): void {
+  if (libraryOnly && !sourceInLibrary) {
+    return;
+  }
   dismiss?.();
 }
 
@@ -51,6 +55,7 @@ export function openAddToPlaylist(anchor: HTMLElement, trackIds: string[]): void
     return;
   }
   closeAddToPlaylist();
+  const openedFromLibrary = anchor.closest(".sheet") !== null;
 
   const head = trackIds.length > 1 ? `Add ${trackIds.length} songs to a playlist` : "Add to playlist";
 
@@ -229,8 +234,13 @@ export function openAddToPlaylist(anchor: HTMLElement, trackIds: string[]): void
   };
 
   let unsubscribe = (): void => {};
+  let pointerTimer: number | null = null;
 
   const close = (): void => {
+    if (pointerTimer !== null) {
+      window.clearTimeout(pointerTimer);
+      pointerTimer = null;
+    }
     document.removeEventListener("pointerdown", onPointerDown, true);
     document.removeEventListener("keydown", onKeyDown, true);
     window.removeEventListener("scroll", onScroll, true);
@@ -240,15 +250,17 @@ export function openAddToPlaylist(anchor: HTMLElement, trackIds: string[]): void
     if (dismiss === close) {
       dismiss = null;
       source = null;
+      sourceInLibrary = false;
     }
   };
   dismiss = close;
   source = anchor;
+  sourceInLibrary = openedFromLibrary;
 
   unsubscribe = subscribe(() => {
     const state = getState();
     // The sheet closing takes the panel with it.
-    if (!state.libraryOpen) {
+    if (openedFromLibrary && !state.libraryOpen) {
       close();
       return;
     }
@@ -264,7 +276,8 @@ export function openAddToPlaylist(anchor: HTMLElement, trackIds: string[]): void
   place(panel, anchor);
 
   // Deferred so the click that opened the panel does not immediately close it.
-  window.setTimeout(() => {
+  pointerTimer = window.setTimeout(() => {
+    pointerTimer = null;
     document.addEventListener("pointerdown", onPointerDown, true);
   }, 0);
   document.addEventListener("keydown", onKeyDown, true);

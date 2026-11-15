@@ -28,6 +28,7 @@ export const INSETS_EVENT = "wave:insets";
 const STORAGE_KEY = "wave:device";
 
 const KINDS: DeviceKind[] = ["desktop", "linuxPhone", "android"];
+const PHONE_MAX_SHORT_EDGE = 600;
 
 export const ZERO_INSETS: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
 
@@ -64,9 +65,14 @@ function detected(): DeviceKind {
   if (isAndroidPlatform) {
     return "android";
   }
-  // A Linux phone is WebKitGTK driven by a finger. Nothing else on Linux says
-  // it is a phone, and a wrong answer only costs the touch affordances.
-  if (isWebKitGtk && coarse()) {
+  const { width, height } = window.screen;
+  if (
+    isWebKitGtk &&
+    width > 0 &&
+    height > 0 &&
+    Math.min(width, height) <= PHONE_MAX_SHORT_EDGE &&
+    (coarse() || window.matchMedia("(any-pointer: coarse)").matches)
+  ) {
     return "linuxPhone";
   }
   return "desktop";
@@ -79,6 +85,10 @@ function coarse(): boolean {
 /** The kind in force. */
 export function device(): DeviceKind {
   return kind;
+}
+
+export function titlebarVisible(preference: boolean | null, on: DeviceKind = kind): boolean {
+  return on !== "android" && (preference ?? on === "desktop");
 }
 
 /** True when the screen is driven by a finger, so hover is not available. */

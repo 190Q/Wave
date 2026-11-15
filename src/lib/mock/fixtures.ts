@@ -104,6 +104,7 @@ function defaultSettings(): Settings {
     resumeOnLaunch: true,
     reduceMotion: "system",
     rememberWindow: true,
+    showTitlebar: null,
     alwaysOnTop: false,
     miniPlayer: false,
     miniCorner: 4,

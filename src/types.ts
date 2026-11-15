@@ -28,6 +28,17 @@ export interface Track {
   addedAt: number;
 }
 
+export interface TrackMetadata {
+  title: string;
+  artist: string | null;
+  album: string | null;
+  albumArtist: string | null;
+  genre: string | null;
+  year: number | null;
+  trackNo: number | null;
+  discNo: number | null;
+}
+
 export type PlaylistKind = "custom" | "generated";
 export type PlaylistMode = "taste" | "genre";
 
@@ -142,6 +153,8 @@ export interface Settings {
   reduceMotion: ReduceMotionMode;
   /** Remembers the window size and position between launches. */
   rememberWindow: boolean;
+  /** `null` follows the device default. */
+  showTitlebar: boolean | null;
   /** Keeps the window above the others. Toggled by `t`. */
   alwaysOnTop: boolean;
   /** The smallest frame, in a corner of the screen, above the others. */

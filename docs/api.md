@@ -314,6 +314,7 @@ Plays a collection: a playlist, an album, an artist, the whole library or Liked 
 - `liked` Liked Songs
 - a playlist id
 - `album:<name>`, `artist:<name>` or `genre:<name>`, with the name in lower case
+- `album:`, `artist:` or `genre:` for songs missing the corresponding tag
 
 A name with a space or a colon in it is percent-encoded in the URL.
 
@@ -628,6 +629,7 @@ curl -s http://127.0.0.1:45679/api/settings
   "resumeOnLaunch": true,
   "reduceMotion": "system",
   "rememberWindow": true,
+  "showTitlebar": null,
   "alwaysOnTop": false,
   "miniPlayer": false,
   "miniCorner": 4,
@@ -640,7 +642,7 @@ curl -s http://127.0.0.1:45679/api/settings
 }
 ```
 
-`reduceMotion` is `system`, `on` or `off`. `searchAlgorithm` names one of the matching algorithms the window offers. `miniCorner` is `1` to `4`. `shortcutSlots` is the nine `Ctrl+Shift+1..9` action slots, empty strings where a slot is unset.
+`reduceMotion` is `system`, `on` or `off`. `showTitlebar` is `true` or `false` to override visibility, or `null` to follow the device default. Android always hides the title bar. `searchAlgorithm` names one of the matching algorithms the window offers. `miniCorner` is `1` to `4`. `shortcutSlots` is the nine `Ctrl+Shift+1..9` action slots, empty strings where a slot is unset.
 
 ### PATCH /api/settings
 

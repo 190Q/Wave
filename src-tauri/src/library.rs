@@ -4,9 +4,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use lofty::config::WriteOptions;
 use lofty::file::FileType;
-use lofty::prelude::{Accessor, AudioFile, ItemKey, TaggedFileExt};
-use serde::Serialize;
+use lofty::prelude::{Accessor, AudioFile, ItemKey, TagExt, TaggedFileExt};
+use lofty::tag::{items::Timestamp, Tag};
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Runtime, State};
 #[cfg(not(target_os = "android"))]
 use tauri_plugin_opener::OpenerExt;
@@ -118,6 +120,55 @@ pub struct Track {
     /// True peak, linear. `None` until the song has been measured.
     pub peak: Option<f32>,
     pub added_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackMetadata {
+    title: String,
+    artist: Option<String>,
+    album: Option<String>,
+    album_artist: Option<String>,
+    genre: Option<String>,
+    year: Option<u16>,
+    track_no: Option<u32>,
+    disc_no: Option<u32>,
+}
+
+impl TrackMetadata {
+    fn from_row(row: &TrackRow) -> Self {
+        Self {
+            title: row.title.clone(),
+            artist: row.artist.clone(),
+            album: row.album.clone(),
+            album_artist: row.album_artist.clone(),
+            genre: row.genre.clone(),
+            year: row.year,
+            track_no: row.track_no,
+            disc_no: row.disc_no,
+        }
+    }
+
+    fn validate(mut self) -> Result<Self, String> {
+        self.title = self.title.trim().to_string();
+        if self.title.is_empty() {
+            return Err("Enter a title.".to_string());
+        }
+        let trim = |value: Option<String>| {
+            value.map(|text| text.trim().to_string()).filter(|text| !text.is_empty())
+        };
+        self.artist = trim(self.artist);
+        self.album = trim(self.album);
+        self.album_artist = trim(self.album_artist);
+        self.genre = trim(self.genre);
+        if self.year.is_some_and(|year| year == 0 || year > 9999) {
+            return Err("The year must be between 1 and 9999.".to_string());
+        }
+        if [self.track_no, self.disc_no].into_iter().flatten().any(|n| n == 0 || n > 65535) {
+            return Err("Track and disc numbers must be between 1 and 65535.".to_string());
+        }
+        Ok(self)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -779,11 +830,15 @@ pub fn scan_library(
     catalog: State<'_, Catalog>,
     full: bool,
 ) -> ScanSummary {
+    #[cfg(target_os = "android")]
+    let guard = crate::library_work::Guard::start(&app, "Scanning your library");
     let mut summary = scan(&app, &catalog, full);
     if let Err(error) = crate::transfer::resolve_imported(&catalog) {
         summary.errors.push(error);
     }
     let _ = crate::playlists::refresh(&app, &store);
+    #[cfg(target_os = "android")]
+    crate::loudness::schedule(&app, guard);
     summary
 }
 
@@ -793,9 +848,134 @@ pub fn reread_tags(
     store: State<'_, Store>,
     catalog: State<'_, Catalog>,
 ) -> ScanSummary {
+    #[cfg(target_os = "android")]
+    let guard = crate::library_work::Guard::start(&app, "Reading song tags");
     let summary = reread(&app, &catalog);
     let _ = crate::playlists::refresh(&app, &store);
+    #[cfg(target_os = "android")]
+    crate::loudness::schedule(&app, guard);
     summary
+}
+
+#[tauri::command(async)]
+pub fn edit_track(
+    app: AppHandle,
+    catalog: State<'_, Catalog>,
+    track_id: String,
+    metadata: TrackMetadata,
+) -> Result<Track, String> {
+    let root = library_root(&app)?;
+    let row = edit_metadata(&root, &catalog, &track_id, metadata)?;
+    Ok(to_track(&row, &root))
+}
+
+fn edit_metadata(
+    root: &Path,
+    catalog: &Catalog,
+    track_id: &str,
+    metadata: TrackMetadata,
+) -> Result<TrackRow, String> {
+    let metadata = metadata.validate()?;
+    let previous = catalog.track(track_id)?
+        .filter(|row| !row.missing)
+        .ok_or_else(|| "That song is no longer in the library.".to_string())?;
+    let before = TrackMetadata::from_row(&previous);
+    if metadata == before {
+        return Ok(previous);
+    }
+
+    let audio = root.join(&previous.rel_path);
+    let stamp = identity::stamp_of(&audio)?;
+    if stamp.bytes != previous.bytes || stamp.modified_ms != previous.modified_ms {
+        return Err("The song changed since the last scan. Rescan the library and try again.".to_string());
+    }
+    let tagged = lofty::read_from_path(&audio)
+        .map_err(|e| format!("Could not read the song tags: {e}"))?;
+    let tag_type = tagged.file_type().primary_tag_type();
+    if !tagged.file_type().tag_support(tag_type).is_writable() {
+        return Err("This song's format does not support editing tags.".to_string());
+    }
+    let mut tag = tagged.primary_tag().cloned().unwrap_or_else(|| {
+        let mut tag = tagged.first_tag().cloned().unwrap_or_else(|| Tag::new(tag_type));
+        if tag.tag_type() != tag_type {
+            tag.re_map(tag_type);
+        }
+        tag
+    });
+    drop(tagged);
+
+    if metadata.title != before.title {
+        tag.set_title(metadata.title.clone());
+    }
+    if metadata.artist != before.artist {
+        match &metadata.artist {
+            Some(value) => tag.set_artist(value.clone()),
+            None => tag.remove_artist(),
+        }
+    }
+    if metadata.album != before.album {
+        match &metadata.album {
+            Some(value) => tag.set_album(value.clone()),
+            None => tag.remove_album(),
+        }
+    }
+    if metadata.album_artist != before.album_artist {
+        match &metadata.album_artist {
+            Some(value) => { tag.insert_text(ItemKey::AlbumArtist, value.clone()); }
+            None => tag.remove_key(ItemKey::AlbumArtist),
+        }
+    }
+    if metadata.genre != before.genre {
+        match &metadata.genre {
+            Some(value) => tag.set_genre(value.clone()),
+            None => tag.remove_genre(),
+        }
+    }
+    if metadata.year != before.year {
+        match metadata.year {
+            Some(year) => tag.set_date(Timestamp { year, ..tag.date().unwrap_or_default() }),
+            None => tag.remove_date(),
+        }
+    }
+    if metadata.track_no != before.track_no {
+        match metadata.track_no {
+            Some(value) => tag.set_track(value),
+            None => tag.remove_track(),
+        }
+    }
+    if metadata.disc_no != before.disc_no {
+        match metadata.disc_no {
+            Some(value) => tag.set_disk(value),
+            None => tag.remove_disk(),
+        }
+    }
+
+    let extension = audio.extension().and_then(|value| value.to_str()).unwrap_or("audio");
+    let temp = root.join(CONFIG_DIR).join(format!(".edit-{}.{extension}", identity::new_id()));
+    let result = (|| {
+        fs::copy(&audio, &temp).map_err(|e| format!("Could not prepare the song for editing: {e}"))?;
+        tag.save_to_path(&temp, WriteOptions::default())
+            .map_err(|e| format!("Could not write the song tags: {e}"))?;
+        let dir = audio.parent().ok_or_else(|| "The song has no folder.".to_string())?;
+        let mut updated = read_row(
+            &previous.id, &temp, dir, &previous.rel_path, &previous.original_name,
+            identity::stamp_of(&temp)?, None,
+        )?;
+        if TrackMetadata::from_row(&updated) != metadata {
+            return Err("This song's format or original filename could not preserve all the requested values.".to_string());
+        }
+        if identity::stamp_of(&audio)? != stamp {
+            return Err("The song changed while it was being edited. Try again.".to_string());
+        }
+        fs::rename(&temp, &audio)
+            .map_err(|e| format!("Could not replace the song file: {e}"))?;
+        updated.added_at = previous.added_at;
+        catalog.upsert_edited_track(&updated, previous.bytes)?;
+        catalog.track(&updated.id)?
+            .ok_or_else(|| "The updated song is no longer in the library.".to_string())
+    })();
+    let _ = fs::remove_file(&temp);
+    result
 }
 
 #[tauri::command]
@@ -884,6 +1064,175 @@ pub fn delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn editable_song(original_name: &str) -> (PathBuf, Catalog, TrackRow) {
+        let root = std::env::temp_dir().join(format!("wave-edit-{}", identity::new_id()));
+        let id = identity::new_id();
+        let dir = track_dir(&root, &id);
+        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(root.join(CONFIG_DIR)).unwrap();
+        let audio = dir.join("audio.wav");
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&38u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&8000u32.to_le_bytes());
+        wav.extend_from_slice(&16000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&2u32.to_le_bytes());
+        wav.extend_from_slice(&[0, 0]);
+        fs::write(&audio, wav).unwrap();
+        let catalog = Catalog::open(&root).unwrap();
+        let mut row = describe(&root, &id, &audio, original_name, None).unwrap();
+        row.lufs = Some(-12.0);
+        row.peak = Some(0.8);
+        row.loudness_bytes = Some(row.bytes);
+        catalog.upsert_track(&row).unwrap();
+        catalog.set_loudness(&row.id, -12.0, 0.8, row.bytes).unwrap();
+        (root, catalog, row)
+    }
+
+    #[test]
+    fn editing_tags_survives_a_reread_and_preserves_loudness() {
+        let (root, catalog, row) = editable_song("Artist - Song.wav");
+        let metadata = TrackMetadata {
+            title: "Renamed".to_string(),
+            artist: Some("Another artist".to_string()),
+            album: Some("Album".to_string()),
+            album_artist: Some("Album artist".to_string()),
+            genre: Some("Rock".to_string()),
+            year: Some(2024),
+            track_no: Some(3),
+            disc_no: Some(2),
+        };
+        let updated = edit_metadata(&root, &catalog, &row.id, metadata.clone()).unwrap();
+        assert_eq!(TrackMetadata::from_row(&updated), metadata);
+        assert_eq!(updated.id, row.id);
+        assert_eq!(updated.added_at, row.added_at);
+        assert_eq!(updated.lufs, row.lufs);
+        assert_eq!(updated.peak, row.peak);
+        assert_eq!(updated.loudness_bytes, Some(updated.bytes));
+        assert_eq!(TrackMetadata::from_row(&catalog.track(&row.id).unwrap().unwrap()), metadata);
+        let known = catalog.rows_by_id().unwrap();
+        let (reread, _) = reconcile(&track_dir(&root, &row.id), &root, &known, &mut Vec::new(), true)
+            .unwrap().unwrap();
+        assert_eq!(TrackMetadata::from_row(&reread), metadata);
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn editing_one_field_preserves_unedited_tags() {
+        let (root, catalog, row) = editable_song("Song.wav");
+        let audio = root.join(&row.rel_path);
+        let mut tag = Tag::new(lofty::tag::TagType::Id3v2);
+        tag.set_title("Song".to_string());
+        tag.set_comment("Keep this comment".to_string());
+        tag.set_track(2);
+        tag.set_track_total(12);
+        tag.set_date(Timestamp { year: 2020, month: Some(5), day: Some(10), ..Timestamp::default() });
+        tag.insert_text(ItemKey::Isrc, "ABC123".to_string());
+        tag.save_to_path(&audio, WriteOptions::default()).unwrap();
+        let refreshed = describe(&root, &row.id, &audio, &row.original_name, None).unwrap();
+        catalog.upsert_track(&refreshed).unwrap();
+        let mut metadata = TrackMetadata::from_row(&refreshed);
+        metadata.title = "New title".to_string();
+        edit_metadata(&root, &catalog, &row.id, metadata).unwrap();
+        let tagged = lofty::read_from_path(&audio).unwrap();
+        let tag = tagged.primary_tag().unwrap();
+        assert_eq!(tag.comment().as_deref(), Some("Keep this comment"));
+        assert_eq!(tag.track_total(), Some(12));
+        assert_eq!(tag.get_string(ItemKey::Isrc), Some("ABC123"));
+        assert_eq!(tag.date().unwrap().to_string(), "2020-05-10");
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires ffmpeg"]
+    fn editing_common_audio_formats() {
+        use std::process::{Command, Stdio};
+
+        let root = std::env::temp_dir().join(format!("wave-edit-formats-{}", identity::new_id()));
+        let catalog = Catalog::open(&root).unwrap();
+        for extension in ["mp3", "flac", "m4a", "ogg", "opus", "wav", "aiff", "aac"] {
+            let id = identity::new_id();
+            let dir = track_dir(&root, &id);
+            fs::create_dir_all(&dir).unwrap();
+            let audio = dir.join(format!("audio.{extension}"));
+            let output = Command::new("ffmpeg")
+                .args(["-v", "error", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "0.3",
+                    "-metadata", "title=Original", "-metadata", "artist=Artist", "-metadata", "comment=Keep",
+                    "-metadata", "date=2020-05-10"])
+                .arg(&audio)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{extension}: {}", String::from_utf8_lossy(&output.stderr));
+            let row = describe(&root, &id, &audio, &format!("Original.{extension}"), None).unwrap();
+            catalog.upsert_track(&row).unwrap();
+            let mut metadata = TrackMetadata::from_row(&row);
+            metadata.title = format!("Edited {extension}");
+            metadata.artist = Some("New artist".to_string());
+            metadata.album = Some("New album".to_string());
+            metadata.genre = Some("Rock".to_string());
+            metadata.year = Some(2024);
+            metadata.track_no = Some(2);
+            metadata.disc_no = Some(1);
+            let updated = edit_metadata(&root, &catalog, &id, metadata.clone())
+                .unwrap_or_else(|error| panic!("{extension}: {error}"));
+            assert_eq!(TrackMetadata::from_row(&updated), metadata, "{extension}");
+            let known = catalog.rows_by_id().unwrap();
+            let (reread, _) = reconcile(&dir, &root, &known, &mut Vec::new(), true).unwrap().unwrap();
+            assert_eq!(TrackMetadata::from_row(&reread), metadata, "{extension}");
+        }
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_or_unrepresentable_edits_leave_the_original_file_and_catalog_alone() {
+        let (root, catalog, row) = editable_song("Artist - Song.wav");
+        let audio = root.join(&row.rel_path);
+        let original = fs::read(&audio).unwrap();
+        let mut metadata = TrackMetadata::from_row(&row);
+        metadata.title = "  ".to_string();
+        assert!(edit_metadata(&root, &catalog, &row.id, metadata).is_err());
+        let mut metadata = TrackMetadata::from_row(&row);
+        metadata.artist = None;
+        assert!(edit_metadata(&root, &catalog, &row.id, metadata).is_err());
+        assert_eq!(fs::read(audio).unwrap(), original);
+        assert_eq!(TrackMetadata::from_row(&catalog.track(&row.id).unwrap().unwrap()), TrackMetadata::from_row(&row));
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clearing_optional_tags_and_saving_without_changes() {
+        let (root, catalog, row) = editable_song("Song.wav");
+        let mut metadata = TrackMetadata::from_row(&row);
+        metadata.album = Some("Album".to_string());
+        metadata.genre = Some("Rock".to_string());
+        metadata.year = Some(2020);
+        let updated = edit_metadata(&root, &catalog, &row.id, metadata).unwrap();
+        let audio = root.join(&row.rel_path);
+        let stamp = identity::stamp_of(&audio).unwrap();
+        edit_metadata(&root, &catalog, &row.id, TrackMetadata::from_row(&updated)).unwrap();
+        assert_eq!(identity::stamp_of(&audio).unwrap(), stamp);
+        let mut cleared = TrackMetadata::from_row(&updated);
+        cleared.album = None;
+        cleared.genre = None;
+        cleared.year = None;
+        let updated = edit_metadata(&root, &catalog, &row.id, cleared.clone()).unwrap();
+        assert_eq!(TrackMetadata::from_row(&updated), cleared);
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn rereading_tags_preserves_existing_loudness_in_the_returned_row() {

@@ -33,6 +33,7 @@ import type {
   Settings,
   SpotifyStatus,
   Track,
+  TrackMetadata,
   UpdateInfo,
   UpdateProgress,
   WindowGeometry,
@@ -42,7 +43,7 @@ import { flushAnalytics, mountAnalytics, notePlaybackError, noteTrackEnded, reco
 import { AudioEngine, assetUrl } from "./audio";
 import { mountAudioWatchdog } from "./audio-watchdog";
 import type { EqProfile } from "./autoeq";
-import { COLLECTION_FILTERS, buildCollections, findCollection, sortAlbumTracks } from "./collections";
+import { COLLECTION_FILTERS, buildCollections, findCollection, isUnknownCollection, sortAlbumTracks } from "./collections";
 import { FALLBACK_COLOUR, colourFromId, isUsableAccent } from "./colour";
 import { isAndroidPlatform } from "./device";
 import { DEFAULT_EQ_BANDS, EqChain } from "./eq";
@@ -207,6 +208,7 @@ const state: AppState = {
     resumeOnLaunch: true,
     reduceMotion: "system",
     rememberWindow: true,
+    showTitlebar: null,
     alwaysOnTop: false,
     miniPlayer: false,
     miniCorner: 4,
@@ -428,7 +430,6 @@ export const player = new Player(engine, (trackId) => {
 
 mountAudioWatchdog(engine, player, (message) => {
   console.warn(message);
-  setNotice(message);
 });
 
 /** The gain a song plays at, or `1` while normalization is switched off. */
@@ -844,9 +845,11 @@ async function readLibraryInfo(): Promise<void> {
 }
 
 let scanSequence = 0;
+let loudnessDuringScan: Map<string, { lufs: number; peak: number }> | null = null;
 
 export async function rescan(forceFull = false): Promise<void> {
   const sequence = ++scanSequence;
+  loudnessDuringScan = new Map();
   state.scanning = true;
   emit();
 
@@ -858,6 +861,14 @@ export async function rescan(forceFull = false): Promise<void> {
     if (sequence !== scanSequence) {
       return;
     }
+    for (const track of summary.changed) {
+      const reading = loudnessDuringScan?.get(track.id);
+      if (reading) {
+        track.lufs = reading.lufs;
+        track.peak = reading.peak;
+      }
+    }
+    loudnessDuringScan = null;
     await applyScan(summary, full, sequence);
   } catch (error) {
     if (sequence === scanSequence) {
@@ -868,11 +879,13 @@ export async function rescan(forceFull = false): Promise<void> {
   if (sequence !== scanSequence) {
     return;
   }
+  loudnessDuringScan = null;
   state.scanning = false;
   emit();
 
-  // Measuring runs behind the scan, so a long pass never holds up the library.
-  void analyseLoudness();
+  if (!isAndroidPlatform) {
+    void analyseLoudness();
+  }
 }
 
 /**
@@ -1712,7 +1725,7 @@ export function openCollection(id: string, startTrackId?: string): void {
 
 /** The order a collection's songs are queued in. */
 function queueOrder(collection: Collection): string[] {
-  return collection.kind === "album"
+  return collection.kind === "album" && !isUnknownCollection(collection)
     ? sortAlbumTracks(collection.trackIds, state.tracksById)
     : collection.trackIds;
 }
@@ -1840,6 +1853,30 @@ export async function deleteTracks(trackIds: string[]): Promise<void> {
   } catch (error) {
     setNotice(describe(error));
   }
+}
+
+export async function editTrack(trackId: string, metadata: TrackMetadata): Promise<void> {
+  const before = state.tracksById.get(trackId);
+  const track = await ipc.editTrack(trackId, metadata);
+  scanSequence += 1;
+  state.tracksById = new Map(state.tracksById).set(track.id, track);
+  state.tracks = [...state.tracksById.values()].sort((left, right) =>
+    left.title.toLowerCase().localeCompare(right.title.toLowerCase()),
+  );
+  refreshCollections();
+  rememberTracks([track]);
+  const fields: (keyof TrackMetadata)[] = [
+    "title", "artist", "album", "albumArtist", "genre", "year", "trackNo", "discNo",
+  ];
+  if (
+    before && player.currentId === trackId && engine.hasFile &&
+    fields.some((field) => before[field] !== track[field])
+  ) {
+    player.reloadCurrent();
+  }
+  emit();
+  await rescan();
+  setNotice(`Updated "${track.title}".`);
 }
 
 export async function addTracksToPlaylist(id: string, trackIds: string[]): Promise<void> {
@@ -2141,6 +2178,7 @@ function watchLoudness(): void {
   void listen<LoudnessUpdate>(LOUDNESS_EVENT, (event) => {
     const { id, lufs, peak, done, total } = event.payload;
 
+    loudnessDuringScan?.set(id, { lufs, peak });
     const track = state.tracksById.get(id);
     if (track) {
       track.lufs = lufs;
@@ -2155,6 +2193,12 @@ function watchLoudness(): void {
   }).catch(() => {
     // Not running inside Tauri, for example `npm run dev` in a browser.
   });
+  if (isAndroidPlatform) {
+    void listen("loudness-finished", () => {
+      state.analysing = null;
+      scheduleEmit();
+    }).catch(() => {});
+  }
 }
 
 function watchSettings(): void {

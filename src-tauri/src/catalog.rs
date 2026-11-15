@@ -382,6 +382,23 @@ impl Catalog {
         self.upsert_tracks(std::slice::from_ref(row))
     }
 
+    pub fn upsert_edited_track(&self, row: &TrackRow, old_bytes: u64) -> Result<(), String> {
+        let mut connection = self.guard();
+        let transaction = connection
+            .transaction()
+            .map_err(|e| format!("could not start a catalog write: {e}"))?;
+        write_row(&transaction, row)?;
+        transaction
+            .execute(
+                "UPDATE tracks SET loudness_bytes = ?2 WHERE id = ?1 AND loudness_bytes = ?3",
+                params![row.id, row.bytes as i64, old_bytes as i64],
+            )
+            .map_err(|e| format!("could not preserve a loudness reading: {e}"))?;
+        transaction
+            .commit()
+            .map_err(|e| format!("could not finish a catalog write: {e}"))
+    }
+
     pub fn upsert_tracks(&self, rows: &[TrackRow]) -> Result<(), String> {
         let mut connection = self.guard();
         let transaction = connection

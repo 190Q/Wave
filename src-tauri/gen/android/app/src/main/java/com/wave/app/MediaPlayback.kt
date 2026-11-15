@@ -51,9 +51,6 @@ object MediaPlayback {
 
   private const val CHANNEL_ID = "wave-playback"
 
-  /** How far the seek button moves, matching the front end's own step. */
-  private const val SEEK_STEP_MS = 10_000.0
-
   private const val KEEP_ALIVE_EVERY_MS = 30_000L
 
   private const val TILE_SIZE = 256
@@ -174,9 +171,12 @@ object MediaPlayback {
         override fun onSkipToNext() = press("next", null)
         override fun onSkipToPrevious() = press("previous", null)
         override fun onSeekTo(position: Long) = press("seekTo", position.toDouble())
-        override fun onFastForward() = press("seekBy", SEEK_STEP_MS)
-        override fun onRewind() = press("seekBy", -SEEK_STEP_MS)
+        override fun onFastForward() = press("seekBy", MediaSeek.STEP_MS)
+        override fun onRewind() = press("seekBy", -MediaSeek.STEP_MS)
         override fun onSkipToQueueItem(id: Long) = press("skipToQueueItem", id.toDouble())
+        override fun onCustomAction(action: String?, extras: Bundle?) {
+          MediaSeek.offset(action)?.let { press("seekBy", it) }
+        }
       }
     )
     created.isActive = true
@@ -218,6 +218,8 @@ object MediaPlayback {
 
     return PlaybackStateCompat.Builder()
       .setActions(actions)
+      .addCustomAction(MediaSeek.REWIND, "Rewind 10 seconds", R.drawable.ic_wave_rewind)
+      .addCustomAction(MediaSeek.FORWARD, "Forward 10 seconds", R.drawable.ic_wave_forward)
       .setState(
         if (song.playing) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED,
         song.positionMs,
@@ -249,10 +251,10 @@ object MediaPlayback {
 
     builder.addAction(button(context, R.drawable.ic_wave_next, "Next", "next", null))
     builder.addAction(
-      button(context, R.drawable.ic_wave_rewind, "Rewind 10 seconds", "seekBy", -SEEK_STEP_MS)
+      button(context, R.drawable.ic_wave_rewind, "Rewind 10 seconds", "seekBy", -MediaSeek.STEP_MS)
     )
     builder.addAction(
-      button(context, R.drawable.ic_wave_forward, "Forward 10 seconds", "seekBy", SEEK_STEP_MS)
+      button(context, R.drawable.ic_wave_forward, "Forward 10 seconds", "seekBy", MediaSeek.STEP_MS)
     )
 
     // Android 8 to 12 colour the card from the song; 13 and later ignore both of

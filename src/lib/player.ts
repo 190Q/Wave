@@ -274,6 +274,14 @@ export class Player {
     }
   }
 
+  finishTransitions(): void {
+    this.engine.finishTransitions();
+    this.stopFade();
+    this.level = this.targetLevel();
+    this.applyLevel();
+    this.settleFade();
+  }
+
   next(): void {
     if (!this.hasQueue) {
       return;

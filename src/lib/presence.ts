@@ -151,6 +151,14 @@ function worthSending(next: NowPlaying | null, last: NowPlaying | null): boolean
 
 /** Runs whatever the system's own controls asked for. */
 function apply(control: MediaControl): void {
+  try {
+    applyControl(control);
+  } finally {
+    player.finishTransitions();
+  }
+}
+
+function applyControl(control: MediaControl): void {
   const position = player.snapshot().positionMs;
 
   switch (control.action) {

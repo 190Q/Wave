@@ -856,9 +856,28 @@ mod tests {
         assert_eq!(control.action, "next");
         assert_eq!(control.value, None);
 
-        let control = control_of(&MediaControlEvent::Seek(SeekDirection::Backward)).unwrap();
+        for (direction, expected) in [
+            (SeekDirection::Backward, -10_000.0),
+            (SeekDirection::Forward, 10_000.0),
+        ] {
+            let control = control_of(&MediaControlEvent::Seek(direction)).unwrap();
+            assert_eq!(control.action, "seekBy");
+            assert_eq!(control.value, Some(expected));
+
+            let control =
+                control_of(&MediaControlEvent::SeekBy(direction, Duration::from_micros(10_000_000)))
+                    .unwrap();
+            assert_eq!(control.action, "seekBy");
+            assert_eq!(control.value, Some(expected));
+        }
+
+        let control = control_of(&MediaControlEvent::SeekBy(
+            SeekDirection::Backward,
+            Duration::from_millis(2_500),
+        ))
+        .unwrap();
         assert_eq!(control.action, "seekBy");
-        assert_eq!(control.value, Some(-10_000.0));
+        assert_eq!(control.value, Some(-2_500.0));
 
         let control = control_of(&MediaControlEvent::SetVolume(0.5)).unwrap();
         assert_eq!(control.action, "volume");

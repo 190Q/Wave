@@ -105,6 +105,22 @@ and import the audio files separately.
 Local playback works offline. Imports can look up missing metadata online, and
 update checks and generated playlists also use the network.
 
+### Headphone EQ with AutoEq
+
+1. Open the [AutoEq results](https://github.com/jaakkopasanen/AutoEq/tree/master/results)
+   and find your exact headphone or headset model. Pick the matching variant,
+   such as ANC on or off, if one is listed.
+2. Open the model's folder and select the file ending in `ParametricEQ.txt`.
+   Use GitHub's **Download raw file** button to save the text file.
+3. In Wave, open **Settings → Playback → Equaliser**, choose **Open**, then
+   select **Import a profile** under **Curves** and pick the downloaded file.
+4. Wave saves and enables the profile. Select it under **Curves** to use it
+   again later. If output selection is supported, you can also choose your
+   headset under **Follows the output** and assign the profile to it.
+
+Wave imports the filters and calculates its own automatic preamp rather than
+using the preamp value in the file.
+
 ### Spotify setup
 
 Spotify link imports need your own developer app. Deezer and YouTube do not

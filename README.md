@@ -95,15 +95,44 @@ import a copied Wave `songs` folder with its artwork and lyrics.
 
 To move a playlist, export a collection from **Settings → Library** on desktop
 and import the resulting `.wavelist` from **Import**. Desktop can download songs
-that are missing from the destination library. On Android, import the audio
-separately: the playlist matches songs already in the library and keeps missing
-entries until their audio is imported.
-
-Link imports are not available on Android. To transfer music to a phone, copy
-and import the audio files separately.
+missing from the destination library. For Android, follow the migration guide
+[below](#migrating-to-android); link imports are not available on Android.
 
 Local playback works offline. Imports can look up missing metadata online, and
 update checks and generated playlists also use the network.
+
+### Migrating to Android
+
+The most reliable way to move your music and playlists is to copy the audio
+first, then import your playlist exports. Before starting, check that titles
+and artists are tagged in the audio files: playlist matching uses metadata,
+and names derived only from the original filenames may not survive the copy.
+
+1. On desktop, open **Settings → Library → Export playlist**, select a
+   playlist and click **Export**. Repeat for each playlist you want to transfer;
+   you can also export **Liked Songs**. Each `.wavelist` contains an ordered
+   list and metadata, not audio, and only includes songs in your library.
+2. In the same settings section, click **Open in Explorer** and copy the entire
+   `songs` folder, including its subfolders, artwork and lyrics. Keep the folder
+   structure intact.
+3. Install Wave on your phone. Transfer the `songs` folder and `.wavelist` files
+   to accessible phone storage, for example using USB file transfer. Put the
+   `songs` folder inside a folder such as `Music/Wave transfer`.
+4. On Android, open **Import → Import folder**, select the copied `songs`
+   folder and grant access when prompted. Wait for the import to finish.
+5. Open **Import → Import Wave playlist** and select each `.wavelist` in turn.
+   Wave creates playlists and matches their entries to the imported songs.
+   Missing entries remain in the playlist and can be matched when their audio
+   is imported later.
+6. If you exported **Liked Songs**, it is imported as a regular playlist, not
+   as likes. Once its songs are matched, open that imported playlist, long-press
+   a song and choose **Select all**; long-press again and choose **Like** if
+   offered to restore the likes.
+
+Settings and listening history are not transferred. Wave copies the audio into
+its own library, so allow enough space for both copies during import. After
+checking the songs and playlists, you can remove the temporary copy from phone
+storage.
 
 ### Headphone EQ with AutoEq
 

@@ -189,9 +189,12 @@ html[data-device="android"] {
   z-index: 1;
   display: block;
   height: auto;
-  padding-right: calc(1.5rem + var(--inset-right));
-  padding-left: calc(1.5rem + var(--inset-left));
   transform: translateY(calc(100% - var(--sheet-travel)));
+}
+
+[data-device="android"] .lyrics-track {
+  right: calc(1.5rem + var(--inset-right));
+  left: calc(1.5rem + var(--inset-left));
 }
 
 /* The lyrics are centred in the sheet, rather than ranged left in a column. */

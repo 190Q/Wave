@@ -28,6 +28,7 @@ export function stepVolumeFromKey(direction: number): void {
 
 export function mountDock(): void {
   const dock = element("dock");
+  const controls = dock?.querySelector<HTMLElement>(".dock-row");
   const timeNow = element("time-now");
   const timeTotal = element("time-total");
   const like = element<HTMLButtonElement>("like");
@@ -43,7 +44,7 @@ export function mountDock(): void {
   const grab = element<HTMLButtonElement>("dock-grab");
 
   if (
-    !dock || !timeNow || !timeTotal || !like || !shuffle || !previous ||
+    !dock || !controls || !timeNow || !timeTotal || !like || !shuffle || !previous ||
     !play || !next || !repeat || !queueToggle || !volume || !volumeBars || !position
   ) {
     return;
@@ -52,9 +53,6 @@ export function mountDock(): void {
   mountTouch();
   const sheet: LyricsSheet | null = device() === "android" ? mountLyricsSheet() : null;
 
-  // The dock background is the seek bar: pressing anywhere on it shows where
-  // the track would land, and letting go takes it there. Buttons keep their own
-  // clicks.
   let scrubbing = false;
   let scrubFraction = 0;
 
@@ -88,8 +86,10 @@ export function mountDock(): void {
 
   let pressing = false;
   let pressedId: number | null = null;
+  let suppressControlClick = false;
 
   dock.addEventListener("pointerdown", (event) => {
+    suppressControlClick = false;
     if (event.clientY >= window.innerHeight - insets().bottom) {
       return;
     }
@@ -101,17 +101,39 @@ export function mountDock(): void {
     pressing = true;
     sheet?.press(event);
 
-    if ((event.target as HTMLElement).closest("button")) {
+    const button = (event.target as HTMLElement).closest("button");
+    const touch = isTouch();
+    const aboveControls = touch && event.clientY < controls.getBoundingClientRect().top;
+
+    // Touch target adjustment can send a seek-area press to a nearby button.
+    if (button && !(aboveControls && controls.contains(button))) {
       return;
     }
 
+    suppressControlClick = aboveControls;
     pressedId = event.pointerId;
     dock.setPointerCapture(event.pointerId);
+
+    if (touch && !aboveControls) {
+      return;
+    }
 
     scrubbing = true;
     dock.classList.add("is-scrubbing");
     previewSeek(fractionAt(event.clientX));
   });
+
+  dock.addEventListener("click", (event) => {
+    if (!suppressControlClick) {
+      return;
+    }
+    suppressControlClick = false;
+    const button = (event.target as HTMLElement).closest("button");
+    if (event.detail !== 0 && button && controls.contains(button)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, true);
 
   window.addEventListener("pointermove", (event) => {
     if (!pressing) {
@@ -161,7 +183,10 @@ export function mountDock(): void {
   };
 
   window.addEventListener("pointerup", () => stopPress(true));
-  window.addEventListener("pointercancel", () => stopPress(false));
+  window.addEventListener("pointercancel", () => {
+    suppressControlClick = false;
+    stopPress(false);
+  });
 
   play.addEventListener("click", () => player.toggle());
   previous.addEventListener("click", () => player.previous());

@@ -903,9 +903,13 @@ function dropRowsHtml(state: AppState): string {
 
   return [
     ...local,
-    dropRow("lyrics", "lyrics", "Fetch lyrics", empty),
-    dropRow("covers", "covers", "Fetch covers", empty),
-    dropRow("genres", "library", "Fetch genres", empty),
+    ...(device() === "desktop"
+      ? []
+      : [
+          dropRow("lyrics", "lyrics", "Fetch lyrics", empty),
+          dropRow("covers", "covers", "Fetch covers", empty),
+          dropRow("genres", "library", "Fetch genres", empty),
+        ]),
   ].join("");
 }
 

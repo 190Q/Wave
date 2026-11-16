@@ -34,6 +34,32 @@ class PlaybackPolicyTest {
   }
 
   @Test
+  fun pausedControlsUseElapsedTimeWithoutExtendingForUpdates() {
+    val controls = PausedControls(delayMs = 600_000)
+    assertEquals(600_000L, controls.remaining(true, 1_000))
+    assertEquals(300_000L, controls.remaining(true, 301_000))
+    assertEquals(0L, controls.remaining(true, 601_000))
+    assertEquals(0L, controls.remaining(true, 1_000_000))
+  }
+
+  @Test
+  fun pausedControlsRestartAfterPlaybackOrControlsAreDisabled() {
+    val controls = PausedControls(delayMs = 600_000)
+    assertEquals(600_000L, controls.remaining(true, 1_000))
+    assertNull(controls.remaining(false, 301_000))
+    assertEquals(600_000L, controls.remaining(true, 401_000))
+    assertEquals(0L, controls.remaining(true, 1_001_000))
+    assertNull(controls.remaining(false, 1_002_000))
+  }
+
+  @Test
+  fun pausedControlsDoNotExpireIfTheClockMovesBackwards() {
+    val controls = PausedControls(delayMs = 600_000)
+    assertEquals(600_000L, controls.remaining(true, 1_000))
+    assertEquals(600_000L, controls.remaining(true, 500))
+  }
+
+  @Test
   fun permissionIsRequestedOnceAndNotAfterAnEarlierDenial() {
     assertTrue(notificationPermissionNeeded(true, false, false, false))
     assertFalse(notificationPermissionNeeded(true, false, true, false))

@@ -329,7 +329,16 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
     if (value != null) {
       payload.put("value", value)
     }
-    channel?.send(payload)
+    val view = webView
+    if (view == null) {
+      channel?.send(payload)
+      return
+    }
+    view.post {
+      view.onResume()
+      view.resumeTimers()
+      channel?.send(payload)
+    }
   }
 
   /**

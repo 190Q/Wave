@@ -10,6 +10,21 @@ internal fun notificationPermissionNeeded(
 internal fun playbackWakeLockNeeded(foreground: Boolean, playing: Boolean): Boolean =
   foreground && playing
 
+internal const val PAUSED_CONTROLS_DELAY_MS = 10 * 60_000L
+
+internal class PausedControls(private val delayMs: Long = PAUSED_CONTROLS_DELAY_MS) {
+  private var pausedAt: Long? = null
+
+  fun remaining(eligible: Boolean, now: Long): Long? {
+    if (!eligible) {
+      pausedAt = null
+      return null
+    }
+    val started = pausedAt ?: now.also { pausedAt = it }
+    return (delayMs - (now - started).coerceAtLeast(0)).coerceAtLeast(0)
+  }
+}
+
 internal class PlaybackWakeLock(
   private val acquire: () -> Unit,
   private val release: () -> Unit

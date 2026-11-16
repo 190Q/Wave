@@ -60,6 +60,7 @@ object MediaPlayback {
   var onControl: ((String, Double?) -> Unit)? = null
 
   private var session: MediaSessionCompat? = null
+  @Volatile
   private var notification: Notification? = null
   private var artwork: Bitmap? = null
   private val artworkCache = ArtworkCache { path ->
@@ -69,6 +70,7 @@ object MediaPlayback {
   private var tileKey = ""
   private var requests = 0
 
+  @Volatile
   private var lastSong: Song? = null
 
   @Volatile
@@ -77,6 +79,8 @@ object MediaPlayback {
 
   @Volatile
   private var controlsEnabled = true
+
+  private var showingPausedNotification = false
 
   private var queue: List<QueueTrack> = emptyList()
 
@@ -88,11 +92,16 @@ object MediaPlayback {
   val current: Notification?
     get() = notification
 
+  val hasEnabledControls: Boolean
+    get() = controlsEnabled && lastSong != null
+
   /** Shows a song, or takes the whole session down when there is none. */
+  @Synchronized
   fun show(context: Context, song: Song) {
     val session = session(context)
     lastSong = song
     playing = song.playing
+    if (song.playing) showingPausedNotification = false
     MediaPlaybackService.syncPlayback()
     session.setPlaybackState(state(song))
 
@@ -108,7 +117,7 @@ object MediaPlayback {
       session.isActive = controlsEnabled
 
       // The foreground service needs a notification before it starts.
-      val built = build(context, song)
+      val built = build(context, song, !showingPausedNotification)
       notification = built
       try {
         NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, built)
@@ -122,20 +131,45 @@ object MediaPlayback {
     keptAt = SystemClock.elapsedRealtime()
   }
 
+  @Synchronized
   fun setControls(context: Context, enabled: Boolean) {
     if (controlsEnabled == enabled) return
     controlsEnabled = enabled
+    if (!enabled) showingPausedNotification = false
     session?.isActive = enabled && lastSong != null
     shown = null
     lastSong?.let { show(context, it) }
   }
 
+  @Synchronized
+  fun showPausedControls(context: Context) {
+    val song = lastSong ?: return
+    if (song.playing || !controlsEnabled || showingPausedNotification) return
+
+    val manager = NotificationManagerCompat.from(context)
+    if (!manager.areNotificationsEnabled()) return
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+      manager.getNotificationChannel(CHANNEL_ID)?.importance == NotificationManager.IMPORTANCE_NONE
+    ) return
+
+    val built = build(context, song, false)
+    try {
+      manager.notify(NOTIFICATION_ID, built)
+      notification = built
+      showingPausedNotification = true
+    } catch (error: SecurityException) {
+      Log.w("Wave", "the paused playback notification could not be shown", error)
+    }
+  }
+
   /** Takes the notification down and stops holding the process up. */
+  @Synchronized
   fun clear(context: Context) {
     shown = null
     notification = null
     lastSong = null
     playing = false
+    showingPausedNotification = false
     MediaPlaybackService.syncPlayback()
     session?.isActive = false
     NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
@@ -254,7 +288,7 @@ object MediaPlayback {
       .build()
   }
 
-  private fun build(context: Context, song: Song): Notification {
+  private fun build(context: Context, song: Song, mediaStyle: Boolean): Notification {
     notificationChannel(context)
 
     if (!controlsEnabled) {
@@ -310,11 +344,15 @@ object MediaPlayback {
       builder.setLargeIcon(letterTile(song, colour))
     }
 
-    builder.setStyle(
-      MediaStyle()
-        .setMediaSession(session?.sessionToken)
-        .setShowActionsInCompactView(0, 1, 2)
-    )
+    if (mediaStyle) {
+      builder.setStyle(
+        MediaStyle()
+          .setMediaSession(session?.sessionToken)
+          .setShowActionsInCompactView(0, 1, 2)
+      )
+    } else {
+      builder.setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+    }
 
     return builder.build()
   }

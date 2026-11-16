@@ -177,6 +177,8 @@ const handlers: Record<string, Handler> = {
     return snapshot();
   },
 
+  patch_settings: ({ patch }) => handlers.set_settings({ settings: patch }),
+
   set_session: ({ session }) => {
     if (isObject(session)) {
       persisted.session = session as unknown as Session;

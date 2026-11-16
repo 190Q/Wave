@@ -20,6 +20,7 @@ import {
   themeColour,
 } from "../lib/state";
 import { createPanel } from "./drop";
+import { dialogFits } from "./fit";
 import { fillIcons } from "./icons";
 import { claimPopup, releasePopup } from "./popups";
 import { themeWipe } from "./wipe";
@@ -216,19 +217,25 @@ export function mountTheme(): void {
     }
   });
 
-  apply.addEventListener("click", () => {
+  const commitTheme = (value: string): void => {
+    if (device() !== "desktop") {
+      closeDialog();
+    }
     wipePending = true;
-    void setTheme(hsvToHex(draft));
+    void setTheme(value);
+  };
+
+  apply.addEventListener("click", () => {
+    commitTheme(hsvToHex(draft));
   });
 
   const chooseTheme = (value: string): void => {
-    wipePending = true;
     if (value !== ADAPTIVE_THEME) {
       draft = hexToHsv(value);
       hue.value = String(Math.round(draft.h));
       paint();
     }
-    void setTheme(value);
+    commitTheme(value);
   };
 
   list.addEventListener("click", (event) => {
@@ -264,14 +271,14 @@ export function mountTheme(): void {
     openDialog();
   };
 
-  // Cramped mode: the dialog cannot fit, so the toggle itself grows downwards
-  // and reveals the theme list inside the same shape.
+  // On desktop, the theme list folds into the toggle when the dialog won't fit.
   const panel = createPanel({
     dialog,
     toggle,
     face,
     show: openPicker,
     hide: closeDialog,
+    fits: () => device() !== "desktop" || dialogFits(dialog),
     render: () => {
       dropList.innerHTML = themeRowsHtml();
     },

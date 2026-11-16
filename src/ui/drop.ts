@@ -34,6 +34,8 @@ export interface PanelParts {
   hide(): void;
   /** Fills the compact list. */
   render(): void;
+  /** Overrides the default modal fit check. */
+  fits?: () => boolean;
 }
 
 export interface Panel {
@@ -49,13 +51,10 @@ export interface Panel {
   dismiss(): void;
 }
 
-/**
- * A panel that is a modal while it fits and the compact drop when it does not,
- * and that swaps between the two as the window moves. All three panels are one
- * of these, so they turn over at the same size and in the same way.
- */
+/** Swaps a panel between its modal and compact drop as its fit changes. */
 export function createPanel(parts: PanelParts): Panel {
   const { dialog, body, toggle, face, show, hide, render } = parts;
+  const fits = parts.fits ?? (() => dialogFits(dialog, body));
   const drop = createDrop({ toggle, face }, render);
 
   /** True while the modal is on screen, rather than on its way out. */
@@ -70,7 +69,7 @@ export function createPanel(parts: PanelParts): Panel {
     if (modalUp()) {
       return;
     }
-    if (dialogFits(dialog, body)) {
+    if (fits()) {
       show(anchor);
       return;
     }
@@ -79,7 +78,7 @@ export function createPanel(parts: PanelParts): Panel {
 
   /** Follows the window: whichever of the two fits is the one left standing. */
   const fitPanel = (): void => {
-    if (dialogFits(dialog, body)) {
+    if (fits()) {
       if (drop.isOpen) {
         drop.close();
         show(face);

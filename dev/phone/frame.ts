@@ -181,10 +181,20 @@ function main(): void {
     statusTime.textContent = `${now.getHours()}:${String(now.getMinutes()).padStart(2, "0")}`;
   };
 
-  presetSelect.innerHTML = PRESETS.map(
-    (entry) => `<option value="${entry.id}">${entry.label}</option>`,
-  ).join("");
-  presetSelect.value = preset.id;
+  const paintPresets = (): void => {
+    const available = kind === "android"
+      ? PRESETS.filter((entry) => entry.height >= entry.width)
+      : PRESETS;
+    if (!available.includes(preset)) {
+      preset = available[0];
+    }
+    presetSelect.innerHTML = available.map(
+      (entry) => `<option value="${entry.id}">${entry.label}</option>`,
+    ).join("");
+    presetSelect.value = preset.id;
+  };
+
+  paintPresets();
   kindSelect.value = kind;
   cutoutSelect.value = cutoutShape;
   lyrics.checked = window.localStorage.getItem(LYRICS_KEY) === "1";
@@ -206,9 +216,9 @@ function main(): void {
   kindSelect.addEventListener("change", () => {
     kind = kindSelect.value;
     localStorage.setItem(DEVICE_KEY, kind);
+    paintPresets();
     // The frame's own bars follow at once; the held page follows its reload.
-    applyInsets();
-    paint();
+    applyPreset();
     reload();
   });
 

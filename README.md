@@ -58,7 +58,8 @@ an equaliser and a theme that follows the artwork.
   other tasks without opening the window. Run `wave help` for the full list.
 - **Phone simulator:** Preview the interface in a browser with a mock library
   using `npm run dev:phone`, without a phone or the Rust backend. Select
-  `linuxPhone` and a small or landscape device size to test its popups.
+  `linuxPhone` and a small or landscape device size to test its popups. Android
+  requests portrait orientation on phone-sized screens.
 - **Development builds:** The interface uses TypeScript and the DOM; the backend
   uses Rust and Tauri 2. Desktop and Android development commands are below.
 

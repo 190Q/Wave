@@ -86,8 +86,10 @@ export function mountSettings(): void {
   /** What the panel is editing. Committed only on Save, discarded otherwise. */
   let draft: Settings = { ...getState().settings };
 
-  /** Which slot's inline action list is expanded, if any. */
+  /** Which slot's action list is expanded, if any. */
   let openSlot: number | null = null;
+  let refreshPending = false;
+  let lastBodyScrollTop = body.scrollTop;
 
   let closeTimer: number | null = null;
   let exportId = "all";
@@ -124,6 +126,7 @@ export function mountSettings(): void {
     // Every open starts from what is actually stored.
     draft = { ...getState().settings };
     openSlot = null;
+    body.scrollTop = 0;
     render();
     claimPopup(closeDialog);
     // Start collapsed, then let the stylesheet play it in.
@@ -174,7 +177,7 @@ export function mountSettings(): void {
       return;
     }
     const anchor = body.querySelector<HTMLElement>(`[data-slot-open="${openSlot}"]`);
-    const picker = body.querySelector<HTMLElement>(".slot-picker");
+    const picker = body.querySelector<HTMLElement>(".slot-row .slot-picker");
     if (!anchor || !picker) {
       return;
     }
@@ -182,8 +185,35 @@ export function mountSettings(): void {
     placePicker(picker, anchor, dialog.getBoundingClientRect());
   };
 
+  const setOpenSlot = (index: number | null): void => {
+    if (openSlot !== null) {
+      const trigger = body.querySelector<HTMLElement>(`[data-slot-open="${openSlot}"]`);
+      trigger?.classList.remove("is-open");
+      trigger?.setAttribute("aria-expanded", "false");
+      body.querySelector(".slot-row .slot-picker")?.remove();
+    }
+    openSlot = index;
+    if (index === null) {
+      return;
+    }
+    const trigger = body.querySelector<HTMLElement>(`[data-slot-open="${index}"]`);
+    const row = trigger?.closest<HTMLElement>(".slot-row");
+    if (!trigger || !row) {
+      openSlot = null;
+      return;
+    }
+    trigger.classList.add("is-open");
+    trigger.setAttribute("aria-expanded", "true");
+    row.insertAdjacentHTML("beforeend", slotPickerHtml(index, draft.shortcutSlots[index] ?? ""));
+    placeSlotPicker();
+  };
+
   const render = (): void => {
     exportPicker.close();
+    refreshPending = false;
+    const scrollTop = body.scrollTop;
+    const focusedSlot = (document.activeElement as HTMLElement | null)
+      ?.closest<HTMLElement>("[data-slot-open]")?.dataset.slotOpen;
     const state = getState();
     body.innerHTML = [
       playbackHtml(draft),
@@ -196,9 +226,25 @@ export function mountSettings(): void {
       android ? "" : shortcutsHtml(draft, state.windowSlots, openSlot),
       updatesHtml(state, draft),
     ].join("");
+    body.scrollTop = scrollTop;
+    lastBodyScrollTop = body.scrollTop;
+    if (focusedSlot !== undefined) {
+      body.querySelector<HTMLElement>(`[data-slot-open="${focusedSlot}"]`)?.focus({ preventScroll: true });
+    }
     placeSlotPicker();
     placeThumb(false);
     paintSave();
+  };
+
+  const refresh = (): void => {
+    if (exportPicker.isOpen) {
+      return;
+    }
+    if (openSlot !== null) {
+      refreshPending = true;
+      return;
+    }
+    render();
   };
 
   /** Reads the record's size and this year's figures, for the section below. */
@@ -215,8 +261,8 @@ export function mountSettings(): void {
       listeningStats = null;
       listeningSwell = null;
     }
-    if (dialog.open && !dialog.classList.contains("is-closed") && !exportPicker.isOpen) {
-      render();
+    if (dialog.open && !dialog.classList.contains("is-closed")) {
+      refresh();
     }
   };
 
@@ -291,8 +337,10 @@ export function mountSettings(): void {
     const slotTrigger = target.closest<HTMLElement>("[data-slot-open]");
     if (slotTrigger?.dataset.slotOpen) {
       const index = Number(slotTrigger.dataset.slotOpen);
-      openSlot = openSlot === index ? null : index;
-      render();
+      setOpenSlot(openSlot === index ? null : index);
+      if (openSlot === null && refreshPending) {
+        render();
+      }
       return;
     }
 
@@ -306,11 +354,12 @@ export function mountSettings(): void {
       }
       slots[index] = action;
       draft = { ...draft, shortcutSlots: slots.slice(0, SLOT_COUNT) };
-      openSlot = null;
+      setOpenSlot(null);
       if (action.startsWith("snap-window")) {
         void captureWindowSlot(index);
       }
       render();
+      body.querySelector<HTMLElement>(`[data-slot-open="${index}"]`)?.focus({ preventScroll: true });
       return;
     }
 
@@ -427,8 +476,12 @@ export function mountSettings(): void {
       return;
     }
     if (openSlot !== null) {
-      openSlot = null;
-      render();
+      const index = openSlot;
+      setOpenSlot(null);
+      if (refreshPending) {
+        render();
+      }
+      body.querySelector<HTMLElement>(`[data-slot-open="${index}"]`)?.focus({ preventScroll: true });
       return;
     }
     closeDialog();
@@ -440,23 +493,26 @@ export function mountSettings(): void {
     if (!dialog.open || dialog.classList.contains("is-closed")) {
       return;
     }
-    // Background progress must not replace a field while it is being searched.
-    if (exportPicker.isOpen) {
-      return;
-    }
     if (Object.keys(pendingPatch()).length === 0) {
       draft = { ...getState().settings };
     }
-    render();
+    refresh();
   });
 
   const dismissPicker = (): void => {
     if (openSlot !== null) {
-      openSlot = null;
-      render();
+      setOpenSlot(null);
+      if (refreshPending) {
+        render();
+      }
     }
   };
-  body.addEventListener("scroll", dismissPicker);
+  body.addEventListener("scroll", () => {
+    if (body.scrollTop !== lastBodyScrollTop) {
+      lastBodyScrollTop = body.scrollTop;
+      dismissPicker();
+    }
+  });
   window.addEventListener("resize", dismissPicker);
   window.addEventListener("resize", () => placeThumb(false));
 }
@@ -849,6 +905,17 @@ function searchHtml(settings: Settings): string {
   );
 }
 
+function slotPickerHtml(index: number, assigned: string): string {
+  return `<div class="slot-picker">
+    ${[{ id: "", label: "Unassigned" }, ...SLOT_ACTIONS]
+      .map(
+        (action) => `
+      <button class="slot-option${action.id === assigned ? " is-on" : ""}" type="button" data-slot-set="${index}" data-action="${escapeHtml(action.id)}"${action.id === assigned ? ' aria-current="true"' : ""}>${escapeHtml(action.label)}</button>`,
+      )
+      .join("")}
+  </div>`;
+}
+
 function shortcutsHtml(
   settings: Settings,
   windowSlots: (WindowGeometry | null)[],
@@ -861,16 +928,7 @@ function shortcutsHtml(
     const name = escapeHtml(slotLabel(index + 1));
     const note = snapNote(assigned, windowSlots[index] ?? null);
 
-    const picker = expanded
-      ? `<div class="slot-picker">
-          ${[{ id: "", label: "Unassigned" }, ...SLOT_ACTIONS]
-            .map(
-              (action) => `
-            <button class="slot-option${action.id === assigned ? " is-on" : ""}" type="button" data-slot-set="${index}" data-action="${escapeHtml(action.id)}"${action.id === assigned ? ' aria-current="true"' : ""}>${escapeHtml(action.label)}</button>`,
-            )
-            .join("")}
-        </div>`
-      : "";
+    const picker = expanded ? slotPickerHtml(index, assigned) : "";
 
     return `
       <div class="slot-row">

@@ -1,3 +1,4 @@
+import { device } from "../lib/device";
 import { dialogFits } from "./fit";
 
 /** How far a drop keeps off the bottom of the window. */
@@ -54,7 +55,7 @@ export interface Panel {
 /** Swaps a panel between its modal and compact drop as its fit changes. */
 export function createPanel(parts: PanelParts): Panel {
   const { dialog, body, toggle, face, show, hide, render } = parts;
-  const fits = parts.fits ?? (() => dialogFits(dialog, body));
+  const fits = parts.fits ?? (() => device() === "linuxPhone" || dialogFits(dialog, body));
   const drop = createDrop({ toggle, face }, render);
 
   /** True while the modal is on screen, rather than on its way out. */

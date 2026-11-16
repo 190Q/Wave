@@ -16,6 +16,8 @@ interface Preset {
 
 const PRESETS: Preset[] = [
   { id: "compact", label: "360 x 720 at 3x", width: 360, height: 720, dpr: 3, statusBar: 24, cutout: 12, gestureBar: 20 },
+  { id: "small", label: "320 x 480 at 2x", width: 320, height: 480, dpr: 2, statusBar: 24, cutout: 12, gestureBar: 20 },
+  { id: "landscape", label: "720 x 360 at 3x", width: 720, height: 360, dpr: 3, statusBar: 24, cutout: 12, gestureBar: 20 },
   { id: "pixel", label: "412 x 915 at 2.625x", width: 412, height: 915, dpr: 2.625, statusBar: 28, cutout: 16, gestureBar: 24 },
   { id: "tall", label: "390 x 844 at 3x", width: 390, height: 844, dpr: 3, statusBar: 34, cutout: 18, gestureBar: 21 },
 ];

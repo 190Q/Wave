@@ -250,7 +250,7 @@ export function mountTheme(): void {
   element("theme-close")?.addEventListener("click", () => closeDialog());
 
   dialog.addEventListener("click", (event) => {
-    if (event.target === dialog && device() !== "android") {
+    if (event.target === dialog && device() === "desktop") {
       closeDialog();
     }
   });

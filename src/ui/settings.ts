@@ -463,7 +463,7 @@ export function mountSettings(): void {
   });
 
   dialog.addEventListener("click", (event) => {
-    if (event.target === dialog && device() !== "android") {
+    if (event.target === dialog && device() === "desktop") {
       closeDialog();
     }
   });

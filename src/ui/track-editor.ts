@@ -1,4 +1,4 @@
-import { isTouch } from "../lib/device";
+import { device, isTouch } from "../lib/device";
 import { editTrack, getState } from "../lib/state";
 import type { TrackMetadata } from "../types";
 import { claimPopup, releasePopup } from "./popups";
@@ -80,7 +80,7 @@ export function mountTrackEditor(): void {
     }
   });
   dialog.addEventListener("click", (event) => {
-    if (event.target === dialog && !saving) {
+    if (event.target === dialog && !saving && device() !== "linuxPhone") {
       close();
     }
   });

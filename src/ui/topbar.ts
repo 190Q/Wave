@@ -57,6 +57,7 @@ export function mountTopbar(): void {
   }
 
   const android = device() === "android";
+  const linuxPhone = device() === "linuxPhone";
 
   libraryButton.addEventListener("click", () => toggleLibrary());
 
@@ -314,6 +315,16 @@ export function mountTopbar(): void {
   };
 
   const decideCrates = (): void => {
+    if (linuxPhone) {
+      const compact = recents.classList.contains("is-compact");
+      recents.classList.add("no-anim", "is-compact");
+      const noRoom = recents.scrollWidth > recents.clientWidth + 1;
+      recents.classList.toggle("is-compact", compact);
+      void recents.offsetWidth;
+      recents.classList.remove("no-anim");
+      recents.classList.toggle("is-no-room", noRoom);
+    }
+
     if (cratesNatural === null && recents.clientWidth >= cratesFitAt) {
       recents.classList.remove("is-compact");
       return;
@@ -334,6 +345,8 @@ export function mountTopbar(): void {
 
   if (!android && typeof ResizeObserver !== "undefined") {
     new ResizeObserver(decideCrates).observe(recents);
+  } else if (linuxPhone) {
+    window.addEventListener("resize", decideCrates);
   }
   // Text metrics settle once the display font has loaded.
   if (!android) {

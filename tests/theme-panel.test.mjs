@@ -46,7 +46,7 @@ const vite = await createServer({
     name: "theme-test-mocks",
     enforce: "pre",
     resolveId(source, importer) {
-      if (importer && /[\\/]src[\\/]ui[\\/](theme|fit)\.ts$/.test(importer) && source in mocks) {
+      if (importer && /[\\/]src[\\/]ui[\\/](theme|fit|drop)\.ts$/.test(importer) && source in mocks) {
         return `\0theme-test:${source}`;
       }
     },
@@ -127,6 +127,15 @@ const { mountTheme } = await vite.ssrLoadModule("/src/ui/theme.ts");
 const { createPanel } = await vite.ssrLoadModule("/src/ui/drop.ts");
 
 for (const device of ["android", "linuxPhone"]) {
+  test(`${device} theme stays open when the full-screen background is clicked`, () => {
+    const { elements, dialog } = setup(device, 800);
+    mountTheme();
+    elements["theme-toggle-face"].dispatch("click");
+    dialog.dispatch("click", { target: dialog });
+    assert.equal(dialog.open, true);
+    assert.equal(dialog.classList.contains("is-closed"), false);
+  });
+
   test(`${device} theme picks close the dialog without opening the compact drop`, async () => {
     const { context, elements, dialog } = setup(device, 800);
     mountTheme();
@@ -174,6 +183,14 @@ for (const device of ["android", "linuxPhone"]) {
     assert.equal(elements["theme-toggle"].classList.contains("is-open"), false);
   });
 }
+
+test("desktop theme backdrop clicks still close the dialog", () => {
+  const { elements, dialog } = setup("desktop", 800);
+  mountTheme();
+  elements["theme-toggle-face"].dispatch("click");
+  dialog.dispatch("click", { target: dialog });
+  assert.equal(dialog.classList.contains("is-closed"), true);
+});
 
 test("desktop theme picks keep the dialog open while it fits", () => {
   const { context, elements, dialog } = setup("desktop", 800);
@@ -234,6 +251,51 @@ test("panels without a fit override keep the shared desktop threshold", () => {
 
   window.innerHeight = 350;
   window.dispatch("resize");
+  assert.equal(dialog.open, false);
+  assert.equal(toggle.classList.contains("is-open"), true);
+});
+
+test("Linux phone panels stay modal when opened or resized below the desktop threshold", () => {
+  const { elements, dialog } = setup("linuxPhone", 350);
+  const face = elements["theme-toggle-face"];
+  const toggle = elements["theme-toggle"];
+  createPanel({
+    dialog,
+    body: new Element(),
+    toggle,
+    face,
+    show: () => { dialog.open = true; },
+    hide: () => { dialog.open = false; },
+    render() {},
+  });
+
+  face.dispatch("click");
+  assert.equal(dialog.open, true);
+  assert.equal(toggle.classList.contains("is-open"), false);
+
+  for (const height of [800, 350, 120]) {
+    window.innerHeight = height;
+    window.dispatch("resize");
+    assert.equal(dialog.open, true);
+    assert.equal(toggle.classList.contains("is-open"), false);
+  }
+});
+
+test("Android panels without a fit override retain the compact fallback", () => {
+  const { elements, dialog } = setup("android", 350);
+  const face = elements["theme-toggle-face"];
+  const toggle = elements["theme-toggle"];
+  createPanel({
+    dialog,
+    body: new Element(),
+    toggle,
+    face,
+    show: () => { dialog.open = true; },
+    hide: () => { dialog.open = false; },
+    render() {},
+  });
+
+  face.dispatch("click");
   assert.equal(dialog.open, false);
   assert.equal(toggle.classList.contains("is-open"), true);
 });

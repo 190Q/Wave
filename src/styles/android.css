@@ -29,6 +29,11 @@
   background-repeat: no-repeat;
 }
 
+[data-device="linuxPhone"] .crates.is-no-room {
+  visibility: hidden;
+  overflow: hidden;
+}
+
 /* The hero takes no room of its own, so its children join the stage's
    column. The lyrics panel is the one that stays. */
 :is([data-device="android"], [data-device="linuxPhone"]) .hero {
@@ -256,10 +261,19 @@ html:is([data-device="android"], [data-device="linuxPhone"]) {
     calc(1.25rem + var(--inset-bottom)) calc(1rem + var(--inset-left));
 }
 
+[data-device="linuxPhone"] .confirm-dialog {
+  inset: var(--inset-top) var(--inset-right) var(--inset-bottom) var(--inset-left);
+  max-width: max(0px, calc(100vw - var(--inset-left) - var(--inset-right) - 2rem));
+  max-height: max(0px, calc(100vh - var(--inset-top) - var(--inset-bottom) - 2rem));
+  overflow-y: auto;
+}
+
 /* Dialogs are full screen, and the safe area is the padding they keep. */
-[data-device="android"] .theme-dialog,
-[data-device="android"] .settings-dialog,
-[data-device="android"] .import-dialog {
+:is([data-device="android"], [data-device="linuxPhone"]) .theme-dialog,
+:is([data-device="android"], [data-device="linuxPhone"]) .settings-dialog,
+:is([data-device="android"], [data-device="linuxPhone"]) .import-dialog,
+[data-device="linuxPhone"] .track-editor-dialog,
+[data-device="linuxPhone"] .update-dialog {
   margin: 0;
   width: 100%;
   max-width: none;
@@ -272,13 +286,16 @@ html:is([data-device="android"], [data-device="linuxPhone"]) {
 
 /* A closed panel is measured off screen to see whether it fits at all, so the
    full height is only taken while it is really open. */
-[data-device="android"] .theme-dialog[open],
-[data-device="android"] .settings-dialog[open],
-[data-device="android"] .import-dialog[open] {
+:is([data-device="android"], [data-device="linuxPhone"]) .theme-dialog[open],
+:is([data-device="android"], [data-device="linuxPhone"]) .settings-dialog[open],
+:is([data-device="android"], [data-device="linuxPhone"]) .import-dialog[open],
+[data-device="linuxPhone"] .track-editor-dialog[open],
+[data-device="linuxPhone"] .update-dialog[open] {
   height: 100%;
 }
 
-[data-device="android"] .theme-dialog {
+:is([data-device="android"], [data-device="linuxPhone"]) .theme-dialog,
+[data-device="linuxPhone"] .track-editor-dialog {
   padding: calc(var(--inset-top) + 1.25rem) calc(var(--inset-right) + 1.25rem)
     calc(var(--inset-bottom) + 1.25rem) calc(var(--inset-left) + 1.25rem);
 }
@@ -307,7 +324,7 @@ html:is([data-device="android"], [data-device="linuxPhone"]) {
   max-height: min(24rem, calc(100vh - var(--inset-top) - var(--inset-bottom) - 1rem));
 }
 
-[data-device="android"] .eq-panel {
+:is([data-device="android"], [data-device="linuxPhone"]) .eq-panel {
   padding: var(--inset-top) var(--inset-right) var(--inset-bottom) var(--inset-left);
 }
 
@@ -334,17 +351,17 @@ html:is([data-device="android"], [data-device="linuxPhone"]) {
 }
 
 /* Floating notices sit under the top bar rather than at a fixed offset. */
-[data-device="android"] .status,
-[data-device="android"] .update-toast {
+:is([data-device="android"], [data-device="linuxPhone"]) .status,
+:is([data-device="android"], [data-device="linuxPhone"]) .update-toast {
   top: calc(var(--phone-topbar, 4.5rem) + 0.5rem);
 }
 
-[data-device="android"] .status {
+:is([data-device="android"], [data-device="linuxPhone"]) .status {
   left: calc((100% + var(--inset-left) - var(--inset-right)) / 2);
   max-width: min(28rem, calc(100% - 2rem - var(--inset-left) - var(--inset-right)));
 }
 
-[data-device="android"] .search-modal {
+:is([data-device="android"], [data-device="linuxPhone"]) .search-modal {
   padding-top: calc(var(--phone-topbar, 4.5rem) + 0.5rem);
   padding-right: calc(1rem + var(--inset-right));
   padding-left: calc(1rem + var(--inset-left));

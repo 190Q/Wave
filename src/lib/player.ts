@@ -473,7 +473,7 @@ export class Player {
       return;
     }
 
-    const position = this.positionMs;
+    const position = this.engine.positionMs;
     this.sampleListening();
     this.stopFade();
     this.level = 0;

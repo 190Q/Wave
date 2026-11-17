@@ -449,7 +449,7 @@ export function updateStatus(): Promise<UpdateInfo | null> {
   return invoke("update_status");
 }
 
-/** Downloads the newer release and installs it, then Wave restarts. */
-export function installUpdate(): Promise<void> {
+/** Returns whether the installer was handed off without restarting Wave. */
+export function installUpdate(): Promise<boolean> {
   return invoke("install_update");
 }

@@ -545,6 +545,7 @@ export interface UpdateInfo {
 export interface UpdateProgress {
   received: number;
   total: number;
+  installing?: boolean;
 }
 
 export interface PersistedState {

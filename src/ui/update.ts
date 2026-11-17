@@ -73,7 +73,7 @@ export function mountUpdate(): void {
     body.innerHTML = [
       versionsHtml(update, getState().appVersion),
       featuresHtml(update),
-      update.automatic ? "" : manualHintHtml(),
+      update.automatic ? "" : manualHintHtml(update),
       updateProgress ? progressHtml(updateProgress) : "",
       updateError ? `<p class="update-hint is-error">${escapeHtml(updateError)}</p>` : "",
     ].join("");
@@ -84,6 +84,7 @@ export function mountUpdate(): void {
     releaseButton.textContent = update.automatic ? "View the release" : "Open the release page";
     releaseButton.classList.toggle("pill-strong", !update.automatic);
     installButton.hidden = installing || !update.automatic;
+    installButton.disabled = updateChecking;
   };
 
   const openDialog = (): void => {
@@ -204,7 +205,10 @@ export function mountUpdate(): void {
       }
       seen = true;
       if (waitingForFocus) {
-        openDialog();
+        waitingForFocus = false;
+        if (getState().update) {
+          openDialog();
+        }
       }
     })
     .catch(() => {
@@ -243,12 +247,19 @@ function featuresHtml(info: UpdateInfo): string {
 }
 
 /** Why this copy cannot replace itself. */
-function manualHintHtml(): string {
+function manualHintHtml(info: UpdateInfo): string {
+  if (!info.assetName) {
+    return `<p class="update-hint">No compatible installer is available for this release.</p>`;
+  }
   return `<p class="update-hint">This copy was installed by a package manager, so Wave cannot replace it on its own. Take the newer release and install it the same way.</p>`;
 }
 
 /** How far the download has got. */
 function progressHtml(progress: UpdateProgress): string {
+  if (progress.installing) {
+    return `<div class="update-progress"><span class="update-progress-bar" style="width: 100%"></span></div>
+      <p class="update-hint">Starting the installer...</p>`;
+  }
   const percent =
     progress.total > 0 ? Math.min(100, Math.round((progress.received / progress.total) * 100)) : 0;
   const size =
@@ -257,7 +268,7 @@ function progressHtml(progress: UpdateProgress): string {
       : formatBytes(progress.received);
 
   return `<div class="update-progress"><span class="update-progress-bar" style="width: ${percent}%"></span></div>
-    <p class="update-hint">Downloading, ${escapeHtml(size)}. Wave restarts itself when it is ready.</p>`;
+    <p class="update-hint">Downloading, ${escapeHtml(size)}.</p>`;
 }
 
 function formatBytes(bytes: number): string {

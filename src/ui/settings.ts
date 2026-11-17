@@ -406,7 +406,6 @@ export function mountSettings(): void {
         openEq();
         return;
       case "check-update": {
-        // A version already found is offered rather than looked up again.
         if (getState().update) {
           openUpdate();
           return;
@@ -849,7 +848,7 @@ function updatesHtml(state: AppState, settings: Settings): string {
     notes.push(`Wave ${appVersion}`);
   }
   if (installing) {
-    notes.push("downloading the newer release; Wave restarts when it is ready");
+    notes.push("downloading the newer release");
   } else if (update) {
     notes.push(`Wave ${update.version} is available`);
   } else if (updateChecking) {

@@ -182,6 +182,40 @@ test("Android settings do not include Discord presence", () => {
   assert.equal("discordPresence" in app.getState().settings, false);
 });
 
+test("Android update installation clears progress after handoff and remains retryable", async () => {
+  const first = deferred();
+  globalThis.__testIpc.installUpdate = () => first.promise;
+  const install = app.installUpdate();
+  assert.deepEqual(app.getState().updateProgress, { received: 0, total: 0 });
+  listeners.get("update-progress")({ payload: { received: 50, total: 100, installing: false } });
+  assert.equal(app.getState().updateProgress.received, 50);
+  first.resolve(true);
+  await install;
+  assert.equal(app.getState().updateProgress, null);
+  listeners.get("update-progress")({ payload: { received: 100, total: 100, installing: true } });
+  assert.equal(app.getState().updateProgress, null);
+
+  const denied = deferred();
+  globalThis.__testIpc.installUpdate = () => denied.promise;
+  const retry = app.installUpdate();
+  denied.reject(new Error("Allow Wave to install updates, then try again."));
+  await retry;
+  assert.equal(app.getState().updateProgress, null);
+  assert.match(app.getState().updateError, /Allow Wave/);
+
+  globalThis.__testIpc.installUpdate = async () => true;
+  await app.installUpdate();
+  assert.equal(app.getState().updateProgress, null);
+  assert.equal(app.getState().updateError, null);
+});
+
+test("an installer that restarts Wave keeps its progress visible", async () => {
+  globalThis.__testIpc.installUpdate = async () => false;
+  await app.installUpdate();
+  assert.notEqual(app.getState().updateProgress, null);
+  app.getState().updateProgress = null;
+});
+
 test("Android sends both link preview and import only to YouTube", async () => {
   linkCalls.length = 0;
   const url = "https://open.spotify.com/track/example";

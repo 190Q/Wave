@@ -386,7 +386,7 @@ const handlers: Record<string, Handler> = {
 
   check_update: () => (updateAvailable ? offeredUpdate() : null),
   update_status: () => (updateAvailable ? offeredUpdate() : null),
-  install_update: () => undefined,
+  install_update: () => true,
 
   "plugin:app|version": () => "0.2.0",
   "plugin:event|listen": ({ event, handler }) => listen(text(event), count(handler)),

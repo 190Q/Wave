@@ -2675,9 +2675,9 @@ export async function checkForUpdates(announce = false): Promise<void> {
   emit();
 }
 
-/** Downloads the newer release and installs it. Wave restarts itself. */
+/** Downloads the newer release and starts its installer. */
 export async function installUpdate(): Promise<void> {
-  if (state.updateProgress !== null) {
+  if (state.updateProgress !== null || state.updateChecking) {
     return;
   }
 
@@ -2686,7 +2686,11 @@ export async function installUpdate(): Promise<void> {
   emit();
 
   try {
-    await ipc.installUpdate();
+    const handedOff = await ipc.installUpdate();
+    if (handedOff) {
+      state.updateProgress = null;
+      emit();
+    }
   } catch (error) {
     state.updateProgress = null;
     state.updateError = describe(error);
@@ -2715,8 +2719,10 @@ async function startUpdater(): Promise<void> {
 /** Follows an update download, so the popup can show how far it has got. */
 function watchUpdate(): void {
   void listen<UpdateProgress>(UPDATE_PROGRESS_EVENT, (event) => {
-    state.updateProgress = event.payload;
-    scheduleEmit();
+    if (state.updateProgress !== null) {
+      state.updateProgress = event.payload;
+      scheduleEmit();
+    }
   }).catch(() => {
     // Not running inside Tauri, for example `npm run dev` in a browser.
   });

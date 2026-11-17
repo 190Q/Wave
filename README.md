@@ -48,7 +48,9 @@ an equaliser and a theme that follows the artwork.
   Android also provides notification and lock-screen playback controls.
 - **Updates:** Check for new releases from settings. Windows, AppImage and
   Android installations can launch the update from Wave; other Linux packages
-  are updated manually.
+  are updated manually. On Android, allow installs from Wave if prompted and
+  confirm the update in the system installer. APK updates must be signed with
+  the same key as the installed app.
 
 ### For developers
 

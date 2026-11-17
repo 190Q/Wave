@@ -49,11 +49,21 @@ pub struct UpdateInfo {
     pub automatic: bool,
 }
 
+fn valid_asset_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+}
+
 /// What the front end is told while the installer downloads.
 #[derive(Clone, Serialize)]
 struct Progress {
     received: u64,
     total: u64,
+    installing: bool,
 }
 
 /// A GitHub release, in the shape the API returns it.
@@ -127,14 +137,17 @@ fn check(app: &AppHandle) -> Result<Option<UpdateInfo>, String> {
         automatic: asset.is_some() && can_install_itself(),
     };
 
-    if let Some(stored) = store.snapshot().update {
-        if !is_newer(&info.version, &stored.version) {
-            return Ok(Some(stored));
-        }
-    }
+    let saved = store.update_saved(app, |state| {
+        state.update = Some(merge_offer(state.update.take(), info));
+    })?;
+    Ok(saved.update)
+}
 
-    store.update_saved(app, |state| state.update = Some(info.clone()))?;
-    Ok(Some(info))
+fn merge_offer(stored: Option<UpdateInfo>, found: UpdateInfo) -> UpdateInfo {
+    match stored {
+        Some(stored) if is_newer(&stored.version, &found.version) => stored,
+        _ => found,
+    }
 }
 
 /// The releases are read with a blocking client, which has to be on a thread of
@@ -177,7 +190,14 @@ fn install_stored(app: &AppHandle) -> Result<(), String> {
     }
 
     let downloaded = download_path(app, &info)?;
-    download(app, &info.asset_url, &downloaded)?;
+    let progress = download(app, &info.asset_url, &downloaded)?;
+    let _ = app.emit(
+        UPDATE_PROGRESS_EVENT,
+        Progress {
+            installing: true,
+            ..progress
+        },
+    );
     install(app, &downloaded, &info)
 }
 
@@ -185,6 +205,10 @@ fn install_stored(app: &AppHandle) -> Result<(), String> {
 /// the folder its FileProvider shares with the system installer; everywhere
 /// else the system's temporary folder is what the installer expects.
 fn download_path(app: &AppHandle, info: &UpdateInfo) -> Result<PathBuf, String> {
+    if !valid_asset_name(&info.asset_name) {
+        return Err("the installer has an invalid filename".to_string());
+    }
+
     #[cfg(target_os = "android")]
     {
         let dir = app
@@ -206,11 +230,13 @@ fn download_path(app: &AppHandle, info: &UpdateInfo) -> Result<PathBuf, String> 
 /// The installer is downloaded with a blocking client, so it is put on a thread
 /// of its own rather than on the one the window runs on.
 #[tauri::command]
-pub async fn install_update(app: AppHandle) -> Result<(), String> {
+pub async fn install_update(app: AppHandle) -> Result<bool, String> {
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || install_stored(&handle))
-        .await
-        .map_err(|e| format!("the update stopped unexpectedly: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        install_stored(&handle).map(|()| cfg!(target_os = "android"))
+    })
+    .await
+    .map_err(|e| format!("the update stopped unexpectedly: {e}"))?
 }
 
 /// Reads the latest release from GitHub's releases API.
@@ -235,7 +261,7 @@ fn latest_release(client: &reqwest::blocking::Client, current: &str) -> Result<R
 }
 
 /// Streams the installer to `destination`, reporting progress as it goes.
-fn download(app: &AppHandle, url: &str, destination: &Path) -> Result<(), String> {
+fn download(app: &AppHandle, url: &str, destination: &Path) -> Result<Progress, String> {
     let mut response = client()?
         .get(url)
         .send()
@@ -266,10 +292,25 @@ fn download(app: &AppHandle, url: &str, destination: &Path) -> Result<(), String
         file.write_all(&buffer[..read])
             .map_err(|e| format!("could not write {}: {e}", destination.display()))?;
         received += read as u64;
-        let _ = app.emit(UPDATE_PROGRESS_EVENT, Progress { received, total });
+        let _ = app.emit(
+            UPDATE_PROGRESS_EVENT,
+            Progress {
+                received,
+                total,
+                installing: false,
+            },
+        );
     }
 
-    Ok(())
+    if received == 0 || (total > 0 && received != total) {
+        return Err("the installer download was incomplete".to_string());
+    }
+
+    Ok(Progress {
+        received,
+        total,
+        installing: false,
+    })
 }
 
 /// True when `candidate` is a higher version than `current`.
@@ -370,21 +411,17 @@ fn linux_installer_names(arch: &str) -> (&'static str, &'static str) {
 
 #[cfg(target_os = "android")]
 fn installer_names() -> (&'static str, &'static str) {
-    (android_abi_name(), ".apk")
+    android_installer_names(std::env::consts::ARCH)
 }
 
-#[cfg(target_os = "android")]
-fn android_abi_name() -> &'static str {
-    if cfg!(target_arch = "aarch64") {
-        "arm64.apk"
-    } else if cfg!(target_arch = "arm") {
-        "armv7.apk"
-    } else if cfg!(target_arch = "x86_64") {
-        "x86_64.apk"
-    } else if cfg!(target_arch = "x86") {
-        "x86.apk"
-    } else {
-        ".apk"
+#[cfg(any(target_os = "android", test))]
+fn android_installer_names(arch: &str) -> (&'static str, &'static str) {
+    match arch {
+        "aarch64" => ("_arm64.apk", "_universal.apk"),
+        "arm" => ("_armv7.apk", "_universal.apk"),
+        "x86_64" => ("_x86_64.apk", "_universal.apk"),
+        "x86" => ("_x86.apk", "_universal.apk"),
+        _ => ("", "_universal.apk"),
     }
 }
 
@@ -612,6 +649,77 @@ Installers for Windows and Linux.
         let assets = vec![asset("Wave_0.1.5_amd64.deb")];
 
         assert!(pick_asset(&assets, ("-setup-slim.exe", "-setup.exe")).is_none());
+    }
+
+    #[test]
+    fn the_same_release_refreshes_its_notes_and_installer() {
+        let stored = UpdateInfo {
+            version: "0.3.0".into(),
+            features: vec![],
+            automatic: false,
+            ..Default::default()
+        };
+        let found = UpdateInfo {
+            version: "0.3.0".into(),
+            features: vec!["New feature".into()],
+            asset_name: "Wave_0.3.0_arm64.apk".into(),
+            automatic: true,
+            ..Default::default()
+        };
+
+        assert_eq!(merge_offer(Some(stored), found.clone()), found);
+    }
+
+    #[test]
+    fn an_older_release_does_not_replace_a_newer_offer() {
+        let stored = UpdateInfo {
+            version: "0.4.0".into(),
+            ..Default::default()
+        };
+        let found = UpdateInfo {
+            version: "0.3.0".into(),
+            ..Default::default()
+        };
+
+        assert_eq!(merge_offer(Some(stored.clone()), found), stored);
+    }
+
+    #[test]
+    fn android_updates_match_the_running_architecture_or_a_universal_apk() {
+        let assets = vec![
+            asset("Wave_0.3.0_x86_64.apk"),
+            asset("Wave_0.3.0_arm64.apk"),
+            asset("Wave_0.3.0_universal.apk"),
+        ];
+
+        assert_eq!(
+            pick_asset(&assets, android_installer_names("aarch64"))
+                .unwrap()
+                .name,
+            "Wave_0.3.0_arm64.apk"
+        );
+        assert_eq!(
+            pick_asset(&assets, android_installer_names("arm"))
+                .unwrap()
+                .name,
+            "Wave_0.3.0_universal.apk"
+        );
+        assert_eq!(
+            pick_asset(&assets, android_installer_names("x86_64"))
+                .unwrap()
+                .name,
+            "Wave_0.3.0_x86_64.apk"
+        );
+        assert!(pick_asset(&assets[..2], android_installer_names("arm")).is_none());
+        assert!(pick_asset(&assets[..2], android_installer_names("unknown")).is_none());
+    }
+
+    #[test]
+    fn installer_names_cannot_escape_the_download_directory() {
+        assert!(valid_asset_name("Wave_0.3.0_arm64.apk"));
+        for name in ["", ".", "..", "../Wave.apk", r"..\Wave.apk", "/Wave.apk"] {
+            assert!(!valid_asset_name(name));
+        }
     }
 
     #[test]

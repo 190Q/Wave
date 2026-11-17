@@ -35,7 +35,11 @@ const mocks = {
       return true;
     };
     export const captureWindowSlot = async (index) => { context().captured.push(index); };
-    export const checkForUpdates = async () => {};
+    export const checkForUpdates = async () => {
+      context().updateChecks += 1;
+      context().state.update = context().checkResult;
+      context().notify();
+    };
     export const exportCollection = async () => {};
     export const fixTagsAndCovers = async () => {};
     export const jobRunning = () => false;
@@ -58,7 +62,7 @@ const mocks = {
     };
   `,
   "./popups": "export const claimPopup = () => {}; export const releasePopup = () => {};",
-  "./update": "export const openUpdate = () => {};",
+  "./update": "export const openUpdate = () => { globalThis.__settingsTest.updateOpens += 1; };",
 };
 
 const vite = await createServer({
@@ -118,6 +122,7 @@ class Element extends Events {
   closest(selector) {
     if (selector === "[data-slot-open]" && this.dataset.slotOpen !== undefined) return this;
     if (selector === "[data-slot-set]" && this.dataset.slotSet !== undefined) return this;
+    if (selector === "[data-command]" && this.dataset.command !== undefined) return this;
     if (selector === ".slot-row") return this.row ?? null;
     return null;
   }
@@ -185,6 +190,9 @@ function setup(device = "desktop", androidPlatform = false) {
     placements: [],
     captured: [],
     saved: [],
+    updateChecks: 0,
+    updateOpens: 0,
+    checkResult: null,
     state: {
       settings: {
         shortcutSlots: [], reduceMotion: "system", searchAlgorithm: "substring",
@@ -218,6 +226,35 @@ test("Discord presence appears on desktop and Linux phones, not Android", () => 
     assert.equal(body.innerHTML.includes('data-toggle="discordPresence"'), visible);
     assert.match(body.innerHTML, /data-toggle="systemMediaControls"/);
     assert.match(body.innerHTML, /data-toggle="normalizeVolume"/);
+  }
+});
+
+test("checking updates stays in settings until an available update is selected", async () => {
+  for (const device of ["desktop", "android"]) {
+    const { body, dialog, context } = setup(device, device === "android");
+    context.state.settings.autoUpdate = true;
+    mountSettings();
+    openSettings();
+    const button = new Element();
+    button.dataset.command = "check-update";
+
+    body.dispatch("click", { target: button });
+    await Promise.resolve();
+    assert.equal(context.updateChecks, 1);
+    assert.equal(context.updateOpens, 0);
+    assert.equal(dialog.open, true);
+    assert.match(body.innerHTML, /up to date/);
+
+    context.checkResult = { version: "0.4.0" };
+    body.dispatch("click", { target: button });
+    await Promise.resolve();
+    assert.equal(context.updateChecks, 2);
+    assert.equal(context.updateOpens, 0);
+    assert.match(body.innerHTML, /Update to 0.4.0/);
+
+    body.dispatch("click", { target: button });
+    assert.equal(context.updateChecks, 2);
+    assert.equal(context.updateOpens, 1);
   }
 });
 

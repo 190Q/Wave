@@ -794,6 +794,51 @@ fn answers(meta: &TrackMeta, candidate: &Candidate, seen: &Found) -> bool {
     artist_named(meta, candidate, seen)
 }
 
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn phone_search_title(meta: &TrackMeta, title: &str) -> bool {
+    carries(&meta.title, title) && !stray_aside(title, &meta.title)
+}
+
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn phone_match_score(
+    meta: &TrackMeta,
+    title: &str,
+    channel: &str,
+    duration_ms: Option<u64>,
+    live: bool,
+) -> Option<i32> {
+    let mut normalized = meta.clone();
+    normalized.artists = meta.artists.iter()
+        .flat_map(|artist| artist.split([',', ';']))
+        .map(str::trim)
+        .filter(|artist| !artist.is_empty())
+        .map(str::to_string)
+        .collect();
+    let candidate = Candidate {
+        id: String::new(),
+        title: title.to_string(),
+        channel: channel.to_string(),
+        duration_ms,
+        url: None,
+        song: false,
+    };
+    let seen = Found {
+        title: title.to_string(),
+        channel: channel.to_string(),
+        duration_ms: duration_ms.unwrap_or_default(),
+        live,
+        ..Found::default()
+    };
+    if live || !answers(&normalized, &candidate, &seen)
+        || duration_ms.filter(|length| *length > 0)
+            .zip(meta.duration_ms.filter(|length| *length > 0))
+            .is_some_and(|(found, wanted)| found.abs_diff(wanted) > LENGTH_WINDOW_MS)
+    {
+        return None;
+    }
+    Some(points(&normalized, &candidate, &seen))
+}
+
 /// Whether one of the song's artists is named by the hit, in its title, its
 /// channel, or the artist the catalogue credits it to.
 fn artist_named(meta: &TrackMeta, candidate: &Candidate, seen: &Found) -> bool {
@@ -1204,7 +1249,7 @@ pub(crate) fn landed(path: &Path, meta: &TrackMeta) -> Result<(), String> {
         lofty::read_from_path(path).map_err(|e| format!("what came back is not audio: {e}"))?;
     let length = tagged.properties().duration().as_millis() as u64;
 
-    let Some(wanted) = meta.duration_ms else {
+    let Some(wanted) = meta.duration_ms.filter(|length| *length > 0) else {
         return Ok(());
     };
     if length == 0 {
@@ -1528,6 +1573,19 @@ mod tests {
         assert!(carries(&song.title, "The Beatles - Hey Jude (Official Audio)"));
         assert!(!carries(&song.title, "Hey Bulldog"));
         assert!(!carries(&song.title, "Hey Jude Part Two"));
+    }
+
+    #[test]
+    fn phone_matching_rejects_wrong_recordings_and_accepts_shared_artists() {
+        let song = meta("Bang!", &["AJR, Guest"], 180);
+        assert!(phone_search_title(&song, "Bang! (Official Audio)"));
+        assert!(!phone_search_title(&song, "Another Song"));
+        assert!(phone_match_score(&song, "Bang! (Official Audio)", "AJR - Topic", Some(180_000), false).is_some());
+        assert!(phone_match_score(&song, "Bang! (Cover)", "AJR - Topic", Some(180_000), false).is_none());
+        assert!(phone_match_score(&song, "Bang!", "Another Artist", Some(180_000), false).is_none());
+        assert!(phone_match_score(&song, "Bang!", "AJR - Topic", Some(200_000), false).is_none());
+        assert!(phone_match_score(&song, "Bang!", "AJR - Topic", Some(180_000), true).is_none());
+        assert!(phone_match_score(&song, "Bang!", "AJR - Topic", None, false).is_some());
     }
 
     #[test]

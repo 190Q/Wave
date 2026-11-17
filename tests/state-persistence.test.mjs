@@ -102,9 +102,11 @@ const playlists = [];
 const sessions = [];
 const linkCalls = [];
 const audioPickerCalls = [];
+const playlistDownloads = [];
 let holdReads = null;
 let deleteError = null;
 let importErrors = ["Cannot copy this file"];
+let waveWaiting = 0;
 const outcome = () => ({
   songs: 0, duplicates: 0, similar: 0, images: 0, lyrics: 0,
   playlist: null, skipped: 0, trackIds: [], errors: [...importErrors], state: clone(backend),
@@ -151,6 +153,9 @@ globalThis.__testIpc = new Proxy({
   importPickedFiles: async () => outcome(),
   importPhoneFolder: async () => outcome(),
   scanPhoneMusic: async () => outcome(),
+  pickWaveList: async () => "playlist.wavelist",
+  importWaveList: async () => ({ ...outcome(), playlist: "Test", playlistId: "wave-list", skipped: waveWaiting, errors: [] }),
+  downloadPlaylist: async (id, entries) => { playlistDownloads.push([id, entries]); return { ...outcome(), errors: [] }; },
   youtubePlan: async (url) => { linkCalls.push(["youtubePlan", url]); return { name: "video", total: 1, duplicates: 0, examples: [] }; },
   spotifyPlan: async (url) => { linkCalls.push(["spotifyPlan", url]); return null; },
   deezerPlan: async (url) => { linkCalls.push(["deezerPlan", url]); return null; },
@@ -407,6 +412,18 @@ test("folder, file, and phone music imports show the first detailed error", asyn
     assert.match(app.getState().notice, /2 failed.*playlists could not be refreshed: unavailable/);
   }
   importErrors = ["Cannot copy this file"];
+});
+
+test("Android playlist import starts downloads only for waiting songs", async () => {
+  playlistDownloads.length = 0;
+  waveWaiting = 5;
+  await app.importWaveList();
+  await tick();
+  assert.deepEqual(playlistDownloads, [["wave-list", []]]);
+  waveWaiting = 0;
+  await app.importWaveList();
+  await tick();
+  assert.equal(playlistDownloads.length, 1);
 });
 
 test("delete failures force a full rescan and reconcile confirmed deletions with scan warnings", async () => {

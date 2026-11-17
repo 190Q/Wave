@@ -1466,6 +1466,9 @@ export async function importWaveList(): Promise<void> {
       reused: state.transferProgress?.reused ?? 0,
       startedAt: state.transferProgress?.startedAt ?? Date.now(),
     };
+    if (isAndroidPlatform && outcome.playlistId && outcome.skipped > 0) {
+      void downloadPending(outcome.playlistId, []);
+    }
   } catch (error) {
     state.transferProgress = failedProgress(describe(error));
     setNotice(describe(error));
@@ -2363,6 +2366,7 @@ function downloadSummary(outcome: ImportOutcome): string {
 /** Fetches a generated playlist's pending entries, an empty list meaning all of them. */
 export async function downloadPending(playlistId: string, entryIds: string[]): Promise<void> {
   if (jobRunning(state.downloadProgress)) {
+    setNotice("Another playlist is already downloading. Download the waiting songs when it finishes.");
     return;
   }
 

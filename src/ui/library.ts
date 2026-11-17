@@ -1168,7 +1168,7 @@ function renderDetail(state: AppState, collection: Collection, renaming = false)
           <div class="detail-actions">${detailActions(collection, pendingCount)}</div>
         </div>
       </div>
-      ${generated ? `<div class="detail-progress" id="detail-progress"></div>` : ""}
+      ${generated || collection.kind === "playlist" ? `<div class="detail-progress" id="detail-progress"></div>` : ""}
       ${collection.entries.length > 0 ? `<ol class="tracks">${rows}</ol>` : `<p class="empty">Nothing in here yet.</p>`}
     </div>`;
 }
@@ -1241,6 +1241,11 @@ function detailActions(collection: Collection, pendingCount: number): string {
               <span class="btn-icon" data-icon="shuffle"></span>
               <span>Shuffle</span>
             </button>
+            ${device() === "android" && pendingCount > 0 ? `
+            <button class="pill" type="button" data-download="${id}">
+              <span class="btn-icon" data-icon="import"></span>
+              <span>Download ${plural(pendingCount, "song")}</span>
+            </button>` : ""}
             ${menu}`;
 }
 
@@ -1643,7 +1648,7 @@ export function openTrackMenu(
     }
   }
 
-  if (everyPending && collectionId && device() !== "android") {
+  if (everyPending && collectionId) {
     items.push({
       label: many ? `Download ${count}` : "Download",
       action: () => void downloadPending(collectionId, trackIds),

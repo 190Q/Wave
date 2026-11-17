@@ -41,6 +41,7 @@ pub struct ImportOutcome {
     /// Added even though something else shares their title, artist and album.
     pub similar: usize,
     pub playlist: Option<String>,
+    pub playlist_id: Option<String>,
     /// The songs that landed, so the front end can fill in what they are missing.
     pub track_ids: Vec<String>,
     pub errors: Vec<String>,
@@ -672,6 +673,7 @@ pub fn import_into_library(
         duplicates,
         similar,
         playlist,
+        playlist_id: None,
         track_ids: landed,
         errors,
         state: PersistedState::default(),

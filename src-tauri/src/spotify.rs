@@ -650,6 +650,8 @@ mod tests {
 
     #[test]
     fn the_blocking_client_is_safe_on_a_blocking_thread() {
+        #[cfg(target_os = "android")]
+        crate::install_tls_provider();
         let built = tauri::async_runtime::spawn_blocking(|| {
             reqwest::blocking::Client::builder().build().is_ok()
         });

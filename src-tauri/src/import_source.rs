@@ -262,6 +262,7 @@ fn run_inner(
         duplicates,
         similar,
         playlist,
+        playlist_id: None,
         track_ids: Vec::new(),
         // The download failures belong in the same list as the import ones.
         errors: report.failures().to_vec(),
@@ -310,12 +311,15 @@ pub(crate) fn catalog_index(catalog: &Catalog) -> Result<TrackIndex, String> {
     Ok(index)
 }
 
-fn remember(index: &mut TrackIndex, row: TrackRow) {
+pub(crate) fn remember(index: &mut TrackIndex, row: TrackRow) {
     let artist = row.artist.as_deref().unwrap_or_default();
     if fold(&row.title).is_empty() || fold(main_artist(artist)).is_empty() {
         return;
     }
-    index.candidates.entry(loose_key(&row.title, artist)).or_default().push(row);
+    let candidates = index.candidates.entry(loose_key(&row.title, artist)).or_default();
+    if !candidates.iter().any(|candidate| candidate.id == row.id) {
+        candidates.push(row);
+    }
 }
 
 #[cfg(test)]

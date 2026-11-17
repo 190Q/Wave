@@ -815,6 +815,17 @@ impl Catalog {
             .map_err(|e| format!("could not finish a catalog write: {e}"))
     }
 
+    #[cfg(any(target_os = "android", test))]
+    pub fn is_pending_entry(&self, playlist_id: &str, track_id: &str) -> Result<bool, String> {
+        self.guard().query_row(
+            "SELECT EXISTS (SELECT 1 FROM pending_tracks p \
+             JOIN playlist_tracks t ON t.playlist_id = p.playlist_id AND t.track_id = p.id \
+             WHERE p.playlist_id = ?1 AND p.id = ?2)",
+            params![playlist_id, track_id],
+            |row| row.get(0),
+        ).map_err(|e| format!("could not read the waiting song: {e}"))
+    }
+
     /// The songs a playlist is still waiting on.
     pub fn pending_tracks(&self, playlist_id: &str) -> Result<Vec<PendingTrack>, String> {
         let connection = self.guard();

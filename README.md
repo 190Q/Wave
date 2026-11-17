@@ -97,10 +97,10 @@ can also pick individual audio files, scan the phone's music folders, or
 import a copied Wave `songs` folder with its artwork and lyrics.
 
 To move a playlist, export a collection from **Settings → Library** on desktop
-and import the resulting `.wavelist` from **Import**. Desktop can download songs
-missing from the destination library. For Android, follow the migration guide
-[below](#migrating-to-android). Android can also download audio from YouTube
-video and playlist links through **Import**.
+and import the resulting `.wavelist` from **Import**. Wave matches songs already
+in the library and searches YouTube for missing audio. For Android, copying the
+original songs first preserves the original files; see the migration guide
+[below](#migrating-to-android).
 
 Local playback works offline. Imports can look up missing metadata online, and
 update checks and generated playlists also use the network.
@@ -125,9 +125,10 @@ and names derived only from the original filenames may not survive the copy.
 4. On Android, open **Import → Import folder**, select the copied `songs`
    folder and grant access when prompted. Wait for the import to finish.
 5. Open **Import → Import Wave playlist** and select each `.wavelist` in turn.
-   Wave creates playlists and matches their entries to the imported songs.
-   Missing entries remain in the playlist and can be matched when their audio
-   is imported later.
+   Wave creates playlists, matches imported songs, and searches YouTube for
+   missing audio. Downloaded matches may differ from the original recordings.
+   Entries that cannot be downloaded remain in the playlist; use **Download**
+   there to retry, or import their audio later.
 6. If you exported **Liked Songs**, it is imported as a regular playlist, not
    as likes. Once its songs are matched, open that imported playlist, long-press
    a song and choose **Select all**; long-press again and choose **Like** if

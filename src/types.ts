@@ -740,6 +740,7 @@ export interface ImportOutcome {
   duplicates: number;
   similar: number;
   playlist: string | null;
+  playlistId?: string | null;
   /** The songs that landed, which are the ones still missing their metadata. */
   trackIds: string[];
   errors: string[];

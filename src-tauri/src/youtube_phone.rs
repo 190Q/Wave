@@ -1,12 +1,14 @@
 use std::fs;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use tauri::AppHandle;
 use ytdown::{CollectionKind, Container, MediaInfo, VideoInfo, Ytdown};
+use ytdown::extractor::{Extractor, ExtractorContext, youtube::YoutubeExtractor};
+use ytdown::transport::{HttpClient, HttpRequest, HttpResponse, ReqwestClient};
 
 use crate::download::{self, Fetched, Job};
 use crate::import::ImportOutcome;
@@ -17,16 +19,95 @@ use crate::youtube::{folder_name, youtube_url};
 
 const LIMIT: usize = 500;
 const LOOKUPS: usize = 4;
+const SEARCH_HITS: usize = 12;
+const SEARCH_MATCHES: usize = 4;
 const CHECKED_FOR: Duration = Duration::from_secs(600);
 type CheckedLink = (Instant, String, Link);
 static CHECKED_LINK: Mutex<Option<CheckedLink>> = Mutex::new(None);
 
-fn extractor() -> Result<Ytdown, String> {
-    Ytdown::builder()
+const VISION_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
+
+struct YoutubeTransport(ReqwestClient);
+
+#[async_trait::async_trait]
+impl HttpClient for YoutubeTransport {
+    async fn execute(&self, mut request: HttpRequest) -> ytdown::Result<HttpResponse> {
+        adapt_request(&mut request);
+        self.0.execute(request).await
+    }
+}
+
+fn adapt_request(request: &mut HttpRequest) {
+    if !request.url.contains("/youtubei/v1/player?") && !request.url.contains("/youtubei/v1/search?") {
+        return;
+    }
+    let Some(body) = request.body.as_ref() else { return; };
+    let Ok(mut body) = serde_json::from_slice::<serde_json::Value>(body) else { return; };
+    if request.url.contains("/youtubei/v1/search?") {
+        if let Some(query) = body.get_mut("query") {
+            if let Some(text) = query.as_str() {
+                *query = percent_encoding::percent_decode_str(text).decode_utf8_lossy().into_owned().into();
+            }
+        }
+    } else if body.pointer("/context/client/clientName").and_then(|name| name.as_str()) == Some("ANDROID_VR") {
+        // The Android VR client can return capped streams, so prefer visionOS.
+        let Some(client) = body.pointer_mut("/context/client").and_then(|client| client.as_object_mut()) else { return; };
+        client.remove("androidSdkVersion");
+        for (key, value) in [
+            ("clientName", "VISIONOS"), ("clientVersion", "1.02"),
+            ("deviceMake", "Apple"), ("deviceModel", "RealityDevice17,1"),
+            ("osName", "visionOS"), ("osVersion", "26.5.23O471"),
+            ("userAgent", VISION_AGENT),
+        ] {
+            client.insert(key.into(), value.into());
+        }
+        for (name, value) in &mut request.headers {
+            if name.eq_ignore_ascii_case("User-Agent") {
+                *value = VISION_AGENT.into();
+            } else if name.eq_ignore_ascii_case("X-YouTube-Client-Name") {
+                *value = "101".into();
+            } else if name.eq_ignore_ascii_case("X-YouTube-Client-Version") {
+                *value = "1.02".into();
+            }
+        }
+    }
+    if let Ok(encoded) = serde_json::to_vec(&body) {
+        request.body = Some(encoded);
+    }
+}
+
+pub(crate) struct PhoneYoutube {
+    downloader: Ytdown,
+    extractor: YoutubeExtractor,
+    context: ExtractorContext,
+}
+
+impl PhoneYoutube {
+    async fn resolve(&self, url: &str) -> ytdown::Result<MediaInfo> {
+        let input = match url.strip_prefix("ytsearch:") {
+            Some(query) => format!("ytsearch:{}", query.replace('%', "%25")),
+            None => url.to_string(),
+        };
+        let url = reqwest::Url::parse(&input).map_err(|_| ytdown::Error::UnsupportedUrl(url.into()))?;
+        self.extractor.extract(&self.context, &url).await
+    }
+}
+
+pub(crate) fn extractor() -> Result<PhoneYoutube, String> {
+    let client = reqwest12::Client::builder().connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(90))
+        .build().map_err(|error| format!("Could not start the YouTube downloader: {error}"))?;
+    let downloader = Ytdown::builder()
+        .client(client.clone())
         .clear_extractors()
-        .extractor(Box::new(ytdown::extractor::youtube::YoutubeExtractor::new()))
+        .extractor(Box::new(YoutubeExtractor::new()))
         .build()
-        .map_err(|error| format!("Could not start the YouTube downloader: {error}"))
+        .map_err(|error| format!("Could not start the YouTube downloader: {error}"))?;
+    Ok(PhoneYoutube {
+        downloader,
+        extractor: YoutubeExtractor::new(),
+        context: ExtractorContext::new(Arc::new(YoutubeTransport(ReqwestClient::new(client)))),
+    })
 }
 
 fn playlist_title(url: &str) -> Option<String> {
@@ -121,11 +202,11 @@ where
     Ok(tracks)
 }
 
-fn resolve(yt: &Ytdown, url: &str, report: &mut Reporter) -> Result<Link, String> {
+fn resolve(yt: &PhoneYoutube, url: &str, report: &mut Reporter) -> Result<Link, String> {
     resolve_with_limit(yt, url, report, LIMIT)
 }
 
-fn resolve_with_limit(yt: &Ytdown, url: &str, report: &mut Reporter, limit: usize) -> Result<Link, String> {
+fn resolve_with_limit(yt: &PhoneYoutube, url: &str, report: &mut Reporter, limit: usize) -> Result<Link, String> {
     report.phase("resolving", "Reading the YouTube link.");
     let playlist_title = if url.contains("/playlist?") { playlist_title(url) } else { None };
     tauri::async_runtime::block_on(async {
@@ -166,7 +247,101 @@ fn video_meta(video: &VideoInfo) -> TrackMeta {
     }
 }
 
-fn fetch(yt: &Ytdown, job: &Job<'_>) -> Result<PathBuf, String> {
+async fn search_matches(yt: &PhoneYoutube, meta: &TrackMeta) -> Result<Vec<VideoInfo>, String> {
+    let artist = meta.artists.first().map(|name| name.split([',', ';']).next().unwrap_or(name)).unwrap_or("");
+    let query = format!("ytsearch:{artist} {} audio", meta.title);
+    let media = yt.resolve(&query).await
+        .map_err(|error| format!("Could not search YouTube: {error}"))?;
+    let MediaInfo::Collection(collection) = media else {
+        return Err("YouTube did not return search results.".to_string());
+    };
+    let mut entries = collection.entries.take(SEARCH_HITS);
+    let mut matches = Vec::new();
+    while let Some(entry) = entries.next().await {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) if !matches.is_empty() => break,
+            Err(error) => return Err(format!("Could not read YouTube search results: {error}")),
+        };
+        if entry.id.len() != 11
+            || !entry.id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+            || !entry.title.as_deref().is_some_and(|title| download::phone_search_title(meta, title))
+        {
+            continue;
+        }
+        let url = format!("https://www.youtube.com/watch?v={}", entry.id);
+        let Ok(MediaInfo::Single(video)) = yt.resolve(&url).await else {
+            continue;
+        };
+        let score = download::phone_match_score(
+            meta,
+            &video.title,
+            video.uploader.as_deref().unwrap_or_default(),
+            video.duration.map(|duration| duration.as_millis() as u64),
+            video.is_live,
+        );
+        if let Some(score) = score {
+            let close = video.duration.map(|duration| duration.as_millis() as u64)
+                .zip(meta.duration_ms.filter(|length| *length > 0))
+                .is_some_and(|(found, wanted)| found.abs_diff(wanted) <= 2_000);
+            matches.push((score, video));
+            if matches.len() >= SEARCH_MATCHES || (score >= 17 && close) {
+                break;
+            }
+        }
+    }
+    matches.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    if matches.is_empty() {
+        return Err("No matching YouTube audio was found.".to_string());
+    }
+    Ok(matches.into_iter().map(|(_, video)| video).collect())
+}
+
+pub(crate) fn fetch_matching(yt: &PhoneYoutube, job: &Job<'_>) -> Result<PathBuf, String> {
+    let matches = tauri::async_runtime::block_on(search_matches(yt, job.meta))?;
+    let cover = job.cover.as_deref().and_then(|path| fs::read(path).ok())
+        .or_else(|| crate::cover_fetch::look_up(
+            &job.meta.artists.join(", "), &job.meta.title, &job.meta.album,
+        ));
+    let mut failure = None;
+    for video in matches {
+        let artwork = cover.clone().or_else(|| {
+            let url = video.thumbnails.iter().max_by_key(|image| image.width.unwrap_or(0))
+                .map(|image| image.url.as_str());
+            download::fetch_cover(url)
+        });
+        match fetch_video(yt, job, &video, artwork) {
+            Ok(path) => return Ok(path),
+            Err(error) => {
+                let _ = fs::remove_file(job.dir.join("audio.m4a"));
+                failure = Some(error);
+            }
+        }
+    }
+    Err(failure.unwrap_or_else(|| "No matching YouTube audio was found.".to_string()))
+}
+
+fn fetch_video(yt: &PhoneYoutube, job: &Job<'_>, video: &VideoInfo, cover: Option<Vec<u8>>) -> Result<PathBuf, String> {
+    let path = job.dir.join("audio.m4a");
+    fs::create_dir_all(&job.dir).map_err(|error| format!("Could not create the download folder: {error}"))?;
+    let format = video.formats().audio_only().container(&Container::M4a).best_audio()
+        .map_err(|_| "YouTube did not provide a compatible audio stream.".to_string())?;
+    tauri::async_runtime::block_on(async {
+        yt.downloader.download(format, &path).resume(false).chunk_size(200 * 1024).await
+            .map_err(download_error)
+    })?;
+    download::landed(&path, job.meta)?;
+    download::tag(&path, job.meta, cover)?;
+    Ok(path)
+}
+
+fn download_error(error: ytdown::Error) -> String {
+    let message = error.to_string();
+    let message = message.split(" for url").next().unwrap_or(&message);
+    format!("Could not download the audio: {message}")
+}
+
+fn fetch(yt: &PhoneYoutube, job: &Job<'_>) -> Result<PathBuf, String> {
     let url = job.meta.source_url.as_deref().ok_or("The YouTube video has no link.")?;
     let path = job.dir.join("audio.m4a");
     fs::create_dir_all(&job.dir).map_err(|error| format!("Could not create the download folder: {error}"))?;
@@ -180,8 +355,8 @@ fn fetch(yt: &Ytdown, job: &Job<'_>) -> Result<PathBuf, String> {
         }
         let format = video.formats().audio_only().container(&Container::M4a).best_audio()
             .map_err(|_| "YouTube did not provide a compatible audio stream.".to_string())?;
-        yt.download(format, &path).resume(false).await
-            .map_err(|error| format!("Could not download the audio: {error}"))?;
+        yt.downloader.download(format, &path).resume(false).chunk_size(200 * 1024).await
+            .map_err(download_error)?;
         Ok::<(), String>(())
     })?;
     download::landed(&path, job.meta)?;
@@ -192,6 +367,59 @@ fn fetch(yt: &Ytdown, job: &Job<'_>) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn player_request_uses_visionos_without_changing_the_visitor() {
+        let mut request = HttpRequest::post("innertube", "https://www.youtube.com/youtubei/v1/player?key=public")
+            .header("User-Agent", "old")
+            .header("X-YouTube-Client-Name", "28")
+            .header("X-YouTube-Client-Version", "old")
+            .body(serde_json::to_vec(&serde_json::json!({
+                "videoId": "abcdefghijk",
+                "context": { "client": { "clientName": "ANDROID_VR", "visitorData": "visitor", "androidSdkVersion": 32 } }
+            })).unwrap());
+        adapt_request(&mut request);
+        let body: serde_json::Value = serde_json::from_slice(request.body.as_ref().unwrap()).unwrap();
+        assert_eq!(body["videoId"], "abcdefghijk");
+        assert_eq!(body["context"]["client"]["clientName"], "VISIONOS");
+        assert_eq!(body["context"]["client"]["visitorData"], "visitor");
+        assert!(body["context"]["client"].get("androidSdkVersion").is_none());
+        assert!(request.headers.iter().any(|(name, value)| name == "X-YouTube-Client-Name" && value == "101"));
+        assert!(request.headers.iter().any(|(name, value)| name == "User-Agent" && value == VISION_AGENT));
+    }
+
+    #[test]
+    fn search_request_decodes_unicode_and_keeps_literal_percent_signs() {
+        let mut request = HttpRequest::post("innertube", "https://www.youtube.com/youtubei/v1/search?key=public")
+            .body(serde_json::to_vec(&serde_json::json!({ "query": "Beyonc%C3%A9 100%25" })).unwrap());
+        adapt_request(&mut request);
+        let body: serde_json::Value = serde_json::from_slice(request.body.as_ref().unwrap()).unwrap();
+        assert_eq!(body["query"], "Beyoncé 100%");
+    }
+
+    #[test]
+    fn player_fallback_requests_are_unchanged() {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "context": { "client": { "clientName": "IOS" } }
+        })).unwrap();
+        let mut request = HttpRequest::post("innertube", "https://www.youtube.com/youtubei/v1/player?key=public")
+            .header("X-YouTube-Client-Name", "5")
+            .body(body.clone());
+        adapt_request(&mut request);
+        assert_eq!(request.body.unwrap(), body);
+        assert_eq!(request.headers[0].1, "5");
+    }
+
+    #[test]
+    fn download_errors_do_not_expose_stream_urls() {
+        let error = ytdown::Error::Network {
+            stage: "download",
+            message: "HTTP status 403 for url (https://example.test/?secret=value)".into(),
+        };
+        let message = download_error(error);
+        assert!(message.contains("403"));
+        assert!(!message.contains("https://"));
+    }
 
     fn entry(id: &str, title: &str) -> ytdown::Entry {
         let mut entry = ytdown::Entry::default();
@@ -265,7 +493,32 @@ mod tests {
 
     #[test]
     #[ignore = "requires YouTube network access"]
+    fn searches_and_downloads_a_real_matching_song() {
+        #[cfg(target_os = "android")]
+        crate::install_tls_provider();
+        let yt = extractor().unwrap();
+        let meta = TrackMeta {
+            title: "Never Gonna Give You Up".into(),
+            artists: vec!["Rick Astley".into()],
+            duration_ms: Some(213_000),
+            ..TrackMeta::default()
+        };
+        let dir = std::env::temp_dir().join(format!("wave-youtube-match-{}", crate::identity::new_id()));
+        let job = Job { key: 0, meta: &meta, dir: dir.clone(), cover: None };
+        let path = fetch_matching(&yt, &job).unwrap();
+        assert!(fs::metadata(&path).unwrap().len() > 10_000);
+        let tags = lofty::read_from_path(&path).unwrap();
+        use lofty::prelude::{Accessor, TaggedFileExt};
+        assert_eq!(tags.primary_tag().and_then(|tag| tag.title()).as_deref(), Some(meta.title.as_str()));
+        assert!(tags.primary_tag().is_some_and(|tag| !tag.pictures().is_empty()));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires YouTube network access"]
     fn reads_a_real_youtube_playlist_in_order() {
+        #[cfg(target_os = "android")]
+        crate::install_tls_provider();
         let yt = extractor().unwrap();
         let mut report = Reporter::quiet();
         let link = resolve_with_limit(
@@ -288,6 +541,8 @@ mod tests {
     #[test]
     #[ignore = "requires YouTube network access"]
     fn downloads_a_real_youtube_video_as_tagged_m4a() {
+        #[cfg(target_os = "android")]
+        crate::install_tls_provider();
         let yt = extractor().unwrap();
         let mut report = Reporter::quiet();
         let link = resolve(&yt, "https://www.youtube.com/watch?v=jNQXAC9IVRw", &mut report).unwrap();

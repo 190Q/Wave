@@ -290,6 +290,7 @@ pub(crate) fn run(
             duplicates,
             similar,
             playlist: None,
+            playlist_id: None,
             track_ids: Vec::new(),
             errors: Vec::new(),
             state: PersistedState::default(),
@@ -344,11 +345,12 @@ fn run_phone(app: &AppHandle, path: &str, report: &mut Reporter) -> Result<Impor
     let catalog = app.state::<Catalog>();
     let existing = import_source::catalog_index(&catalog)?;
     let (entries, pending, matched) = imported_entries(&list.tracks, &existing);
-    catalog.create_imported_playlist(&list.name, &entries, &pending)?;
+    let playlist_id = catalog.create_imported_playlist(&list.name, &entries, &pending)?;
     let mut outcome = ImportOutcome {
         duplicates: matched,
         skipped: pending.len(),
         playlist: Some(list.name.clone()),
+        playlist_id: Some(playlist_id),
         ..ImportOutcome::default()
     };
     import::remember_import(app, "wavelist", &list.name, &outcome);

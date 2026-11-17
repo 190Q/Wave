@@ -21,7 +21,8 @@ const mocks = {
     export const playFromCollection = (collectionId, id) => context.played.push({ collectionId, id });
     export const createPlaylist = () => {}, deletePlaylist = () => {},
       deleteTracks = (ids) => context.deleted.push(ids),
-      downloadPending = () => {}, generatePlaylist = () => {}, playCollection = () => {},
+      downloadPending = (id, entries) => context.downloaded.push({ id, entries }),
+      generatePlaylist = () => {}, playCollection = () => {},
       playTrackInContext = () => {}, refreshRecommendStatus = () => {}, replaceTrackCover = () => {},
       removeTracksFromPlaylist = (id, ids) => context.removed.push({ id, ids }),
       renamePlaylist = (id, name) => context.renamed.push({ id, name }), reorderPlaylist = () => {},
@@ -91,6 +92,7 @@ class FakeElement {
     if (selector === "[data-track]" && this.dataset.track) return this;
     if (selector === "[data-collection]" && this.dataset.collection) return this;
     if (selector === "[data-menu]" && this.dataset.menu) return this;
+    if (selector === "[data-download]" && this.dataset.download) return this;
     return null;
   }
   dispatch(type, target, extra = {}) {
@@ -112,25 +114,28 @@ globalThis.document = {
 
 const { mountLibrary } = await vite.ssrLoadModule("/src/ui/library.ts");
 
-function setup({ touch = false, kind = "playlist" } = {}) {
+function setup({ touch = false, kind = "playlist", pending = false } = {}) {
   const tracks = ["one", "two", "three"].map((id) => ({
     id, title: id, artist: null, durationMs: 1000,
   }));
   const ids = tracks.map(({ id }) => id);
-  const collection = { id: "playlist", kind, name: "Playlist", subtitle: "3 songs", entries: ids, trackIds: ids };
+  const entries = pending ? [...ids, "waiting"] : ids;
+  const collection = { id: "playlist", kind, name: "Playlist", subtitle: "3 songs", entries, trackIds: ids };
   context.touch = touch;
   context.menu = null;
   context.liked = [];
   context.played = [];
   context.removed = [];
   context.deleted = [];
+  context.downloaded = [];
   context.renamed = [];
   context.confirmed = [];
   context.state = {
     libraryOpen: true, filter: "playlists", query: "", sort: "name",
     settings: { searchAlgorithm: "substring" },
     tracks, tracksById: new Map(tracks.map((track) => [track.id, track])),
-    pendingById: new Map(), likes: new Set(), collections: [collection],
+    pendingById: new Map(pending ? [["waiting", { id: "waiting", title: "Waiting", artists: ["Artist"] }]] : []),
+    likes: new Set(), collections: [collection],
     collectionsRevision: 1, playCounts: new Map(), scanErrors: [], scanning: false,
   };
   context.elements = Object.fromEntries([
@@ -140,15 +145,17 @@ function setup({ touch = false, kind = "playlist" } = {}) {
   const list = context.elements.library;
   const pane = context.elements["library-pane"];
   const host = new FakeElement();
+  const progress = new FakeElement();
   const renameInput = new HTMLInputElement();
-  const rows = ids.map((id) => new FakeElement({ track: id }));
+  const rows = entries.map((id) => new FakeElement({ track: id }));
   list.querySelectorAll = (selector) => selector === "[data-track]" ? rows : [];
   pane.querySelector = (selector) => selector === ".tracks" ? host
+    : selector === "#detail-progress" && pane.innerHTML.includes('id="detail-progress"') ? progress
     : selector === ".detail-rename" && pane.innerHTML.includes('class="search detail-rename"') ? renameInput
     : null;
   mountLibrary();
   list.dispatch("click", new FakeElement({ collection: collection.id }));
-  return { list, pane, rows, renameInput };
+  return { list, pane, rows, renameInput, progress };
 }
 
 function rightClick(list, row) {
@@ -189,6 +196,20 @@ test("desktop song selection never adds a toolbar and keeps the context menu", (
   rightClick(list, rows[1]);
   assert.equal(context.menu.items[0].label, "Like 3 songs");
   assert.doesNotMatch(pane.innerHTML, /selection-bar|data-select=/);
+});
+
+test("Android imported playlists offer bulk and individual pending downloads", () => {
+  const { list, pane, rows, progress } = setup({ touch: true, pending: true });
+  assert.match(pane.innerHTML, /data-download="playlist"/);
+  assert.match(pane.innerHTML, /Download 1 song/);
+  assert.match(pane.innerHTML, /id="detail-progress"/);
+  list.dispatch("click", new FakeElement({ download: "playlist" }));
+  assert.deepEqual(context.downloaded, [{ id: "playlist", entries: [] }]);
+
+  rightClick(list, rows[3]);
+  context.menu.items.find(({ label }) => label === "Download").action();
+  assert.deepEqual(context.downloaded[1], { id: "playlist", entries: ["waiting"] });
+  assert.equal(progress.innerHTML, "");
 });
 
 test("touch selection retains Select all and Clear selection in the menu", () => {

@@ -24,8 +24,6 @@ class DeniedMediaControlsTest {
       MediaPlayback.setControls(context, true)
       MediaPlayback.show(context, Song().apply { title = "Track" })
       val notification = MediaPlayback.current
-      MediaPlayback.showPausedControls(context)
-      assertTrue(notification === MediaPlayback.current)
       assertTrue(notification!!.extras.containsKey(Notification.EXTRA_MEDIA_SESSION))
       assertFalse(NotificationManagerCompat.from(context).areNotificationsEnabled())
     }

@@ -1,20 +1,13 @@
 package com.wave.app
 
 import android.app.Service
-import android.content.BroadcastReceiver
-import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import android.os.PowerManager
-import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.ServiceCompat
-import androidx.core.content.ContextCompat
 
 /**
  * What keeps a song playing while the app is in the background.
@@ -33,32 +26,18 @@ class MediaPlaybackService : Service() {
     private var instance: MediaPlaybackService? = null
 
     fun syncPlayback() {
-      instance?.let {
-        it.syncWakeLock()
-        it.requestPausedControlsSync()
-      }
+      instance?.syncWakeLock()
     }
   }
 
   private var wakeLock: PowerManager.WakeLock? = null
   private val wakeLockController = PlaybackWakeLock(::hold, ::release)
-  private val handler = Handler(Looper.getMainLooper())
-  private val pausedControls = PausedControls()
-  private val checkPausedControls = Runnable { syncPausedControls() }
-  private val screenOnReceiver = object : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-      syncPausedControls()
-    }
-  }
   @Volatile
   private var foregroundActive = false
 
   override fun onCreate() {
     super.onCreate()
     instance = this
-    ContextCompat.registerReceiver(
-      this, screenOnReceiver, IntentFilter(Intent.ACTION_SCREEN_ON), ContextCompat.RECEIVER_NOT_EXPORTED
-    )
   }
 
   override fun onBind(intent: Intent?): IBinder? = null
@@ -83,7 +62,6 @@ class MediaPlaybackService : Service() {
   private fun setForegroundActive(active: Boolean) {
     foregroundActive = active
     syncWakeLock()
-    requestPausedControlsSync()
   }
 
   @Synchronized
@@ -91,37 +69,10 @@ class MediaPlaybackService : Service() {
     wakeLockController.sync(foregroundActive, MediaPlayback.playing)
   }
 
-  private fun requestPausedControlsSync() {
-    val eligible = pausedControlsEligible()
-    val now = SystemClock.elapsedRealtime()
-    handler.post {
-      if (instance === this) syncPausedControls(eligible, now)
-    }
-  }
-
-  private fun pausedControlsEligible(): Boolean =
-    Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-      foregroundActive && !MediaPlayback.playing && MediaPlayback.hasEnabledControls
-
-  private fun syncPausedControls(
-    eligible: Boolean = pausedControlsEligible(),
-    now: Long = SystemClock.elapsedRealtime()
-  ) {
-    handler.removeCallbacks(checkPausedControls)
-    val remaining = pausedControls.remaining(eligible, now) ?: return
-    if (remaining == 0L) {
-      MediaPlayback.showPausedControls(this)
-    } else {
-      handler.postDelayed(checkPausedControls, remaining)
-    }
-  }
-
   override fun onDestroy() {
     Log.i("Wave", "the playback service stopped")
     if (instance === this) instance = null
     setForegroundActive(false)
-    handler.removeCallbacks(checkPausedControls)
-    unregisterReceiver(screenOnReceiver)
     ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
     super.onDestroy()
   }

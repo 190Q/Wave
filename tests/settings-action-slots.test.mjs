@@ -6,8 +6,9 @@ import { createServer } from "vite";
 const mocks = {
   "../lib/analytics": "export const forgetCaptured = () => {};",
   "../lib/device": `
-    export const device = () => "desktop";
-    export const isAndroidPlatform = false;
+    export const device = () => globalThis.__settingsTest.device;
+    export let isAndroidPlatform = false;
+    export const setAndroidPlatform = (value) => { isAndroidPlatform = value; };
     export const titlebarVisible = (value) => value ?? true;
   `,
   "../lib/format": `
@@ -157,7 +158,8 @@ class Body extends Element {
   }
 }
 
-function setup() {
+function setup(device = "desktop", androidPlatform = false) {
+  setAndroidPlatform(androidPlatform);
   const body = new Body();
   const dialog = new Element();
   dialog.open = false;
@@ -178,6 +180,7 @@ function setup() {
   };
   globalThis.window = Object.assign(new Events(), { setTimeout, clearTimeout });
   const context = {
+    device,
     analytics: new Promise(() => {}),
     placements: [],
     captured: [],
@@ -198,6 +201,25 @@ function setup() {
 }
 
 const { mountSettings, openSettings } = await vite.ssrLoadModule("/src/ui/settings.ts");
+const { setAndroidPlatform } = await vite.ssrLoadModule("\0settings-test:../lib/device");
+
+test("Discord presence appears on desktop and Linux phones, not Android", () => {
+  for (const [device, androidPlatform, visible] of [
+    ["desktop", false, true],
+    ["linuxPhone", false, true],
+    ["android", false, false],
+    ["android", true, false],
+    ["desktop", true, false],
+    ["linuxPhone", true, false],
+  ]) {
+    const { body } = setup(device, androidPlatform);
+    mountSettings();
+    openSettings();
+    assert.equal(body.innerHTML.includes('data-toggle="discordPresence"'), visible);
+    assert.match(body.innerHTML, /data-toggle="systemMediaControls"/);
+    assert.match(body.innerHTML, /data-toggle="normalizeVolume"/);
+  }
+});
 
 test("slot menus stay open without rebuilding or scrolling the settings body", () => {
   const { body, dialog, context } = setup();

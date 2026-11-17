@@ -287,7 +287,7 @@ const state: AppState = {
     shortcutSlots: [],
     analyticsEnabled: true,
     systemMediaControls: true,
-    discordPresence: false,
+    ...(isAndroidPlatform ? {} : { discordPresence: false }),
     autoUpdate: true,
     eqEnabled: false,
     eqBands: [],

@@ -217,7 +217,7 @@ export function mountSettings(): void {
     const state = getState();
     body.innerHTML = [
       playbackHtml(draft),
-      nowPlayingHtml(draft),
+      nowPlayingHtml(draft, android || isAndroidPlatform),
       appearanceHtml(draft),
       android ? "" : windowHtml(draft),
       libraryHtml(state, selectedExport()?.id ?? ""),
@@ -312,7 +312,7 @@ export function mountSettings(): void {
         next[key] = !next[key];
       }
       draft = next;
-      paintToggle(toggle, key === "showTitlebar" ? titlebarVisible(next.showTitlebar) : next[key]);
+      paintToggle(toggle, key === "showTitlebar" ? titlebarVisible(next.showTitlebar) : next[key] ?? false);
       paintSave();
       return;
     }
@@ -576,7 +576,7 @@ function playbackHtml(settings: Settings): string {
   );
 }
 
-function nowPlayingHtml(settings: Settings): string {
+function nowPlayingHtml(settings: Settings, android: boolean): string {
   return section(
     "Now playing",
     `${toggleRow(
@@ -585,11 +585,11 @@ function nowPlayingHtml(settings: Settings): string {
       "Show the song in the system's own controls: the Windows media flyout, the lock screen and the media keys, or the media widget of a Linux desktop. The controls there play, pause, skip, seek and set the volume.",
       settings.systemMediaControls,
     )}
-    ${toggleRow(
+    ${android ? "" : toggleRow(
       "discordPresence",
       "Discord presence",
       "Show the song on your Discord profile, the way Spotify does, with the title, artist and a progress bar. Off until this is switched on.",
-      settings.discordPresence,
+      settings.discordPresence ?? false,
     )}`,
   );
 }

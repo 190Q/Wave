@@ -38,8 +38,6 @@ blake3 = "1"
 # crate already is: no async runtime is pulled in for it.
 tiny_http = "0.12"
 
-discord-rich-presence = "1.1.0"
-
 # Every HTTP request the crate makes: lyrics, cover art, genres, the Spotify and
 # Deezer catalogues and the updater.
 #
@@ -49,6 +47,7 @@ discord-rich-presence = "1.1.0"
 # calls its rustls backend `rustls-no-provider`, so the provider is picked
 # here: ring, which needs nothing but the NDK's clang.
 [target.'cfg(not(target_os = "android"))'.dependencies]
+discord-rich-presence = "1.1.0"
 reqwest = { version = "0.13.5", default-features = false, features = [
   "blocking",
   "charset",

@@ -8,14 +8,19 @@
 
 #[cfg(desktop)]
 use std::path::Path;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
+#[cfg(desktop)]
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
+#[cfg(desktop)]
 use std::time::Duration;
 
+#[cfg(desktop)]
 use discord_rich_presence::activity::{
     Activity, ActivityType, Assets, StatusDisplayType, Timestamps,
 };
+#[cfg(desktop)]
 use discord_rich_presence::{DiscordIpc, DiscordIpcClient};
 use serde::{Deserialize, Serialize};
 #[cfg(desktop)]
@@ -25,8 +30,11 @@ use souvlaki::{
 };
 #[cfg(desktop)]
 use tauri::Emitter;
-use tauri::{AppHandle, Listener, Manager, State};
+#[cfg(desktop)]
+use tauri::Listener;
+use tauri::{AppHandle, Manager, State};
 
+#[cfg(desktop)]
 use crate::source::{now_ms, read_env};
 use crate::state::Store;
 
@@ -41,22 +49,28 @@ pub const CONTROL_EVENT: &str = "media-control";
 /// https://discord.com/developers/applications, uploads the logo as a rich
 /// presence asset named `wave`, and puts its Application ID here or into
 /// DISCORD_CLIENT_ID.
+#[cfg(desktop)]
 const DEFAULT_DISCORD_CLIENT_ID: &str = "1570105712296595526";
 
 /// The asset Discord draws beside the song.
+#[cfg(desktop)]
 const DISCORD_ARTWORK: &str = "wave";
 
 /// How long to wait before trying Discord again while it has not answered.
+#[cfg(desktop)]
 const DISCORD_RETRY: Duration = Duration::from_secs(15);
 
 /// How long a worker waits when there is nothing to do.
+#[cfg(desktop)]
 const IDLE: Duration = Duration::from_secs(60);
 
 /// How far the position may sit from where the timestamps were taken before
 /// they are taken again, which is what a seek looks like.
+#[cfg(desktop)]
 const DRIFT_MS: u64 = 2000;
 
 /// How far the fast forward and rewind buttons move.
+#[cfg(desktop)]
 const SEEK_STEP_MS: u64 = 10_000;
 
 /// The song the front end is playing.
@@ -113,6 +127,7 @@ enum SystemMessage {
 }
 
 /// What the Discord worker is told.
+#[cfg(desktop)]
 enum DiscordMessage {
     Show(Option<NowPlaying>),
     Stop,
@@ -129,9 +144,11 @@ struct Workers {
     system: Option<Sender<SystemMessage>>,
     /// Kept so the app can wait for the controls to be let go of.
     system_thread: Option<JoinHandle<()>>,
+    #[cfg(desktop)]
     discord: Option<Sender<DiscordMessage>>,
     /// The application the Discord worker was started with, so a changed id in
     /// the config is noticed.
+    #[cfg(desktop)]
     discord_id: Option<String>,
 }
 
@@ -146,7 +163,11 @@ impl Presence {
             workers: Mutex::new(Workers::default()),
             app: app.clone(),
         };
-        presence.set_enabled(settings.system_media_controls, settings.discord_presence);
+        presence.set_enabled(
+            settings.system_media_controls,
+            #[cfg(desktop)]
+            settings.discord_presence,
+        );
         presence
     }
 
@@ -156,6 +177,7 @@ impl Presence {
         if let Some(system) = workers.system.as_ref() {
             let _ = system.send(SystemMessage::Show(song.clone()));
         }
+        #[cfg(desktop)]
         if let Some(discord) = workers.discord.as_ref() {
             let _ = discord.send(DiscordMessage::Show(song));
         }
@@ -176,7 +198,7 @@ impl Presence {
     }
 
     /// Starts or stops each surface, without a restart.
-    pub fn set_enabled(&self, system: bool, discord: bool) {
+    pub fn set_enabled(&self, system: bool, #[cfg(desktop)] discord: bool) {
         let mut workers = self.guard();
 
         if system_worker_needed(cfg!(target_os = "android"), system) {
@@ -199,6 +221,7 @@ impl Presence {
             }
         }
 
+        #[cfg(desktop)]
         if discord {
             if workers.discord.is_none() {
                 let id = discord_client_id(&self.app);
@@ -212,6 +235,7 @@ impl Presence {
 
     /// Starts the Discord worker over when the config names a different
     /// application, so an id pasted into it takes effect as it is saved.
+    #[cfg(desktop)]
     fn refresh_discord(&self) {
         let wanted = discord_client_id(&self.app);
         let mut workers = self.guard();
@@ -238,6 +262,7 @@ impl Presence {
         if let Some(sender) = workers.system.take() {
             let _ = sender.send(SystemMessage::Stop);
         }
+        #[cfg(desktop)]
         if let Some(sender) = workers.discord.take() {
             // Discord drops the activity when the connection closes, so the
             // exit does not wait for it.
@@ -258,6 +283,7 @@ fn system_worker_needed(android: bool, controls: bool) -> bool {
 }
 
 /// Follows the config `.env`, for the Discord application id in it.
+#[cfg(desktop)]
 pub fn watch_config(app: &AppHandle) {
     let handle = app.clone();
     app.listen(crate::source::CONFIG_EVENT, move |_| {
@@ -415,6 +441,7 @@ fn rewritten(shown: Option<&NowPlaying>, next: Option<&NowPlaying>) -> bool {
 }
 
 /// The tags that make one song different from another, without the position.
+#[cfg(desktop)]
 fn same_track(left: &NowPlaying, right: &NowPlaying) -> bool {
     left.title == right.title
         && left.artist == right.artist
@@ -456,6 +483,7 @@ fn show_playback(controls: &mut MediaControls, song: &NowPlaying) {
 }
 
 /// A tag with nothing in it is left off rather than shown empty.
+#[cfg(desktop)]
 fn text(value: &str) -> Option<&str> {
     (!value.is_empty()).then_some(value)
 }
@@ -529,6 +557,7 @@ fn step(direction: &SeekDirection, by: u64) -> f64 {
 
 /// The Discord side: one connection, and the activity it last managed to
 /// write, so a song that has not changed is not written again.
+#[cfg(desktop)]
 struct Discord {
     client_id: String,
     client: Option<DiscordIpcClient>,
@@ -539,6 +568,7 @@ struct Discord {
 }
 
 /// Where the progress bar Discord draws starts from.
+#[cfg(desktop)]
 #[derive(Clone, Copy)]
 struct Anchor {
     at_ms: u64,
@@ -547,6 +577,7 @@ struct Anchor {
 }
 
 /// The activity as Discord last received it.
+#[cfg(desktop)]
 #[derive(Clone, PartialEq, Eq)]
 struct Shown {
     title: String,
@@ -556,6 +587,7 @@ struct Shown {
     end: i64,
 }
 
+#[cfg(desktop)]
 impl Discord {
     fn new(client_id: String) -> Self {
         Self {
@@ -675,6 +707,7 @@ impl Discord {
 
 /// True when the position is not where the anchor says it should be, which is
 /// what a seek looks like from here.
+#[cfg(desktop)]
 fn jumped(anchor: &Anchor, song: &NowPlaying) -> bool {
     let elapsed = if anchor.playing {
         now_ms().saturating_sub(anchor.at_ms)
@@ -688,6 +721,7 @@ fn jumped(anchor: &Anchor, song: &NowPlaying) -> bool {
 /// The two timestamps Discord draws its bar from: where the song started, and
 /// where it ends. A song that is not playing has neither, so the bar stops
 /// with the music.
+#[cfg(desktop)]
 fn stamps(anchor: Option<&Anchor>, song: &NowPlaying) -> (i64, i64) {
     let Some(anchor) = anchor else {
         return (0, 0);
@@ -701,6 +735,7 @@ fn stamps(anchor: Option<&Anchor>, song: &NowPlaying) -> (i64, i64) {
 }
 
 /// The card Discord shows: the song, the artist, and the progress bar.
+#[cfg(desktop)]
 fn activity(song: &NowPlaying, stamps: (i64, i64)) -> Activity<'_> {
     let mut assets = Assets::new().large_image(DISCORD_ARTWORK);
     if let Some(album) = text(&song.album) {
@@ -723,12 +758,14 @@ fn activity(song: &NowPlaying, stamps: (i64, i64)) -> Activity<'_> {
     activity
 }
 
+#[cfg(desktop)]
 fn start_discord(client_id: Option<String>) -> Sender<DiscordMessage> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || run_discord(client_id, receiver));
     sender
 }
 
+#[cfg(desktop)]
 fn run_discord(client_id: Option<String>, receiver: Receiver<DiscordMessage>) {
     let Some(client_id) = client_id else {
         eprintln!(
@@ -763,6 +800,7 @@ fn run_discord(client_id: Option<String>, receiver: Receiver<DiscordMessage>) {
 
 /// The Discord application to report to: the config `.env` when it names one,
 /// otherwise the id the build carries.
+#[cfg(desktop)]
 fn discord_client_id(app: &AppHandle) -> Option<String> {
     let from_env = read_env(app).discord_client_id.filter(|id| !id.trim().is_empty());
 
@@ -912,6 +950,7 @@ mod tests {
         assert!(control_of(&MediaControlEvent::Quit).is_none());
     }
 
+    #[cfg(desktop)]
     #[test]
     fn a_seek_moves_the_timestamps_and_a_tick_does_not() {
         let mut discord = Discord::new("id".to_string());
@@ -930,6 +969,7 @@ mod tests {
         assert!(after.1 > after.0);
     }
 
+    #[cfg(desktop)]
     #[test]
     fn a_paused_song_has_no_progress_bar() {
         let mut discord = Discord::new("id".to_string());
@@ -938,6 +978,7 @@ mod tests {
         assert_eq!(stamps(discord.anchor.as_ref(), discord.song.as_ref().unwrap()), (0, 0));
     }
 
+    #[cfg(desktop)]
     #[test]
     fn a_paused_song_is_not_held() {
         let mut discord = Discord::new("id".to_string());
@@ -973,6 +1014,7 @@ mod tests {
         assert!(!discord.waiting());
     }
 
+    #[cfg(desktop)]
     #[test]
     fn a_pause_clears_a_shown_activity_even_if_the_connection_fails() {
         let mut discord = Discord::new("id".to_string());
@@ -995,6 +1037,7 @@ mod tests {
         assert!(discord.waiting());
     }
 
+    #[cfg(desktop)]
     #[test]
     #[ignore = "requires Discord and temporarily updates its activity"]
     fn live_discord_presence_tracks_pause_and_resume() {
@@ -1026,6 +1069,7 @@ mod tests {
         discord.stop();
     }
 
+    #[cfg(desktop)]
     #[test]
     fn a_song_with_no_title_is_not_shown() {
         let mut discord = Discord::new("id".to_string());

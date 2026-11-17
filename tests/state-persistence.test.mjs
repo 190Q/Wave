@@ -173,6 +173,10 @@ backend = {
 await app.init();
 await tick();
 
+test("Android settings do not include Discord presence", () => {
+  assert.equal("discordPresence" in app.getState().settings, false);
+});
+
 test("Android sends both link preview and import only to YouTube", async () => {
   linkCalls.length = 0;
   const url = "https://open.spotify.com/track/example";
@@ -194,14 +198,14 @@ test("serializes partial settings writes and preserves independently changed fie
   const second = app.setTheme("#123456");
   await tick();
   assert.deepEqual(writes.slice(start).map((entry) => entry.patch), [{ normalizeVolume: false }]);
-  backend.settings.discordPresence = true;
+  backend.settings.analyticsEnabled = false;
   completeWrite(start);
   await first;
   await tick();
   assert.deepEqual(writes[start + 1].patch, { theme: "#123456", recentColours: ["#123456"] });
   completeWrite(start + 1);
   await second;
-  assert.equal(backend.settings.discordPresence, true);
+  assert.equal(backend.settings.analyticsEnabled, false);
   assert.equal(backend.settings.normalizeVolume, false);
   assert.equal(app.getState().settings.theme, "#123456");
 });
@@ -292,7 +296,7 @@ test("a failed EQ edit stays retryable while other settings refresh", async () =
   app.setEqPreampDb(11);
   runTimer(400);
   await tick();
-  backend.settings.discordPresence = false;
+  backend.settings.analyticsEnabled = true;
   holdReads = deferred();
   const read = holdReads;
   listeners.get("settings-changed")({ payload: backend.settings });
@@ -302,7 +306,7 @@ test("a failed EQ edit stays retryable while other settings refresh", async () =
   await tick();
   await tick();
   assert.equal(app.getState().settings.eqPreampDb, 11);
-  assert.equal(app.getState().settings.discordPresence, false);
+  assert.equal(app.getState().settings.analyticsEnabled, true);
   const flush = app.flushSession();
   await tick();
   assert.deepEqual(writes[start + 1].patch, { eqPreampDb: 11 });

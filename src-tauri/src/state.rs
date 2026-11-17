@@ -148,6 +148,7 @@ pub struct Settings {
     /// and the media keys, or MPRIS on Linux.
     pub system_media_controls: bool,
     /// Shows the song on the Discord profile. Off until it is asked for.
+    #[cfg(desktop)]
     pub discord_presence: bool,
     /// Looks for a newer release and offers to install it. On by default.
     pub auto_update: bool,
@@ -191,6 +192,7 @@ impl Default for Settings {
             shortcut_slots: Vec::new(),
             analytics_enabled: true,
             system_media_controls: true,
+            #[cfg(desktop)]
             discord_presence: false,
             auto_update: true,
             eq_enabled: false,
@@ -711,12 +713,14 @@ fn apply_settings_changes(app: &AppHandle, store: &Store, before: &Settings, aft
         }
     }
 
-    if before.system_media_controls != after.system_media_controls
-        || before.discord_presence != after.discord_presence
-    {
+    let presence_changed = before.system_media_controls != after.system_media_controls;
+    #[cfg(desktop)]
+    let presence_changed = presence_changed || before.discord_presence != after.discord_presence;
+    if presence_changed {
         if let Some(presence) = app.try_state::<crate::presence::Presence>() {
             presence.set_enabled(
                 after.system_media_controls,
+                #[cfg(desktop)]
                 after.discord_presence,
             );
         }
@@ -1325,6 +1329,17 @@ mod tests {
 
     fn patch(value: Value) -> Map<String, Value> {
         value.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn discord_setting_is_desktop_only_and_legacy_state_still_loads() {
+        let legacy = serde_json::json!({ "settings": { "discordPresence": true, "volume": 42 } });
+        let state: PersistedState = serde_json::from_value(legacy).unwrap();
+        assert_eq!(state.settings.volume, 42);
+        let settings = serde_json::to_value(&state.settings).unwrap();
+        assert_eq!(settings.get("discordPresence").is_some(), cfg!(desktop));
+        let result = merge_settings(&state.settings, patch(serde_json::json!({ "discordPresence": false })));
+        assert_eq!(result.is_ok(), cfg!(desktop));
     }
 
     #[test]

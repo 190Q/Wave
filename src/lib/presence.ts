@@ -131,7 +131,7 @@ export function mountPresence(): void {
 /** Android also needs playback updates for its foreground service. */
 function showing(): boolean {
   const { systemMediaControls, discordPresence } = getState().settings;
-  return isAndroidPlatform || systemMediaControls || discordPresence;
+  return isAndroidPlatform || systemMediaControls || discordPresence === true;
 }
 
 /** The song as the two surfaces want it, or `null` when nothing is loaded. */

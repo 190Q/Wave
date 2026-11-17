@@ -168,8 +168,8 @@ export interface Settings {
   analyticsEnabled: boolean;
   /** Shows the song in the system's own controls: the Windows media flyout and the media keys, or MPRIS on Linux. */
   systemMediaControls: boolean;
-  /** Shows the song on the Discord profile. Off until it is asked for. */
-  discordPresence: boolean;
+  /** Desktop only: shows the song on the Discord profile. */
+  discordPresence?: boolean;
   /** Looks for a newer release on launch, and says so when it finds one. */
   autoUpdate: boolean;
   /** Whether the equaliser is in the signal path at all. */

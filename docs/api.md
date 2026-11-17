@@ -644,6 +644,8 @@ curl -s http://127.0.0.1:45679/api/settings
 
 `reduceMotion` is `system`, `on` or `off`. `showTitlebar` is `true` or `false` to override visibility, or `null` to follow the device default. Android always hides the title bar. `searchAlgorithm` names one of the matching algorithms the window offers. `miniCorner` is `1` to `4`. `shortcutSlots` is the nine `Ctrl+Shift+1..9` action slots, empty strings where a slot is unset.
 
+`discordPresence` is available on desktop only and is not present in Android settings.
+
 ### PATCH /api/settings
 
 A partial settings object, merged onto the current one, so only the keys that should change need sending. The merge is shallow: a key that is sent replaces what was there, and a key that is not sent is left alone.

@@ -44,6 +44,7 @@ pub struct Env {
     pub deno: Option<String>,
     pub cookies: Option<String>,
     pub browser: Option<String>,
+    #[cfg(desktop)]
     pub discord_client_id: Option<String>,
     pub api: Option<String>,
     pub api_port: Option<String>,
@@ -56,10 +57,22 @@ impl Env {
 }
 
 fn env_template() -> String {
+    let discord = if cfg!(desktop) {
+        "\
+# Discord presence shows the song on your Discord profile. It needs an
+# application of its own: create one at
+# https://discord.com/developers/applications, call it Wave, and upload the
+# logo under Rich Presence -> Art Assets as \"wave\". Paste its Application ID
+# below, or leave this out to use the id the build carries.
+# DISCORD_CLIENT_ID=
+#
+"
+    } else {
+        ""
+    };
     format!(
         "\
-# Spotify credentials for the Import dialog, the download tools every import
-# uses, and the Discord application the presence reports to.
+# Spotify credentials for the Import dialog and download tool overrides.
 #
 # 1. Create an app at https://developer.spotify.com/dashboard
 # 2. In that app, add this to Redirect URIs, exactly as written:
@@ -86,21 +99,15 @@ SPOTIFY_CLIENT_SECRET=
 # YTDLP_COOKIES_FROM_BROWSER=firefox
 # YTDLP_COOKIES=
 #
-# Discord presence shows the song on your Discord profile. It needs an
-# application of its own: create one at
-# https://discord.com/developers/applications, call it Wave, and upload the
-# logo under Rich Presence -> Art Assets as \"wave\". Paste its Application ID
-# below, or leave this out to use the id the build carries.
-# DISCORD_CLIENT_ID=
-#
-# The local API lets a script or a dev tool drive the copy of Wave that is
+{}# The local API lets a script or a dev tool drive the copy of Wave that is
 # already open. It is on by default and answers on 127.0.0.1 only, so nothing
 # outside this machine can reach it. WAVE_API=0 switches it off, and
 # WAVE_API_PORT moves it off 45679.
 # WAVE_API=0
 # WAVE_API_PORT=45679
 ",
-        crate::spotify::redirect_uri()
+        crate::spotify::redirect_uri(),
+        discord
     )
 }
 
@@ -198,6 +205,7 @@ fn parse_env(raw: &str) -> Env {
             "DENO_PATH" => env.deno = Some(value),
             "YTDLP_COOKIES" => env.cookies = Some(value),
             "YTDLP_COOKIES_FROM_BROWSER" => env.browser = Some(value),
+            #[cfg(desktop)]
             "DISCORD_CLIENT_ID" => env.discord_client_id = Some(value),
             "WAVE_API" => env.api = Some(value),
             "WAVE_API_PORT" => env.api_port = Some(value),
@@ -310,6 +318,7 @@ not a pair
         );
 
         assert_eq!(env.client_id, "abc");
+        #[cfg(desktop)]
         assert_eq!(env.discord_client_id.as_deref(), Some("1234567890"));
         assert_eq!(env.client_secret, "shh");
         assert_eq!(env.yt_dlp.as_deref(), Some("C:\\tools\\yt-dlp.exe"));
@@ -324,6 +333,7 @@ not a pair
         let template = env_template();
         assert!(template.contains("YTDLP_COOKIES_FROM_BROWSER="));
         assert!(template.contains("YTDLP_COOKIES="));
+        assert_eq!(template.contains("DISCORD_CLIENT_ID="), cfg!(desktop));
     }
 
     #[test]

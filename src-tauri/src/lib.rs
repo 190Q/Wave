@@ -230,6 +230,7 @@ pub fn run() {
             state::watch_window(app.handle());
             source::watch_config(app.handle());
             app.manage(presence::Presence::start(app.handle()));
+            #[cfg(desktop)]
             presence::watch_config(app.handle());
 
             #[cfg(windows)]

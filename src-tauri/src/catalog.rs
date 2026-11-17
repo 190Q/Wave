@@ -1480,6 +1480,52 @@ mod tests {
     }
 
     #[test]
+    fn offline_library_and_pending_playlist_survive_restart() {
+        let root = scratch("phone-offline-restart");
+        let catalog = Catalog::open(&root).unwrap();
+        catalog
+            .upsert_track(&song("one", "One", "hash-one"))
+            .unwrap();
+        let id = catalog
+            .create_generated_playlist(
+                "Offline",
+                &["one".into(), "waiting".into()],
+                &[waiting("waiting", "Two")],
+            )
+            .unwrap();
+        catalog
+            .set_meta(LAYOUT_VERSION_KEY, LAYOUT_VERSION)
+            .unwrap();
+        drop(catalog);
+
+        let catalog = Catalog::open(&root).unwrap();
+        let playlist = one_playlist(&catalog, &id);
+        assert_eq!(playlist.entries, vec!["one", "waiting"]);
+        assert_eq!(playlist.track_ids, vec!["one"]);
+        assert_eq!(playlist.pending[0].title, "Two");
+        assert_eq!(
+            catalog.meta(LAYOUT_VERSION_KEY).as_deref(),
+            Some(LAYOUT_VERSION)
+        );
+        catalog
+            .upsert_track(&song("two", "Two", "hash-two"))
+            .unwrap();
+        catalog
+            .resolve_pending(&id, &[("waiting".into(), "two".into())])
+            .unwrap();
+        drop(catalog);
+
+        let catalog = Catalog::open(&root).unwrap();
+        assert_eq!(
+            one_playlist(&catalog, &id).track_ids,
+            vec!["one", "two"]
+        );
+        assert!(catalog.pending_tracks(&id).unwrap().is_empty());
+        drop(catalog);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn a_scan_never_wipes_a_loudness_reading() {
         let root = scratch("loudness");
         let catalog = Catalog::open(&root).unwrap();

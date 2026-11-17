@@ -8,6 +8,7 @@
 // `sync`, so VERSION is the only one to edit by hand.
 import { execFileSync, execSync } from "node:child_process";
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -283,8 +284,8 @@ const BODY = [
   "Linux builds target glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+,",
   "Fedora 36+) and come for x86_64 and aarch64. postmarketOS and Alpine are",
   "musl, where the glibc packages cannot run, so they get an aarch64 tarball",
-  "of their own. That one is the binary on its own: ffmpeg and Deno publish",
-  "no musl build, so there is nothing to put beside it.",
+  "of their own. Its installer installs WebKitGTK 4.1 and the other Alpine",
+  "runtime dependencies. Download tools are not bundled for musl.",
   "",
   "The Android APK is for a phone. Install it once by hand, and Wave offers each",
   "later release in **Settings → Updates**: it downloads the APK and hands it to",
@@ -705,9 +706,16 @@ function commandMusl() {
 
   mkdirSync(MUSL_DIR, { recursive: true });
   const archive = join(MUSL_DIR, muslName(version));
-  // Only the binary goes in. The desktop entry and the icons come from the
-  // bundle, which a musl build has none of.
-  run("tar", ["-czf", archive, "-C", dirname(binary), BINARY]);
+  const staging = mkdtempSync(join(MUSL_DIR, "wave-phone-"));
+  try {
+    copyFileSync(binary, join(staging, "wave-bin"));
+    copyFileSync(join(root, "scripts", "musl-launcher.sh"), join(staging, "wave"));
+    chmodSync(join(staging, "wave"), 0o755);
+    chmodSync(join(staging, "wave-bin"), 0o755);
+    run("tar", ["-czf", archive, "-C", staging, "wave", "wave-bin"]);
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
   say(`\nWrote ${archive}`);
 }
 

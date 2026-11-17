@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
@@ -107,6 +107,49 @@ test("standalone slim builds still compile when no reusable build is requested",
   const result = run(["slim"]);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(readFileSync(join(root, "arguments.json"), "utf8"))[1], "build");
+});
+
+test("musl releases archive the launcher and the compiled phone executable", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "wave-release-musl-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, "scripts"));
+  for (const file of ["release.mjs", "release-assets.mjs", "musl-launcher.sh"]) {
+    copyFileSync(fileURLToPath(new URL(`../scripts/${file}`, import.meta.url)), join(root, "scripts", file));
+  }
+  writeFileSync(join(root, "VERSION"), "1.2.3\n");
+  const mock = join(root, "mock-build.cjs");
+  writeFileSync(mock, `
+    const child = require("node:child_process");
+    const fs = require("node:fs");
+    const path = require("node:path");
+    Object.defineProperty(process, "platform", { value: "linux" });
+    child.execSync = command => {
+      const dir = path.join(process.cwd(), "src-tauri", "target", "aarch64-unknown-linux-musl", "release");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "wave"), "compiled binary");
+      fs.writeFileSync(path.join(process.cwd(), "build-command"), command);
+    };
+    child.execFileSync = (file, args) => {
+      if (file !== "tar") throw new Error("unexpected command");
+      const stage = args[3];
+      fs.writeFileSync(path.join(process.cwd(), "archive.json"), JSON.stringify({
+        args, launcher: fs.readFileSync(path.join(stage, "wave"), "utf8"),
+        binary: fs.readFileSync(path.join(stage, "wave-bin"), "utf8")
+      }));
+    };
+    require("node:module").syncBuiltinESMExports();
+  `);
+  const env = { ...process.env, NODE_OPTIONS: `--require "${mock.replaceAll("\\", "/")}"` };
+  delete env.CARGO_TARGET_DIR;
+  const result = spawnSync(process.execPath, ["scripts/release.mjs", "musl"], { cwd: root, env, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(join(root, "build-command"), "utf8"), /--target aarch64-unknown-linux-musl --config src-tauri\/tauri\.phone\.conf\.json/);
+  const archive = JSON.parse(readFileSync(join(root, "archive.json"), "utf8"));
+  assert.deepEqual(archive.args.slice(-2), ["wave", "wave-bin"]);
+  assert.match(archive.args[1], /Wave_1\.2\.3_aarch64_musl\.tar\.gz$/);
+  assert.match(archive.launcher, /WAVE_WEBKIT_HELPER_DIR/);
+  assert.equal(archive.binary, "compiled binary");
+  assert.deepEqual(readdirSync(join(root, "src-tauri", "target", "musl")), []);
 });
 
 function releaseFixture(t, release) {

@@ -161,6 +161,11 @@ jobs:
             fi
           done
 
+      - name: Verify the musl installer in a clean Alpine runtime
+        run: |
+          docker run --rm --volume "$PWD:/wave:ro" --workdir /wave \
+            alpine:3.22 sh scripts/musl-runtime-test.sh
+
       - name: Attach the musl package
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

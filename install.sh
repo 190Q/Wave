@@ -19,7 +19,7 @@ usage() {
 Wave installer for Linux.
 
   --version <v>   install a specific version (default: the latest release)
-  --dir <path>    prefix for an AppImage install (default: $HOME/.local)
+  --dir <path>    prefix for an AppImage or musl install (default: $HOME/.local)
   --uninstall     remove an installed copy
   -h, --help      show this message
 
@@ -28,8 +28,6 @@ Environment:
   WAVE_PREFIX     same as --dir
 USAGE
 }
-
-command -v curl >/dev/null 2>&1 || die "curl is required"
 
 VERSION="${WAVE_VERSION:-}"
 PREFIX="${WAVE_PREFIX:-$HOME/.local}"
@@ -49,12 +47,17 @@ done
 
 remove_appimage() {
   rm -f "$PREFIX/bin/wave"
+  if [ -f "$PREFIX/share/wave/musl-install" ]; then
+    rm -f "$PREFIX/bin/wave-bin" "$PREFIX/share/wave/musl-install"
+  fi
   rm -f "$HOME/.local/share/applications/wave.desktop"
-  say "Removed the AppImage install from $PREFIX/bin."
+  say "Removed the local install from $PREFIX/bin."
 }
 
 if [ "$UNINSTALL" -eq 1 ]; then
-  if command -v dpkg >/dev/null 2>&1 && dpkg -s "$PKG" >/dev/null 2>&1; then
+  if [ -f "$PREFIX/share/wave/musl-install" ]; then
+    remove_appimage
+  elif command -v dpkg >/dev/null 2>&1 && dpkg -s "$PKG" >/dev/null 2>&1; then
     sudo apt-get remove -y "$PKG" 2>/dev/null || sudo dpkg -r "$PKG"
     say "Removed the Wave package."
   elif command -v rpm >/dev/null 2>&1 && rpm -q "$PKG" >/dev/null 2>&1; then
@@ -66,11 +69,20 @@ if [ "$UNINSTALL" -eq 1 ]; then
   exit 0
 fi
 
+command -v curl >/dev/null 2>&1 || die "curl is required"
+
 case "$(uname -m)" in
   x86_64|amd64)   DEB=amd64; RPM=x86_64;  APPIMAGE=amd64 ;;
   aarch64|arm64)  DEB=arm64; RPM=aarch64; APPIMAGE=aarch64 ;;
   *) die "unsupported architecture: $(uname -m)" ;;
 esac
+
+MUSL=0
+if (ldd --version 2>&1 || true) | grep -qi musl; then
+  MUSL=1
+  [ "$RPM" = aarch64 ] || die "the musl release is only available for aarch64"
+  command -v apk >/dev/null 2>&1 || die "the musl installer requires Alpine's apk package manager"
+fi
 
 if [ -z "$VERSION" ]; then
   say "Looking up the latest release..."
@@ -110,8 +122,71 @@ fetch() { # $1: url, $2: destination
 deb="$(asset '\.deb$' "$DEB")"
 rpm="$(asset '\.rpm$' "$RPM")"
 appimage="$(asset '\.AppImage$' "$APPIMAGE")"
+musl="$(asset '_aarch64_musl\.tar\.gz$' '_aarch64_musl')"
 
-if [ -n "$deb" ] && command -v dpkg >/dev/null 2>&1; then
+desktop_entry() {
+  mkdir -p "$HOME/.local/share/applications"
+  exec_path=$(printf '%s' "$PREFIX/bin/wave" | sed 's/\\/\\\\/g; s/"/\\"/g; s/`/\\`/g; s/\$/\\$/g; s/%/%%/g')
+  cat > "$HOME/.local/share/applications/wave.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Wave
+Comment=A local-first music player
+Exec="$exec_path"
+Terminal=false
+Categories=Audio;Music;Player;AudioVideo;
+DESKTOP
+}
+
+local_installed() {
+  say "Wave $VERSION installed to $PREFIX/bin/wave"
+  case ":$PATH:" in
+    *":$PREFIX/bin:"*) ;;
+    *) warn "$PREFIX/bin is not on your PATH; add it, or run $PREFIX/bin/wave directly." ;;
+  esac
+}
+
+if [ "$MUSL" -eq 1 ]; then
+  [ -n "$musl" ] || die "the v$VERSION release has no aarch64 musl package"
+  fetch "$musl" "$TMP/wave.tar.gz"
+  tar -xzf "$TMP/wave.tar.gz" -C "$TMP" wave || die "the musl archive does not contain wave"
+  [ -f "$TMP/wave" ] && [ ! -L "$TMP/wave" ] || die "the musl archive contains an invalid wave executable"
+  if tar -tzf "$TMP/wave.tar.gz" | grep -qx 'wave-bin'; then
+    tar -xzf "$TMP/wave.tar.gz" -C "$TMP" wave-bin || die "could not extract the musl executable"
+    [ -f "$TMP/wave-bin" ] && [ ! -L "$TMP/wave-bin" ] || die "the musl archive contains an invalid wave-bin executable"
+  fi
+
+  missing=""
+  for package in webkit2gtk-4.1 libayatana-appindicator librsvg xdotool openssl gst-plugins-base gst-plugins-good gst-libav; do
+    apk info -e "$package" >/dev/null 2>&1 || missing="$missing $package"
+  done
+  if [ -n "$missing" ]; then
+    say "Installing Alpine runtime dependencies:$missing"
+    if [ "$(id -u)" -eq 0 ]; then
+      apk add --no-cache $missing || die "could not install Alpine runtime dependencies"
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo apk add --no-cache $missing || die "could not install Alpine runtime dependencies"
+    elif command -v doas >/dev/null 2>&1; then
+      doas apk add --no-cache $missing || die "could not install Alpine runtime dependencies"
+    else
+      die "install the missing dependencies with apk add:$missing"
+    fi
+  fi
+
+  mkdir -p "$PREFIX/bin" "$PREFIX/share/wave"
+  PREFIX="$(cd "$PREFIX" && pwd -P)"
+  cp "$TMP/wave" "$PREFIX/bin/wave"
+  if [ -f "$TMP/wave-bin" ]; then
+    cp "$TMP/wave-bin" "$PREFIX/bin/wave-bin"
+    chmod +x "$PREFIX/bin/wave-bin"
+  else
+    rm -f "$PREFIX/bin/wave-bin"
+  fi
+  chmod +x "$PREFIX/bin/wave"
+  : > "$PREFIX/share/wave/musl-install"
+  desktop_entry
+  local_installed
+elif [ -n "$deb" ] && command -v dpkg >/dev/null 2>&1; then
   fetch "$deb" "$TMP/wave.deb"
   say "Installing the package (this needs sudo)"
   if command -v apt-get >/dev/null 2>&1; then
@@ -137,23 +212,9 @@ elif [ -n "$appimage" ]; then
   fetch "$appimage" "$PREFIX/bin/wave"
   chmod +x "$PREFIX/bin/wave"
 
-  # A menu entry, so it shows up in the launcher like a packaged build would.
-  mkdir -p "$HOME/.local/share/applications"
-  cat > "$HOME/.local/share/applications/wave.desktop" <<DESKTOP
-[Desktop Entry]
-Type=Application
-Name=Wave
-Comment=A local-first music player
-Exec=$PREFIX/bin/wave
-Terminal=false
-Categories=Audio;Music;Player;AudioVideo;
-DESKTOP
-
-  say "Wave $VERSION installed to $PREFIX/bin/wave"
-  case ":$PATH:" in
-    *":$PREFIX/bin:"*) ;;
-    *) warn "$PREFIX/bin is not on your PATH; add it, or run $PREFIX/bin/wave directly." ;;
-  esac
+  PREFIX="$(cd "$PREFIX" && pwd -P)"
+  desktop_entry
+  local_installed
 else
   die "the v$VERSION release has no package for this architecture"
 fi

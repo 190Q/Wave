@@ -4,7 +4,9 @@ import { test } from "node:test";
 
 const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 const recovery = readFileSync(new URL("../.github/workflows/release-phone.yml", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+const phoneTests = readFileSync(new URL("../.github/workflows/linux-phone.yml", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 const musl = readFileSync(new URL("../scripts/musl-build.sh", import.meta.url), "utf8");
+const runtime = readFileSync(new URL("../scripts/musl-runtime-test.sh", import.meta.url), "utf8");
 
 test("release builds run after signing checks and publish only after every platform succeeds", () => {
   assert.match(workflow, /Check Android signing[\s\S]*Create the draft release/);
@@ -16,6 +18,14 @@ test("release builds run after signing checks and publish only after every platf
   assert.match(workflow, /node scripts\/release\.mjs slim --reuse-build/);
 });
 
+test("phone changes are tested on pull requests and ARM Alpine", () => {
+  assert.match(phoneTests, /pull_request:/);
+  assert.match(phoneTests, /tests\/linux-phone\.test\.mjs/);
+  assert.match(phoneTests, /runs-on: ubuntu-22\.04-arm/);
+  assert.match(phoneTests, /alpine:3\.22 sh scripts\/musl-build\.sh/);
+  assert.match(phoneTests, /alpine:3\.22 sh scripts\/musl-runtime-test\.sh/);
+});
+
 test("phone recovery uses tagged application source and current build tooling", () => {
   assert.match(recovery, /ref: \$\{\{ inputs\.tag \}\}/);
   assert.match(recovery, /ref: \$\{\{ github\.sha \}\}/);
@@ -23,7 +33,19 @@ test("phone recovery uses tagged application source and current build tooling", 
   assert.match(recovery, /node scripts\/release\.mjs upload-musl "\$RELEASE_TAG"/);
   assert.match(recovery, /node scripts\/release\.mjs organize "\$RELEASE_TAG"/);
   assert.match(musl, /CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=-crt-static"/);
+  assert.match(musl, /TAURI_CONFIG="\$\(cat src-tauri\/tauri\.phone\.conf\.json\)"/);
+  assert.match(musl, /cargo test .*--target aarch64-unknown-linux-musl --lib/);
   assert.match(musl, /\nldd /);
+});
+
+test("phone releases verify installation in a clean Alpine environment", () => {
+  for (const source of [workflow, recovery]) {
+    assert.match(source, /name: Verify the musl installer in a clean Alpine runtime/);
+    assert.match(source, /alpine:3\.22 sh scripts\/musl-runtime-test\.sh/);
+  }
+  assert.match(runtime, /sh install\.sh --version/);
+  assert.match(runtime, /ldd "\$HOME\/\.local\/bin\/wave-bin"/);
+  assert.match(runtime, /sh install\.sh --uninstall/);
 });
 
 test("phone builds restore ownership of cached files after the container exits", () => {

@@ -26,4 +26,6 @@ export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=-crt
 
 npm ci
 node scripts/release.mjs musl
+TAURI_CONFIG="$(cat src-tauri/tauri.phone.conf.json)" \
+  cargo test --manifest-path src-tauri/Cargo.toml --release --target aarch64-unknown-linux-musl --lib
 ldd "${CARGO_TARGET_DIR:-src-tauri/target}/aarch64-unknown-linux-musl/release/wave"

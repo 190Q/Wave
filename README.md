@@ -91,6 +91,38 @@ irm https://raw.githubusercontent.com/190Q/Wave/main/install.ps1 | iex
 curl -fsSL https://raw.githubusercontent.com/190Q/Wave/main/install.sh | sh
 ```
 
+### Linux phones (Alpine and postmarketOS)
+
+On aarch64 musl systems, the Linux installer selects the phone tarball and
+installs WebKitGTK 4.1, the other runtime libraries, and GStreamer audio
+plugins using `apk`. It may ask for `sudo` or `doas`. The executable and
+launcher are installed under `~/.local/bin`; set `WAVE_PREFIX` or use
+`--dir` with a saved copy of the installer to change the prefix. The installer
+also creates a desktop entry. Its `--uninstall` option removes Wave but leaves
+the shared system dependencies installed.
+
+The tarball is not self-contained: a manual installation also needs
+`webkit2gtk-4.1`, `libayatana-appindicator`, `librsvg`, `xdotool`, `openssl`,
+`gst-plugins-base`, `gst-plugins-good`, and `gst-libav`. Extract both `wave`
+and `wave-bin` into the same directory and run `wave`. The musl build does not
+include yt-dlp, ffmpeg or Deno; install compatible copies separately for link
+imports.
+
+WebKitGTK normally uses the helper executables installed with its own library.
+If they are elsewhere, set `WAVE_WEBKIT_HELPER_DIR` to the directory containing
+`WebKitNetworkProcess` and `WebKitWebProcess` before launching Wave. The
+helpers must match the installed WebKitGTK library version. The launcher uses
+Bubblewrap and an unprivileged mount namespace to expose that directory at the
+path expected by WebKit, without changing system files. The default expected
+path is `/usr/libexec/webkit2gtk-4.1`; set `WAVE_WEBKIT_HELPER_TARGET` if the
+installed WebKit library was built with a different path. Its parent directory
+must exist. Bubblewrap and user namespaces must be available, and the override
+may not work inside another container or sandbox.
+
+For a graphical launcher, export these variables in the desktop session
+environment as well as in a terminal. `WEBKIT_EXEC_PATH` is not a reliable
+override for production WebKitGTK builds.
+
 ## Getting started
 
 Open **Import** and choose a music folder. Wave copies the audio into its own

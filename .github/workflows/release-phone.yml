@@ -38,7 +38,9 @@ jobs:
           node-version: 22
 
       - name: Use the current release tooling with the tagged source
-        run: cp .release-tools/scripts/release.mjs .release-tools/scripts/release-assets.mjs .release-tools/scripts/musl-build.sh scripts/
+        run: |
+          cp .release-tools/scripts/release.mjs .release-tools/scripts/release-assets.mjs .release-tools/scripts/musl-build.sh .release-tools/scripts/musl-launcher.sh .release-tools/scripts/musl-runtime-test.sh scripts/
+          cp .release-tools/install.sh install.sh
 
       - name: Check the release
         env:
@@ -77,6 +79,11 @@ jobs:
               sudo chown -R "$(id -u):$(id -g)" "$path"
             fi
           done
+
+      - name: Verify the musl installer in a clean Alpine runtime
+        run: |
+          docker run --rm --volume "$PWD:/wave:ro" --workdir /wave \
+            alpine:3.22 sh scripts/musl-runtime-test.sh
 
       - name: Attach the package and organize downloads
         env:

@@ -52,6 +52,7 @@ const {
   pruneArtworkQueue,
   subscribe,
 } = await vite.ssrLoadModule("/src/lib/state.ts");
+const { mosaicHtml } = await vite.ssrLoadModule("/src/ui/artwork.ts");
 
 function tracks(prefix, count) {
   const ids = Array.from({ length: count }, (_, index) => `${prefix}-${index}`);
@@ -119,23 +120,23 @@ test("promotes pending covers and waits for all nearby covers to be painted", as
 
   prioritizeNearbyArtwork(order, 6, false);
   const priority = [order[6], order[5], order[7], order[4], order[8]];
-  assert.deepEqual(started.slice(2), priority);
+  assert.deepEqual(started.slice(2), priority.slice(0, 1));
   assert.equal(mayRevealArtwork(order[6]), true);
   assert.equal(mayRevealArtwork(order[0]), false);
 
   await finish(order.slice(0, 2));
   render();
   assert.equal(mayRevealArtwork(order[0]), false);
-  assert.equal(started.length, 7);
+  assert.deepEqual(started.slice(2), priority.slice(0, 3));
 
-  await finish(priority.slice(0, 4));
+  await finish(priority.slice(0, 3));
   render();
   assert.equal(mayRevealArtwork(order[0]), false);
   assert.equal(started.length, 7);
 
   const reveals = [];
   const unsubscribe = subscribe(() => reveals.push(mayRevealArtwork(order[0])));
-  await finish([priority[4]], new Set([priority[4]]));
+  await finish(priority.slice(3), new Set([priority[4]]));
   assert.equal(started.length, 7);
   render();
   assert.deepEqual(reveals, [false]);
@@ -149,20 +150,22 @@ test("promotes pending covers and waits for all nearby covers to be painted", as
 test("updates priority when the current track changes during loading", async () => {
   const order = tracks("move", 14);
   prioritizeNearbyArtwork(order, 3, false);
-  assert.deepEqual(started, [order[3], order[2], order[4], order[1], order[5]]);
+  assert.deepEqual(started, [order[3], order[2], order[4]]);
   prefetchArtwork(order);
 
   prioritizeNearbyArtwork(order, 10, false);
   pruneArtworkQueue(new Set(), new Set(order));
   assert.equal(mayRevealArtwork(order[3]), false);
   assert.equal(mayRevealArtwork(order[10]), true);
-  assert.deepEqual(started.slice(5), [order[10], order[9], order[11], order[8], order[12]]);
+  assert.equal(started.length, 3);
 
-  await finish([order[3]]);
-  await finish([order[2], order[4], order[1], order[5]]);
+  await finish([order[3], order[2], order[4]]);
+  assert.deepEqual(started.slice(3), [order[10], order[9], order[11]]);
   assert.equal(started.includes(order[0]), false);
 
-  await finish([order[10], order[9], order[11], order[8], order[12]]);
+  await finish([order[10], order[9], order[11]]);
+  assert.deepEqual(started.slice(6), [order[8], order[12]]);
+  await finish([order[8], order[12]]);
   render();
   assert.equal(started.includes(order[0]), true);
 });
@@ -187,7 +190,8 @@ test("navigation to a cached group releases an older priority barrier", async ()
   const order = tracks("return", 12);
   const first = [order[3], order[2], order[4], order[1], order[5]];
   prioritizeNearbyArtwork(order, 3, false);
-  await finish(first);
+  await finish(first.slice(0, 3));
+  await finish(first.slice(3));
   render();
   render();
 
@@ -195,17 +199,71 @@ test("navigation to a cached group releases an older priority barrier", async ()
   assert.equal(mayRevealArtwork(order[0]), false);
   prioritizeNearbyArtwork(order, 3, false);
   prefetchArtwork(order);
+  pruneArtworkQueue(new Set(), new Set(order));
   render();
   assert.equal(mayRevealArtwork(order[0]), true);
+  assert.equal(started.includes(order[0]), false);
+  await finish([order[9], order[8], order[10]]);
   assert.equal(started.includes(order[0]), true);
 });
 
-test("without phone priority the normal artwork tiers remain independent", async () => {
+test("rapid navigation through 200 songs never exceeds the phone read limit", async () => {
+  const order = tracks("stress", 200);
+  for (let cursor = 0; cursor < order.length; cursor += 5) {
+    prioritizeNearbyArtwork(order, cursor, false);
+    pruneArtworkQueue(new Set(), new Set());
+    assert.ok(requests.size <= 3);
+  }
+  assert.deepEqual(started, order.slice(0, 3));
+  await finish(order.slice(0, 3));
+  assert.deepEqual(started.slice(3), [order[195], order[194], order[196]]);
+  assert.equal(requests.size, 3);
+});
+
+test("phone collection mosaics wait for their composed covers", () => {
+  const order = tracks("mosaic", 4);
+  const html = mosaicHtml(order, getState().tracksById);
+  assert.match(html, /data-cover="mosaic-0\|mosaic-1\|mosaic-2\|mosaic-3"/);
+  assert.deepEqual(started, []);
+});
+
+test("old phone artwork URLs are revoked and can be reloaded", async () => {
+  const order = tracks("eviction", 70);
+  const revoked = [];
+  const original = URL.revokeObjectURL;
+  URL.revokeObjectURL = (url) => {
+    revoked.push(url);
+    original(url);
+  };
+  try {
+    let first;
+    let last;
+    for (const id of order) {
+      const track = getState().tracksById.get(id);
+      artworkUrlFor(track, "now");
+      await finish([id]);
+      const url = artworkUrlFor(track, "idle");
+      if (id === order[0]) first = url;
+      if (id === order.at(-1)) last = url;
+    }
+    assert.ok(revoked.includes(first));
+    assert.ok(!revoked.includes(last));
+    assert.equal(artworkUrlFor(getState().tracksById.get(order[0]), "now"), null);
+    await finish([order[0]]);
+    assert.ok(artworkUrlFor(getState().tracksById.get(order[0]), "idle"));
+  } finally {
+    URL.revokeObjectURL = original;
+  }
+});
+
+test("normal artwork tiers share the phone concurrency limit", async () => {
   const order = tracks("desktop", 8);
   prioritizeNearbyArtwork([], 0, false);
   prefetchArtwork(order.slice(0, 2));
   artworkUrlFor(getState().tracksById.get(order[6]), "queue");
   artworkUrlFor(getState().tracksById.get(order[7]), "now");
+  assert.deepEqual(started, [order[0], order[1], order[6]]);
+  await finish([order[0]]);
   assert.deepEqual(started, [order[0], order[1], order[6], order[7]]);
   assert.equal(mayRevealArtwork(order[2]), true);
 });

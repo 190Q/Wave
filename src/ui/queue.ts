@@ -728,7 +728,9 @@ export function mountQueue(): void {
       renderedOrder = signature;
       renderedLooping = looping;
       renderedSourceId = snapshot.sourceId;
-      prefetchArtwork(snapshot.order);
+      if (device() === "desktop") {
+        prefetchArtwork(snapshot.order);
+      }
 
       if (reshuffle) {
         washAway();

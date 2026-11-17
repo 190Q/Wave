@@ -20,7 +20,35 @@ const COLOUR_WRITE_GAP: Duration = Duration::from_secs(2);
 
 static LAST_COLOUR_WRITE: Mutex<Option<Instant>> = Mutex::new(None);
 static COLOUR_LOCK: Mutex<()> = Mutex::new(());
+static IMAGE_LOCK: Mutex<()> = Mutex::new(());
 const MAX_COVER_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_DECODED_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_IMAGE_EDGE: u32 = 8192;
+
+fn read_cover(path: &Path) -> Result<Vec<u8>, String> {
+    let file = fs::File::open(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    if file.metadata().map(|metadata| metadata.len() > MAX_COVER_BYTES).unwrap_or(false) {
+        return Err(format!("{} is larger than 32 MB", path.display()));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_COVER_BYTES + 1).read_to_end(&mut bytes)
+        .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    if bytes.len() as u64 > MAX_COVER_BYTES {
+        return Err(format!("{} is larger than 32 MB", path.display()));
+    }
+    Ok(bytes)
+}
+
+fn decode_cover(bytes: &[u8]) -> image::ImageResult<image::DynamicImage> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_EDGE);
+    limits.max_image_height = Some(MAX_IMAGE_EDGE);
+    limits.max_alloc = Some(MAX_DECODED_BYTES);
+    reader.limits(limits);
+    reader.decode()
+}
 
 /// True when the colour cache is next in line to be written. Colours only ever
 /// live in memory until then, and the autosave picks up whatever is left.
@@ -53,7 +81,9 @@ type Bucket = (u64, u64, u64, u64);
 const ACCENT_CANDIDATES: usize = 12;
 const ACCENT_MIN_BRIGHTNESS: f32 = 80.0;
 pub fn dominant_colours(path: &Path) -> Result<Vec<String>, String> {
-    let image = image::open(path).map_err(|e| format!("could not decode {}: {e}", path.display()))?;
+    let _guard = IMAGE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let bytes = read_cover(path)?;
+    let image = decode_cover(&bytes).map_err(|e| format!("could not decode {}: {e}", path.display()))?;
 
     // 64x64 is small enough to be fast and large enough that a cover's accent
     // colours still survive the downscale.
@@ -242,28 +272,28 @@ const ARTWORK_MAX_EDGE: u32 = 640;
 
 #[tauri::command(async)]
 pub fn artwork_bytes(app: AppHandle, path: String) -> Result<tauri::ipc::Response, String> {
-    let bytes = fs::read(&path).map_err(|e| format!("could not read {path}: {e}"))?;
-    Ok(tauri::ipc::Response::new(cached_thumbnail(&app, &path, &bytes)))
+    let _guard = IMAGE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let bytes = read_cover(Path::new(&path))?;
+    let thumbnail = cached_thumbnail(&app, &path, &bytes)
+        .ok_or_else(|| format!("could not decode {path}"))?;
+    Ok(tauri::ipc::Response::new(thumbnail))
 }
 
-fn cached_thumbnail(app: &AppHandle, path: &str, bytes: &[u8]) -> Vec<u8> {
-    let Some(cache) = app.path().app_cache_dir().ok().map(|dir| dir.join("thumbs")) else {
-        return bytes.to_vec();
-    };
-    if fs::create_dir_all(&cache).is_err() {
-        return bytes.to_vec();
+fn cached_thumbnail(app: &AppHandle, path: &str, bytes: &[u8]) -> Option<Vec<u8>> {
+    let target = app.path().app_cache_dir().ok().map(|dir| {
+        dir.join("thumbs").join(format!("{}-{}.jpg", cache_key(path), bytes.len()))
+    });
+    if let Some(cached) = target.as_ref().and_then(|target| read_cover(target).ok()) {
+        return Some(cached);
     }
 
-    let target = cache.join(format!("{}-{}.jpg", cache_key(path), bytes.len()));
-    if let Ok(cached) = fs::read(&target) {
-        return cached;
+    let encoded = thumbnail(bytes)?;
+    if let Some(target) = target {
+        if target.parent().is_some_and(|dir| fs::create_dir_all(dir).is_ok()) {
+            let _ = fs::write(target, &encoded);
+        }
     }
-
-    let Some(encoded) = thumbnail(bytes) else {
-        return bytes.to_vec();
-    };
-    let _ = fs::write(&target, &encoded);
-    encoded
+    Some(encoded)
 }
 
 const COVER_CELL: u32 = 256;
@@ -280,7 +310,7 @@ pub fn cover_bytes(app: AppHandle, paths: Vec<String>) -> Result<tauri::ipc::Res
         .map(|dir| dir.join(format!("{}.jpg", cache_key(&cover_signature(&paths)))));
 
     if let Some(target) = &target {
-        if let Ok(cached) = fs::read(target) {
+        if let Ok(cached) = read_cover(target) {
             return Ok(tauri::ipc::Response::new(cached));
         }
     }
@@ -308,12 +338,14 @@ fn square_thumb(cache: Option<&Path>, path: &str) -> Option<Vec<u8>> {
     let target = cache.map(|dir| dir.join(format!("{}-sq.jpg", file_key(path))));
 
     if let Some(target) = &target {
-        if let Ok(cached) = fs::read(target) {
+        if let Ok(cached) = read_cover(target) {
             return Some(cached);
         }
     }
 
-    let image = image::open(path).ok()?;
+    let _guard = IMAGE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let bytes = read_cover(Path::new(path)).ok()?;
+    let image = decode_cover(&bytes).ok()?;
     let filled = image.resize_to_fill(COVER_CELL, COVER_CELL, image::imageops::FilterType::Triangle);
 
     let mut out = Vec::new();
@@ -376,7 +408,7 @@ fn cache_key(path: &str) -> String {
 }
 
 fn thumbnail(bytes: &[u8]) -> Option<Vec<u8>> {
-    let image = image::load_from_memory(bytes).ok()?;
+    let image = decode_cover(bytes).ok()?;
     let scaled = if image.width().max(image.height()) > ARTWORK_MAX_EDGE {
         image.resize(
             ARTWORK_MAX_EDGE,
@@ -444,6 +476,23 @@ mod tests {
         let encoded = thumbnail(&bytes);
         assert!(encoded.is_some(), "jpeg encoding is unavailable");
         assert!(image::load_from_memory(&encoded.unwrap()).is_ok());
+    }
+
+    #[test]
+    fn rejects_oversized_images_for_all_artwork_paths() {
+        let dir = scratch("oversized");
+        let path = dir.join("wide.png");
+        image::RgbImage::new(MAX_IMAGE_EDGE + 1, 1).save(&path).unwrap();
+        let bytes = fs::read(&path).unwrap();
+
+        assert!(decode_cover(&bytes).is_err());
+        assert!(thumbnail(&bytes).is_none());
+        assert!(dominant_colours(&path).is_err());
+        assert!(square_thumb(None, path.to_str().unwrap()).is_none());
+
+        let large = dir.join("large.bin");
+        fs::File::create(&large).unwrap().set_len(MAX_COVER_BYTES + 1).unwrap();
+        assert!(read_cover(&large).is_err());
     }
 
     #[test]

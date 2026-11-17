@@ -1,5 +1,6 @@
 import { cardGradient, colourFromId } from "../lib/colour";
 import { isUnknownCollection } from "../lib/collections";
+import { isAndroidPlatform } from "../lib/device";
 import { escapeHtml } from "../lib/format";
 import { artworkUrlFor, colourFor, type ArtworkTier } from "../lib/state";
 import type { Collection, Track } from "../types";
@@ -39,7 +40,12 @@ export function mosaicHtml(
   tier: ArtworkTier = "background",
 ): string {
   const { tracks, marker } = mosaicTracks(trackIds, tracksById);
-  return buildMosaic(tracks, marker, (track) => plainCoverStyle(track, tier));
+  return buildMosaic(tracks, marker, isAndroidPlatform
+    ? (track) => {
+        const colour = colourFor(track);
+        return `background-color: ${colour}; background-image: ${cardGradient(colour)};`;
+      }
+    : (track) => plainCoverStyle(track, tier));
 }
 
 export function resultCoverHtml(collection: Collection, tracksById: Map<string, Track>): string {

@@ -8,6 +8,17 @@ import org.junit.Test
 
 class PlaybackPolicyTest {
   @Test
+  fun artworkIsSampledToFitTheMediaSession() {
+    assertEquals(1, artworkSampleSize(512, 256, 512))
+    assertEquals(2, artworkSampleSize(513, 400, 512))
+    assertEquals(8, artworkSampleSize(4000, 3000, 512))
+    assertEquals(16, artworkSampleSize(8192, 1000, 512))
+    assertEquals(1 shl 30, artworkSampleSize(Int.MAX_VALUE, 1, 1))
+    assertEquals(1, artworkSampleSize(-1, 100, 512))
+    assertEquals(1, artworkSampleSize(100, 100, 0))
+  }
+
+  @Test
   fun wakeLockIsHeldOnlyForForegroundPlayback() {
     assertTrue(playbackWakeLockNeeded(true, true))
     assertFalse(playbackWakeLockNeeded(true, false))

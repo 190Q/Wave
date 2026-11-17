@@ -10,6 +10,17 @@ internal fun notificationPermissionNeeded(
 internal fun playbackWakeLockNeeded(foreground: Boolean, playing: Boolean): Boolean =
   foreground && playing
 
+internal fun artworkSampleSize(width: Int, height: Int, maxEdge: Int): Int {
+  if (width <= 0 || height <= 0 || maxEdge <= 0) return 1
+  val longest = maxOf(width, height).toLong()
+  var sample = 1
+  while ((longest + sample - 1) / sample > maxEdge) {
+    if (sample > Int.MAX_VALUE / 2) return sample
+    sample *= 2
+  }
+  return sample
+}
+
 internal const val PAUSED_CONTROLS_DELAY_MS = 10 * 60_000L
 
 internal class PausedControls(private val delayMs: Long = PAUSED_CONTROLS_DELAY_MS) {

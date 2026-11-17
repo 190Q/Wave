@@ -1,7 +1,7 @@
 import { cachedCoverUrl, coverUrl } from "../lib/state";
 
 let observer: IntersectionObserver | null = null;
-const observed = new Map<ParentNode, Set<Element>>();
+const observed = new WeakMap<ParentNode, Set<Element>>();
 const sources = new WeakMap<Element, string[]>();
 
 /** Swaps the placeholder mosaic for the composed image. */
@@ -49,10 +49,7 @@ function ensureObserver(): IntersectionObserver {
 /** Queues a composed cover for every `data-cover` element inside `root`. */
 export function hydrateCovers(root: ParentNode): void {
   const active = ensureObserver();
-
-  for (const element of observed.get(root) ?? []) {
-    active.unobserve(element);
-  }
+  releaseCovers(root);
 
   const watching = new Set<Element>();
   observed.set(root, watching);
@@ -74,4 +71,12 @@ export function hydrateCovers(root: ParentNode): void {
     watching.add(element);
     active.observe(element);
   }
+}
+
+export function releaseCovers(root: ParentNode): void {
+  for (const element of observed.get(root) ?? []) {
+    observer?.unobserve(element);
+    sources.delete(element);
+  }
+  observed.delete(root);
 }

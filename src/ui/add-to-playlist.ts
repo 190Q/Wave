@@ -10,7 +10,7 @@ import {
 } from "../lib/state";
 import type { Playlist } from "../types";
 import { mosaicHtml } from "./artwork";
-import { hydrateCovers } from "./covers";
+import { hydrateCovers, releaseCovers } from "./covers";
 import { fillIcons } from "./icons";
 
 /** The panel that is up, so opening another one replaces it. */
@@ -266,6 +266,7 @@ export function openAddToPlaylist(anchor: HTMLElement, trackIds: string[]): void
     viewport?.removeEventListener("resize", onViewportChange);
     viewport?.removeEventListener("scroll", onViewportChange);
     unsubscribe();
+    releaseCovers(list);
     panel.remove();
     if (dismiss === close) {
       dismiss = null;

@@ -24,7 +24,10 @@ const mocks = {
     export const addTracksToPlaylist = () => {}, removeTracksFromPlaylist = () => {};
   `,
   "./artwork": 'export const mosaicHtml = () => "";',
-  "./covers": "export const hydrateCovers = () => {};",
+  "./covers": `
+    export const hydrateCovers = () => {};
+    export const releaseCovers = (root) => { globalThis.__addToTest.released = root; };
+  `,
   "./icons": "export const fillIcons = () => {};",
 };
 
@@ -96,6 +99,7 @@ globalThis.HTMLInputElement = class extends Element {};
 function setup(touch) {
   context.touch = touch;
   context.created = [];
+  context.released = null;
   const documentEvents = new Events();
   const windowEvents = new Events();
   const viewport = new Events();
@@ -149,6 +153,7 @@ test("touch keyboard resize keeps search and new playlist editors within the vis
   panel.create.dispatch("keydown", { target: panel.create.input, key: "Enter" });
   assert.deepEqual(context.created, [{ name: "New playlist", ids: ["song"] }]);
   assert.equal(panel.removed, true);
+  assert.equal(context.released, panel.list);
   assert.equal(viewport.listeners.get("resize").size, 0);
   assert.equal(viewport.listeners.get("scroll").size, 0);
 });
@@ -159,5 +164,6 @@ test("desktop popup still closes on window resize", () => {
   assert.equal(document.activeElement, panel.search);
   windowEvents.dispatch("resize");
   assert.equal(panel.removed, true);
+  assert.equal(context.released, panel.list);
   closeAddToPlaylist();
 });

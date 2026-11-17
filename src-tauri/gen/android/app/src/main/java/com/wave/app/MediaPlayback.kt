@@ -54,6 +54,7 @@ object MediaPlayback {
   private const val KEEP_ALIVE_EVERY_MS = 30_000L
 
   private const val TILE_SIZE = 256
+  private const val ARTWORK_MAX_EDGE = 512
 
   /** Where a button press goes. The plugin fills this in when it is loaded. */
   @Volatile
@@ -64,7 +65,16 @@ object MediaPlayback {
   private var notification: Notification? = null
   private var artwork: Bitmap? = null
   private val artworkCache = ArtworkCache { path ->
-    if (File(path).isFile) BitmapFactory.decodeFile(path) else null
+    if (!File(path).isFile) {
+      null
+    } else {
+      val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+      BitmapFactory.decodeFile(path, bounds)
+      val options = BitmapFactory.Options().apply {
+        inSampleSize = artworkSampleSize(bounds.outWidth, bounds.outHeight, ARTWORK_MAX_EDGE)
+      }
+      BitmapFactory.decodeFile(path, options)
+    }
   }
   private var tile: Bitmap? = null
   private var tileKey = ""

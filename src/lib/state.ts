@@ -467,6 +467,8 @@ type ArtworkWorkTier = ArtworkTier | "priority";
 
 const TIER_PRIORITY: Record<ArtworkTier, number> = { now: 0, queue: 1, background: 2, prefetch: 3, idle: 4 };
 const TIER_CONCURRENCY: Record<ArtworkTier, number> = { now: 1, queue: 7, background: 2, prefetch: 2, idle: 0 };
+const PHONE_ARTWORK_READS = 3;
+const PHONE_ARTWORK_URLS = 64;
 /** Track id -> object URL for its artwork. */
 const artworkUrls = new Map<string, string>();
 const artworkPending = new Map<string, ArtworkTier>();
@@ -686,6 +688,10 @@ export function artworkUrlFor(track: Track, tier: ArtworkTier = "background"): s
 
   const cached = artworkUrls.get(track.id);
   if (cached !== undefined) {
+    if (isAndroidPlatform) {
+      artworkUrls.delete(track.id);
+      artworkUrls.set(track.id, cached);
+    }
     return cached;
   }
 
@@ -800,9 +806,28 @@ function retainArtwork(): void {
   }
 }
 
+function trimArtwork(): void {
+  if (!isAndroidPlatform) {
+    return;
+  }
+  for (const [id, url] of artworkUrls) {
+    if (artworkUrls.size <= PHONE_ARTWORK_URLS) {
+      break;
+    }
+    if (artworkPriority.has(id) || id === player.currentId) {
+      continue;
+    }
+    artworkUrls.delete(id);
+    URL.revokeObjectURL(url);
+  }
+}
+
 /** Starts as many pending reads as the per-tier limits allow, best tier first. */
 function pumpArtwork(): void {
   for (const id of artworkPriority) {
+    if (isAndroidPlatform && artworkInFlight.size >= PHONE_ARTWORK_READS) {
+      break;
+    }
     if (artworkPending.has(id)) {
       artworkPending.delete(id);
       startArtwork(id, "priority");
@@ -815,6 +840,9 @@ function pumpArtwork(): void {
   }
 
   for (;;) {
+    if (isAndroidPlatform && artworkInFlight.size >= PHONE_ARTWORK_READS) {
+      return;
+    }
     let chosen: string | null = null;
     let chosenTier: ArtworkTier = "background";
 
@@ -858,6 +886,7 @@ function startArtwork(trackId: string, tier: ArtworkWorkTier): void {
         return;
       }
       artworkUrls.set(trackId, URL.createObjectURL(new Blob([buffer], { type: imageMime(path, buffer) })));
+      trimArtwork();
       if (artworkPriority.has(trackId)) {
         artworkPriorityNeedsRender = true;
       }

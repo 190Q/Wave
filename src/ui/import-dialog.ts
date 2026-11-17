@@ -37,6 +37,7 @@ import type {
 } from "../types";
 import { choiceDialog, confirmDialog } from "./confirm";
 import { createPanel } from "./drop";
+import { dialogFits } from "./fit";
 import { highlightHtml } from "./highlight";
 import { fillIcons } from "./icons";
 import { placePicker, windowFrame } from "./picker";
@@ -88,6 +89,7 @@ export function mountImportDialog(): void {
 
   /** Whether the Spotify setup steps are showing. */
   let setupOpen = false;
+  let linkOnly = false;
 
   const setOrigin = (): void => {
     const dialogRect = dialog.getBoundingClientRect();
@@ -98,7 +100,7 @@ export function mountImportDialog(): void {
   };
 
   const render = (): void => {
-    body.innerHTML = sectionsHtml(getState(), picked);
+    body.innerHTML = linkOnly ? linkSection() : sectionsHtml(getState(), picked);
     fillIcons(body);
     paintLink();
   };
@@ -113,7 +115,9 @@ export function mountImportDialog(): void {
     if (status) {
       const service = serviceOf(linkValue());
       status.innerHTML =
-        service === "spotify"
+        device() === "android"
+          ? state.importing ? progressHtml(state.importing) : ""
+          : service === "spotify"
           ? spotifyStateHtml(state, setupOpen)
           : toolsStateHtml(state, service);
     }
@@ -260,7 +264,7 @@ export function mountImportDialog(): void {
     paintActive();
   };
 
-  const open = (from?: HTMLElement): void => {
+  const open = (from?: HTMLElement, onlyLink = false): void => {
     // Already up: reopening would only replay the pop.
     if (dialog.open && !dialog.classList.contains("is-closed")) {
       return;
@@ -270,6 +274,7 @@ export function mountImportDialog(): void {
       closeTimer = null;
     }
     anchor = from ?? fallback;
+    linkOnly = onlyLink;
     claimPopup(close);
     closeCombo(true);
     render();
@@ -305,6 +310,7 @@ export function mountImportDialog(): void {
     face: fallback,
     show: open,
     hide: close,
+    fits: () => device() === "linuxPhone" || (device() === "android" && dialog.open) || dialogFits(dialog, body),
     render: () => {
       dropList.innerHTML = dropRowsHtml(getState());
       fillIcons(dropList);
@@ -377,6 +383,9 @@ export function mountImportDialog(): void {
       case "wavelist":
         close();
         void importWaveList();
+        return;
+      case "link-panel":
+        open(fallback, true);
         return;
       case "link": {
         const field = body.querySelector<HTMLInputElement>("#import-link-url");
@@ -496,7 +505,7 @@ export function mountImportDialog(): void {
     if (input.id === "import-link-url") {
       if (event.key === "Enter") {
         event.preventDefault();
-        void startLinkImport(input.value);
+        runImportAction("link");
       }
       return;
     }
@@ -556,7 +565,7 @@ export function mountImportDialog(): void {
 function sectionsHtml(state: AppState, picked: Map<string, string>): string {
   return [
     localSection(),
-    device() === "android" ? "" : linkSection(),
+    linkSection(),
     historySection(),
     ...FETCH_SECTIONS.map((spec) => fetchSection(spec, state, picked)),
   ].join("");
@@ -592,16 +601,22 @@ function localSection(): string {
 }
 
 function linkSection(): string {
+  const android = device() === "android";
+  const hint = android
+    ? "Paste a YouTube video or playlist link to download its audio to your library."
+    : "Paste a Spotify, Deezer or YouTube link: a track, a playlist, or a Deezer album. A YouTube link is downloaded exactly as it is, so nothing is guessed at. Spotify needs the credentials below; Deezer and YouTube need nothing else.";
+  const placeholder = android ? "https://www.youtube.com/..." : "https://open.spotify.com/... or https://www.youtube.com/...";
+  const label = android ? "YouTube link" : "Spotify, Deezer or YouTube link";
   return section(
     "Import from a link",
-    `<p class="import-hint">Paste a Spotify, Deezer or YouTube link: a track, a playlist, or a Deezer album. A YouTube link is downloaded exactly as it is, so nothing is guessed at. Spotify needs the credentials below; Deezer and YouTube need nothing else.</p>
+    `<p class="import-hint">${hint}</p>
     <div class="import-field">
       <input
         class="import-input"
         id="import-link-url"
         type="text"
-        placeholder="https://open.spotify.com/... or https://www.youtube.com/..."
-        aria-label="Spotify, Deezer or YouTube link"
+        placeholder="${placeholder}"
+        aria-label="${label}"
         spellcheck="false"
         autocomplete="off"
       />
@@ -790,7 +805,7 @@ function failuresHtml(failures: string[]): string {
     ${shown.map((failure) => `<li>${escapeHtml(failure)}</li>`).join("")}
     ${rest > 0 ? `<li>and ${rest} more</li>` : ""}
   </ul>
-  <button class="pill import-log-open" type="button" data-import="log">Open the download log</button>`;
+  ${device() === "android" ? "" : `<button class="pill import-log-open" type="button" data-import="log">Open the download log</button>`}`;
 }
 
 /** What the Local import section says about the log a download writes. */
@@ -893,6 +908,7 @@ function dropRowsHtml(state: AppState): string {
           dropRow("files", "import", "Import files"),
           dropRow("phone-folder", "folder", "Import folder"),
           dropRow("wavelist", "import", "Import Wave playlist"),
+          dropRow("link-panel", "import", "Import a YouTube link"),
           dropRow("phone", "library", "Scan my phone's music"),
           dropRow("fix", "covers", "Fix tags and covers"),
         ]

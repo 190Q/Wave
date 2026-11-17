@@ -1,8 +1,3 @@
-// A phone cannot run yt-dlp, ffmpeg or Deno, so the whole link-import path is
-// unreachable there: the commands that report it as unavailable are all that
-// answers. It is still compiled, so that the shape of the app does not depend
-// on which platform it was built for. Nothing is allowed on desktop, where any
-// of it going unused is worth being told about.
 #![cfg_attr(not(desktop), allow(dead_code))]
 
 mod analytics;
@@ -44,6 +39,8 @@ mod search;
 mod source;
 mod spotify;
 mod youtube;
+#[cfg(any(target_os = "android", test))]
+mod youtube_phone;
 mod spotify_import;
 mod state;
 mod tools;

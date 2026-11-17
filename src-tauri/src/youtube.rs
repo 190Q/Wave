@@ -5,7 +5,9 @@ use crate::download;
 use crate::import::ImportOutcome;
 #[cfg(desktop)]
 use crate::import_source::Service;
-use crate::import_source::{self, ImportPlan, Kind, Link};
+#[cfg(not(target_os = "android"))]
+use crate::import_source;
+use crate::import_source::{ImportPlan, Kind, Link};
 #[cfg(desktop)]
 use crate::progress::Output;
 use crate::progress::Reporter;
@@ -62,7 +64,7 @@ pub(crate) fn resolve(app: &AppHandle, url: &str, report: &mut Reporter) -> Resu
 }
 
 /// A folder name for the link, so each one stages on its own.
-fn folder_name(url: &str) -> String {
+pub(crate) fn folder_name(url: &str) -> String {
     let name: String = url
         .rsplit(['/', '='])
         .next()
@@ -81,13 +83,72 @@ fn folder_name(url: &str) -> String {
     }
 }
 
+pub(crate) fn youtube_url(url: &str) -> Result<String, String> {
+    let invalid = || "Paste a YouTube video or playlist link.".to_string();
+    let parsed = reqwest::Url::parse(url.trim()).map_err(|_| invalid())?;
+    if parsed.scheme() != "https" || parsed.port().is_some() || !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(invalid());
+    }
+    let host = parsed.host_str().ok_or_else(invalid)?;
+    if !matches!(host, "youtube.com" | "www.youtube.com" | "m.youtube.com" | "music.youtube.com" | "youtu.be") {
+        return Err(invalid());
+    }
+
+    let id = if host == "youtu.be" {
+        let mut segments = parsed.path_segments().ok_or_else(invalid)?.filter(|segment| !segment.is_empty());
+        let id = segments.next().map(str::to_owned);
+        if segments.next().is_some() { return Err(invalid()); }
+        id
+    } else if parsed.path() == "/watch" {
+        parsed.query_pairs().find(|(key, _)| key == "v").map(|(_, value)| value.into_owned())
+    } else if matches!(parsed.path(), "/playlist" | "/playlist/") {
+        None
+    } else {
+        let mut segments = parsed.path_segments().ok_or_else(invalid)?.filter(|segment| !segment.is_empty());
+        match segments.next() {
+            Some("shorts" | "embed" | "v") => {
+                let id = segments.next().map(str::to_owned);
+                if segments.next().is_some() { return Err(invalid()); }
+                id
+            }
+            _ => return Err(invalid()),
+        }
+    };
+    let valid_id = |id: &str| id.len() == 11
+        && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-');
+    if (host == "youtu.be" || !matches!(parsed.path(), "/watch" | "/playlist" | "/playlist/"))
+        && !id.as_deref().is_some_and(valid_id)
+    {
+        return Err(invalid());
+    }
+    if let Some((_, list)) = parsed.query_pairs().find(|(key, _)| key == "list") {
+        if list.is_empty() || list.len() > 128
+            || !list.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        {
+            return Err(invalid());
+        }
+        return Ok(format!("https://www.youtube.com/playlist?list={list}"));
+    }
+    let id = id.filter(|id| valid_id(id)).ok_or_else(invalid)?;
+    Ok(format!("https://www.youtube.com/watch?v={id}"))
+}
+
 #[tauri::command]
 pub async fn youtube_import(
     app: AppHandle,
     url: String,
     download_duplicates: bool,
 ) -> Result<ImportOutcome, String> {
-    #[cfg(not(desktop))]
+    #[cfg(target_os = "android")]
+    {
+        return tauri::async_runtime::spawn_blocking(move || {
+            crate::youtube_phone::run(&app, &url, download_duplicates)
+        })
+        .await
+        .map_err(|e| format!("the import stopped unexpectedly: {e}"))?;
+    }
+
+    #[cfg(all(not(desktop), not(target_os = "android")))]
     {
         let _ = (app, url, download_duplicates);
         return Err(import_source::NOT_ON_ANDROID.to_string());
@@ -112,7 +173,16 @@ pub async fn youtube_import(
 
 #[tauri::command]
 pub async fn youtube_plan(app: AppHandle, url: String) -> Result<ImportPlan, String> {
-    #[cfg(not(desktop))]
+    #[cfg(target_os = "android")]
+    {
+        return tauri::async_runtime::spawn_blocking(move || {
+            crate::youtube_phone::plan(&app, &url)
+        })
+        .await
+        .map_err(|e| format!("could not read the link: {e}"))?;
+    }
+
+    #[cfg(all(not(desktop), not(target_os = "android")))]
     {
         let _ = (app, url);
         return Err(import_source::NOT_ON_ANDROID.to_string());
@@ -159,6 +229,36 @@ pub async fn youtube_status(app: AppHandle) -> Result<YoutubeStatus, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepts_only_youtube_videos_and_playlists() {
+        let video = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+        assert_eq!(youtube_url(" https://youtu.be/dQw4w9WgXcQ?t=1 ").unwrap(), video);
+        assert_eq!(youtube_url("https://music.youtube.com/watch?v=dQw4w9WgXcQ").unwrap(), video);
+        assert_eq!(youtube_url("https://m.youtube.com/shorts/dQw4w9WgXcQ").unwrap(), video);
+        assert_eq!(
+            youtube_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL_123").unwrap(),
+            "https://www.youtube.com/playlist?list=PL_123"
+        );
+        for bad in [
+            "https://open.spotify.com/track/123",
+            "https://youtube.com.evil.example/watch?v=dQw4w9WgXcQ",
+            "https://youtube.com@evil.example/watch?v=dQw4w9WgXcQ",
+            "http://youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://youtube.com/@channel",
+            "https://youtube.com/@channel?list=PL123",
+            "https://youtube.com/watch?v=bad",
+            "https://youtube.com:444/watch?v=dQw4w9WgXcQ",
+            "https://youtube.com/watch?v=dQw4w9WgXcQ&list=",
+            "https://youtu.be/bad?list=PL123",
+            "https://youtu.be/dQw4w9WgXcQ/extra",
+            "https://youtube.com/shorts/bad?list=PL123",
+            "https://youtube.com/shorts?list=PL123",
+            "https://youtube.com/playlist",
+        ] {
+            assert!(youtube_url(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn names_a_staging_folder_after_the_link() {

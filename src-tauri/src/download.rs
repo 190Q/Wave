@@ -677,7 +677,7 @@ fn link_entry(entry: &Value) -> Option<LinkEntry> {
     })
 }
 
-fn credit(title: &str, credited: &str, channel: &str) -> (String, Vec<String>) {
+pub(crate) fn credit(title: &str, credited: &str, channel: &str) -> (String, Vec<String>) {
     let credited = credited.trim();
     if !credited.is_empty() {
         return (title.to_string(), vec![credited.to_string()]);
@@ -1199,7 +1199,7 @@ fn pull(tools: &Tools, candidate: &Candidate, target: &Path) -> Result<PathBuf, 
         .unwrap_or(path))
 }
 
-fn landed(path: &Path, meta: &TrackMeta) -> Result<(), String> {
+pub(crate) fn landed(path: &Path, meta: &TrackMeta) -> Result<(), String> {
     let tagged =
         lofty::read_from_path(path).map_err(|e| format!("what came back is not audio: {e}"))?;
     let length = tagged.properties().duration().as_millis() as u64;
@@ -1331,9 +1331,14 @@ pub fn fetch_cover(url: Option<&str>) -> Option<Vec<u8>> {
     response.bytes().ok().map(|bytes| bytes.to_vec())
 }
 
-/// Writes the ID3 tags, and the cover when one was fetched.
-fn tag(path: &Path, meta: &TrackMeta, cover: Option<Vec<u8>>) -> Result<(), String> {
-    let mut tag = Tag::new(TagType::Id3v2);
+/// Writes audio tags and the cover when one was fetched.
+pub(crate) fn tag(path: &Path, meta: &TrackMeta, cover: Option<Vec<u8>>) -> Result<(), String> {
+    let tag_type = if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("m4a")) {
+        TagType::Mp4Ilst
+    } else {
+        TagType::Id3v2
+    };
+    let mut tag = Tag::new(tag_type);
 
     tag.set_title(meta.title.clone());
     tag.set_artist(meta.artists.join(", "));

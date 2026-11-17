@@ -18,14 +18,9 @@ use crate::tools;
 /// Follows one import, track by track.
 pub const PROGRESS_EVENT: &str = "source-import";
 
-/// What a link import answers with on a platform that cannot download.
-///
-/// yt-dlp, ffmpeg and Deno all have to run as separate programs, and none of
-/// them has an Android build, so there is nothing on a phone to fetch a link's
-/// audio with. Saying so is better than a download that fails obscurely.
 #[cfg(not(desktop))]
 pub const NOT_ON_ANDROID: &str =
-    "link imports are not available on Android: yt-dlp, ffmpeg and Deno cannot run there. \
+    "this link import is not available on Android. \
      Import the music from the phone's own storage instead.";
 
 /// The services a pasted link can belong to.
@@ -110,7 +105,8 @@ pub fn plan_link(
     url: &str,
     output: Output,
 ) -> Result<ImportPlan, String> {
-    plan(app, service.name(), output, |report| {
+    download_log::begin(app, service.name());
+    plan(app, output, |report| {
         resolve_link(app, service, url, false, report)
     })
 }
@@ -140,7 +136,14 @@ pub fn run(
     resolve: impl FnOnce(&mut Reporter) -> Result<Link, String>,
 ) -> Result<ImportOutcome, String> {
     let mut report = Reporter::new(app, PROGRESS_EVENT, output);
-    let outcome = run_inner(app, source, &mut report, download_duplicates, resolve);
+    let outcome = (|| {
+        let bundled = tools::bundled_dir(app);
+        let log = download_log::begin(app, source);
+        let tools = download::resolve_tools(&read_env(app), bundled.as_deref())?;
+        run_inner(app, source, &mut report, download_duplicates, log.as_deref(), resolve, |jobs, keep| {
+            download::fetch_all(&tools, jobs, keep)
+        })
+    })();
 
     match &outcome {
         Ok(_) => report.phase("done", "Finished."),
@@ -150,20 +153,33 @@ pub fn run(
     outcome
 }
 
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn run_phone(
+    app: &AppHandle,
+    download_duplicates: bool,
+    resolve: impl FnOnce(&mut Reporter) -> Result<Link, String>,
+    fetch: impl FnOnce(&[download::Job<'_>], &mut dyn FnMut(download::Fetched)),
+) -> Result<ImportOutcome, String> {
+    let mut report = Reporter::new(app, PROGRESS_EVENT, Output::Events);
+    let outcome = run_inner(app, "youtube", &mut report, download_duplicates, None, resolve, fetch);
+    match &outcome {
+        Ok(_) => report.phase("done", "Finished."),
+        Err(error) => report.phase("failed", error),
+    }
+    outcome
+}
+
 fn run_inner(
     app: &AppHandle,
     source: &str,
     report: &mut Reporter,
     download_duplicates: bool,
+    log: Option<&download_log::Log>,
     resolve: impl FnOnce(&mut Reporter) -> Result<Link, String>,
+    fetch: impl FnOnce(&[download::Job<'_>], &mut dyn FnMut(download::Fetched)),
 ) -> Result<ImportOutcome, String> {
-    let bundled = tools::bundled_dir(app);
-    // Everything yt-dlp says while this import runs is written to the log, so a
-    // download that goes wrong can be read back afterwards.
-    download_log::begin(app, source);
-    let tools = download::resolve_tools(&read_env(app), bundled.as_deref())?;
     let link = resolve(report)?;
-    if let Some(log) = &tools.log {
+    if let Some(log) = log {
         log.link(&link.name, link.tracks.len());
     }
     let tracks = link.tracks;
@@ -210,7 +226,7 @@ fn run_inner(
     let mut duplicates = reused.len();
     let mut handled = 0usize;
 
-    download::fetch_all(&tools, &jobs, |fetched| {
+    fetch(&jobs, &mut |fetched| {
         let label = track_label(&tracks[fetched.key]);
         handled += 1;
 
@@ -479,14 +495,10 @@ pub struct ImportPlan {
 
 pub fn plan(
     app: &AppHandle,
-    source: &str,
     output: Output,
     resolve: impl FnOnce(&mut Reporter) -> Result<Link, String>,
 ) -> Result<ImportPlan, String> {
     let mut report = Reporter::new(app, PROGRESS_EVENT, output);
-    // Reading the link runs yt-dlp for a pasted YouTube one, so it is logged
-    // too; the import that follows rewrites the log from the start.
-    download_log::begin(app, source);
     let link = resolve(&mut report)?;
     let existing = library_index(app);
 

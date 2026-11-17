@@ -27,7 +27,8 @@ an equaliser and a theme that follows the artwork.
   equaliser and output selection support depends on the webview.
 - **Lyrics and metadata:** Read synced `.lrc` lyrics and look up missing lyrics,
   cover art and genres for a collection.
-- **Link imports:** On desktop, import Spotify, Deezer or YouTube links. Spotify
+- **Link imports:** Import YouTube videos or playlists on Android and desktop.
+  On desktop, Spotify and Deezer links are also supported. Spotify
   and Deezer provide the track information; Wave searches YouTube for matching
   audio. YouTube links are downloaded directly.
 - **Generated playlists:** Make a mix from your listening or a genre using
@@ -98,7 +99,8 @@ import a copied Wave `songs` folder with its artwork and lyrics.
 To move a playlist, export a collection from **Settings → Library** on desktop
 and import the resulting `.wavelist` from **Import**. Desktop can download songs
 missing from the destination library. For Android, follow the migration guide
-[below](#migrating-to-android); link imports are not available on Android.
+[below](#migrating-to-android). Android can also download audio from YouTube
+video and playlist links through **Import**.
 
 Local playback works offline. Imports can look up missing metadata online, and
 update checks and generated playlists also use the network.
@@ -228,10 +230,11 @@ the port. See [docs/api.md](docs/api.md) for endpoints and examples.
 
 ## Troubleshooting
 
-- **A download fails:** Open the download log in the import dialog. Check that
-  yt-dlp, ffmpeg and Deno are available, especially with a slim build.
-- **A YouTube download needs sign-in:** Set `YTDLP_COOKIES_FROM_BROWSER` or
-  `YTDLP_COOKIES` in the config `.env`, then try again.
+- **A download fails on desktop:** Open the download log in the import dialog.
+  Check that yt-dlp, ffmpeg and Deno are available, especially with a slim build.
+- **A YouTube download needs sign-in:** On desktop, set
+  `YTDLP_COOKIES_FROM_BROWSER` or `YTDLP_COOKIES` in the config `.env`, then
+  try again. Android does not support authenticated YouTube downloads.
 - **A song will not play on Linux:** Install the GStreamer plugins for its
   format. The packaged builds include or depend on the usual plugins.
 - **Spotify or Deezer cannot open a playlist:** Spotify's editorial playlists

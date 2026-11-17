@@ -1100,8 +1100,10 @@ export async function init(): Promise<void> {
     state.notice = describe(error);
     state.ready = true;
   }
-  void refreshDeezerStatus();
-  void refreshYoutubeStatus();
+  if (!isAndroidPlatform) {
+    void refreshDeezerStatus();
+    void refreshYoutubeStatus();
+  }
   void refreshRecommendStatus();
   void loadPlayCounts();
   void startUpdater();
@@ -1875,7 +1877,7 @@ export async function planLink(url: string): Promise<ImportPlan | null> {
   emit();
 
   try {
-    const service = serviceOf(link);
+    const service = isAndroidPlatform || device() === "android" ? "youtube" : serviceOf(link);
     const plan =
       service === "spotify"
         ? await ipc.spotifyPlan(link)
@@ -1915,7 +1917,7 @@ export async function importLink(url: string, downloadDuplicates: boolean): Prom
   emit();
 
   try {
-    const service = serviceOf(link);
+    const service = isAndroidPlatform || device() === "android" ? "youtube" : serviceOf(link);
     const outcome =
       service === "spotify"
         ? await ipc.importSpotify(link, downloadDuplicates)
@@ -2503,9 +2505,11 @@ function watchSources(): void {
     }
     configTimer = window.setTimeout(() => {
       configTimer = null;
-      void refreshSpotifyStatus();
-      void refreshDeezerStatus();
-      void refreshYoutubeStatus();
+      if (!isAndroidPlatform) {
+        void refreshSpotifyStatus();
+        void refreshDeezerStatus();
+        void refreshYoutubeStatus();
+      }
     }, CONFIG_SETTLE_MS);
   }).catch(() => {
     // Same as above: the browser has no config watcher.

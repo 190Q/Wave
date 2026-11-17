@@ -17,8 +17,10 @@ const mocks = {
     export const fetchCovers = () => {}, fetchGenres = () => {}, fetchLyrics = () => {};
     export const fixTagsAndCovers = () => {}, importPhoneFolder = () => {};
     export const importPhoneMusic = () => {}, importPickedFiles = () => {};
-    export const importLink = () => {}, openImportLog = () => {}, openSpotifyConfig = () => {};
-    export const planLink = () => {}, refreshDeezerStatus = () => {};
+    export const importLink = async (url, duplicates) => { context().actions.push(["importLink", url, duplicates]); };
+    export const openImportLog = () => {}, openSpotifyConfig = () => {};
+    export const planLink = async (url) => { context().actions.push(["planLink", url]); return { duplicates: 0 }; };
+    export const refreshDeezerStatus = () => {};
     export const refreshSpotifyStatus = () => {}, refreshYoutubeStatus = () => {};
     export const jobRunning = () => false, serviceOf = () => "youtube";
     export const setNotice = () => {}, subscribe = () => {};
@@ -50,6 +52,7 @@ const vite = await createServer({
     },
   }],
 });
+
 after(() => vite.close());
 
 class Events {
@@ -144,13 +147,50 @@ test("the full desktop import panel still offers all fetch sections", () => {
   }
 });
 
+test("Android full import offers YouTube without Spotify or desktop tools", () => {
+  const { elements, dialog } = setup("android", 800);
+  mountImportDialog();
+  elements["import-open"].dispatch("click");
+
+  assert.equal(dialog.open, true);
+  const html = elements["import-body"].innerHTML;
+  assert.match(html, /aria-label="YouTube link"/);
+  assert.doesNotMatch(html, /Spotify|Deezer|yt-dlp|data-import="config"/);
+});
+
+test("Android compact import opens the link field and keeps it open when the keyboard resizes", async () => {
+  const { context, elements, dialog } = setup("android", 350);
+  mountImportDialog();
+  elements["import-open"].dispatch("click");
+  elements["import-drop-list"].dispatch("click", {
+    target: { closest: () => ({ dataset: { import: "link-panel" } }) },
+  });
+
+  assert.equal(dialog.open, true);
+  assert.match(elements["import-body"].innerHTML, /aria-label="YouTube link"/);
+  window.innerHeight = 250;
+  window.dispatch("resize");
+  assert.equal(dialog.classList.contains("is-closed"), false);
+
+  elements["import-body"].querySelector = (selector) =>
+    selector === "#import-link-url" ? { value: "https://youtu.be/dQw4w9WgXcQ" } : null;
+  elements["import-body"].dispatch("click", {
+    target: { closest: (selector) => selector === "[data-import]" ? { dataset: { import: "link" } } : null },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(context.actions, [
+    ["planLink", "https://youtu.be/dQw4w9WgXcQ"],
+    ["importLink", "https://youtu.be/dQw4w9WgXcQ", false],
+  ]);
+});
+
 test("Android compact import keeps the fetch actions and disables them without collections", () => {
   const { elements } = setup("android", 350, []);
   mountImportDialog();
   elements["import-open"].dispatch("click");
 
   const html = elements["import-drop-list"].innerHTML;
-  assert.deepEqual(actions(html), ["files", "phone-folder", "wavelist", "phone", "fix", "lyrics", "covers", "genres"]);
+  assert.deepEqual(actions(html), ["files", "phone-folder", "wavelist", "link-panel", "phone", "fix", "lyrics", "covers", "genres"]);
   for (const action of ["lyrics", "covers", "genres"]) {
     assert.match(html, new RegExp(`data-import="${action}"[^>]* disabled`));
   }

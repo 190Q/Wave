@@ -100,6 +100,7 @@ const writes = [];
 const likes = [];
 const playlists = [];
 const sessions = [];
+const linkCalls = [];
 let holdReads = null;
 let deleteError = null;
 let importErrors = ["Cannot copy this file"];
@@ -148,6 +149,12 @@ globalThis.__testIpc = new Proxy({
   importPickedFiles: async () => outcome(),
   importPhoneFolder: async () => outcome(),
   scanPhoneMusic: async () => outcome(),
+  youtubePlan: async (url) => { linkCalls.push(["youtubePlan", url]); return { name: "video", total: 1, duplicates: 0, examples: [] }; },
+  spotifyPlan: async (url) => { linkCalls.push(["spotifyPlan", url]); return null; },
+  deezerPlan: async (url) => { linkCalls.push(["deezerPlan", url]); return null; },
+  importYoutube: async (url, duplicates) => { linkCalls.push(["importYoutube", url, duplicates]); return outcome(); },
+  importSpotify: async (url) => { linkCalls.push(["importSpotify", url]); return outcome(); },
+  importDeezer: async (url) => { linkCalls.push(["importDeezer", url]); return outcome(); },
   deleteTracks: async () => { throw new Error(deleteError); },
   analyticsPlayCounts: async () => ({}),
 }, {
@@ -163,6 +170,14 @@ backend = {
 };
 await app.init();
 await tick();
+
+test("Android sends both link preview and import only to YouTube", async () => {
+  linkCalls.length = 0;
+  const url = "https://open.spotify.com/track/example";
+  await app.planLink(url);
+  await app.importLink(url, false);
+  assert.deepEqual(linkCalls, [["youtubePlan", url], ["importYoutube", url, false]]);
+});
 
 function completeWrite(index) {
   const request = writes[index];

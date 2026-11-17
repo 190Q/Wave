@@ -1,3 +1,4 @@
+import { insets, isTouch, ZERO_INSETS } from "../lib/device";
 import { escapeHtml } from "../lib/format";
 import { claimPopup, releasePopup } from "./popups";
 
@@ -20,7 +21,12 @@ export interface MenuPoint {
 let open: HTMLElement | null = null;
 let dismiss: (() => void) | null = null;
 
-export function openMenu(anchor: HTMLElement, items: MenuItem[], at?: MenuPoint): void {
+export function openMenu(
+  anchor: HTMLElement,
+  items: MenuItem[],
+  at?: MenuPoint,
+  options?: { fitViewport?: boolean },
+): void {
   closeMenu();
 
   if (items.length === 0) {
@@ -56,7 +62,7 @@ export function openMenu(anchor: HTMLElement, items: MenuItem[], at?: MenuPoint)
   });
 
   document.body.appendChild(menu);
-  position(menu, anchor, at);
+  position(menu, anchor, at, options?.fitViewport === true);
 
   const onPointerDown = (event: PointerEvent) => {
     if (!menu.contains(event.target as Node)) {
@@ -137,22 +143,34 @@ export function closeMenu(): void {
   releasePopup(closeMenu);
 }
 
-function position(menu: HTMLElement, anchor: HTMLElement, at?: MenuPoint): void {
-  const margin = 8;
+function position(menu: HTMLElement, anchor: HTMLElement, at: MenuPoint | undefined, fitViewport: boolean): void {
+  const touchFit = fitViewport && isTouch();
+  const margin = touchFit ? 4 : 8;
+  const safe = touchFit ? insets() : ZERO_INSETS;
+
+  if (touchFit) {
+    menu.style.maxWidth = `${Math.max(0, window.innerWidth - margin * 2 - safe.left - safe.right)}px`;
+    menu.style.maxHeight = `${Math.max(0, window.innerHeight - margin * 2 - safe.top - safe.bottom)}px`;
+  }
 
   // Measure before placing, so the flip decision uses the real size.
   const width = menu.offsetWidth;
   const height = menu.offsetHeight;
+  const minLeft = margin + safe.left;
+  const maxLeft = Math.max(minLeft, window.innerWidth - width - margin - safe.right);
+  const minTop = margin + safe.top;
+  const maxTop = Math.max(minTop, window.innerHeight - height - margin - safe.bottom);
 
   // A pointer position hangs the menu off the cursor; an anchor off its corner.
   const rect = anchor.getBoundingClientRect();
   let left = at ? at.x : rect.right - width;
   let top = at ? at.y : rect.bottom + margin;
 
-  if (top + height > window.innerHeight - margin) {
-    top = at ? Math.max(margin, at.y - height) : Math.max(margin, rect.top - height - margin);
+  if (top > maxTop) {
+    top = at ? at.y - height : rect.top - height - margin;
   }
-  left = Math.min(Math.max(margin, left), window.innerWidth - width - margin);
+  left = Math.min(Math.max(minLeft, left), maxLeft);
+  top = Math.min(Math.max(minTop, top), maxTop);
 
   menu.style.left = `${Math.round(left)}px`;
   menu.style.top = `${Math.round(top)}px`;

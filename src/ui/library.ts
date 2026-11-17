@@ -1678,7 +1678,7 @@ export function openTrackMenu(
     }
   }
 
-  openMenu(row, items, at);
+  openMenu(row, items, at, { fitViewport: true });
 }
 
 /** The menu the New playlist button opens. */

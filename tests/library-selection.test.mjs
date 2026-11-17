@@ -36,8 +36,8 @@ const mocks = {
   "./icons": "export const fillIcons = () => {};",
   "./import-dialog": "export const openImport = () => {};",
   "./menu": `
-    export const openMenu = (anchor, items, at) => {
-      globalThis.__librarySelectionTest.menu = { anchor, items, at };
+    export const openMenu = (anchor, items, at, options) => {
+      globalThis.__librarySelectionTest.menu = { anchor, items, at, options };
     };
   `,
   "./track-editor": "export const openTrackEditor = () => {};",
@@ -171,6 +171,7 @@ test("desktop song selection never adds a toolbar and keeps the context menu", (
   assert.equal(event.defaultPrevented, true);
   assert.equal(rows[0].classes.has("is-selected"), true);
   assert.deepEqual(context.menu.at, { x: 30, y: 40 });
+  assert.deepEqual(context.menu.options, { fitViewport: true });
   const labels = context.menu.items.map(({ label }) => label);
   for (const label of ["Like", "Add to playlist", "Edit song", "Remove from this playlist", "Delete song"]) {
     assert.ok(labels.includes(label));
@@ -215,6 +216,7 @@ test("Android imported playlists offer bulk and individual pending downloads", (
 test("touch selection retains Select all and Clear selection in the menu", () => {
   const { list, pane, rows } = setup({ touch: true, kind: "generated" });
   rightClick(list, rows[0]);
+  assert.deepEqual(context.menu.options, { fitViewport: true });
   context.menu.items.find(({ label }) => label === "Select all").action();
   assert.ok(rows.every((row) => row.classes.has("is-selected")));
   assert.doesNotMatch(pane.innerHTML, /selection-bar|data-select=/);
@@ -236,6 +238,8 @@ test("long pressing an unselected song never acts on a previous selection", asyn
 
   assert.equal(rows[0].classes.has("is-selected"), false);
   assert.equal(rows[1].classes.has("is-selected"), true);
+  assert.equal(context.menu.items.length, 9);
+  assert.deepEqual(context.menu.options, { fitViewport: true });
   context.menu.items.find(({ label }) => label === "Like").action();
   context.menu.items.find(({ label }) => label === "Remove from this playlist").action();
   context.menu.items.find(({ label }) => label === "Delete song").action();

@@ -30,6 +30,22 @@ const SEEK_STEP_MS = 10_000;
 /** How many songs of the play order are handed to the system's controls. */
 const QUEUE_LIMIT = 50;
 
+declare global {
+  interface Window {
+    wavePlayback?: { postMessage(message: string): void };
+  }
+}
+
+function sendAndroidUpdate(update: object): boolean {
+  if (!isAndroidPlatform || !window.wavePlayback) return false;
+  try {
+    window.wavePlayback.postMessage(JSON.stringify(update));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Keeps the system's own media controls, and Discord, in step with the player. */
 export function mountPresence(): void {
   /** What was last sent, so a song that has not moved is not sent again. */
@@ -44,7 +60,9 @@ export function mountPresence(): void {
       const { song } = pending;
       pending = null;
       try {
-        await setNowPlaying(song);
+        if (!sendAndroidUpdate({ type: "song", song })) {
+          await setNowPlaying(song);
+        }
       } catch {
         if (pending === null && sent === song) {
           retryNeeded = true;
@@ -105,9 +123,11 @@ export function mountPresence(): void {
         : [];
     });
 
-    void setQueue(tracks).catch(() => {
-      // Not running inside Tauri, or the backend is no longer there.
-    });
+    if (!sendAndroidUpdate({ type: "queue", tracks })) {
+      void setQueue(tracks).catch(() => {
+        // Not running inside Tauri, or the backend is no longer there.
+      });
+    }
   };
 
   player.onChange(push);
@@ -123,9 +143,15 @@ export function mountPresence(): void {
     push();
   }, POSITION_INTERVAL_MS);
 
-  void listen<MediaControl>(CONTROL_EVENT, (event) => apply(event.payload)).catch(() => {
-    // Not running inside Tauri, for example `npm run dev` in a browser.
-  });
+  if (isAndroidPlatform) {
+    window.addEventListener("wave:media-control", (event) => {
+      apply((event as CustomEvent<MediaControl>).detail);
+    });
+  } else {
+    void listen<MediaControl>(CONTROL_EVENT, (event) => apply(event.payload)).catch(() => {
+      // Not running inside Tauri, for example `npm run dev` in a browser.
+    });
+  }
 }
 
 /** Android also needs playback updates for its foreground service. */

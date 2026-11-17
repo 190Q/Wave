@@ -9,6 +9,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.DocumentsContract
 import android.util.Log
 import android.view.View
@@ -30,7 +32,6 @@ import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.Permission
 import app.tauri.annotation.TauriPlugin
-import app.tauri.plugin.Channel
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
@@ -75,11 +76,6 @@ class ControlsArgs {
 }
 
 @InvokeArg
-class EventsArgs {
-  lateinit var channel: Channel
-}
-
-@InvokeArg
 class LogArgs {
   lateinit var name: String
 }
@@ -88,24 +84,37 @@ class LogArgs {
 private const val KEEP_ALIVE_RETRY_MS = 500L
 private const val LOG_VIEW_BYTES = 1_048_576L
 
-/**
- * The phone's own media session.
- *
- * Playback stays in the webview's audio element, so this plugin plays nothing.
- * It puts what that element is doing where Android can see it, in a
- * MediaSessionCompat with a media style notification, and reports the buttons
- * the notification, the lockscreen and a headset are pressed with back to Rust.
- *
- * It also reads the window insets, which is what the front end needs to keep
- * its own furniture clear of the status bar and the gesture bar.
- */
+private val playbackHandler = Handler(Looper.getMainLooper())
+
+internal fun resumePlaybackWebView(view: WebView, action: () -> Unit) {
+  playbackHandler.post {
+    view.onResume()
+    view.resumeTimers()
+    action()
+  }
+}
+
+internal fun dispatchPlaybackControl(view: WebView, action: String, value: Double?) {
+  val payload = JSObject()
+  payload.put("action", action)
+  if (value != null) {
+    payload.put("value", value)
+  }
+  resumePlaybackWebView(view) {
+    view.evaluateJavascript(
+      "window.dispatchEvent(new CustomEvent('wave:media-control',{detail:$payload}));",
+      null
+    )
+  }
+}
+
+/** Reports playback to Android and forwards media controls to the webview. */
 @TauriPlugin(
   permissions = [
     Permission(alias = "notifications", strings = [Manifest.permission.POST_NOTIFICATIONS])
   ]
 )
 class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
-  private var channel: Channel? = null
   private var webView: WebView? = null
   private var insets: Insets? = null
   private var startScript: ScriptHandler? = null
@@ -117,6 +126,12 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
   override fun load(webView: WebView) {
     this.webView = webView
     MediaPlayback.onControl = { action, value -> report(action, value) }
+    registerPlaybackBridge(webView) { update ->
+      when (update) {
+        is PlaybackUpdate.NowPlaying -> showSong(update.song)
+        is PlaybackUpdate.Queue -> MediaPlayback.setQueue(activity, update.tracks)
+      }
+    }
     watchInsets()
   }
 
@@ -141,22 +156,18 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
     keepPlaying()
   }
 
-  /** The channel the button presses go back on. */
-  @Command
-  fun startEvents(invoke: Invoke) {
-    channel = invoke.parseArgs(EventsArgs::class.java).channel
-    invoke.resolve()
-  }
-
   /** Shows a song, or takes the notification down when there is none. */
   @Command
   fun setNowPlaying(invoke: Invoke) {
-    val song = invoke.parseArgs(SongArgs::class.java).song
+    showSong(invoke.parseArgs(SongArgs::class.java).song)
+    invoke.resolve()
+  }
+
+  private fun showSong(song: Song?) {
     if (song == null) {
       playing = false
       keepAliveLogged = false
       MediaPlayback.clear(activity)
-      invoke.resolve()
       return
     }
 
@@ -173,7 +184,6 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     MediaPlayback.show(activity, song)
-    invoke.resolve()
   }
 
   /** Hands over the play order, so the phone's own card can offer the queue. */
@@ -311,10 +321,8 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
       Log.i("Wave", "playback keep-alive: webView.onResume and resumeTimers")
     }
 
-    view.post {
-      view.onResume()
-      view.resumeTimers()
-      view.postDelayed({
+    resumePlaybackWebView(view) {
+      playbackHandler.postDelayed({
         if (playing) {
           view.onResume()
           view.resumeTimers()
@@ -324,21 +332,8 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   private fun report(action: String, value: Double?) {
-    val payload = JSObject()
-    payload.put("action", action)
-    if (value != null) {
-      payload.put("value", value)
-    }
-    val view = webView
-    if (view == null) {
-      channel?.send(payload)
-      return
-    }
-    view.post {
-      view.onResume()
-      view.resumeTimers()
-      channel?.send(payload)
-    }
+    val view = webView ?: return
+    dispatchPlaybackControl(view, action, value)
   }
 
   /**

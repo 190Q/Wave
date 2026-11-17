@@ -96,14 +96,16 @@ class FakeAudio {
   load() {}
 }
 
-function setup(PlayerClass = Player, mount = mountPresence, controls = true, sendSong = null) {
+function setup(PlayerClass = Player, mount = mountPresence, controls = true, sendSong = null, bridge = false) {
   context.elements = [];
   context.frames = new Map();
   context.nextFrame = 1;
   context.control = null;
+  context.androidControl = null;
   context.songs = [];
   context.sendSong = sendSong;
   context.queues = [];
+  context.bridgeMessages = [];
   context.settings = { systemMediaControls: controls, discordPresence: false };
 
   const listeners = new Map();
@@ -121,7 +123,13 @@ function setup(PlayerClass = Player, mount = mountPresence, controls = true, sen
   globalThis.window = {
     cancelAnimationFrame: (id) => context.frames.delete(id),
     setInterval: (callback) => { context.interval = callback; return 0; },
+    addEventListener: (name, callback) => {
+      if (name === "wave:media-control") context.androidControl = callback;
+    },
   };
+  if (bridge) {
+    window.wavePlayback = { postMessage: (message) => context.bridgeMessages.push(JSON.parse(message)) };
+  }
   globalThis.requestAnimationFrame = (callback) => {
     const id = context.nextFrame++;
     context.frames.set(id, callback);
@@ -160,6 +168,33 @@ test("Android forwards play, pause and queue updates with both optional surfaces
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(context.songs.at(-1).title, "two");
   assert.equal(context.songs.at(-1).playing, true);
+});
+
+test("Android handles direct media controls without waiting for the Tauri event bridge", () => {
+  const { engine, player } = setup(AndroidPlayer, mountAndroidPresence, false);
+  context.androidControl({ detail: { action: "pause" } });
+  assert.equal(engine.element.paused, true);
+  context.androidControl({ detail: { action: "play" } });
+  assert.equal(engine.element.paused, false);
+  assert.ok(engine.element.volume > 0);
+  context.androidControl({ detail: { action: "seekTo", value: 25000 } });
+  assert.equal(engine.positionMs, 25000);
+  context.androidControl({ detail: { action: "next" } });
+  assert.equal(player.currentId, "two");
+  assert.equal(engine.element.paused, false);
+});
+
+test("Android updates the media session without waiting for Tauri acknowledgements", () => {
+  const { player } = setup(AndroidPlayer, mountAndroidPresence, false, null, true);
+  assert.ok(context.bridgeMessages.some((message) => message.type === "queue" && message.tracks.length === 3));
+  context.androidControl({ detail: { action: "pause" } });
+  context.androidControl({ detail: { action: "play" } });
+  const songs = context.bridgeMessages.filter((message) => message.type === "song").map((message) => message.song);
+  assert.equal(songs.at(-2).playing, false);
+  assert.equal(songs.at(-1).playing, true);
+  assert.deepEqual(context.songs, []);
+  assert.deepEqual(context.queues, []);
+  assert.equal(player.snapshot().playing, true);
 });
 
 test("delayed playback updates cannot overtake a pause", async () => {

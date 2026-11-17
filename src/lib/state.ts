@@ -1354,7 +1354,7 @@ export async function importFolder(choose: () => Promise<boolean | null>): Promi
 /** Imports the files a picker handed back. On Android those are content URIs. */
 export async function importPickedFiles(): Promise<void> {
   try {
-    const paths = await ipc.pickAudioFiles();
+    const paths = await (isAndroidPlatform ? ipc.pickPhoneAudioFiles() : ipc.pickAudioFiles());
     if (!paths || paths.length === 0) {
       return;
     }

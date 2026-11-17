@@ -278,6 +278,8 @@ pub fn run() {
             import::import_folder,
             import::import_picked_files,
             #[cfg(target_os = "android")]
+            music_library::pick_phone_audio_files,
+            #[cfg(target_os = "android")]
             import::scan_phone_music,
             #[cfg(target_os = "android")]
             import::import_phone_folder,

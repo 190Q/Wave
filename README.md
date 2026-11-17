@@ -138,6 +138,13 @@ its own library, so allow enough space for both copies during import. After
 checking the songs and playlists, you can remove the temporary copy from phone
 storage.
 
+The Android file browser's menu can switch between internal storage, SD cards
+and other available providers. File selection shows all file types so audio
+with an unrecognized type is still visible; only supported audio formats are
+imported. The folder picker only lets you select folders. Android may restrict
+access to some folders, especially other apps' private data and certain storage
+roots on newer versions.
+
 ### Headphone EQ with AutoEq
 
 1. Open the [AutoEq results](https://github.com/jaakkopasanen/AutoEq/tree/master/results)

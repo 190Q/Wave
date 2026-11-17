@@ -575,7 +575,7 @@ function localSection(): string {
   if (device() === "android") {
     return section(
       "Import from this phone",
-      `<p class="import-hint">Pick audio files or a folder, including a copied Wave songs folder, or scan the phone's music folders. Import songs before importing a Wave playlist to match its tracks.</p>
+      `<p class="import-hint">Pick audio files or a folder, including a copied Wave songs folder, or scan the phone's music folders. Use the file browser's menu to switch storage locations. The folder picker only lets you select folders. Import songs before importing a Wave playlist to match its tracks.</p>
       <div class="import-actions">
         <button class="pill" type="button" data-import="files">Import files</button>
         <button class="pill" type="button" data-import="phone-folder">Import folder</button>

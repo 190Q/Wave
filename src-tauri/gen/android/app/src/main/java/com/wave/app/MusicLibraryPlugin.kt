@@ -37,6 +37,33 @@ class FolderUri {
 
 internal data class IndexedMusicFile(val uri: String, val name: String, val mime: String?)
 
+internal fun musicPickerIntent(folder: Boolean): Intent {
+  val intent = Intent(if (folder) Intent.ACTION_OPEN_DOCUMENT_TREE else Intent.ACTION_OPEN_DOCUMENT)
+  intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+  if (!folder) {
+    intent.addCategory(Intent.CATEGORY_OPENABLE)
+    intent.type = "*/*"
+    intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+  }
+  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+    intent.putExtra(
+      DocumentsContract.EXTRA_INITIAL_URI,
+      DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:")
+    )
+  }
+  return intent
+}
+
+internal fun pickedFileUris(result: ActivityResult): List<String> {
+  if (result.resultCode != Activity.RESULT_OK) return emptyList()
+  val data = result.data ?: return emptyList()
+  val clip = data.clipData
+  if (clip != null) {
+    return (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri?.toString() }
+  }
+  return listOfNotNull(data.data?.toString())
+}
+
 internal fun indexedMusic(resolver: ContentResolver): List<IndexedMusicFile> =
   indexedMusic { uri, columns -> resolver.query(uri, columns, null, null, null) }
 
@@ -129,11 +156,25 @@ class MusicLibraryPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   @Command
+  fun pickFiles(invoke: Invoke) {
+    try {
+      startActivityForResult(invoke, musicPickerIntent(false), "filesResult")
+    } catch (error: Exception) {
+      invoke.reject(error.message ?: "Could not open the file picker")
+    }
+  }
+
+  @ActivityCallback
+  fun filesResult(invoke: Invoke, result: ActivityResult) {
+    val answer = JSObject()
+    answer.put("files", jsArray(pickedFileUris(result)))
+    invoke.resolve(answer)
+  }
+
+  @Command
   fun pickFolder(invoke: Invoke) {
     try {
-      val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
-      intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-      startActivityForResult(invoke, intent, "folderResult")
+      startActivityForResult(invoke, musicPickerIntent(true), "folderResult")
     } catch (error: Exception) {
       invoke.reject(error.message ?: "Could not open the folder picker")
     }

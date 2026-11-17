@@ -325,7 +325,12 @@ export async function pickFolder(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
-/** Native picker for audio files, returning `content://` URIs on Android. */
+export async function pickPhoneAudioFiles(): Promise<string[] | null> {
+  const selected = await invoke<string[]>("pick_phone_audio_files");
+  return selected.length > 0 ? selected : null;
+}
+
+/** Native picker for audio files on desktop. */
 export async function pickAudioFiles(): Promise<string[] | null> {
   const selected = await open({
     multiple: true,

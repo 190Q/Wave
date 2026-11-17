@@ -101,6 +101,7 @@ const likes = [];
 const playlists = [];
 const sessions = [];
 const linkCalls = [];
+const audioPickerCalls = [];
 let holdReads = null;
 let deleteError = null;
 let importErrors = ["Cannot copy this file"];
@@ -144,7 +145,8 @@ globalThis.__testIpc = new Proxy({
   libraryInfo: async () => ({ tracks: scanTracks.length }),
   audioStreamBase: async () => "http://127.0.0.1:1234",
   pickFolder: async () => "folder",
-  pickAudioFiles: async () => ["song"],
+  pickAudioFiles: async () => { audioPickerCalls.push("desktop"); return ["song"]; },
+  pickPhoneAudioFiles: async () => { audioPickerCalls.push("android"); return ["song"]; },
   importFolder: async () => outcome(),
   importPickedFiles: async () => outcome(),
   importPhoneFolder: async () => outcome(),
@@ -383,6 +385,7 @@ test("overlapping session saves remain ordered and flush the latest snapshot", a
 });
 
 test("folder, file, and phone music imports show the first detailed error", async () => {
+  audioPickerCalls.length = 0;
   const actions = [
     () => app.importFolder(async () => false),
     () => app.importPickedFiles(),
@@ -393,6 +396,7 @@ test("folder, file, and phone music imports show the first detailed error", asyn
     await action();
     assert.match(app.getState().notice, /1 failed.*Cannot copy this file/);
   }
+  assert.deepEqual(audioPickerCalls, ["android"]);
   importErrors = ["Cannot copy this file", "Import finished, but the playlists could not be refreshed: unavailable"];
   for (const action of actions) {
     await action();

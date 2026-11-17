@@ -292,6 +292,10 @@ fn import_selected(
 ) -> ImportOutcome {
     let mut outcome = ImportOutcome::default();
     for (uri, name) in files {
+        if let Err(error) = validate_picked_audio(&name) {
+            outcome.errors.push(error);
+            continue;
+        }
         let staged = match stage_picked(app, &uri, &name) {
             Ok(staged) => staged,
             Err(error) => {
@@ -318,6 +322,14 @@ fn import_selected(
     }
 
     outcome
+}
+
+fn validate_picked_audio(name: &str) -> Result<(), String> {
+    if has_extension(Path::new(name), AUDIO_EXTENSIONS) {
+        Ok(())
+    } else {
+        Err(format!("{name}: unsupported audio format"))
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -1379,6 +1391,16 @@ mod tests {
         assert_eq!(indexed_audio_name("nested/Song", Some("audio/mpeg")).as_deref(), Some("Song.mp3"));
         assert_eq!(indexed_audio_name("Movie.mp4", Some("video/mp4")), None);
         assert_eq!(indexed_audio_name("unknown", None), None);
+    }
+
+    #[test]
+    fn picked_files_accept_supported_extensions_and_reject_other_files() {
+        for extension in AUDIO_EXTENSIONS {
+            assert!(validate_picked_audio(&format!("Song.{}", extension.to_uppercase())).is_ok());
+        }
+        for name in ["cover.jpg", "notes.txt", "movie.mp4", "no-extension"] {
+            assert_eq!(validate_picked_audio(name), Err(format!("{name}: unsupported audio format")));
+        }
     }
 
     #[test]

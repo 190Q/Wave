@@ -26,6 +26,11 @@ struct MusicFiles {
 }
 
 #[derive(Debug, Deserialize)]
+struct PickedFiles {
+    files: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct MusicFile {
     pub uri: String,
     pub name: String,
@@ -97,6 +102,13 @@ impl MusicLibrary {
             .map_err(|error| format!("the picked files could not be read: {error}"))
     }
 
+    pub fn pick_files(&self) -> Result<Vec<String>, String> {
+        self.0
+            .run_mobile_plugin::<PickedFiles>("pickFiles", ())
+            .map(|answer| answer.files)
+            .map_err(|error| format!("the file picker could not be opened: {error}"))
+    }
+
     pub fn pick_folder(&self) -> Result<Option<String>, String> {
         self.0
             .run_mobile_plugin::<Folder>("pickFolder", ())
@@ -110,6 +122,11 @@ impl MusicLibrary {
             .map(|answer| answer.files)
             .map_err(|error| format!("the selected folder could not be read: {error}"))
     }
+}
+
+#[tauri::command(async)]
+pub fn pick_phone_audio_files(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    app.state::<MusicLibrary>().pick_files()
 }
 
 /// Registers the Kotlin plugin and keeps the handle the app reaches it through.

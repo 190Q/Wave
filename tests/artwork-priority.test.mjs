@@ -121,7 +121,7 @@ test("promotes pending covers and waits for all nearby covers to be painted", as
   prioritizeNearbyArtwork(order, 6, false);
   const priority = [order[6], order[5], order[7], order[4], order[8]];
   assert.deepEqual(started.slice(2), priority.slice(0, 1));
-  assert.equal(mayRevealArtwork(order[6]), true);
+  assert.equal(mayRevealArtwork(order[6]), false);
   assert.equal(mayRevealArtwork(order[0]), false);
 
   await finish(order.slice(0, 2));
@@ -156,7 +156,7 @@ test("updates priority when the current track changes during loading", async () 
   prioritizeNearbyArtwork(order, 10, false);
   pruneArtworkQueue(new Set(), new Set(order));
   assert.equal(mayRevealArtwork(order[3]), false);
-  assert.equal(mayRevealArtwork(order[10]), true);
+  assert.equal(mayRevealArtwork(order[10]), false);
   assert.equal(started.length, 3);
 
   await finish([order[3], order[2], order[4]]);
@@ -178,12 +178,59 @@ test("missing or already-cached priority covers do not block other artwork", asy
 
   getState().tracksById.get(order[2]).artworkPath = null;
   prioritizeNearbyArtwork(order, 3, false);
+  assert.equal(mayRevealArtwork(order[3]), false);
   assert.deepEqual(started, [order[3], order[4], order[1], order[5]]);
   prefetchArtwork(order);
   await finish([order[4], order[1], order[5]]);
   render();
+  assert.equal(mayRevealArtwork(order[3]), true);
   assert.equal(mayRevealArtwork(order[0]), true);
   assert.equal(started.includes(order[0]), true);
+});
+
+test("reveals nearby search-result covers together after multiple read batches", async () => {
+  const order = tracks("search", 12);
+  const priority = [order[6], order[5], order[7], order[4], order[8]];
+  const renders = [];
+  const unsubscribe = subscribe(() => {
+    prioritizeNearbyArtwork(order, 6, false);
+    renders.push(priority.filter((id) =>
+      mayRevealArtwork(id) && artworkUrlFor(getState().tracksById.get(id), "idle")));
+  });
+
+  try {
+    prioritizeNearbyArtwork(order, 6, false);
+    assert.deepEqual(started, priority.slice(0, 3));
+    await finish(priority.slice(0, 3));
+    render();
+    assert.deepEqual(renders, [[]]);
+
+    await finish([priority[3]]);
+    render();
+    assert.deepEqual(renders, [[], []]);
+
+    await finish([priority[4]]);
+    render();
+    assert.deepEqual(renders, [[], [], priority]);
+  } finally {
+    unsubscribe();
+  }
+});
+
+test("a failed nearby cover does not prevent the remaining covers revealing together", async () => {
+  const order = tracks("failed-search", 9);
+  const priority = [order[4], order[3], order[5], order[2], order[6]];
+  prioritizeNearbyArtwork(order, 4, false);
+
+  await finish(priority.slice(0, 3));
+  render();
+  assert.equal(mayRevealArtwork(priority[0]), false);
+
+  await finish(priority.slice(3), new Set([priority[4]]));
+  assert.equal(mayRevealArtwork(priority[0]), true);
+  render();
+  assert.equal(mayRevealArtwork(priority[4]), true);
+  assert.equal(artworkUrlFor(getState().tracksById.get(priority[4]), "idle"), null);
 });
 
 test("navigation to a cached group releases an older priority barrier", async () => {

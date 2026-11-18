@@ -745,7 +745,16 @@ export function prioritizeNearbyArtwork(order: readonly string[], cursor: number
 }
 
 export function mayRevealArtwork(trackId: string): boolean {
-  return !artworkPriorityNeedsRender || artworkPriority.has(trackId);
+  return !artworkPriorityNeedsRender || (artworkPriority.has(trackId) && !priorityArtworkPending());
+}
+
+function priorityArtworkPending(): boolean {
+  for (const id of artworkPriority) {
+    if (artworkPending.has(id) || artworkInFlight.has(id)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function prefetchArtwork(trackIds: readonly string[]): void {
@@ -838,8 +847,7 @@ function pumpArtwork(): void {
     }
   }
 
-  if (artworkPriorityNeedsRender ||
-      [...artworkPriority].some((id) => artworkPending.has(id) || artworkInFlight.has(id))) {
+  if (artworkPriorityNeedsRender || priorityArtworkPending()) {
     return;
   }
 
@@ -1082,8 +1090,7 @@ function scheduleEmit(): void {
   window.setTimeout(() => {
     emitScheduled = false;
     emit();
-    if (artworkPriorityNeedsRender &&
-        ![...artworkPriority].some((id) => artworkPending.has(id) || artworkInFlight.has(id))) {
+    if (artworkPriorityNeedsRender && !priorityArtworkPending()) {
       artworkPriorityNeedsRender = false;
       pumpArtwork();
       scheduleEmit();

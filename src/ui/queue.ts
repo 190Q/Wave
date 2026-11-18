@@ -376,6 +376,9 @@ export function mountQueue(): void {
 
     if (enter === "all") {
       for (const [, card] of created) {
+        if (device() !== "desktop" && !card.dataset.artwork) {
+          continue;
+        }
         card.classList.add("is-entering");
         entering.add(card);
       }
@@ -383,6 +386,9 @@ export function mountQueue(): void {
       // The cards the strip grew by are the ones furthest from the centre.
       created.sort((a, b) => Math.abs(b[0] - centre) - Math.abs(a[0] - centre));
       for (const [, card] of created.slice(0, enter)) {
+        if (device() !== "desktop" && !card.dataset.artwork) {
+          continue;
+        }
         card.classList.add("is-entering");
         popping.add(card);
       }
@@ -732,7 +738,13 @@ export function mountQueue(): void {
         prefetchArtwork(snapshot.order);
       }
 
-      if (reshuffle) {
+      const awaitingArtwork = device() !== "desktop" &&
+        snapshot.currentId !== null && !mayRevealArtwork(snapshot.currentId);
+      if (awaitingArtwork) {
+        flushPopping();
+        endWash();
+        clearCards();
+      } else if (reshuffle) {
         washAway();
         washed = true;
       } else if (collectionChanged && shown && !reduceMotionActive() && oldCount > 0) {

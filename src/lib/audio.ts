@@ -13,6 +13,7 @@ export interface AudioEngineHandlers {
   /** A fresh element, or one on its way out, for the equaliser to follow. */
   onElement?: (element: HTMLAudioElement, phase: "created" | "retired") => void;
   onBuffering?: (durationMs: number, element: HTMLAudioElement) => void;
+  onPlaying?: () => void;
 }
 
 const REPORT_BUFFERING_MS = 250;
@@ -284,6 +285,7 @@ export class AudioEngine {
     const waitingAt = this.waitingAt;
     this.waitingAt = null;
     this.elementPlayed = true;
+    this.handlers.onPlaying?.();
     if (waitingAt !== null) {
       const elapsed = performance.now() - waitingAt;
       if (elapsed >= REPORT_BUFFERING_MS) {

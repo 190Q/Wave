@@ -86,6 +86,7 @@ class LogArgs {
 /** How long after a pause the webview is put back into its running state. */
 private const val KEEP_ALIVE_RETRY_MS = 500L
 private const val CONTROL_TIMEOUT_MS = 10_000L
+private const val CONTROL_TRANSITION_MS = 500L
 private const val LOG_VIEW_BYTES = 1_048_576L
 
 private val playbackHandler = Handler(Looper.getMainLooper())
@@ -115,7 +116,7 @@ internal fun dispatchPlaybackControl(view: WebView, action: String, value: Doubl
     val rustView = view as? RustWebView
     if (rustView != null) {
       val pending = pendingControls[rustView] ?: 0
-      if (pending == 0) rustView.setPlaybackControlVisible(true)
+      rustView.setPlaybackControlVisible(true)
       pendingControls[rustView] = pending + 1
     }
 
@@ -143,7 +144,7 @@ internal fun dispatchPlaybackControl(view: WebView, action: String, value: Doubl
       try {
         view.evaluateJavascript(
           "if (Date.now() <= $deadline) window.dispatchEvent(new CustomEvent('wave:media-control',{detail:$payload}));"
-        ) { finish.run() }
+        ) { playbackHandler.postDelayed(finish, CONTROL_TRANSITION_MS) }
       } catch (error: Exception) {
         finish.run()
         Log.w("Wave", "the media control could not be delivered", error)

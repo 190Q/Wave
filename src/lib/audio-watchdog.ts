@@ -38,7 +38,7 @@ export function mountAudioWatchdog(
     const element = engine.element;
     if (element.paused) {
       report(`The sound was taken away by the system. ${describe(element)}`);
-      player.pause();
+      player.pauseForInterruption();
       return;
     }
 
@@ -54,7 +54,7 @@ export function mountAudioWatchdog(
     if (hidden && snapshot.playing) {
       player.sampleListening();
     }
-    if (!snapshot.playing || !snapshot.currentId || element.ended || (hidden && element.paused)) {
+    if (!snapshot.playing || !snapshot.currentId || element.ended) {
       reset();
       return;
     }

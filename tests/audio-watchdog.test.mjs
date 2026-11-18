@@ -71,6 +71,7 @@ function watchdog(t, hidden = false) {
     sampleListening() { this.samples += 1; },
     reloadCurrent() { this.reloads += 1; },
     pause() { this.pauses += 1; this.playing = false; this.change(); },
+    pauseForInterruption() { this.pause(); },
   };
   mountAudioWatchdog(engine, player, (message) => reports.push(message));
   const check = (ms = 1000) => {
@@ -173,16 +174,114 @@ test("seeks, track changes, element changes, and visibility changes reset stall 
   assert.equal(player.reloads, 1);
 });
 
-test("an unexpected pause is reconciled only when visible", (t) => {
+test("an unexpected background pause is reconciled after the longer grace period", (t) => {
   const { engine, player, reports, check } = watchdog(t, true);
   engine.element.paused = true;
-  for (let i = 0; i < 20; i += 1) check();
+  for (let i = 0; i < 14; i += 1) check();
   assert.equal(player.pauses, 0);
-  document.hidden = false;
   check();
-  for (let i = 0; i < 5; i += 1) check();
   assert.equal(player.pauses, 1);
   assert.match(reports[0], /taken away by the system/);
+});
+
+function interruptedPlayback(t, hidden = false, reconcile = true) {
+  const clock = environment(t, hidden);
+  globalThis.HTMLMediaElement = { HAVE_METADATA: 1 };
+  globalThis.Audio = class {
+    paused = true;
+    ended = false;
+    seeking = false;
+    currentTime = 0;
+    duration = 120;
+    readyState = 1;
+    listeners = new Map();
+    addEventListener(name, listener) { this.listeners.set(name, listener); }
+    removeEventListener(name) { this.listeners.delete(name); }
+    play() { this.paused = false; return Promise.resolve(); }
+    pause() { this.paused = true; }
+    removeAttribute(name) { if (name === "src") this.src = ""; }
+    load() {}
+    dispatch(name) { this.listeners.get(name)?.(); }
+  };
+  let player;
+  const engine = new AudioEngine({ onPlaying: () => player.handlePlaying() });
+  player = new Player(engine, (id) => ({
+    path: `http://127.0.0.1:1234/${id}`, durationMs: 120000, gain: 1,
+  }));
+  mountAudioWatchdog(engine, player, () => {});
+  player.setQueue("queue", "Queue", ["one", "two"]);
+  player.play();
+  player.finishTransitions();
+  engine.element.paused = true;
+  if (reconcile) {
+    for (let i = 0; i < (hidden ? 16 : 6); i += 1) {
+      clock.advance(1000);
+      window.check();
+    }
+    assert.equal(player.snapshot().playing, false);
+    player.finishTransitions();
+  }
+  return { engine, player };
+}
+
+test("an interrupted element restores the player and volume when it resumes", (t) => {
+  const { engine, player } = interruptedPlayback(t);
+  assert.equal(engine.element.volume, 0);
+  engine.element.paused = false;
+  engine.element.dispatch("playing");
+  assert.equal(player.snapshot().playing, true);
+  player.finishTransitions();
+  assert.ok(engine.element.volume > 0);
+  assert.equal(typeof window.check, "function");
+});
+
+test("a user pause during an interruption prevents an automatic resume", (t) => {
+  const { engine, player } = interruptedPlayback(t);
+  const old = engine.element;
+  player.pause();
+  assert.notEqual(engine.element, old);
+  assert.equal(old.src, "");
+  assert.equal(old.listeners.has("playing"), false);
+  engine.element.paused = false;
+  engine.element.dispatch("playing");
+  assert.equal(player.snapshot().playing, false);
+  assert.equal(engine.element.paused, true);
+});
+
+test("a user pause before the watchdog fires retires the interrupted element", (t) => {
+  const { engine, player } = interruptedPlayback(t, false, false);
+  const old = engine.element;
+  player.pause();
+  assert.equal(player.snapshot().playing, false);
+  assert.notEqual(engine.element, old);
+  assert.equal(old.src, "");
+  assert.equal(old.listeners.has("playing"), false);
+});
+
+test("a long background interruption can resume without losing volume", (t) => {
+  const { engine, player } = interruptedPlayback(t, true);
+  engine.element.paused = false;
+  engine.element.dispatch("playing");
+  assert.equal(player.snapshot().playing, true);
+  assert.ok(engine.element.volume > 0);
+});
+
+test("a stale playing event cannot resume an element that is still paused", (t) => {
+  const { engine, player } = interruptedPlayback(t);
+  engine.element.dispatch("playing");
+  assert.equal(player.snapshot().playing, false);
+  engine.element.paused = false;
+  engine.element.dispatch("playing");
+  assert.equal(player.snapshot().playing, true);
+});
+
+test("replacing a track cancels the old interruption", (t) => {
+  const { engine, player } = interruptedPlayback(t);
+  player.moveTo("two");
+  engine.element.paused = false;
+  engine.element.dispatch("playing");
+  assert.equal(player.snapshot().playing, false);
+  assert.equal(engine.element.paused, true);
 });
 
 test("reloading uses the media clock rather than the extrapolated display position", (t) => {

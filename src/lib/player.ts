@@ -72,6 +72,7 @@ export class Player {
   private listenedAt = 0;
 
   private playing = false;
+  private resumeAfterInterruption = false;
   private shuffle = false;
   private repeat: RepeatMode = "off";
 
@@ -219,6 +220,7 @@ export class Player {
     this.muted = playback.muted;
     this.sampleListening();
     this.playing = false;
+    this.resumeAfterInterruption = false;
     this.level = 0;
     this.applyLevel();
     this.stopFade();
@@ -254,6 +256,7 @@ export class Player {
     if (!this.hasQueue || this.playing) {
       return;
     }
+    this.resumeAfterInterruption = false;
     this.playing = true;
 
     if (this.loadedId !== this.currentId) {
@@ -296,12 +299,54 @@ export class Player {
   }
 
   pause(): void {
+    const interrupted = this.resumeAfterInterruption || (this.playing && !this.engine.isPlaying);
+    this.resumeAfterInterruption = false;
+    if (!this.playing) {
+      if (interrupted) this.cancelInterruptedPlayback();
+      return;
+    }
+    this.sampleListening();
+    this.playing = false;
+    if (interrupted) {
+      this.cancelInterruptedPlayback();
+    } else {
+      this.startFade(0);
+    }
+    this.emitChange();
+  }
+
+  pauseForInterruption(): void {
     if (!this.playing) {
       return;
     }
     this.sampleListening();
     this.playing = false;
+    this.resumeAfterInterruption = true;
     this.startFade(0);
+    this.emitChange();
+  }
+
+  private cancelInterruptedPlayback(): void {
+    const position = this.engine.positionMs;
+    this.stopFade();
+    this.level = 0;
+    this.engine.reload(false, position);
+    this.stopClock();
+    this.resetListeningClock();
+  }
+
+  handlePlaying(): void {
+    if (this.playing || !this.engine.isPlaying) {
+      return;
+    }
+    if (!this.resumeAfterInterruption) {
+      if (this.fade === null) this.engine.pause();
+      return;
+    }
+    this.resumeAfterInterruption = false;
+    this.playing = true;
+    this.startClock();
+    this.startFade(this.targetLevel());
     this.emitChange();
   }
 
@@ -485,6 +530,7 @@ export class Player {
 
     const position = this.engine.positionMs;
     this.sampleListening();
+    this.resumeAfterInterruption = false;
     this.stopFade();
     this.level = 0;
     this.engine.reload(this.playing, position);
@@ -509,6 +555,7 @@ export class Player {
     this.sampleListening();
     this.stopFade();
     this.playing = false;
+    this.resumeAfterInterruption = false;
     this.level = 0;
     this.applyLevel();
     this.stopClock();
@@ -537,6 +584,7 @@ export class Player {
 
     this.stopFade();
     this.level = 0;
+    this.resumeAfterInterruption = false;
 
     if (!id || !source) {
       this.loadedId = null;
@@ -570,6 +618,7 @@ export class Player {
   private finish(): void {
     this.stopFade();
     this.playing = false;
+    this.resumeAfterInterruption = false;
     this.level = 0;
     this.applyLevel();
     this.engine.pause();

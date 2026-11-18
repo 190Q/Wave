@@ -4,6 +4,9 @@ import android.Manifest
 import android.app.Notification
 import android.app.NotificationManager
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.os.Build
 import android.util.Base64
 import android.view.View
@@ -43,6 +46,106 @@ class PausedMediaControlsTest {
       instrumentation.uiAutomation.grantRuntimePermission(context.packageName, Manifest.permission.POST_NOTIFICATIONS)
     }
     instrumentation.runOnMainSync { MediaPlayback.setControls(context, true) }
+  }
+
+  @Test
+  fun backgroundControlKeepsAnimationFramesRunning() {
+    val probe = BackgroundPlaybackProbe()
+    lateinit var view: RustWebView
+    val scenario = ActivityScenario.launch(PlaybackTestActivity::class.java)
+    try {
+      scenario.onActivity { activity ->
+        view = RustWebView(activity, emptyArray(), "control-animation-test")
+        view.addJavascriptInterface(probe, "test")
+        activity.addContentView(view, ViewGroup.LayoutParams(1, 1))
+        view.loadDataWithBaseURL("https://tauri.localhost/", """
+          <script>
+            let controlled = false;
+            document.addEventListener("visibilitychange", () => {
+              if (controlled && document.hidden) test.hiddenAgain();
+            });
+            window.addEventListener("wave:media-control", (event) => {
+              controlled = true;
+              test.control(event.detail.action, document.hidden);
+              const start = performance.now();
+              function frame(now) {
+                if (now - start >= 300) test.animationFinished(document.hidden);
+                else requestAnimationFrame(frame);
+              }
+              requestAnimationFrame(frame);
+            });
+            test.ready();
+          </script>
+        """.trimIndent(), "text/html", "UTF-8", null)
+      }
+      assertTrue(probe.ready.await(20, TimeUnit.SECONDS))
+      scenario.moveToState(Lifecycle.State.CREATED)
+      instrumentation.runOnMainSync { dispatchPlaybackControl(view, "pause", null) }
+      assertTrue(probe.control.await(10, TimeUnit.SECONDS))
+      assertTrue(probe.animationFinished.await(10, TimeUnit.SECONDS))
+      assertFalse(probe.hiddenDuringAnimation)
+      assertTrue(probe.hiddenAgain.await(10, TimeUnit.SECONDS))
+    } finally {
+      instrumentation.runOnMainSync { (view.parent as? ViewGroup)?.removeView(view); view.destroy() }
+      scenario.close()
+    }
+  }
+
+  @Test
+  fun webViewResumesAfterTransientAudioFocusLoss() {
+    val probe = BackgroundPlaybackProbe()
+    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    val listener = AudioManager.OnAudioFocusChangeListener {}
+    val request = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+        .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY).build())
+        .setOnAudioFocusChangeListener(listener)
+        .build()
+    } else {
+      null
+    }
+    lateinit var view: RustWebView
+    val scenario = ActivityScenario.launch(PlaybackTestActivity::class.java)
+    try {
+      scenario.onActivity { activity ->
+        view = RustWebView(activity, emptyArray(), "focus-interruption-test")
+        view.addJavascriptInterface(probe, "test")
+        activity.addContentView(view, ViewGroup.LayoutParams(1, 1))
+        val sound = Base64.encodeToString(silentWav(), Base64.NO_WRAP)
+        view.loadDataWithBaseURL("https://tauri.localhost/", """
+          <script>
+            const audio = new Audio("data:audio/wav;base64,$sound");
+            audio.loop = true;
+            let interrupted = false;
+            audio.addEventListener("pause", () => {
+              interrupted = true;
+              test.interrupted();
+            });
+            audio.addEventListener("playing", () => {
+              if (interrupted) test.resumed();
+              else test.started();
+            });
+            audio.play();
+          </script>
+        """.trimIndent(), "text/html", "UTF-8", null)
+      }
+      assertTrue(probe.started.await(20, TimeUnit.SECONDS))
+      val result = if (request != null) audioManager.requestAudioFocus(request)
+      else @Suppress("DEPRECATION") audioManager.requestAudioFocus(
+        listener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+      )
+      assertEquals(AudioManager.AUDIOFOCUS_REQUEST_GRANTED, result)
+      assertTrue(probe.interrupted.await(10, TimeUnit.SECONDS))
+      Thread.sleep(6_000)
+      if (request != null) audioManager.abandonAudioFocusRequest(request)
+      else @Suppress("DEPRECATION") audioManager.abandonAudioFocus(listener)
+      assertTrue(probe.resumed.await(10, TimeUnit.SECONDS))
+    } finally {
+      if (request != null) audioManager.abandonAudioFocusRequest(request)
+      else @Suppress("DEPRECATION") audioManager.abandonAudioFocus(listener)
+      instrumentation.runOnMainSync { (view.parent as? ViewGroup)?.removeView(view); view.destroy() }
+      scenario.close()
+    }
   }
 
   @Test
@@ -403,18 +506,24 @@ class PausedMediaControlsTest {
     val control = CountDownLatch(expectedControls)
     val firstControl = CountDownLatch(1)
     val started = CountDownLatch(1)
+    val interrupted = CountDownLatch(1)
+    val resumed = CountDownLatch(1)
     val hiddenBeforeControl = CountDownLatch(1)
     val hiddenAgain = CountDownLatch(1)
+    val animationFinished = CountDownLatch(1)
     val blocked = CountDownLatch(1)
     val unblock = CountDownLatch(1)
     val actions = Collections.synchronizedList(mutableListOf<String>())
     val hiddenStates = Collections.synchronizedList(mutableListOf<Boolean>())
     @Volatile var action: String? = null
     @Volatile var hiddenDuringControl = true
+    @Volatile var hiddenDuringAnimation = true
 
     @JavascriptInterface fun ready() { ready.countDown() }
     @JavascriptInterface fun frozen() { frozen.countDown() }
     @JavascriptInterface fun started() { started.countDown() }
+    @JavascriptInterface fun interrupted() { interrupted.countDown() }
+    @JavascriptInterface fun resumed() { resumed.countDown() }
     @JavascriptInterface fun block() {
       blocked.countDown()
       unblock.await(20, TimeUnit.SECONDS)
@@ -429,6 +538,10 @@ class PausedMediaControlsTest {
     }
     @JavascriptInterface fun hiddenBeforeControl() { hiddenBeforeControl.countDown() }
     @JavascriptInterface fun hiddenAgain() { hiddenAgain.countDown() }
+    @JavascriptInterface fun animationFinished(hidden: Boolean) {
+      hiddenDuringAnimation = hidden
+      animationFinished.countDown()
+    }
   }
 
   private fun silentWav(): ByteArray {

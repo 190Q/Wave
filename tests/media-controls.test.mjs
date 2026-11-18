@@ -176,6 +176,13 @@ function tickIntervals() {
   for (const callback of [...context.intervals.values()]) callback();
 }
 
+function finishFrames() {
+  const frames = [...context.frames.entries()];
+  for (const [id, callback] of frames) {
+    if (context.frames.delete(id)) callback(performance.now() + 400);
+  }
+}
+
 test("Android forwards play, pause and queue updates with both optional surfaces disabled", async () => {
   const { player } = setup(AndroidPlayer, mountAndroidPresence, false);
   await new Promise((resolve) => setImmediate(resolve));
@@ -193,15 +200,22 @@ test("Android forwards play, pause and queue updates with both optional surfaces
 test("Android handles direct media controls without waiting for the Tauri event bridge", () => {
   const { engine, player } = setup(AndroidPlayer, mountAndroidPresence, false);
   context.androidControl({ detail: { action: "pause" } });
+  assert.equal(engine.element.paused, false);
+  finishFrames();
   assert.equal(engine.element.paused, true);
   context.androidControl({ detail: { action: "play" } });
   assert.equal(engine.element.paused, false);
+  assert.equal(engine.element.volume, 0);
+  finishFrames();
   assert.ok(engine.element.volume > 0);
   context.androidControl({ detail: { action: "seekTo", value: 25000 } });
   assert.equal(engine.positionMs, 25000);
   context.androidControl({ detail: { action: "next" } });
   assert.equal(player.currentId, "two");
   assert.equal(engine.element.paused, false);
+  assert.equal(engine.element.volume, 0);
+  finishFrames();
+  assert.ok(engine.element.volume > 0);
 });
 
 test("Android updates the media session without waiting for Tauri acknowledgements", () => {
@@ -412,13 +426,16 @@ test("the visual clock parks while hidden without losing listening time", (t) =>
 });
 
 for (const [platform, PlayerClass] of [["Linux", Player], ["Android", AndroidPlayer]]) {
-  test(`${platform}: system next, pause, previous and pause do not leave an old song playing`, () => {
+  test(`${platform}: system controls fade and retire outgoing songs`, () => {
     const { engine, player } = setup(PlayerClass);
     const first = engine.element;
 
     press("next");
     const second = engine.element;
     assert.equal(player.currentId, "two");
+    assert.equal(first.paused, false);
+    assert.equal(second.volume, 0);
+    finishFrames();
     assert.equal(first.paused, true);
     assert.equal(first.src, "");
     assert.equal(second.paused, false);
@@ -426,34 +443,41 @@ for (const [platform, PlayerClass] of [["Linux", Player], ["Android", AndroidPla
     assert.equal(second.volume === 1, platform === "Android");
 
     press("pause");
-    assert.equal(second.paused, true);
+    assert.equal(second.paused, false);
     assert.equal(player.snapshot().playing, false);
+    finishFrames();
+    assert.equal(second.paused, true);
 
     press("previous");
     const previous = engine.element;
     assert.equal(player.currentId, "one");
     assert.equal(previous.paused, false);
+    finishFrames();
     assert.ok(previous.volume > 0);
 
     press("pause");
+    finishFrames();
     assert.equal(previous.paused, true);
     assert.equal(context.elements.filter((element) => !element.paused).length, 0);
   });
 }
 
-test("rapid system transitions retire every outgoing element without animation frames", () => {
+test("rapid system transitions retire every outgoing element after their fades", () => {
   const { engine, player } = setup();
   for (const action of ["next", "next", "previous", "next", "previous", "previous"]) {
     press(action);
-    assert.deepEqual(context.elements.filter((element) => !element.paused), [engine.element]);
-    assert.ok(engine.element.volume > 0);
   }
   assert.equal(player.currentId, "one");
+  finishFrames();
+  assert.deepEqual(context.elements.filter((element) => !element.paused), [engine.element]);
+  assert.ok(engine.element.volume > 0);
 
   press("pause");
+  finishFrames();
   assert.equal(engine.element.paused, true);
   press("play");
   assert.equal(engine.element.paused, false);
+  finishFrames();
   assert.ok(engine.element.volume > 0);
 });
 
@@ -510,16 +534,18 @@ test("system seeking keeps the current song playing", () => {
   assert.equal(player.snapshot().playing, true);
 });
 
-test("queue selection and stop finish pending transitions", () => {
+test("queue selection and stop finish pending transitions after fading", () => {
   const { engine, player } = setup();
   const first = engine.element;
   press("skipToQueueItem", 2);
   assert.equal(player.currentId, "three");
+  finishFrames();
   assert.equal(first.paused, true);
   assert.equal(engine.element.paused, false);
 
   engine.element.currentTime = 50;
   press("stop");
+  finishFrames();
   assert.equal(engine.element.paused, true);
   assert.equal(engine.positionMs, 0);
   assert.equal(player.snapshot().playing, false);

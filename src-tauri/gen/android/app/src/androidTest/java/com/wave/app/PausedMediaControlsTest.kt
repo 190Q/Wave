@@ -6,14 +6,20 @@ import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
 import android.util.Base64
+import android.view.View
+import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import android.widget.FrameLayout
+import androidx.lifecycle.Lifecycle
+import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.webkit.WebViewFeature
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.junit.After
@@ -37,6 +43,137 @@ class PausedMediaControlsTest {
       instrumentation.uiAutomation.grantRuntimePermission(context.packageName, Manifest.permission.POST_NOTIFICATIONS)
     }
     instrumentation.runOnMainSync { MediaPlayback.setControls(context, true) }
+  }
+
+  @Test
+  fun overlappingControlsStayVisibleUntilAllAreDelivered() {
+    val probe = BackgroundPlaybackProbe(3)
+    lateinit var view: RustWebView
+    val scenario = ActivityScenario.launch(PlaybackTestActivity::class.java)
+    try {
+      scenario.onActivity { activity ->
+        view = RustWebView(activity, emptyArray(), "overlapping-controls-test")
+        view.addJavascriptInterface(probe, "test")
+        activity.addContentView(view, ViewGroup.LayoutParams(1, 1))
+        view.loadDataWithBaseURL("https://tauri.localhost/", """
+          <script>
+            let controlled = false;
+            document.addEventListener("visibilitychange", () => {
+              if (controlled && document.hidden) test.hiddenAgain();
+            });
+            window.addEventListener("wave:media-control", (event) => {
+              controlled = true;
+              test.control(event.detail.action, document.hidden);
+            });
+            test.ready();
+          </script>
+        """.trimIndent(), "text/html", "UTF-8", null)
+      }
+      assertTrue(probe.ready.await(20, TimeUnit.SECONDS))
+      scenario.moveToState(Lifecycle.State.CREATED)
+      instrumentation.runOnMainSync {
+        dispatchPlaybackControl(view, "play", null)
+        dispatchPlaybackControl(view, "next", null)
+        dispatchPlaybackControl(view, "pause", null)
+      }
+      assertTrue(probe.control.await(10, TimeUnit.SECONDS))
+      assertEquals(listOf("play", "next", "pause"), probe.actions)
+      assertEquals(listOf(false, false, false), probe.hiddenStates)
+      assertTrue(probe.hiddenAgain.await(10, TimeUnit.SECONDS))
+    } finally {
+      instrumentation.runOnMainSync { (view.parent as? ViewGroup)?.removeView(view); view.destroy() }
+      scenario.close()
+    }
+  }
+
+  @Test
+  fun expiredControlDoesNotRunAfterANewControlArrives() {
+    val probe = BackgroundPlaybackProbe()
+    lateinit var view: RustWebView
+    val scenario = ActivityScenario.launch(PlaybackTestActivity::class.java)
+    try {
+      scenario.onActivity { activity ->
+        view = RustWebView(activity, emptyArray(), "expired-control-test")
+        view.addJavascriptInterface(probe, "test")
+        activity.addContentView(view, ViewGroup.LayoutParams(1, 1))
+        view.loadDataWithBaseURL("https://tauri.localhost/", """
+          <script>
+            let controlled = false;
+            document.addEventListener("visibilitychange", () => {
+              if (controlled && document.hidden) test.hiddenAgain();
+            });
+            window.addEventListener("wave:media-control", (event) => {
+              controlled = true;
+              test.control(event.detail.action, document.hidden);
+            });
+            test.ready();
+          </script>
+        """.trimIndent(), "text/html", "UTF-8", null)
+      }
+      assertTrue(probe.ready.await(20, TimeUnit.SECONDS))
+      scenario.moveToState(Lifecycle.State.CREATED)
+      instrumentation.runOnMainSync { view.evaluateJavascript("test.block()", null) }
+      assertTrue(probe.blocked.await(10, TimeUnit.SECONDS))
+      instrumentation.runOnMainSync { dispatchPlaybackControl(view, "play", null) }
+      Thread.sleep(11_000)
+      instrumentation.runOnMainSync { dispatchPlaybackControl(view, "next", null) }
+      probe.unblock.countDown()
+      assertTrue(probe.control.await(10, TimeUnit.SECONDS))
+      assertEquals(listOf("next"), probe.actions)
+      assertFalse(probe.hiddenDuringControl)
+      assertTrue(probe.hiddenAgain.await(10, TimeUnit.SECONDS))
+    } finally {
+      probe.unblock.countDown()
+      instrumentation.runOnMainSync { (view.parent as? ViewGroup)?.removeView(view); view.destroy() }
+      scenario.close()
+    }
+  }
+
+  @Test
+  fun controlsRestoreForegroundAndHiddenParentVisibility() {
+    val probe = BackgroundPlaybackProbe(2)
+    lateinit var view: RustWebView
+    lateinit var parent: FrameLayout
+    val scenario = ActivityScenario.launch(PlaybackTestActivity::class.java)
+    try {
+      scenario.onActivity { activity ->
+        parent = FrameLayout(activity)
+        view = RustWebView(activity, emptyArray(), "visibility-test")
+        view.addJavascriptInterface(probe, "test")
+        parent.addView(view, ViewGroup.LayoutParams(1, 1))
+        activity.addContentView(parent, ViewGroup.LayoutParams(1, 1))
+        view.loadDataWithBaseURL("https://tauri.localhost/", """
+          <script>
+            let controls = 0;
+            document.addEventListener("visibilitychange", () => {
+              if (document.hidden && controls === 1) test.hiddenBeforeControl();
+              if (document.hidden && controls === 2) test.hiddenAgain();
+            });
+            window.addEventListener("wave:media-control", (event) => {
+              controls++;
+              test.control(event.detail.action, document.hidden);
+            });
+            test.ready();
+          </script>
+        """.trimIndent(), "text/html", "UTF-8", null)
+      }
+      assertTrue(probe.ready.await(20, TimeUnit.SECONDS))
+      instrumentation.runOnMainSync { dispatchPlaybackControl(view, "play", null) }
+      assertTrue(probe.firstControl.await(10, TimeUnit.SECONDS))
+      instrumentation.runOnMainSync {
+        assertEquals(View.VISIBLE, view.windowVisibility)
+        parent.visibility = View.INVISIBLE
+      }
+      assertTrue(probe.hiddenBeforeControl.await(10, TimeUnit.SECONDS))
+      instrumentation.runOnMainSync { dispatchPlaybackControl(view, "next", null) }
+      assertTrue(probe.control.await(10, TimeUnit.SECONDS))
+      assertEquals(listOf("play", "next"), probe.actions)
+      assertEquals(listOf(false, false), probe.hiddenStates)
+      assertTrue(probe.hiddenAgain.await(10, TimeUnit.SECONDS))
+    } finally {
+      instrumentation.runOnMainSync { parent.removeView(view); view.destroy() }
+      scenario.close()
+    }
   }
 
   @After
@@ -188,6 +325,61 @@ class PausedMediaControlsTest {
     }
   }
 
+  @Test
+  fun backgroundedWebViewIsVisibleOnlyWhileDeliveringControls() {
+    val probe = BackgroundPlaybackProbe()
+    lateinit var view: RustWebView
+    val scenario = ActivityScenario.launch(PlaybackTestActivity::class.java)
+    try {
+      scenario.onActivity { activity ->
+        view = RustWebView(activity, emptyArray(), "playback-test")
+        view.addJavascriptInterface(probe, "test")
+        activity.addContentView(view, ViewGroup.LayoutParams(1, 1))
+        val sound = Base64.encodeToString(silentWav(), Base64.NO_WRAP)
+        view.loadDataWithBaseURL("https://tauri.localhost/", """
+          <script>
+            let controlled = false;
+            const audio = new Audio("data:audio/wav;base64,$sound");
+            audio.addEventListener("timeupdate", () => {
+              if (audio.currentTime > 0) test.started();
+            });
+            document.addEventListener("freeze", () => test.frozen());
+            document.addEventListener("visibilitychange", () => {
+              if (controlled && document.hidden) test.hiddenAgain();
+            });
+            window.addEventListener("wave:media-control", (event) => {
+              controlled = true;
+              test.control(event.detail.action, document.hidden);
+              if (event.detail.action === "play") audio.play();
+            });
+            test.ready();
+          </script>
+        """.trimIndent(), "text/html", "UTF-8", null)
+      }
+      assertTrue(probe.ready.await(20, TimeUnit.SECONDS))
+      scenario.moveToState(Lifecycle.State.CREATED)
+      val freezeSeconds = InstrumentationRegistry.getArguments().getString("freezeTimeoutSeconds")?.toLongOrNull()
+      if (freezeSeconds != null) {
+        assertTrue("WebView did not freeze", probe.frozen.await(freezeSeconds, TimeUnit.SECONDS))
+      }
+      instrumentation.runOnMainSync {
+        assertTrue(view.isAttachedToWindow)
+        assertTrue(view.windowVisibility != View.VISIBLE)
+        MediaPlayback.onControl = { name, value -> dispatchPlaybackControl(view, name, value) }
+        MediaPlayback.show(context, Song().apply { title = "Track" })
+        MediaPlayback.current!!.actions[1].actionIntent.send()
+      }
+      assertTrue(probe.control.await(10, TimeUnit.SECONDS))
+      assertEquals("play", probe.action)
+      assertFalse(probe.hiddenDuringControl)
+      assertTrue(probe.started.await(15, TimeUnit.SECONDS))
+      assertTrue(probe.hiddenAgain.await(10, TimeUnit.SECONDS))
+    } finally {
+      instrumentation.runOnMainSync { (view.parent as? ViewGroup)?.removeView(view); view.destroy() }
+      scenario.close()
+    }
+  }
+
   class PlaybackProbe {
     val ready = CountDownLatch(1)
     val control = CountDownLatch(1)
@@ -203,6 +395,40 @@ class PausedMediaControlsTest {
       control.countDown()
     }
     @JavascriptInterface fun started() { started.countDown() }
+  }
+
+  class BackgroundPlaybackProbe(expectedControls: Int = 1) {
+    val ready = CountDownLatch(1)
+    val frozen = CountDownLatch(1)
+    val control = CountDownLatch(expectedControls)
+    val firstControl = CountDownLatch(1)
+    val started = CountDownLatch(1)
+    val hiddenBeforeControl = CountDownLatch(1)
+    val hiddenAgain = CountDownLatch(1)
+    val blocked = CountDownLatch(1)
+    val unblock = CountDownLatch(1)
+    val actions = Collections.synchronizedList(mutableListOf<String>())
+    val hiddenStates = Collections.synchronizedList(mutableListOf<Boolean>())
+    @Volatile var action: String? = null
+    @Volatile var hiddenDuringControl = true
+
+    @JavascriptInterface fun ready() { ready.countDown() }
+    @JavascriptInterface fun frozen() { frozen.countDown() }
+    @JavascriptInterface fun started() { started.countDown() }
+    @JavascriptInterface fun block() {
+      blocked.countDown()
+      unblock.await(20, TimeUnit.SECONDS)
+    }
+    @JavascriptInterface fun control(value: String, hidden: Boolean) {
+      action = value
+      hiddenDuringControl = hidden
+      actions.add(value)
+      hiddenStates.add(hidden)
+      firstControl.countDown()
+      control.countDown()
+    }
+    @JavascriptInterface fun hiddenBeforeControl() { hiddenBeforeControl.countDown() }
+    @JavascriptInterface fun hiddenAgain() { hiddenAgain.countDown() }
   }
 
   private fun silentWav(): ByteArray {

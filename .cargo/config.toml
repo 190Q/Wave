@@ -1,0 +1,8 @@
+[env]
+WRY_RUSTWEBVIEW_CLASS_EXTENSION = { force = true, value = """
+    fun setPlaybackControlVisible(visible: Boolean) {
+        // Wake a frozen renderer without changing the Android view hierarchy.
+        super.onVisibilityChanged(this, if (visible || isShown) android.view.View.VISIBLE else android.view.View.INVISIBLE)
+        super.onWindowVisibilityChanged(if (visible) android.view.View.VISIBLE else windowVisibility)
+    }
+""" }

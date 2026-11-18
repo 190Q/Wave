@@ -5,12 +5,14 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.DocumentsContract
 import android.util.Log
 import android.view.View
@@ -37,6 +39,7 @@ import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import java.io.File
 import java.io.RandomAccessFile
+import java.util.WeakHashMap
 
 /** The song the front end is playing, in the shape `media_session.rs` sends it. */
 @InvokeArg
@@ -82,9 +85,11 @@ class LogArgs {
 
 /** How long after a pause the webview is put back into its running state. */
 private const val KEEP_ALIVE_RETRY_MS = 500L
+private const val CONTROL_TIMEOUT_MS = 10_000L
 private const val LOG_VIEW_BYTES = 1_048_576L
 
 private val playbackHandler = Handler(Looper.getMainLooper())
+private val pendingControls = WeakHashMap<RustWebView, Int>()
 
 internal fun resumePlaybackWebView(view: WebView, action: () -> Unit) {
   playbackHandler.post {
@@ -100,11 +105,50 @@ internal fun dispatchPlaybackControl(view: WebView, action: String, value: Doubl
   if (value != null) {
     payload.put("value", value)
   }
+  val power = view.context.applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+  val wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "wave:media-control").apply {
+    setReferenceCounted(false)
+    acquire(CONTROL_TIMEOUT_MS)
+  }
+  val deadline = System.currentTimeMillis() + CONTROL_TIMEOUT_MS
   resumePlaybackWebView(view) {
-    view.evaluateJavascript(
-      "window.dispatchEvent(new CustomEvent('wave:media-control',{detail:$payload}));",
-      null
-    )
+    val rustView = view as? RustWebView
+    if (rustView != null) {
+      val pending = pendingControls[rustView] ?: 0
+      if (pending == 0) rustView.setPlaybackControlVisible(true)
+      pendingControls[rustView] = pending + 1
+    }
+
+    var finished = false
+    lateinit var finish: Runnable
+    finish = Runnable {
+      if (!finished) {
+        finished = true
+        playbackHandler.removeCallbacks(finish)
+        if (rustView != null) {
+          val pending = (pendingControls[rustView] ?: 1) - 1
+          if (pending == 0) {
+            pendingControls.remove(rustView)
+            rustView.setPlaybackControlVisible(false)
+          } else {
+            pendingControls[rustView] = pending
+          }
+        }
+        if (wakeLock.isHeld) wakeLock.release()
+      }
+    }
+    playbackHandler.postDelayed(finish, CONTROL_TIMEOUT_MS)
+    // Chromium posts its visibility update, so deliver the control on the next turn.
+    playbackHandler.post {
+      try {
+        view.evaluateJavascript(
+          "if (Date.now() <= $deadline) window.dispatchEvent(new CustomEvent('wave:media-control',{detail:$payload}));"
+        ) { finish.run() }
+      } catch (error: Exception) {
+        finish.run()
+        Log.w("Wave", "the media control could not be delivered", error)
+      }
+    }
   }
 }
 

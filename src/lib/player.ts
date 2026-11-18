@@ -32,6 +32,7 @@ export interface PlayerSource {
 type ChangeListener = (snapshot: PlayerSnapshot) => void;
 type ProgressListener = (positionMs: number, durationMs: number) => void;
 type ListeningListener = (elapsedMs: number) => void;
+type SeekListener = () => void;
 
 export const MIN_VOLUME = 0;
 export const MAX_VOLUME = 100;
@@ -87,6 +88,7 @@ export class Player {
   private readonly changeListeners = new Set<ChangeListener>();
   private readonly progressListeners = new Set<ProgressListener>();
   private readonly listeningListeners = new Set<ListeningListener>();
+  private readonly seekListeners = new Set<SeekListener>();
 
   constructor(engine: AudioEngine, sourceOf: (trackId: string) => PlayerSource | undefined) {
     this.engine = engine;
@@ -107,6 +109,11 @@ export class Player {
     return () => {
       this.progressListeners.delete(listener);
     };
+  }
+
+  onSeek(listener: SeekListener): () => void {
+    this.seekListeners.add(listener);
+    return () => this.seekListeners.delete(listener);
   }
 
   get currentId(): string | null {
@@ -351,6 +358,9 @@ export class Player {
     this.engine.seek(Math.min(Math.max(positionMs, 0), limit));
     this.resetListeningClock();
     this.emitProgress();
+    for (const listener of this.seekListeners) {
+      listener();
+    }
   }
 
   seekFraction(fraction: number): void {
@@ -648,8 +658,14 @@ export class Player {
   /** The page went away, so a fade that is still running is finished here. */
   private readonly settleLevelIfHidden = (): void => {
     if (!document.hidden) {
+      if (this.playing) {
+        this.emitProgress();
+        this.startClock();
+      }
       return;
     }
+    this.sampleListening();
+    this.stopClock();
     const to = this.fade?.to ?? this.targetLevel();
     this.stopFade();
     this.level = to;
@@ -694,7 +710,7 @@ export class Player {
     this.reportedMs = this.engine.positionMs;
     this.reportedAt = performance.now();
     this.resetListeningClock();
-    if (this.clockFrame === null) {
+    if (!document.hidden && this.clockFrame === null) {
       this.clockFrame = requestAnimationFrame(this.tick);
     }
   }
@@ -709,7 +725,7 @@ export class Player {
   /** Reads the media clock every frame, so the UI follows the sound. */
   private readonly tick = (): void => {
     this.clockFrame = null;
-    if (!this.playing) {
+    if (!this.playing || document.hidden) {
       return;
     }
     this.emitProgress();

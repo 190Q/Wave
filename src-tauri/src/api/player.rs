@@ -159,10 +159,13 @@ impl Bridge {
         // The window only sends the queue when it has moved, so a report that
         // leaves it out carries the one already known.
         if report.order.is_none() {
-            report.order = heard.last.as_ref().and_then(|last| last.order.clone());
+            report.order = heard.last.as_mut().and_then(|last| last.order.take());
         }
         if report.source_order.is_none() {
-            report.source_order = heard.last.as_ref().and_then(|last| last.source_order.clone());
+            report.source_order = heard
+                .last
+                .as_mut()
+                .and_then(|last| last.source_order.take());
         }
 
         let acked = report.command.clone().map(|id| (id, report.clone()));
@@ -286,6 +289,7 @@ mod tests {
         let bridge = Bridge::default();
         bridge.accept(Report {
             order: Some(vec!["abc".to_string(), "def".to_string()]),
+            source_order: Some(vec!["def".to_string(), "abc".to_string()]),
             ..Report::default()
         });
         bridge.accept(Report {
@@ -295,7 +299,44 @@ mod tests {
 
         let kept = bridge.snapshot().unwrap();
         assert_eq!(kept.order, Some(vec!["abc".to_string(), "def".to_string()]));
+        assert_eq!(
+            kept.source_order,
+            Some(vec!["def".to_string(), "abc".to_string()])
+        );
         assert!(kept.playing);
+    }
+
+    #[test]
+    fn position_reports_reuse_queues_without_changing_command_answers() {
+        let bridge = Bridge::default();
+        bridge.accept(Report {
+            command: Some("command-1".to_string()),
+            order: Some(vec!["abc".to_string(), "def".to_string()]),
+            source_order: Some(vec!["def".to_string(), "abc".to_string()]),
+            ..Report::default()
+        });
+        let (order, source_order) = {
+            let heard = bridge.guard();
+            let report = heard.last.as_ref().unwrap();
+            (
+                report.order.as_ref().unwrap().as_ptr(),
+                report.source_order.as_ref().unwrap().as_ptr(),
+            )
+        };
+        bridge.accept(Report {
+            playing: true,
+            ..Report::default()
+        });
+        {
+            let heard = bridge.guard();
+            let report = heard.last.as_ref().unwrap();
+            assert_eq!(report.order.as_ref().unwrap().as_ptr(), order);
+            assert_eq!(report.source_order.as_ref().unwrap().as_ptr(), source_order);
+        }
+        let answered = bridge.wait("command-1").unwrap();
+        assert!(!answered.playing);
+        assert_eq!(answered.order.unwrap(), ["abc", "def"]);
+        assert_eq!(answered.source_order.unwrap(), ["def", "abc"]);
     }
 
     #[test]

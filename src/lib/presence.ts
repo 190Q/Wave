@@ -53,6 +53,24 @@ export function mountPresence(): void {
   let pending: { song: NowPlaying | null } | null = null;
   let sending = false;
   let retryNeeded = false;
+  let timer: number | null = null;
+
+  const syncTimer = (): void => {
+    const needed = showing() && (player.snapshot().playing || retryNeeded);
+    if (needed && timer === null) {
+      timer = window.setInterval(() => {
+        if (retryNeeded) {
+          sent = undefined;
+          retryNeeded = false;
+        }
+        push();
+        syncTimer();
+      }, POSITION_INTERVAL_MS);
+    } else if (!needed && timer !== null) {
+      window.clearInterval(timer);
+      timer = null;
+    }
+  };
 
   const send = async (): Promise<void> => {
     sending = true;
@@ -66,6 +84,7 @@ export function mountPresence(): void {
       } catch {
         if (pending === null && sent === song) {
           retryNeeded = true;
+          syncTimer();
         }
       }
     }
@@ -130,18 +149,16 @@ export function mountPresence(): void {
     }
   };
 
-  player.onChange(push);
-  player.onChange(pushQueue);
-  player.onProgress(push);
-  subscribe(push);
-  subscribe(pushQueue);
-  window.setInterval(() => {
-    if (retryNeeded) {
-      sent = undefined;
-      retryNeeded = false;
-    }
+  const sync = (): void => {
     push();
-  }, POSITION_INTERVAL_MS);
+    syncTimer();
+  };
+
+  player.onChange(sync);
+  player.onChange(pushQueue);
+  player.onSeek(sync);
+  subscribe(sync);
+  subscribe(pushQueue);
 
   if (isAndroidPlatform) {
     window.addEventListener("wave:media-control", (event) => {

@@ -286,7 +286,10 @@ export function mountDock(): void {
     }
     const fraction = durationMs > 0 ? Math.min(positionMs / durationMs, 1) : 0;
     setProgress(fraction);
-    timeNow.textContent = formatDuration(positionMs);
+    const time = formatDuration(positionMs);
+    if (timeNow.textContent !== time) {
+      timeNow.textContent = time;
+    }
   };
 
   let lastPlaying: boolean | null = null;

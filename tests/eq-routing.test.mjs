@@ -11,10 +11,12 @@ const vite = await createServer({
   optimizeDeps: { noDiscovery: true },
   server: { middlewareMode: true, watch: null },
 });
+
 after(() => vite.close());
 const { EqChain } = await vite.ssrLoadModule("/src/lib/eq.ts");
 
 class FakeNode {
+  responseCalls = 0;
   gain = { value: 0 };
   frequency = { value: 0 };
   Q = { value: 0 };
@@ -25,7 +27,7 @@ class FakeNode {
   release = { value: 0 };
   connect() {}
   disconnect() {}
-  getFrequencyResponse(_freqs, magnitudes) { magnitudes.fill(2); }
+  getFrequencyResponse(_freqs, magnitudes) { this.responseCalls += 1; magnitudes.fill(2); }
 }
 
 class FakeContext {
@@ -35,13 +37,14 @@ class FakeContext {
   destination = new FakeNode();
   sources = [];
   gains = [];
+  filters = [];
   onstatechange = null;
 
   constructor() { FakeContext.instances.push(this); }
   createGain() { const gain = new FakeNode(); this.gains.push(gain); return gain; }
   createDynamicsCompressor() { return new FakeNode(); }
   createAnalyser() { return new FakeNode(); }
-  createBiquadFilter() { return new FakeNode(); }
+  createBiquadFilter() { const filter = new FakeNode(); this.filters.push(filter); return filter; }
   createMediaElementSource(element) {
     if (element.fail) throw new Error("cannot route");
     this.sources.push(element);
@@ -65,6 +68,33 @@ const settings = (enabled = true) => ({
   eqAutoPreamp: false,
   eqPreampDb: 0,
   eqOutputId: "",
+});
+
+test("the response is cached until the equalizer settings or availability change", () => {
+  const eq = new EqChain();
+  const band = { id: "boost", kind: "peaking", freq: 1000, q: 1, gain: 6, enabled: true };
+  eq.apply({ ...settings(), eqBands: [band] });
+  const context = FakeContext.instances.at(-1);
+  const filter = context.filters[0];
+  assert.equal(filter.responseCalls, 0);
+  const response = eq.curve();
+  assert.equal(filter.responseCalls, 1);
+  assert.ok(response[0] > 0);
+  assert.equal(eq.curve(), response);
+  assert.equal(filter.responseCalls, 1);
+
+  eq.apply({ ...settings(), eqBands: [{ ...band, gain: 3 }] });
+  eq.curve();
+  assert.equal(filter.responseCalls, 2);
+  eq.apply(settings(false));
+  assert.equal(eq.curve()[0], 0);
+  assert.equal(filter.responseCalls, 2);
+  eq.apply({ ...settings(), eqBands: [band] });
+  assert.ok(eq.curve()[0] > 0);
+  assert.equal(filter.responseCalls, 3);
+  eq.block("cors");
+  assert.equal(eq.curve()[0], 0);
+  assert.equal(filter.responseCalls, 3);
 });
 
 test("a boosted suspended graph applies its automatic preamp before audio is routed", async () => {

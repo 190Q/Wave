@@ -92,6 +92,7 @@ export class EqChain {
   private magnitudes: Curve = EMPTY;
   private phases: Curve = EMPTY;
   private response: Curve = EMPTY;
+  private curveDirty = true;
 
   /** Why the equaliser is out of action, `null` while it is available. */
   get blockedReason(): EqBlocked {
@@ -158,6 +159,7 @@ export class EqChain {
       return;
     }
     this.blocked = reason;
+    this.curveDirty = true;
     // Anything already routed keeps playing, because the chain goes flat
     // rather than being taken apart.
     this.rebuild();
@@ -211,6 +213,7 @@ export class EqChain {
   /** Applies the settings, rebuilding only what has changed shape. */
   apply(settings: Settings): void {
     this.settings = settings;
+    this.curveDirty = true;
 
     if (!this.enabled) {
       // Still worth rebuilding, so a curve switched off goes flat.
@@ -242,11 +245,15 @@ export class EqChain {
     if (this.freqs.length === 0) {
       return EMPTY;
     }
+    if (!this.curveDirty) {
+      return this.response;
+    }
     if (this.response.length !== this.freqs.length) {
       this.response = new Float32Array(this.freqs.length);
     }
     const db = this.response;
     db.fill(0);
+    this.curveDirty = false;
 
     const settings = this.settings;
     if (!this.enabled || !settings) {

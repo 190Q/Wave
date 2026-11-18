@@ -44,6 +44,7 @@ function environment(t, hidden = false) {
   globalThis.document = { hidden, addEventListener() {} };
   globalThis.window = {
     setInterval(callback) { this.check = callback; return 1; },
+    clearInterval() { this.check = null; },
     cancelAnimationFrame() {},
   };
   globalThis.requestAnimationFrame = () => 1;
@@ -64,9 +65,12 @@ function watchdog(t, hidden = false) {
     currentId: "one",
     reloads: 0,
     pauses: 0,
+    samples: 0,
     snapshot() { return { playing: this.playing, currentId: this.currentId }; },
+    onChange(listener) { this.change = listener; },
+    sampleListening() { this.samples += 1; },
     reloadCurrent() { this.reloads += 1; },
-    pause() { this.pauses += 1; this.playing = false; },
+    pause() { this.pauses += 1; this.playing = false; this.change(); },
   };
   mountAudioWatchdog(engine, player, (message) => reports.push(message));
   const check = (ms = 1000) => {
@@ -76,6 +80,34 @@ function watchdog(t, hidden = false) {
   window.check();
   return { engine, player, reports, check };
 }
+
+test("the watchdog only runs while a track is playing", (t) => {
+  const { player, check } = watchdog(t);
+  assert.equal(typeof window.check, "function");
+  player.pause();
+  assert.equal(window.check, null);
+  player.playing = true;
+  player.change();
+  assert.equal(typeof window.check, "function");
+  for (let i = 0; i < 4; i += 1) check();
+  assert.equal(player.reloads, 0);
+  check();
+  assert.equal(player.reloads, 0);
+  check();
+  assert.equal(player.reloads, 1);
+});
+
+test("background listening is sampled without a separate timer", (t) => {
+  const { player, check } = watchdog(t, true);
+  assert.equal(player.samples, 1);
+  check();
+  assert.equal(player.samples, 2);
+  document.hidden = false;
+  check();
+  assert.equal(player.samples, 2);
+  player.pause();
+  assert.equal(window.check, null);
+});
 
 test("bunched callbacks do not count as seconds of stalled playback", (t) => {
   const { player, check } = watchdog(t);

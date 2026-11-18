@@ -8,8 +8,9 @@ globalThis.__mediaControlTest = context;
 
 const mocks = {
   "@tauri-apps/api/event": `
-    export const listen = async (_event, callback) => {
-      globalThis.__mediaControlTest.control = callback;
+    export const listen = async (event, callback) => {
+      if (event === "api-command") globalThis.__mediaControlTest.apiControl = callback;
+      else globalThis.__mediaControlTest.control = callback;
       return () => {};
     };
   `,
@@ -24,6 +25,7 @@ const mocks = {
     };
     export const setQueue = async (queue) => globalThis.__mediaControlTest.queues.push(queue);
     export const showMainWindow = async () => {};
+    export const reportApiState = async (report) => globalThis.__mediaControlTest.reports.push(report);
   `,
   "./state": `
     const context = globalThis.__mediaControlTest;
@@ -40,6 +42,10 @@ const mocks = {
     export const setVolume = (value) => context.player.setVolume(value);
     export const stepTrack = (direction) => direction > 0 ? context.player.next() : context.player.previous();
     export const subscribe = () => {};
+    export const collectionById = () => undefined;
+    export const openCollection = () => {};
+    export const playCollection = () => {};
+    export const playTrackInContext = () => {};
   `,
 };
 
@@ -59,7 +65,7 @@ const vite = await createServer({
       if (source === "./device" && /(player|presence)\.ts\?android/.test(importer)) {
         return "\0media-control-test:android-device";
       }
-      if (/[\\/]src[\\/]lib[\\/](presence|player)\.ts/.test(importer)) {
+      if (/[\\/]src[\\/]lib[\\/](api|presence|player)\.ts/.test(importer)) {
         return `\0media-control-test:${source}`;
       }
     },
@@ -75,6 +81,7 @@ const { Player } = await vite.ssrLoadModule("/src/lib/player.ts");
 const { Player: AndroidPlayer } = await vite.ssrLoadModule("/src/lib/player.ts?android");
 const { mountPresence } = await vite.ssrLoadModule("/src/lib/presence.ts");
 const { mountPresence: mountAndroidPresence } = await vite.ssrLoadModule("/src/lib/presence.ts?android");
+const { mountApi } = await vite.ssrLoadModule("/src/lib/api.ts");
 
 class FakeAudio {
   constructor() {
@@ -100,11 +107,15 @@ function setup(PlayerClass = Player, mount = mountPresence, controls = true, sen
   context.elements = [];
   context.frames = new Map();
   context.nextFrame = 1;
+  context.intervals = new Map();
+  context.nextInterval = 1;
   context.control = null;
+  context.apiControl = null;
   context.androidControl = null;
   context.songs = [];
   context.sendSong = sendSong;
   context.queues = [];
+  context.reports = [];
   context.bridgeMessages = [];
   context.settings = { systemMediaControls: controls, discordPresence: false };
 
@@ -122,7 +133,12 @@ function setup(PlayerClass = Player, mount = mountPresence, controls = true, sen
   };
   globalThis.window = {
     cancelAnimationFrame: (id) => context.frames.delete(id),
-    setInterval: (callback) => { context.interval = callback; return 0; },
+    setInterval: (callback) => {
+      const id = context.nextInterval++;
+      context.intervals.set(id, callback);
+      return id;
+    },
+    clearInterval: (id) => context.intervals.delete(id),
     addEventListener: (name, callback) => {
       if (name === "wave:media-control") context.androidControl = callback;
     },
@@ -154,6 +170,10 @@ function setup(PlayerClass = Player, mount = mountPresence, controls = true, sen
 
 function press(action, value) {
   context.control({ payload: { action, value } });
+}
+
+function tickIntervals() {
+  for (const callback of [...context.intervals.values()]) callback();
 }
 
 test("Android forwards play, pause and queue updates with both optional surfaces disabled", async () => {
@@ -236,7 +256,7 @@ test("a failed pause update is retried while playback remains paused", async () 
   assert.equal(context.songs.at(-1).playing, false);
   player.handleLoaded();
   assert.equal(context.songs.length, count);
-  context.interval();
+  tickIntervals();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(context.songs.length, count + 1);
   assert.equal(context.songs.at(-1).playing, false);
@@ -256,11 +276,12 @@ test("a failed clear is retried until acknowledged", async () => {
   await new Promise((resolve) => setImmediate(resolve));
   const count = context.songs.length;
   assert.equal(context.songs.at(-1), null);
-  context.interval();
+  tickIntervals();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(context.songs.length, count + 1);
   assert.equal(context.songs.at(-1), null);
-  context.interval();
+  assert.equal(context.intervals.size, 0);
+  tickIntervals();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(context.songs.length, count + 1);
 });
@@ -282,7 +303,7 @@ test("a newer playing state supersedes a failed clear", async () => {
   assert.equal(context.songs.at(-1).title, "two");
   assert.equal(context.songs.at(-1).playing, true);
   const count = context.songs.length;
-  context.interval();
+  tickIntervals();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(context.songs.length, count);
 });
@@ -291,6 +312,103 @@ test("desktop does not send presence when both surfaces are disabled", () => {
   setup(Player, mountPresence, false);
   assert.deepEqual(context.songs, []);
   assert.deepEqual(context.queues, []);
+  assert.equal(context.intervals.size, 0);
+});
+
+test("presence polling stops when paused and seeks are reported immediately", () => {
+  const { player } = setup(AndroidPlayer, mountAndroidPresence, false, null, true);
+  assert.equal(context.intervals.size, 1);
+  player.pause();
+  assert.equal(context.intervals.size, 0);
+  player.seek(30000);
+  const songs = context.bridgeMessages.filter((message) => message.type === "song");
+  assert.equal(songs.at(-1).song.positionMs, 30000);
+  assert.equal(songs.at(-1).song.playing, false);
+  assert.equal(context.intervals.size, 0);
+  player.play();
+  assert.equal(context.intervals.size, 1);
+});
+
+test("API position polling stops when paused and seeks are reported immediately", () => {
+  const { player } = setup(Player, mountApi);
+  assert.equal(context.intervals.size, 1);
+  assert.ok(context.reports.some((report) => report.order?.length === 3));
+  tickIntervals();
+  assert.equal(context.reports.at(-1).playing, true);
+  assert.equal(context.reports.at(-1).order, undefined);
+
+  player.pause();
+  assert.equal(context.intervals.size, 0);
+  player.seek(30000);
+  assert.equal(context.reports.at(-1).positionMs, 30000);
+  assert.equal(context.reports.at(-1).playing, false);
+  context.apiControl({ payload: { id: "seek-1", action: "seek", value: 45000 } });
+  assert.equal(context.reports.at(-1).command, "seek-1");
+  assert.equal(context.reports.at(-1).positionMs, 45000);
+  assert.equal(context.intervals.size, 0);
+  player.play();
+  assert.equal(context.intervals.size, 1);
+});
+
+test("visual progress frames do not repeatedly send media presence", () => {
+  const { engine } = setup(AndroidPlayer, mountAndroidPresence, false, null, true);
+  const count = context.bridgeMessages.length;
+  for (let frame = 1; frame <= 10; frame += 1) {
+    const [id, callback] = context.frames.entries().next().value;
+    context.frames.delete(id);
+    engine.element.currentTime = frame / 10;
+    callback(performance.now());
+  }
+  assert.equal(context.bridgeMessages.length, count);
+  tickIntervals();
+  assert.equal(context.bridgeMessages.length, count + 1);
+});
+
+test("the visual clock parks while hidden without losing listening time", (t) => {
+  const original = globalThis.performance;
+  let now = 0;
+  globalThis.performance = { now: () => now };
+  t.after(() => { globalThis.performance = original; });
+
+  const { engine, player } = setup(AndroidPlayer, mountAndroidPresence, false, null, true);
+  let listened = 0;
+  let progress = 0;
+  player.onListening((elapsed) => { listened += elapsed; });
+  player.onProgress((position) => { progress = position; });
+  assert.equal(context.frames.size, 1);
+
+  now = 5000;
+  engine.element.currentTime = 5;
+  document.hidden = true;
+  document.dispatch("visibilitychange");
+  assert.equal(context.frames.size, 0);
+  assert.equal(listened, 5000);
+  assert.equal(engine.element.paused, false);
+
+  now = 12000;
+  engine.element.currentTime = 12;
+  player.sampleListening();
+  assert.equal(listened, 12000);
+
+  now = 15000;
+  engine.element.currentTime = 15;
+  document.hidden = false;
+  document.dispatch("visibilitychange");
+  assert.equal(listened, 15000);
+  assert.equal(progress, 15000);
+  assert.equal(context.frames.size, 1);
+
+  document.hidden = true;
+  document.dispatch("visibilitychange");
+  player.pause();
+  assert.equal(engine.element.paused, true);
+  assert.equal(context.frames.size, 0);
+  player.play();
+  assert.equal(engine.element.paused, false);
+  assert.equal(context.frames.size, 0);
+  document.hidden = false;
+  document.dispatch("visibilitychange");
+  assert.equal(context.frames.size, 1);
 });
 
 for (const [platform, PlayerClass] of [["Linux", Player], ["Android", AndroidPlayer]]) {

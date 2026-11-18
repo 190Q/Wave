@@ -24,6 +24,7 @@ export function mountAudioWatchdog(
   let lastSeeking = false;
   let stillFor = 0;
   let cooldownUntil = 0;
+  let timer: number | null = null;
 
   const reset = (): void => {
     lastPosition = null;
@@ -45,11 +46,14 @@ export function mountAudioWatchdog(
     player.reloadCurrent();
   };
 
-  window.setInterval(() => {
+  const check = (): void => {
     const snapshot = player.snapshot();
     const element = engine.element;
     const now = performance.now();
     const hidden = document.hidden;
+    if (hidden && snapshot.playing) {
+      player.sampleListening();
+    }
     if (!snapshot.playing || !snapshot.currentId || element.ended || (hidden && element.paused)) {
       reset();
       return;
@@ -88,7 +92,25 @@ export function mountAudioWatchdog(
     }
 
     repair(now);
-  }, CHECK_MS);
+  };
+
+  const sync = (): void => {
+    const snapshot = player.snapshot();
+    if (snapshot.playing && snapshot.currentId) {
+      if (timer === null) {
+        timer = window.setInterval(check, CHECK_MS);
+      }
+    } else {
+      if (timer !== null) {
+        window.clearInterval(timer);
+        timer = null;
+      }
+      reset();
+    }
+  };
+
+  player.onChange(sync);
+  sync();
 }
 
 function describe(element: HTMLAudioElement): string {

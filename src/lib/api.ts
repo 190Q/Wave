@@ -23,14 +23,20 @@ const SEEK_STEP_MS = 10_000;
 
 /** Keeps the local API in step with the player, in both directions. */
 export function mountApi(): void {
-  player.onChange(() => report(null));
-  // A song playing on its own moves without a change, so the position is pushed
-  // on a timer rather than only when something happens.
-  window.setInterval(() => {
+  let timer: number | null = null;
+  const sync = (): void => {
+    report(null);
     if (player.snapshot().playing) {
-      report(null);
+      if (timer === null) {
+        timer = window.setInterval(() => report(null), POSITION_INTERVAL_MS);
+      }
+    } else if (timer !== null) {
+      window.clearInterval(timer);
+      timer = null;
     }
-  }, POSITION_INTERVAL_MS);
+  };
+  player.onChange(sync);
+  player.onSeek(() => report(null));
 
   void listen<ApiCommand>(COMMAND_EVENT, (event) => {
     apply(event.payload);

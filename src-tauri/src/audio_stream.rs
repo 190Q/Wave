@@ -86,6 +86,11 @@ fn serve(request: Request, app: &AppHandle, root: &Path, token: &str, port: u16)
         return;
     };
 
+    if request.method() == &Method::Options {
+        let _ = request.respond(preflight());
+        return;
+    }
+
     let catalog = app.state::<Catalog>();
     let track = catalog.track(id).ok().flatten().filter(|row| !row.missing);
     let path = track.and_then(|row| {
@@ -124,7 +129,7 @@ fn authorized_id<'a>(
 ) -> Option<&'a str> {
     let id = url.strip_prefix(&format!("/{token}/"))?;
     if host == Some(format!("127.0.0.1:{port}").as_str())
-        && matches!(method, Method::Get | Method::Head)
+        && matches!(method, Method::Get | Method::Head | Method::Options)
         && !id.is_empty()
         && id
             .bytes()
@@ -150,13 +155,23 @@ fn empty(status: u16) -> ResponseBox {
     )
 }
 
+fn preflight() -> ResponseBox {
+    empty(204)
+        .with_header(header("Access-Control-Allow-Origin", "*"))
+        .with_header(header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS"))
+        .with_header(header("Access-Control-Allow-Headers", "Range"))
+}
+
 fn file_response(path: &Path, range: Option<&str>, head: bool) -> io::Result<ResponseBox> {
     let mut file = File::open(path)?;
     let size = file.metadata()?.len();
     let (start, length, partial) = match byte_range(range, size) {
         Ok(range) => range,
         Err(()) => {
-            return Ok(empty(416).with_header(header("Content-Range", &format!("bytes */{size}"))));
+            return Ok(empty(416)
+                .with_header(header("Content-Range", &format!("bytes */{size}")))
+                .with_header(header("Access-Control-Allow-Origin", "*"))
+                .with_header(header("Access-Control-Expose-Headers", "Content-Range")));
         }
     };
     file.seek(SeekFrom::Start(start))?;
@@ -266,7 +281,15 @@ mod tests {
             Some("abc-123")
         );
         assert_eq!(
+            check("/secret/abc-123", Some("127.0.0.1:1234"), &Method::Options),
+            Some("abc-123")
+        );
+        assert_eq!(
             check("/wrong/abc-123", Some("127.0.0.1:1234"), &Method::Get),
+            None
+        );
+        assert_eq!(
+            check("/wrong/abc-123", Some("127.0.0.1:1234"), &Method::Options),
             None
         );
         assert_eq!(
@@ -279,6 +302,10 @@ mod tests {
         );
         assert_eq!(
             check("/secret/abc", Some("example.com:1234"), &Method::Get),
+            None
+        );
+        assert_eq!(
+            check("/secret/abc", Some("example.com:1234"), &Method::Options),
             None
         );
         assert_eq!(check("/secret/abc", None, &Method::Get), None);
@@ -320,6 +347,25 @@ mod tests {
             assert_eq!(byte_range(Some(value), 100), Err(()));
         }
         assert_eq!(byte_range(Some("bytes=0-"), 0), Err(()));
+    }
+
+    #[test]
+    fn preflight_permits_only_audio_methods_and_range_headers() {
+        let response = preflight();
+        assert_eq!(response.status_code(), StatusCode(204));
+        for (name, value) in [
+            ("Access-Control-Allow-Origin", "*"),
+            ("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS"),
+            ("Access-Control-Allow-Headers", "Range"),
+        ] {
+            assert!(
+                response
+                    .headers()
+                    .iter()
+                    .any(|header| { header.field.equiv(name) && header.value.as_str() == value }),
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -414,8 +460,74 @@ mod tests {
                     "{headers}"
                 );
             }
+            assert!(
+                headers
+                    .lines()
+                    .any(|line| line.eq_ignore_ascii_case("Access-Control-Allow-Origin: *")),
+                "{headers}"
+            );
             assert_eq!(received, body);
         }
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn concurrent_http_range_requests_return_the_requested_bytes() {
+        const CLIENTS: usize = 32;
+        const CHUNK: usize = 4096;
+        let path = std::env::temp_dir().join(format!("wave-http-{}.mp3", uuid::Uuid::new_v4()));
+        let contents: Vec<u8> = (0..1_000_000).map(|index| (index % 251) as u8).collect();
+        std::fs::write(&path, &contents).unwrap();
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        let worker = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for _ in 0..CLIENTS {
+                let request = server.recv().unwrap();
+                let file = path.clone();
+                requests.push(thread::spawn(move || {
+                    let range = request
+                        .headers()
+                        .iter()
+                        .find(|header| header.field.equiv("Range"))
+                        .map(|header| header.value.as_str());
+                    let response = file_response(&file, range, false).unwrap();
+                    request.respond(response).unwrap();
+                }));
+            }
+            for request in requests {
+                request.join().unwrap();
+            }
+            std::fs::remove_file(path).unwrap();
+        });
+
+        let clients: Vec<_> = (0..CLIENTS)
+            .map(|index| {
+                thread::spawn(move || {
+                    let start = index * 13_337;
+                    let end = start + CHUNK - 1;
+                    let mut stream = TcpStream::connect(address).unwrap();
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                        .unwrap();
+                    write!(
+                        stream,
+                        "GET / HTTP/1.1\r\nHost: {address}\r\nRange: bytes={start}-{end}\r\nConnection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                    let mut response = Vec::new();
+                    stream.read_to_end(&mut response).unwrap();
+                    let split = response.windows(4).position(|part| part == b"\r\n\r\n").unwrap();
+                    assert!(response.starts_with(b"HTTP/1.1 206 "));
+                    (start, response[split + 4..].to_vec())
+                })
+            })
+            .collect();
+
+        for client in clients {
+            let (start, received) = client.join().unwrap();
+            assert_eq!(received, contents[start..start + CHUNK]);
+        }
+        worker.join().unwrap();
     }
 }

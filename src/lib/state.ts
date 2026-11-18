@@ -500,6 +500,10 @@ const engine = new AudioEngine({
     player.handleError();
   },
   onCorsRefused: handleCorsRefused,
+  onBuffering: (durationMs, element) => {
+    console.warn(`Audio buffering lasted ${Math.round(durationMs)}ms. ` +
+      `Ready ${element.readyState}, network ${element.networkState}, hidden ${document.hidden}.`);
+  },
   onElement: (element, phase) => {
     if (phase === "created") {
       eq.attach(element);

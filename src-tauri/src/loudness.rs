@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+#[cfg(any(target_os = "android", test))]
+use std::time::{Duration, Instant};
 
 use ebur128::{EbuR128, Mode};
 use serde::Serialize;
@@ -19,6 +21,35 @@ use crate::library;
 pub const PROGRESS_EVENT: &str = "loudness-scan";
 #[cfg(target_os = "android")]
 const FINISHED_EVENT: &str = "loudness-finished";
+
+#[cfg(any(target_os = "android", test))]
+const ANALYSIS_SLICE: Duration = Duration::from_millis(10);
+#[cfg(target_os = "android")]
+const PLAYBACK_YIELD: Duration = Duration::from_millis(40);
+
+#[cfg(any(target_os = "android", test))]
+struct AnalysisThrottle {
+    started: Instant,
+}
+
+#[cfg(any(target_os = "android", test))]
+impl AnalysisThrottle {
+    fn new(now: Instant) -> Self {
+        Self { started: now }
+    }
+
+    fn should_yield(&mut self, now: Instant, playing: impl FnOnce() -> bool) -> bool {
+        if now.saturating_duration_since(self.started) < ANALYSIS_SLICE {
+            return false;
+        }
+        self.started = now;
+        playing()
+    }
+
+    fn reset(&mut self, now: Instant) {
+        self.started = now;
+    }
+}
 
 #[cfg(any(target_os = "android", test))]
 #[derive(Default)]
@@ -122,6 +153,10 @@ pub struct Measurement {
 }
 
 pub fn measure(path: &Path) -> Result<Measurement, String> {
+    measure_with(path, || {})
+}
+
+fn measure_with(path: &Path, mut checkpoint: impl FnMut()) -> Result<Measurement, String> {
     let bytes = fs::metadata(path)
         .map_err(|e| format!("could not read {}: {e}", path.display()))?
         .len();
@@ -163,6 +198,7 @@ pub fn measure(path: &Path) -> Result<Measurement, String> {
     let mut frames = 0u64;
 
     loop {
+        checkpoint();
         let packet = match format.next_packet() {
             Ok(packet) => packet,
             // The stream ran out, or a packet is damaged. Either way, what has
@@ -271,8 +307,25 @@ pub(crate) fn analyse(app: &AppHandle, track_ids: &[String]) -> LoudnessOutcome 
     let mut measured = 0usize;
     let mut failures = Vec::new();
 
+    #[cfg(target_os = "android")]
+    let bridge = app.try_state::<crate::api::player::Bridge>();
+    #[cfg(target_os = "android")]
+    let mut throttle = AnalysisThrottle::new(Instant::now());
+
     for (position, row) in todo.iter().enumerate() {
-        match measure(&root.join(&row.rel_path)) {
+        #[cfg(target_os = "android")]
+        let reading = measure_with(&root.join(&row.rel_path), || {
+            if throttle.should_yield(Instant::now(), || {
+                bridge.as_ref().is_some_and(|bridge| bridge.is_playing())
+            }) {
+                std::thread::sleep(PLAYBACK_YIELD);
+                throttle.reset(Instant::now());
+            }
+        });
+        #[cfg(not(target_os = "android"))]
+        let reading = measure(&root.join(&row.rel_path));
+
+        match reading {
             Ok(reading) => {
                 if catalog
                     .set_loudness(&row.id, reading.lufs, reading.peak, reading.bytes)
@@ -339,6 +392,19 @@ mod tests {
         assert!(!queue.advance());
         assert!(queue.request());
         assert!(!queue.advance());
+    }
+
+    #[test]
+    fn analysis_only_yields_after_a_work_slice_while_playing() {
+        let start = Instant::now();
+        let mut throttle = AnalysisThrottle::new(start);
+        assert!(!throttle.should_yield(start + Duration::from_millis(9), || panic!("too early")));
+        assert!(throttle.should_yield(start + Duration::from_millis(10), || true));
+        throttle.reset(start + Duration::from_millis(50));
+        assert!(!throttle.should_yield(start + Duration::from_millis(59), || panic!("too early")));
+        assert!(!throttle.should_yield(start + Duration::from_millis(60), || false));
+        assert!(!throttle.should_yield(start + Duration::from_millis(69), || panic!("too early")));
+        assert!(throttle.should_yield(start + Duration::from_millis(70), || true));
     }
 
     fn scratch(name: &str) -> PathBuf {
@@ -424,6 +490,21 @@ mod tests {
             reading.peak
         );
         assert_eq!(reading.bytes, fs::metadata(&song).unwrap().len());
+    }
+
+    #[test]
+    fn analysis_checks_for_playback_between_packets_without_changing_the_result() {
+        let dir = scratch("checkpoints");
+        let song = dir.join("song.wav");
+        write_sine(&song, 0.5, 1.0);
+
+        let baseline = measure(&song).unwrap();
+        let mut checkpoints = 0;
+        let reading = measure_with(&song, || checkpoints += 1).unwrap();
+        assert!(checkpoints > 1);
+        assert_eq!(reading.bytes, baseline.bytes);
+        assert_eq!(reading.lufs, baseline.lufs);
+        assert_eq!(reading.peak, baseline.peak);
     }
 
     #[test]

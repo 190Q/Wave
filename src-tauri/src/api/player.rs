@@ -151,6 +151,14 @@ impl Bridge {
         self.guard().last.clone()
     }
 
+    #[cfg(any(target_os = "android", test))]
+    pub fn is_playing(&self) -> bool {
+        self.guard()
+            .last
+            .as_ref()
+            .is_some_and(|report| report.playing)
+    }
+
     /// Takes in a report from the window and wakes whoever is waiting on it.
     pub fn accept(&self, report: Report) {
         let mut heard = self.guard();
@@ -304,6 +312,20 @@ mod tests {
             Some(vec!["def".to_string(), "abc".to_string()])
         );
         assert!(kept.playing);
+    }
+
+    #[test]
+    fn playback_state_can_be_checked_without_copying_the_queue() {
+        let bridge = Bridge::default();
+        assert!(!bridge.is_playing());
+        bridge.accept(Report {
+            playing: true,
+            order: Some(vec!["one".to_string()]),
+            ..Report::default()
+        });
+        assert!(bridge.is_playing());
+        bridge.accept(Report::default());
+        assert!(!bridge.is_playing());
     }
 
     #[test]

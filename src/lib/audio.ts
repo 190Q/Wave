@@ -12,7 +12,10 @@ export interface AudioEngineHandlers {
   onCorsRefused?: () => void;
   /** A fresh element, or one on its way out, for the equaliser to follow. */
   onElement?: (element: HTMLAudioElement, phase: "created" | "retired") => void;
+  onBuffering?: (durationMs: number, element: HTMLAudioElement) => void;
 }
+
+const REPORT_BUFFERING_MS = 250;
 
 export interface LoadOptions {
   /** Start as soon as there is enough buffered to play. */
@@ -34,6 +37,8 @@ export class AudioEngine {
 
   /** Whether the element in hand got as far as reporting its metadata. */
   private elementLoaded = false;
+  private elementPlayed = false;
+  private waitingAt: number | null = null;
 
   private readonly retiring = new Map<HTMLAudioElement, number>();
 
@@ -95,6 +100,9 @@ export class AudioEngine {
     this.requestedMs = null;
     this.loadedPath = path;
     this.swap();
+    this.elementLoaded = false;
+    this.elementPlayed = false;
+    this.waitingAt = null;
     // `preload` is read when the load starts, so it has to be set first.
     this.el.preload = autoplay ? "auto" : "metadata";
     this.el.src = sourceUrl(path);
@@ -182,8 +190,14 @@ export class AudioEngine {
     el.addEventListener("loadedmetadata", this.handleMetadata);
     el.addEventListener("durationchange", this.handleDuration);
     el.addEventListener("error", this.handleError);
+    el.addEventListener("waiting", this.handleWaiting);
+    el.addEventListener("playing", this.handlePlaying);
+    el.addEventListener("pause", this.handleInterrupted);
+    el.addEventListener("seeking", this.handleInterrupted);
 
     this.elementLoaded = false;
+    this.elementPlayed = false;
+    this.waitingAt = null;
     this.handlers.onElement?.(el, "created");
     return el;
   }
@@ -229,6 +243,10 @@ export class AudioEngine {
     el.removeEventListener("loadedmetadata", this.handleMetadata);
     el.removeEventListener("durationchange", this.handleDuration);
     el.removeEventListener("error", this.handleError);
+    el.removeEventListener("waiting", this.handleWaiting);
+    el.removeEventListener("playing", this.handlePlaying);
+    el.removeEventListener("pause", this.handleInterrupted);
+    el.removeEventListener("seeking", this.handleInterrupted);
   }
 
   private release(el: HTMLAudioElement): void {
@@ -254,6 +272,28 @@ export class AudioEngine {
 
   private readonly handleEnded = (): void => {
     this.handlers.onEnded?.();
+  };
+
+  private readonly handleWaiting = (): void => {
+    if (this.elementPlayed && !this.el.paused && !this.el.seeking && this.waitingAt === null) {
+      this.waitingAt = performance.now();
+    }
+  };
+
+  private readonly handlePlaying = (): void => {
+    const waitingAt = this.waitingAt;
+    this.waitingAt = null;
+    this.elementPlayed = true;
+    if (waitingAt !== null) {
+      const elapsed = performance.now() - waitingAt;
+      if (elapsed >= REPORT_BUFFERING_MS) {
+        this.handlers.onBuffering?.(elapsed, this.el);
+      }
+    }
+  };
+
+  private readonly handleInterrupted = (): void => {
+    this.waitingAt = null;
   };
 
   private readonly handleError = (): void => {

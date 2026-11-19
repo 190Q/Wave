@@ -482,7 +482,7 @@ const artworkFailed = new Set<string>();
 let emitScheduled = false;
 
 /** The filter chain every element the engine makes is fed through. */
-const eq = new EqChain();
+const eq = new EqChain(isAndroidPlatform ? { latencyHint: "playback" } : undefined);
 
 /** The chain itself, so the overlay can read the curve and the spectrum. */
 export const eqChain = eq;

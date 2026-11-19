@@ -491,3 +491,20 @@ test("delete failures force a full rescan and reconcile confirmed deletions with
   assert.deepEqual(app.getState().tracks, []);
   assert.match(app.getState().notice, /Deletion interrupted/);
 });
+
+test("Android requests playback latency when starting the equalizer", () => {
+  let options;
+  globalThis.AudioContext = class {
+    constructor(value) {
+      options = value;
+      throw new Error("AudioContext unavailable");
+    }
+  };
+  try {
+    app.eqChain.apply({ ...app.getState().settings, eqEnabled: true });
+    assert.deepEqual(options, { latencyHint: "playback" });
+    assert.equal(app.eqChain.blockedReason, "unsupported");
+  } finally {
+    delete globalThis.AudioContext;
+  }
+});

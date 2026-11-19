@@ -94,6 +94,8 @@ export class EqChain {
   private response: Curve = EMPTY;
   private curveDirty = true;
 
+  constructor(private readonly contextOptions?: AudioContextOptions) {}
+
   /** Why the equaliser is out of action, `null` while it is available. */
   get blockedReason(): EqBlocked {
     return this.blocked;
@@ -307,7 +309,7 @@ export class EqChain {
 
     let context: AudioContext;
     try {
-      context = new constructor();
+      context = new constructor(this.contextOptions);
     } catch {
       this.blocked = "unsupported";
       return false;

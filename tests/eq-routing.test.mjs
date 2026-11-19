@@ -40,7 +40,7 @@ class FakeContext {
   filters = [];
   onstatechange = null;
 
-  constructor() { FakeContext.instances.push(this); }
+  constructor(options) { this.options = options; FakeContext.instances.push(this); }
   createGain() { const gain = new FakeNode(); this.gains.push(gain); return gain; }
   createDynamicsCompressor() { return new FakeNode(); }
   createAnalyser() { return new FakeNode(); }
@@ -68,6 +68,25 @@ const settings = (enabled = true) => ({
   eqAutoPreamp: false,
   eqPreampDb: 0,
   eqOutputId: "",
+});
+
+test("the equalizer uses the requested playback latency without starting for disabled EQ", () => {
+  const before = FakeContext.instances.length;
+  const eq = new EqChain({ latencyHint: "playback" });
+  eq.apply(settings(false));
+  assert.equal(FakeContext.instances.length, before);
+  eq.apply(settings());
+  const context = FakeContext.instances.at(-1);
+  assert.deepEqual(context.options, { latencyHint: "playback" });
+  eq.apply(settings(false));
+  eq.apply(settings());
+  assert.equal(FakeContext.instances.at(-1), context);
+});
+
+test("the equalizer leaves the audio context defaults unchanged without options", () => {
+  const eq = new EqChain();
+  eq.apply(settings());
+  assert.equal(FakeContext.instances.at(-1).options, undefined);
 });
 
 test("the response is cached until the equalizer settings or availability change", () => {

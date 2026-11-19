@@ -11,10 +11,14 @@ Object.defineProperty(globalThis, "navigator", {
 const timers = [];
 const started = [];
 const requests = new Map();
+let decode = () => Promise.resolve();
 
 globalThis.Audio = class {
   paused = true;
   addEventListener() {}
+};
+globalThis.Image = class {
+  decode() { return decode(this.src); }
 };
 globalThis.document = { addEventListener() {} };
 globalThis.window = {
@@ -83,6 +87,7 @@ function render() {
 }
 
 afterEach(async () => {
+  decode = () => Promise.resolve();
   prioritizeNearbyArtwork([], 0, false);
   pruneArtworkQueue(new Set(), new Set());
   while (requests.size > 0) {
@@ -325,6 +330,90 @@ test("an old artwork read cannot replace a newer cover", async () => {
   assert.deepEqual(started, ["old-cover", "new-cover"]);
   await finish(["new-cover"]);
   assert.ok(artworkUrlFor(getState().tracksById.get(id), "now"));
+});
+
+test("Android artwork is not exposed until the image has decoded", async () => {
+  const id = "decode-before-reveal";
+  const track = { id, artworkPath: id };
+  getState().tracksById.set(id, track);
+  let finishDecode;
+  decode = () => new Promise((resolve) => { finishDecode = resolve; });
+
+  assert.equal(artworkUrlFor(track, "now"), null);
+  await finish([id]);
+  assert.equal(artworkUrlFor(track, "idle"), null);
+  assert.ok(finishDecode);
+
+  finishDecode();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(artworkUrlFor(track, "idle"));
+});
+
+test("an old image finishing decoding cannot replace a newer cover", async () => {
+  const id = "decode-replacement";
+  const oldPath = "decode-old";
+  const newPath = "decode-new";
+  getState().tracksById.set(id, { id, artworkPath: oldPath });
+  let finishDecode;
+  let oldUrl;
+  const revoked = [];
+  const original = URL.revokeObjectURL;
+  URL.revokeObjectURL = (url) => {
+    revoked.push(url);
+    original(url);
+  };
+  decode = (url) => {
+    oldUrl = url;
+    return new Promise((resolve) => { finishDecode = resolve; });
+  };
+
+  try {
+    artworkUrlFor(getState().tracksById.get(id), "now");
+    await finish([oldPath]);
+    getState().tracksById.set(id, { id, artworkPath: newPath });
+    decode = () => Promise.resolve();
+    finishDecode();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(revoked.includes(oldUrl));
+    assert.equal(artworkUrlFor(getState().tracksById.get(id), "idle"), null);
+    await finish([newPath]);
+    assert.ok(artworkUrlFor(getState().tracksById.get(id), "idle"));
+  } finally {
+    URL.revokeObjectURL = original;
+  }
+});
+
+test("a failed Android decode revokes its URL and releases the artwork slot", async () => {
+  const id = "decode-failure";
+  const track = { id, artworkPath: id };
+  getState().tracksById.set(id, track);
+  let failedUrl;
+  const revoked = [];
+  const original = URL.revokeObjectURL;
+  URL.revokeObjectURL = (url) => {
+    revoked.push(url);
+    original(url);
+  };
+  decode = (url) => {
+    failedUrl = url;
+    return Promise.reject(new Error("decode failed"));
+  };
+
+  try {
+    artworkUrlFor(track, "now");
+    await finish([id]);
+    assert.ok(revoked.includes(failedUrl));
+    assert.equal(artworkUrlFor(track, "now"), null);
+
+    decode = () => Promise.resolve();
+    const next = { id: "decode-after-failure", artworkPath: "decode-after-failure" };
+    getState().tracksById.set(next.id, next);
+    artworkUrlFor(next, "now");
+    await finish([next.id]);
+    assert.ok(artworkUrlFor(next, "idle"));
+  } finally {
+    URL.revokeObjectURL = original;
+  }
 });
 
 test("a JPEG thumbnail is identified by its bytes instead of the source extension", async () => {

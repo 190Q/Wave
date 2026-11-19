@@ -122,7 +122,11 @@
   transition: transform 0.3s cubic-bezier(0.45, 0, 1, 1);
 }
 
-/* The cover sweeping in over the colour a card was standing in for. */
+.card.is-settling .card-body {
+  transition: none;
+}
+
+/* The cover sweeping in over the previous card background. */
 .card-wipe {
   position: absolute;
   inset: 0;

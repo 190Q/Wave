@@ -895,11 +895,24 @@ function startArtwork(trackId: string, tier: ArtworkWorkTier): void {
 
   void ipc
     .artworkBytes(path)
-    .then((buffer) => {
+    .then(async (buffer) => {
       if (state.tracksById.get(trackId)?.artworkPath !== path) {
         return;
       }
-      artworkUrls.set(trackId, URL.createObjectURL(new Blob([buffer], { type: imageMime(path, buffer) })));
+      const url = URL.createObjectURL(new Blob([buffer], { type: imageMime(path, buffer) }));
+      try {
+        if (isAndroidPlatform) {
+          await decodeArtwork(url);
+        }
+      } catch (error) {
+        URL.revokeObjectURL(url);
+        throw error;
+      }
+      if (state.tracksById.get(trackId)?.artworkPath !== path) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      artworkUrls.set(trackId, url);
       trimArtwork();
       if (artworkPriority.has(trackId)) {
         artworkPriorityNeedsRender = true;
@@ -927,6 +940,19 @@ function startArtwork(trackId: string, tier: ArtworkWorkTier): void {
       }
       pumpArtwork();
     });
+}
+
+function decodeArtwork(url: string): Promise<void> {
+  const image = new Image();
+  if (typeof image.decode === "function") {
+    image.src = url;
+    return image.decode();
+  }
+  return new Promise((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error("Could not decode artwork"));
+    image.src = url;
+  });
 }
 
 /** Collection cover key -> object URL for its composed image. */

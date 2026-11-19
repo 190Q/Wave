@@ -43,6 +43,7 @@ const SPRING_TRANSITION =
 
 const LEAVE_MS = 320;
 const WASH_MS = 700;
+const COVER_WAIT_MS = 200;
 
 /**
  * Room the hero must keep: its smallest cover plus the column gap, matching the
@@ -62,6 +63,7 @@ export function mountQueue(): void {
   const entering = new Set<HTMLElement>();
   const popping = new Set<HTMLElement>();
   const unattendedArtwork = new WeakSet<HTMLElement>();
+  const pendingCovers = new Map<HTMLElement, { timer: number; style: string }>();
 
   const live = document.createElement("div");
   live.className = "carousel-live";
@@ -190,11 +192,12 @@ export function mountQueue(): void {
     }
 
     const tier: ArtworkTier = visible ? "queue" : "idle";
-    const reveal = mayRevealArtwork(track.id);
+    const reveal = device() === "android" || mayRevealArtwork(track.id);
     const card = document.createElement("article");
     card.className = "card";
     card.dataset.slot = String(slot);
     card.dataset.index = String(index);
+    card.dataset.trackId = track.id;
     card.dataset.artwork = reveal ? artworkUrlFor(track, tier) ?? "" : "";
     card.dataset.colour = colourFor(track);
     card.innerHTML = `
@@ -208,8 +211,17 @@ export function mountQueue(): void {
     return card;
   };
 
+  const cancelPendingCover = (card: HTMLElement): void => {
+    const pending = pendingCovers.get(card);
+    if (pending) {
+      window.clearTimeout(pending.timer);
+      pendingCovers.delete(card);
+    }
+  };
+
   const clearCards = (): void => {
     for (const card of cards.values()) {
+      cancelPendingCover(card);
       card.remove();
     }
     cards.clear();
@@ -351,6 +363,7 @@ export function mountQueue(): void {
     looping: boolean,
     centre: number,
     enter: "all" | number | null,
+    replaceImmediately = false,
   ): void => {
     const wanted = requiredSlots(centre, total, looping);
     const wantedSet = new Set(wanted);
@@ -358,7 +371,12 @@ export function mountQueue(): void {
     for (const [slot, card] of cards) {
       if (!wantedSet.has(slot)) {
         cards.delete(slot);
-        dismiss(slot, card);
+        cancelPendingCover(card);
+        if (replaceImmediately) {
+          card.remove();
+        } else {
+          dismiss(slot, card);
+        }
       }
     }
 
@@ -482,10 +500,24 @@ export function mountQueue(): void {
     const swaps: CoverSwap[] = [];
 
     for (const [slot, card] of cards) {
-      const track = trackById(order[indexAt(slot, total, looping)]);
+      const index = indexAt(slot, total, looping);
+      const track = trackById(order[index]);
       if (!track) {
         continue;
       }
+
+      const changed = card.dataset.trackId !== track.id;
+      const pending = pendingCovers.get(card);
+      const hadCover = Boolean(card.dataset.artwork) || Boolean(pending);
+      if (changed) {
+        cancelPendingCover(card);
+        unattendedArtwork.delete(card);
+        card.dataset.trackId = track.id;
+        if (Math.abs(Number(card.dataset.offset ?? 0)) <= VISIBLE_RANGE) {
+          ensureColour(track);
+        }
+      }
+      card.dataset.index = String(index);
 
       const title = card.querySelector<HTMLElement>(".card-title");
       const artist = card.querySelector<HTMLElement>(".card-artist");
@@ -497,10 +529,10 @@ export function mountQueue(): void {
         artist.textContent = artistName;
       }
 
-      if (reduceMotionActive() && !card.dataset.artwork) {
+      if (reduceMotionActive() && (changed || !card.dataset.artwork)) {
         unattendedArtwork.add(card);
       }
-      if (!mayRevealArtwork(track.id)) {
+      if (device() !== "android" && !mayRevealArtwork(track.id)) {
         continue;
       }
 
@@ -508,14 +540,15 @@ export function mountQueue(): void {
       const tier: ArtworkTier = visible ? "queue" : "idle";
       const signature = artworkUrlFor(track, tier) ?? "";
       const colour = colourFor(track);
-      if (card.dataset.artwork === signature && card.dataset.colour === colour) {
+      if (!changed && card.dataset.artwork === signature && card.dataset.colour === colour) {
         continue;
       }
 
-      // A card still showing its colour hands over to the cover under the sweep.
-      const revealing = visible && !card.dataset.artwork && signature !== "" && !unattendedArtwork.has(card);
+      const revealing = visible && signature !== "" && !unattendedArtwork.has(card) &&
+        (!card.dataset.artwork || (device() === "android" && changed && card.dataset.artwork !== signature));
       if (signature) {
         unattendedArtwork.delete(card);
+        cancelPendingCover(card);
       }
       card.dataset.artwork = signature;
       card.dataset.colour = colour;
@@ -526,7 +559,22 @@ export function mountQueue(): void {
       }
 
       const style = coverStyle(track, tier);
-      if (revealing) {
+      if (changed && device() === "android" && hadCover && !signature && track.artworkPath &&
+          visible && !reduceMotionActive()) {
+        setCoverStyle(body, body.getAttribute("style") ?? "");
+        const next = {
+          style,
+          timer: window.setTimeout(() => {
+            if (pendingCovers.get(card) === next) {
+              pendingCovers.delete(card);
+              setCoverStyle(body, next.style);
+            }
+          }, COVER_WAIT_MS),
+        };
+        pendingCovers.set(card, next);
+      } else if (!changed && pending && !signature) {
+        pending.style = style;
+      } else if (revealing) {
         swaps.push({ body, style });
       } else {
         setCoverStyle(body, style);
@@ -744,6 +792,7 @@ export function mountQueue(): void {
     const fresh = renderedOrder !== signature;
     let washed = false;
     let grown = 0;
+    let reused = false;
 
     if (fresh) {
       const oldCentre = centerSlot;
@@ -751,6 +800,28 @@ export function mountQueue(): void {
       const reshuffle = isReshuffle(snapshot.order);
       const collectionChanged = snapshot.sourceId !== renderedSourceId;
       const shown = queueShown(isCramped());
+
+      if (device() === "android" && shown && oldCount > 0) {
+        flushPopping();
+        endWash();
+        const arriving = [...cards.values()].filter((card) => card.classList.contains("is-entering"));
+        for (const card of arriving) {
+          card.classList.add("is-settling");
+          card.classList.remove("is-entering");
+        }
+        if (arriving.length > 0) {
+          void carousel.offsetWidth;
+          for (const card of arriving) {
+            card.classList.remove("is-settling");
+          }
+        }
+        for (const card of leaving.values()) {
+          card.remove();
+        }
+        leaving.clear();
+        recentre(snapshot.cursor);
+        reused = true;
+      }
 
       renderedIds = new Set(snapshot.order);
       windowCenter = Number.NaN;
@@ -764,21 +835,23 @@ export function mountQueue(): void {
         prefetchArtwork(snapshot.order);
       }
 
-      const awaitingArtwork = device() !== "desktop" &&
-        snapshot.currentId !== null && !mayRevealArtwork(snapshot.currentId);
-      if (awaitingArtwork) {
-        flushPopping();
-        endWash();
-        clearCards();
-      } else if (reshuffle) {
-        washAway();
-        washed = true;
-      } else if (collectionChanged && shown && !reduceMotionActive() && oldCount > 0) {
-        const newCount = requiredSlots(snapshot.cursor, total, looping).length;
-        grown = swapCollection(oldCentre, oldCount, newCount);
-        washed = true;
-      } else {
-        clearCards();
+      if (!reused) {
+        const awaitingArtwork = device() !== "desktop" &&
+          snapshot.currentId !== null && !mayRevealArtwork(snapshot.currentId);
+        if (awaitingArtwork) {
+          flushPopping();
+          endWash();
+          clearCards();
+        } else if (reshuffle) {
+          washAway();
+          washed = true;
+        } else if (collectionChanged && shown && !reduceMotionActive() && oldCount > 0) {
+          const newCount = requiredSlots(snapshot.cursor, total, looping).length;
+          grown = swapCollection(oldCentre, oldCount, newCount);
+          washed = true;
+        } else {
+          clearCards();
+        }
       }
     } else {
       if (looping !== renderedLooping) {
@@ -816,6 +889,7 @@ export function mountQueue(): void {
         looping,
         materialCenter,
         fresh ? (grown > 0 ? grown : null) : "all",
+        reused,
       );
     }
 
@@ -875,6 +949,13 @@ export function mountQueue(): void {
   subscribeMotion(() => {
     if (!reduceMotionActive()) {
       return;
+    }
+    for (const [card, pending] of pendingCovers) {
+      cancelPendingCover(card);
+      const body = card.querySelector<HTMLElement>(".card-body");
+      if (body) {
+        setCoverStyle(body, pending.style);
+      }
     }
     endWash();
     flushPopping();

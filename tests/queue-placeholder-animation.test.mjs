@@ -6,6 +6,8 @@ import { createServer } from "vite";
 const context = {
   kind: "android",
   ready: true,
+  readyIds: null,
+  missing: new Set(),
   reducedMotion: false,
   state: { queueOpen: true, collections: [] },
   snapshot: null,
@@ -30,8 +32,12 @@ const mocks = {
     export const player = context.player;
     export const getState = () => context.state;
     export const subscribe = (callback) => { context.render = callback; };
-    export const trackById = (id) => id ? { id, title: id, artist: "artist", artworkPath: id } : undefined;
-    export const artworkUrlFor = (track) => context.ready ? "url-" + track.id : null;
+    export const trackById = (id) => id ? {
+      id, title: id, artist: "artist", artworkPath: context.missing.has(id) ? null : id,
+    } : undefined;
+    export const artworkUrlFor = (track) =>
+      track.artworkPath && (context.readyIds ? context.readyIds.has(track.id) : context.ready)
+        ? "url-" + track.id : null;
     export const colourFor = () => "#123456";
     export const mayRevealArtwork = () => context.kind === "desktop" || context.ready;
     export const ensureColour = () => {}, prefetchArtwork = () => {};
@@ -39,7 +45,10 @@ const mocks = {
   `,
   "./artwork": `
     export const coverStyle = (track, tier, reveal = true) =>
-      reveal && globalThis.__queueAnimationTest.ready ? "url-" + track.id : "colour";
+      reveal && track.artworkPath &&
+      (globalThis.__queueAnimationTest.readyIds
+        ? globalThis.__queueAnimationTest.readyIds.has(track.id)
+        : globalThis.__queueAnimationTest.ready) ? "url-" + track.id : "colour-" + track.id;
   `,
   "./library": "export const openTrackMenu = () => {};",
   "./wipe": `
@@ -115,7 +124,13 @@ class FakeElement {
     if (!this.parts.has(selector)) this.parts.set(selector, new FakeElement());
     return this.parts.get(selector);
   }
+  set innerHTML(value) {
+    this.html = value;
+    const style = value.match(/class="card-body" style="([^"]*)"/)?.[1];
+    if (style !== undefined) this.querySelector(".card-body").setAttribute("style", style);
+  }
   setAttribute(name, value) { this[name] = value; }
+  getAttribute(name) { return this[name] ?? null; }
   getBoundingClientRect() { return { left: 0, top: 0, right: 400, bottom: 800 }; }
 }
 
@@ -127,6 +142,8 @@ function snapshot(sourceId, count, cursor = 0) {
 function setup(kind = "android") {
   context.kind = kind;
   context.ready = true;
+  context.readyIds = null;
+  context.missing = new Set();
   context.reducedMotion = false;
   context.swaps = [];
   context.snapshot = snapshot("first", 30);
@@ -134,7 +151,9 @@ function setup(kind = "android") {
   const stage = new FakeElement();
   const root = new FakeElement();
   const frames = new Map();
+  const timers = new Map();
   let nextFrame = 0;
+  let nextTimer = 0;
   globalThis.requestAnimationFrame = (callback) => {
     frames.set(++nextFrame, callback);
     return nextFrame;
@@ -142,8 +161,11 @@ function setup(kind = "android") {
   globalThis.window = {
     innerWidth: 400,
     innerHeight: 800,
-    setTimeout: () => 1,
-    clearTimeout() {},
+    setTimeout: (callback, delay) => {
+      timers.set(++nextTimer, { callback, delay });
+      return nextTimer;
+    },
+    clearTimeout: (id) => timers.delete(id),
     cancelAnimationFrame: (id) => frames.delete(id),
   };
   globalThis.document = {
@@ -158,7 +180,7 @@ function setup(kind = "android") {
   });
   globalThis.ResizeObserver = undefined;
   mountQueue();
-  return { live: carousel.children[0], wash: carousel.children[1], frames };
+  return { live: carousel.children[0], wash: carousel.children[1], frames, timers };
 }
 
 const { mountQueue } = await vite.ssrLoadModule("/src/ui/queue.ts");
@@ -205,8 +227,118 @@ test("loaded phone cards retain their entry animation after a search jump", () =
   assert.equal(current.classList.contains("is-entering"), true);
 });
 
-test("loaded phone covers and desktop collection changes retain their sweep", () => {
-  for (const kind of ["android", "linuxPhone", "desktop"]) {
+test("Android replaces ready covers directly and applies slow placeholders without a sweep", () => {
+  const { live, wash, frames, timers } = setup();
+  const old = [...live.children];
+  context.snapshot = snapshot("second", 30);
+  context.ready = false;
+  context.readyIds = new Set(["second-0", "second-2"]);
+  context.change();
+
+  assert.equal(wash.children.length, 0);
+  assert.equal(frames.size, 0);
+  assert.equal(live.children[0], old[0]);
+  assert.equal(live.children[1], old[1]);
+  assert.equal(live.children[1].dataset.trackId, "second-1");
+  assert.equal(live.children[1].querySelector(".card-title").textContent, "second-1");
+  assert.equal(live.children[1].querySelector(".card-body").style, "url-first-1");
+  assert.deepEqual(context.swaps.at(-1).map(({ style }) => style), ["url-second-0", "url-second-2"]);
+
+  for (const [id, timer] of [...timers]) {
+    if (timer.delay === 200) {
+      timers.delete(id);
+      timer.callback();
+    }
+  }
+  assert.equal(live.children[1].querySelector(".card-body").style, "colour-second-1");
+
+  context.readyIds.add("second-1");
+  context.change();
+  assert.deepEqual(context.swaps.at(-1).map(({ style }) => style), ["url-second-1"]);
+});
+
+test("a quickly loaded Android cover replaces the old cover without showing a colour", () => {
+  const { live, timers } = setup();
+  const body = live.children[0].querySelector(".card-body");
+  context.snapshot = snapshot("second", 30);
+  context.ready = false;
+  context.readyIds = new Set();
+  context.change();
+  const timeout = [...timers.values()].find((timer) => timer.delay === 200);
+  assert.ok(timeout);
+  assert.equal(body.style, "url-first-0");
+
+  context.readyIds.add("second-0");
+  context.change();
+  assert.ok(context.swaps.at(-1).some(({ style }) => style === "url-second-0"));
+  timeout.callback();
+  assert.equal(body.style, "url-first-0");
+});
+
+test("Android settles entering cards before reusing them for unloaded covers", () => {
+  const { live } = setup();
+  context.snapshot = snapshot("first", 30, 20);
+  context.change();
+  const current = live.children.find((card) => card.dataset.slot === "20");
+  assert.equal(current.classList.contains("is-entering"), true);
+
+  context.snapshot = snapshot("second", 30, 20);
+  context.ready = false;
+  context.change();
+  assert.equal(live.children.find((card) => card.dataset.slot === "20"), current);
+  assert.equal(current.classList.contains("is-entering"), false);
+  assert.equal(current.classList.contains("is-settling"), false);
+});
+
+test("Android shuffle reuses positions and does not let an older fallback overwrite a new cover", () => {
+  const { live, wash, timers } = setup();
+  const old = [...live.children];
+  const shuffled = snapshot("first", 30);
+  [shuffled.order[1], shuffled.order[2]] = [shuffled.order[2], shuffled.order[1]];
+  context.snapshot = shuffled;
+  context.ready = false;
+  context.readyIds = new Set(["first-0"]);
+  context.change();
+  const stale = [...timers.values()].find((timer) => timer.delay === 200);
+  assert.ok(stale);
+  assert.equal(live.children[1], old[1]);
+  assert.equal(live.children[1].dataset.trackId, "first-2");
+  assert.equal(live.children[1].dataset.index, "1");
+  assert.equal(wash.children.length, 0);
+
+  context.snapshot = snapshot("third", 30);
+  context.readyIds = new Set(["third-1"]);
+  context.change();
+  assert.ok(context.swaps.at(-1).some(({ style }) => style === "url-third-1"));
+  stale.callback();
+  assert.notEqual(live.children[1].querySelector(".card-body").style, "colour-first-2");
+});
+
+test("Android applies missing covers and backgrounded fallbacks immediately", () => {
+  const { live, timers } = setup();
+  context.snapshot = snapshot("second", 30);
+  context.ready = false;
+  context.readyIds = new Set();
+  context.missing.add("second-0");
+  context.change();
+  assert.equal(live.children[0].querySelector(".card-body").style, "colour-second-0");
+  assert.equal(live.children[1].querySelector(".card-body").style, "url-first-1");
+  assert.ok(timers.size > 0);
+
+  context.reducedMotion = true;
+  context.motionChanged();
+  assert.equal(live.children[1].querySelector(".card-body").style, "colour-second-1");
+  assert.equal(timers.size, 0);
+
+  context.reducedMotion = false;
+  context.readyIds.add("second-1");
+  context.change();
+  assert.equal(live.children[1].querySelector(".card-body").style, "url-second-1");
+  assert.deepEqual(context.swaps.at(-1), []);
+});
+
+test("loaded Linux phone covers and desktop collection changes retain their sweep", () => {
+  for (const kind of ["linuxPhone", "desktop"]) {
     const { live, wash, frames } = setup(kind);
     context.snapshot = snapshot("second", 12);
     context.ready = kind !== "desktop";
@@ -218,7 +350,7 @@ test("loaded phone covers and desktop collection changes retain their sweep", ()
 });
 
 test("an unfinished sweep is cleared before unloaded phone placeholders appear", () => {
-  const { live, wash, frames } = setup();
+  const { live, wash, frames } = setup("linuxPhone");
   context.snapshot = snapshot("second", 12);
   context.change();
   assert.equal(frames.size, 1);
@@ -232,7 +364,7 @@ test("an unfinished sweep is cleared before unloaded phone placeholders appear",
 });
 
 test("backgrounding settles an active sweep and later queue changes do not animate", () => {
-  const { live, wash, frames } = setup();
+  const { live, wash, frames } = setup("linuxPhone");
   context.snapshot = snapshot("second", 30);
   context.change();
   assert.ok(wash.children.length > 0);

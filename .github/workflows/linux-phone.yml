@@ -1,33 +1,6 @@
 name: linux phone tests
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/linux-phone.yml"
-      - ".github/workflows/release*.yml"
-      - "install.sh"
-      - "index.html"
-      - "package*.json"
-      - "public/**"
-      - "scripts/**"
-      - "src/**"
-      - "src-tauri/**"
-      - "tests/**"
-      - "tsconfig.json"
-      - "vite.config.ts"
-      - "VERSION"
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/linux-phone.yml"
-      - ".github/workflows/release*.yml"
-      - "install.sh"
-      - "package*.json"
-      - "scripts/**"
-      - "src/**"
-      - "src-tauri/**"
-      - "tests/**"
-      - "VERSION"
   workflow_dispatch:
 
 permissions:

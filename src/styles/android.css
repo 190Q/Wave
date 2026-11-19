@@ -7,12 +7,6 @@
   display: none;
 }
 
-/* How far the dock and the queue have been pushed up by the sheet drag, in
-   pixels. src/ui/lyrics-sheet.ts owns the value. */
-:is([data-device="android"], [data-device="linuxPhone"]) .stage {
-  --sheet-travel: 0px;
-}
-
 /* The notch and the gesture bar. The insets are whatever the system
    reported, so nothing here is a fixed size. */
 :is([data-device="android"], [data-device="linuxPhone"]) .topbar {
@@ -77,7 +71,7 @@ html:is([data-device="android"], [data-device="linuxPhone"]) {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
-  transform: translateY(calc(-1 * var(--sheet-travel)));
+  transform: translateY(0);
   transition: none;
 }
 
@@ -195,7 +189,7 @@ html:is([data-device="android"], [data-device="linuxPhone"]) {
   display: block;
   height: auto;
   mask-image: none;
-  transform: translateY(calc(100% - var(--sheet-travel)));
+  transform: translateY(100%);
 }
 
 :is([data-device="android"], [data-device="linuxPhone"]) .lyrics[hidden] {

@@ -43,14 +43,17 @@ export function mountLyricsSheet(): LyricsSheet | null {
   const panel = document.getElementById("lyrics-panel");
   const grab = document.getElementById("lyrics-grab");
   const dockGrab = document.getElementById("dock-grab");
+  const dock = document.getElementById("dock");
+  const carousel = document.getElementById("carousel");
   const root = document.documentElement;
 
-  if (!stage || !topbar || !panel || !grab || !dockGrab) {
+  if (!stage || !topbar || !panel || !grab || !dockGrab || !dock || !carousel) {
     return null;
   }
 
   /** How far the stack has been pushed up, in pixels. */
   let travel = 0;
+  let height = 0;
   let open = false;
   /** True while the dock's drag is the sheet's rather than the seek bar's. */
   let owns = false;
@@ -70,13 +73,20 @@ export function mountLyricsSheet(): LyricsSheet | null {
   let startedAt = 0;
 
   /** The room the sheet has, which is what it takes to push the stack clear. */
-  const room = (): number => panel.clientHeight;
+  const room = (): number => height;
+  const measureRoom = (): void => { height = panel.clientHeight; };
 
   /** The sheet only exists while the current song has lyrics to show. */
   const wanted = (): boolean => getState().lyrics.length > 0;
 
   const paint = (): void => {
-    stage.style.setProperty("--sheet-travel", `${travel}px`);
+    panel.style.transform = `translateY(calc(100% - ${travel}px))`;
+    const shift = `translateY(${-travel}px)`;
+    dock.style.transform = shift;
+    carousel.style.transform = shift;
+  };
+
+  const paintOpen = (): void => {
     panel.inert = !open;
     dockGrab.setAttribute("aria-expanded", String(open));
   };
@@ -137,7 +147,9 @@ export function mountLyricsSheet(): LyricsSheet | null {
 
   const settleTo = (next: boolean, velocity = 0): void => {
     stopSettle();
+    measureRoom();
     open = next;
+    paintOpen();
     if (reduceMotionActive() || travel === (next ? room() : 0)) {
       finishSettle();
       return;
@@ -169,6 +181,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
     if (open || !wanted()) {
       return;
     }
+    measureRoom();
     interrupted = stopSettle();
     owns = false;
     originX = event.clientX;
@@ -236,6 +249,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
     if (event.button !== 0 || !open || !wanted()) {
       return;
     }
+    measureRoom();
     stopSettle();
     dragging = true;
     grabMoved = false;
@@ -295,6 +309,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
   /** The sheet follows the top bar, which moves with the notch and the rotation. */
   const refit = (): void => {
     root.style.setProperty("--phone-topbar", `${topbar.offsetHeight}px`);
+    measureRoom();
     if (dragging || owns || settleFrame !== null) {
       return;
     }
@@ -306,6 +321,9 @@ export function mountLyricsSheet(): LyricsSheet | null {
     const observer = new ResizeObserver(refit);
     observer.observe(stage);
     observer.observe(topbar);
+    observer.observe(panel);
+  } else {
+    window.addEventListener("resize", refit);
   }
 
   subscribeMotion(() => {
@@ -323,6 +341,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
     }
   });
 
+  paintOpen();
   refit();
 
   return { press, owned: () => owns, move, release };

@@ -62,6 +62,20 @@ class Element {
   focus() { this.focused = true; }
 }
 
+test("the moving elements remain synchronized without per-frame layout reads", (t) => {
+  const { context, stage, panel, dockGrab, dock, carousel, travel, advance } = setup(t);
+  dockGrab.dispatch("click");
+  const reads = context.heightReads;
+  for (let frame = 0; frame < 10; frame += 1) {
+    advance(16);
+    assert.equal(dock.style.transform, `translateY(${-travel()}px)`);
+    assert.equal(carousel.style.transform, dock.style.transform);
+    assert.equal(panel.style.transform, `translateY(calc(100% - ${travel()}px))`);
+  }
+  assert.equal(context.heightReads, reads);
+  assert.equal(stage.properties.has("--sheet-travel"), false);
+});
+
 function setup(t) {
   const context = { now: 0, reduced: false, state: { lyrics: [{ text: "line" }] } };
   globalThis.__lyricsSheetTest = context;
@@ -71,16 +85,25 @@ function setup(t) {
   const topbar = new Element();
   topbar.offsetHeight = 40;
   const panel = new Element();
-  panel.clientHeight = 600;
+  let panelHeight = 600;
+  context.heightReads = 0;
+  Object.defineProperty(panel, "clientHeight", {
+    get() { context.heightReads += 1; return panelHeight; },
+    set(value) { panelHeight = value; },
+  });
   const grab = new Element();
   const dockGrab = new Element();
+  const dock = new Element();
+  const carousel = new Element();
   const root = new Element();
   const frames = new Map();
   let frameId = 0;
   globalThis.document = {
     documentElement: root,
     querySelector: (selector) => ({ ".stage": stage, ".topbar": topbar })[selector] ?? null,
-    getElementById: (id) => ({ "lyrics-panel": panel, "lyrics-grab": grab, "dock-grab": dockGrab })[id] ?? null,
+    getElementById: (id) => ({
+      "lyrics-panel": panel, "lyrics-grab": grab, "dock-grab": dockGrab, dock, carousel,
+    })[id] ?? null,
   };
   globalThis.requestAnimationFrame = (callback) => {
     frames.set(++frameId, callback);
@@ -93,7 +116,7 @@ function setup(t) {
   };
 
   const sheet = mountLyricsSheet();
-  const travel = () => parseFloat(stage.properties.get("--sheet-travel"));
+  const travel = () => Number(panel.style.transform.match(/-\s*([\d.]+)px/)[1]);
   const advance = (ms) => {
     context.now += ms;
     const callbacks = [...frames.values()];
@@ -101,7 +124,7 @@ function setup(t) {
     for (const callback of callbacks) callback(context.now);
   };
   const pointer = (type, clientY) => ({ type, clientY, clientX: 100, button: 0, pointerId: 1 });
-  return { context, sheet, stage, panel, grab, dockGrab, frames, travel, advance, pointer };
+  return { context, sheet, stage, panel, grab, dockGrab, dock, carousel, frames, travel, advance, pointer };
 }
 
 test("fast and slow upward swipes carry their own release velocity into the settle", (t) => {

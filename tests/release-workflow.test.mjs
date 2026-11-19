@@ -18,8 +18,9 @@ test("release builds run after signing checks and publish only after every platf
   assert.match(workflow, /node scripts\/release\.mjs slim --reuse-build/);
 });
 
-test("phone changes are tested on pull requests and ARM Alpine", () => {
-  assert.match(phoneTests, /pull_request:/);
+test("phone tests run manually on ARM Alpine", () => {
+  assert.match(phoneTests, /^  workflow_dispatch:/m);
+  assert.doesNotMatch(phoneTests, /^  (?:pull_request|push):/m);
   assert.match(phoneTests, /tests\/linux-phone\.test\.mjs/);
   assert.match(phoneTests, /runs-on: ubuntu-22\.04-arm/);
   assert.match(phoneTests, /alpine:3\.22 sh scripts\/musl-build\.sh/);

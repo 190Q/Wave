@@ -113,7 +113,7 @@ function setup(kind = "android") {
   const ids = [
     "dock", "time-now", "time-total", "like", "shuffle", "prev", "play", "next",
     "repeat", "queue-toggle", "volume-bars", "dock-position", "dock-grab",
-    "lyrics-panel", "lyrics-grab",
+    "lyrics-panel", "lyrics-grab", "carousel",
   ];
   const buttons = new Set(["like", "shuffle", "prev", "play", "next", "repeat", "queue-toggle", "dock-grab", "lyrics-grab"]);
   const elements = Object.fromEntries(ids.map((id) => [id, new FakeElement({ button: buttons.has(id) })]));
@@ -171,6 +171,10 @@ const { mountDock } = await vite.ssrLoadModule("/src/ui/dock.ts");
 
 function pointer(target, x, y) {
   return { target, clientX: x, clientY: y, pointerId: 1, button: 0 };
+}
+
+function sheetTravel(elements) {
+  return Number(elements["lyrics-panel"].style.transform.match(/-\s*([\d.]+)px/)[1]);
 }
 
 test("touch button hit areas do not extend above the buttons", async () => {
@@ -278,7 +282,7 @@ test("Android sheet swipes from the controls or seek area do not seek", () => {
     windowEvents.dispatch("pointermove", pointer(elements.dock, 200, startY - 70));
     assert.equal(elements.dock.classList.contains("is-scrubbing"), false);
     windowEvents.dispatch("pointerup", pointer(elements.dock, 200, startY - 70));
-    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "500px");
+    assert.equal(sheetTravel(elements), 500);
     assert.deepEqual(context.seeks, []);
 
     if (startY < 120) {
@@ -336,7 +340,7 @@ test("phone lyrics buttons activate on tap and keyboard", () => {
     close.dispatch("pointerdown", pointer(close, 200, 100));
     close.dispatch("pointerup", pointer(close, 200, 100));
     close.dispatch("click", { detail: 1 });
-    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "0px");
+    assert.equal(sheetTravel(elements), 0);
 
     open.dispatch("click", { detail: 0 });
     assert.equal(stage.style.getPropertyValue("--sheet-travel"), "500px");
@@ -388,5 +392,5 @@ test("a swipe started on a phone transport control does not click it", () => {
     stopPropagation() {},
   });
   assert.equal(prevented, true);
-  assert.equal(stage.style.getPropertyValue("--sheet-travel"), "500px");
+  assert.equal(sheetTravel(elements), 500);
 });

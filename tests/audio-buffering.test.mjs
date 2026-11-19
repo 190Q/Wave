@@ -156,3 +156,22 @@ test("a reused element treats a new CORS failure as an unloaded track", (t) => {
   assert.equal(refusals, 1);
   assert.equal(errors, 0);
 });
+
+test("a pending seek remains visible before its metadata event applies the position", (t) => {
+  environment(t);
+  const positions = [];
+  let engine;
+  engine = new AudioEngine({ onLoaded: () => positions.push(engine.positionMs) });
+  engine.element.readyState = 0;
+  engine.load("http://127.0.0.1:1234/one", { positionMs: 42000 });
+  const audio = engine.element;
+  assert.equal(engine.positionMs, 42000);
+
+  audio.readyState = 1;
+  audio.emit("durationchange");
+  assert.deepEqual(positions, [42000]);
+  audio.emit("loadedmetadata");
+  assert.equal(audio.currentTime, 42);
+  assert.equal(engine.positionMs, 42000);
+  assert.deepEqual(positions, [42000, 42000]);
+});

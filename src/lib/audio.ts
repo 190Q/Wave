@@ -14,6 +14,7 @@ export interface AudioEngineHandlers {
   onElement?: (element: HTMLAudioElement, phase: "created" | "retired") => void;
   onBuffering?: (durationMs: number, element: HTMLAudioElement) => void;
   onPlaying?: () => void;
+  onPause?: () => void;
 }
 
 const REPORT_BUFFERING_MS = 250;
@@ -72,7 +73,7 @@ export class AudioEngine {
 
   /** The media clock, which is what everything on screen is timed against. */
   get positionMs(): number {
-    if (this.el.readyState < HTMLMediaElement.HAVE_METADATA && this.requestedMs !== null) {
+    if (this.requestedMs !== null) {
       return this.requestedMs;
     }
     const seconds = this.el.currentTime;
@@ -193,7 +194,7 @@ export class AudioEngine {
     el.addEventListener("error", this.handleError);
     el.addEventListener("waiting", this.handleWaiting);
     el.addEventListener("playing", this.handlePlaying);
-    el.addEventListener("pause", this.handleInterrupted);
+    el.addEventListener("pause", this.handlePause);
     el.addEventListener("seeking", this.handleInterrupted);
 
     this.elementLoaded = false;
@@ -246,7 +247,7 @@ export class AudioEngine {
     el.removeEventListener("error", this.handleError);
     el.removeEventListener("waiting", this.handleWaiting);
     el.removeEventListener("playing", this.handlePlaying);
-    el.removeEventListener("pause", this.handleInterrupted);
+    el.removeEventListener("pause", this.handlePause);
     el.removeEventListener("seeking", this.handleInterrupted);
   }
 
@@ -296,6 +297,11 @@ export class AudioEngine {
 
   private readonly handleInterrupted = (): void => {
     this.waitingAt = null;
+  };
+
+  private readonly handlePause = (): void => {
+    this.handleInterrupted();
+    this.handlers.onPause?.();
   };
 
   private readonly handleError = (): void => {

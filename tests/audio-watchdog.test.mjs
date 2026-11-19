@@ -204,7 +204,10 @@ function interruptedPlayback(t, hidden = false, reconcile = true) {
     dispatch(name) { this.listeners.get(name)?.(); }
   };
   let player;
-  const engine = new AudioEngine({ onPlaying: () => player.handlePlaying() });
+  const engine = new AudioEngine({
+    onPlaying: () => player.handlePlaying(),
+    onPause: () => player.handlePaused(),
+  });
   player = new Player(engine, (id) => ({
     path: `http://127.0.0.1:1234/${id}`, durationMs: 120000, gain: 1,
   }));
@@ -224,9 +227,74 @@ function interruptedPlayback(t, hidden = false, reconcile = true) {
   return { engine, player };
 }
 
+for (const hidden of [false, true]) {
+  test(`an external pause is reflected immediately and resumes in place when ${hidden ? "hidden" : "visible"}`, (t) => {
+    const { engine, player } = interruptedPlayback(t, hidden, false);
+    const element = engine.element;
+    element.currentTime = 42;
+    element.dispatch("pause");
+    assert.equal(player.snapshot().playing, false);
+    assert.equal(player.positionMs, 42000);
+    assert.ok(element.volume > 0);
+    assert.equal(window.check, null);
+
+    element.paused = false;
+    player.finishTransitions();
+    assert.equal(element.paused, false);
+    assert.ok(element.volume > 0);
+    element.dispatch("playing");
+    assert.equal(player.snapshot().playing, true);
+    assert.equal(engine.element, element);
+    assert.equal(player.positionMs, 42000);
+    assert.ok(element.volume > 0);
+  });
+}
+
+test("a stale pause event cannot interrupt an element already playing", (t) => {
+  const { engine, player } = interruptedPlayback(t, false, false);
+  engine.element.paused = false;
+  engine.element.dispatch("pause");
+  assert.equal(player.snapshot().playing, true);
+});
+
+test("an external pause during a fade preserves the requested volume for automatic playback", (t) => {
+  const { engine, player } = interruptedPlayback(t, false, false);
+  player.setVolume(40);
+  engine.element.dispatch("pause");
+  assert.equal(engine.element.volume, 0.4 * 0.7);
+  engine.element.paused = false;
+  engine.element.dispatch("playing");
+  assert.equal(engine.element.volume, 0.4 * 0.7);
+});
+
+test("volume changes made during an interruption are applied before automatic playback", (t) => {
+  const { engine, player } = interruptedPlayback(t, false, false);
+  engine.element.dispatch("pause");
+  player.setVolume(40);
+  assert.equal(engine.element.volume, 0.4 * 0.7);
+  player.toggleMute();
+  assert.equal(engine.element.volume, 0);
+  player.toggleMute();
+  assert.equal(engine.element.volume, 0.4 * 0.7);
+});
+
+test("a manual pause after an external pause prevents automatic playback and keeps the position", (t) => {
+  const { engine, player } = interruptedPlayback(t, false, false);
+  const old = engine.element;
+  old.currentTime = 42;
+  old.dispatch("pause");
+  player.pause();
+  assert.notEqual(engine.element, old);
+  assert.equal(engine.positionMs, 42000);
+  old.paused = false;
+  old.dispatch("playing");
+  assert.equal(player.snapshot().playing, false);
+  assert.equal(engine.element.paused, true);
+});
+
 test("an interrupted element restores the player and volume when it resumes", (t) => {
   const { engine, player } = interruptedPlayback(t);
-  assert.equal(engine.element.volume, 0);
+  assert.ok(engine.element.volume > 0);
   engine.element.paused = false;
   engine.element.dispatch("playing");
   assert.equal(player.snapshot().playing, true);

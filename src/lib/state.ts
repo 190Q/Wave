@@ -494,6 +494,7 @@ const engine = new AudioEngine({
   },
   onLoaded: () => player.handleLoaded(),
   onPlaying: () => player.handlePlaying(),
+  onPause: () => player.handlePaused(),
   onError: () => {
     const title = currentTrack()?.title;
     setNotice(title ? `Could not play "${title}".` : "That song could not be played.");

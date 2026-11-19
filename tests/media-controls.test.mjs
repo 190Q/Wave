@@ -97,6 +97,7 @@ class FakeAudio {
 
   addEventListener(name, listener) { this.listeners.set(name, listener); }
   removeEventListener(name) { this.listeners.delete(name); }
+  emit(name) { this.listeners.get(name)?.(); }
   play() { this.paused = false; return Promise.resolve(); }
   pause() { this.paused = true; }
   removeAttribute(name) { if (name === "src") this.src = ""; }
@@ -154,8 +155,12 @@ function setup(PlayerClass = Player, mount = mountPresence, controls = true, sen
   globalThis.Audio = FakeAudio;
   globalThis.HTMLMediaElement = { HAVE_METADATA: 1 };
 
-  const engine = new AudioEngine();
-  const player = new PlayerClass(engine, (id) => ({
+  let player;
+  const engine = new AudioEngine({
+    onPause: () => player.handlePaused(),
+    onPlaying: () => player.handlePlaying(),
+  });
+  player = new PlayerClass(engine, (id) => ({
     path: `http://127.0.0.1:1234/${id}`,
     durationMs: 120000,
     gain: 1,
@@ -216,6 +221,31 @@ test("Android handles direct media controls without waiting for the Tauri event 
   assert.equal(engine.element.volume, 0);
   finishFrames();
   assert.ok(engine.element.volume > 0);
+});
+
+test("Android media controls stop at the interrupted position and resume without replacing the audio", () => {
+  const { engine, player } = setup(AndroidPlayer, mountAndroidPresence, false, null, true);
+  const audio = engine.element;
+  audio.currentTime = 42;
+  document.hidden = true;
+  document.dispatch("visibilitychange");
+  audio.paused = true;
+  audio.emit("pause");
+  let songs = context.bridgeMessages.filter((message) => message.type === "song");
+  assert.equal(songs.at(-1).song.playing, false);
+  assert.equal(songs.at(-1).song.positionMs, 42000);
+  assert.equal(context.intervals.size, 0);
+  assert.equal(audio.volume, 1);
+
+  audio.paused = false;
+  assert.equal(audio.volume, 1);
+  audio.emit("playing");
+  songs = context.bridgeMessages.filter((message) => message.type === "song");
+  assert.equal(songs.at(-1).song.playing, true);
+  assert.equal(songs.at(-1).song.positionMs, 42000);
+  assert.equal(engine.element, audio);
+  assert.equal(audio.volume, 1);
+  assert.equal(player.snapshot().playing, true);
 });
 
 test("Android updates the media session without waiting for Tauri acknowledgements", () => {

@@ -322,8 +322,18 @@ export class Player {
     this.sampleListening();
     this.playing = false;
     this.resumeAfterInterruption = true;
-    this.startFade(0);
+    this.stopFade();
+    this.level = this.targetLevel();
+    this.applyLevel();
+    this.stopClock();
     this.emitChange();
+    this.emitProgress();
+  }
+
+  handlePaused(): void {
+    if (!this.engine.isPlaying && !this.engine.element.ended) {
+      this.pauseForInterruption();
+    }
   }
 
   private cancelInterruptedPlayback(): void {
@@ -346,7 +356,9 @@ export class Player {
     this.resumeAfterInterruption = false;
     this.playing = true;
     this.startClock();
-    this.startFade(this.targetLevel());
+    this.stopFade();
+    this.level = this.targetLevel();
+    this.applyLevel();
     this.emitChange();
   }
 
@@ -455,7 +467,11 @@ export class Player {
 
   toggleMute(): void {
     this.muted = !this.muted;
-    this.startFade(this.targetLevel());
+    if (this.resumeAfterInterruption) {
+      this.retarget();
+    } else {
+      this.startFade(this.targetLevel());
+    }
     this.emitChange();
   }
 
@@ -632,9 +648,9 @@ export class Player {
     return duration > 0 && this.engine.positionMs >= duration - END_SLACK_MS;
   }
 
-  /** The level the element settles at: silent while paused or muted. */
+  /** The level the element settles at: silent while manually paused or muted. */
   private targetLevel(): number {
-    if (!this.playing) {
+    if (!this.playing && !this.resumeAfterInterruption) {
       return 0;
     }
     const id = this.currentId;
@@ -733,7 +749,7 @@ export class Player {
 
   /** A pause is only complete once the fade has taken the sound away. */
   private settleFade(): void {
-    if (!this.playing && this.engine.isPlaying) {
+    if (!this.playing && !this.resumeAfterInterruption && this.engine.isPlaying) {
       this.engine.pause();
       this.stopClock();
       this.emitProgress();

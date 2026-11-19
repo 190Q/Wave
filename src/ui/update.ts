@@ -8,6 +8,7 @@ import {
 
 import { device } from "../lib/device";
 import { escapeHtml } from "../lib/format";
+import { reduceMotionActive } from "../lib/motion";
 import { getState, installUpdate, setNotice, subscribe } from "../lib/state";
 import type { UpdateInfo, UpdateProgress } from "../types";
 import { claimPopup, releasePopup } from "./popups";
@@ -120,6 +121,11 @@ export function mountUpdate(): void {
   const paintNotice = (): void => {
     const { update } = getState();
     const show = update !== null && update.version !== dismissed;
+    if (show && toast.hidden && device() === "android" && reduceMotionActive()) {
+      toast.classList.add("is-static");
+    } else if (!show) {
+      toast.classList.remove("is-static");
+    }
     toast.hidden = !show;
     if (show && update) {
       toastText.textContent = `Wave ${update.version} is available.`;
@@ -131,7 +137,7 @@ export function mountUpdate(): void {
     // The plugin cannot report a click on a desktop notification, so one sent
     // while the window is away opens the popup when the user comes back. A
     // window that has never been in front is a launch, which is not away.
-    waitingForFocus = seen && !document.hasFocus();
+    waitingForFocus = device() !== "android" && seen && !document.hasFocus();
 
     try {
       let granted = await isPermissionGranted();

@@ -60,6 +60,10 @@
   animation: none;
 }
 
+.update-toast.is-static {
+  animation: none;
+}
+
 .update-dialog {
   width: min(26rem, 94vw);
   padding: 0;

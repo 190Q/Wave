@@ -13,6 +13,7 @@ const mocks = {
   `,
   "../lib/device": 'export const device = () => globalThis.__themeTest.device;',
   "../lib/format": "export const escapeHtml = (value) => value;",
+  "../lib/motion": "export const reduceMotionActive = () => false; export const subscribeMotion = () => {};",
   "../lib/state": `
     const context = () => globalThis.__themeTest;
     export const ADAPTIVE_THEME = "adaptive";

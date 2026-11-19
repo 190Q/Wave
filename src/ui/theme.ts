@@ -10,6 +10,7 @@ import {
 } from "../lib/colour";
 import { device } from "../lib/device";
 import { escapeHtml } from "../lib/format";
+import { reduceMotionActive, subscribeMotion } from "../lib/motion";
 import {
   ADAPTIVE_THEME,
   adaptiveColour,
@@ -42,7 +43,7 @@ export function applyAccent(colour: string): void {
     return;
   }
 
-  const wipe = wipePending;
+  const wipe = wipePending && !reduceMotionActive();
   wipePending = false;
 
   const paintAccent = (): void => {
@@ -72,14 +73,14 @@ export function applyAccent(colour: string): void {
     void themeWipe(apply).then(() => root.classList.remove("is-theming"));
   };
 
-  if (appliedStage === "" || wipe) {
-    // First paint, or a picked colour: land it inside the sweep.
-    commit();
-    return;
-  }
-
   if (stageTimer !== null) {
     window.clearTimeout(stageTimer);
+    stageTimer = null;
+  }
+
+  if (appliedStage === "" || wipe || reduceMotionActive()) {
+    commit();
+    return;
   }
 
   paintAccent();
@@ -309,6 +310,11 @@ export function mountTheme(): void {
 
   fillIcons(dialog);
   subscribe(render);
+  subscribeMotion(() => {
+    if (reduceMotionActive()) {
+      applyAccent(themeColour());
+    }
+  });
   // The Adaptive swatch has to follow the track, not just the settings.
   player.onChange(render);
   render();

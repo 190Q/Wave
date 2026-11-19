@@ -8,6 +8,7 @@
       {
         "label": "main",
         "title": "Wave",
+        "backgroundColor": "#07070a",
         "visible": false,
         "decorations": false,
         "resizable": false,

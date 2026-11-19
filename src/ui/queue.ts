@@ -15,11 +15,11 @@ import {
   trackById,
   type ArtworkTier,
 } from "../lib/state";
-import { reduceMotionActive } from "../lib/motion";
+import { reduceMotionActive, subscribeMotion } from "../lib/motion";
 import { stepLater } from "../lib/steps";
 import { coverStyle } from "./artwork";
 import { openTrackMenu } from "./library";
-import { coverWipe, type CoverSwap } from "./wipe";
+import { coverWipe, setCoverStyle, type CoverSwap } from "./wipe";
 
 const VISIBLE_RANGE = 5;
 const SPACING_REM = 6.5;
@@ -61,6 +61,7 @@ export function mountQueue(): void {
   const leaving = new Map<number, HTMLElement>();
   const entering = new Set<HTMLElement>();
   const popping = new Set<HTMLElement>();
+  const unattendedArtwork = new WeakSet<HTMLElement>();
 
   const live = document.createElement("div");
   live.className = "carousel-live";
@@ -216,6 +217,10 @@ export function mountQueue(): void {
 
   /** Fades a card out, then takes it away once the fade has run. */
   const dismiss = (slot: number, card: HTMLElement): void => {
+    if (reduceMotionActive()) {
+      card.remove();
+      return;
+    }
     card.classList.add("is-leaving");
     card.style.pointerEvents = "none";
     leaving.set(slot, card);
@@ -250,6 +255,12 @@ export function mountQueue(): void {
 
     const arrived = [...popping];
     popping.clear();
+    if (reduceMotionActive()) {
+      for (const card of arrived) {
+        card.classList.remove("is-entering");
+      }
+      return;
+    }
     void carousel.offsetWidth;
 
     requestAnimationFrame(() => {
@@ -374,6 +385,9 @@ export function mountQueue(): void {
       }
     }
 
+    if (reduceMotionActive()) {
+      return;
+    }
     if (enter === "all") {
       for (const [, card] of created) {
         if (device() !== "desktop" && !card.dataset.artwork) {
@@ -449,6 +463,12 @@ export function mountQueue(): void {
 
     const arrived = [...entering];
     entering.clear();
+    if (reduceMotionActive()) {
+      for (const card of arrived) {
+        card.classList.remove("is-entering");
+      }
+      return;
+    }
     void carousel.offsetWidth;
 
     requestAnimationFrame(() => {
@@ -477,6 +497,9 @@ export function mountQueue(): void {
         artist.textContent = artistName;
       }
 
+      if (reduceMotionActive() && !card.dataset.artwork) {
+        unattendedArtwork.add(card);
+      }
       if (!mayRevealArtwork(track.id)) {
         continue;
       }
@@ -490,7 +513,10 @@ export function mountQueue(): void {
       }
 
       // A card still showing its colour hands over to the cover under the sweep.
-      const revealing = visible && !card.dataset.artwork && signature !== "";
+      const revealing = visible && !card.dataset.artwork && signature !== "" && !unattendedArtwork.has(card);
+      if (signature) {
+        unattendedArtwork.delete(card);
+      }
       card.dataset.artwork = signature;
       card.dataset.colour = colour;
 
@@ -503,7 +529,7 @@ export function mountQueue(): void {
       if (revealing) {
         swaps.push({ body, style });
       } else {
-        body.setAttribute("style", style);
+        setCoverStyle(body, style);
       }
     }
 
@@ -846,6 +872,19 @@ export function mountQueue(): void {
 
   player.onChange(render);
   subscribe(render);
+  subscribeMotion(() => {
+    if (!reduceMotionActive()) {
+      return;
+    }
+    endWash();
+    flushPopping();
+    flushEntering();
+    for (const card of leaving.values()) {
+      card.remove();
+    }
+    leaving.clear();
+    render();
+  });
   render();
 }
 

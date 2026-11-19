@@ -1,3 +1,10 @@
+:root.is-resuming,
+:root.is-resuming *,
+:root.is-resuming *::before,
+:root.is-resuming *::after {
+  transition: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .drop,
   #theme-toggle .btn-icon {

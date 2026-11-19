@@ -17,6 +17,7 @@ const mocks = {
   `,
   "../lib/device": "export const device = () => globalThis.__updateTest.device;",
   "../lib/format": `export const escapeHtml = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");`,
+  "../lib/motion": "export const reduceMotionActive = () => globalThis.__updateTest.reducedMotion ?? false;",
   "../lib/state": `
     const context = () => globalThis.__updateTest;
     export const getState = () => context().state;
@@ -169,4 +170,35 @@ test("returning to a stale update notification does not open an up-to-date popup
   context.focused = true;
   context.focusListener({ payload: true });
   assert.equal(elements["update-dialog"].open, false);
+});
+
+test("an Android update found in the background stays quiet on focus", () => {
+  const { context, elements } = setup();
+  context.state.update = null;
+  mountUpdate();
+  context.focusListener({ payload: true });
+  context.focused = false;
+  context.reducedMotion = true;
+  context.state.update = { version: "0.3.0", features: [] };
+  context.state.updateFoundAt = 1;
+  context.notify();
+  assert.equal(elements["update-toast"].classList.contains("is-static"), true);
+
+  context.focused = true;
+  context.reducedMotion = false;
+  context.focusListener({ payload: true });
+  assert.equal(elements["update-dialog"].open, false);
+  assert.equal(elements["update-toast"].hidden, false);
+});
+
+test("a desktop update found in the background still opens on focus", () => {
+  const { context, elements } = setup("desktop");
+  mountUpdate();
+  context.focusListener({ payload: true });
+  context.focused = false;
+  context.state.updateFoundAt = 1;
+  context.notify();
+  context.focused = true;
+  context.focusListener({ payload: true });
+  assert.equal(elements["update-dialog"].open, true);
 });

@@ -6,6 +6,7 @@ import { createServer } from "vite";
 const context = {
   kind: "android",
   ready: true,
+  reducedMotion: false,
   state: { queueOpen: true, collections: [] },
   snapshot: null,
   swaps: [],
@@ -19,7 +20,10 @@ globalThis.__queueAnimationTest = context;
 const mocks = {
   "../lib/device": "export const device = () => globalThis.__queueAnimationTest.kind;",
   "../lib/format": "export const escapeHtml = (value) => value;",
-  "../lib/motion": "export const reduceMotionActive = () => false;",
+  "../lib/motion": `
+    export const reduceMotionActive = () => globalThis.__queueAnimationTest.reducedMotion;
+    export const subscribeMotion = (callback) => { globalThis.__queueAnimationTest.motionChanged = callback; };
+  `,
   "../lib/steps": "export const stepLater = () => {};",
   "../lib/state": `
     const context = globalThis.__queueAnimationTest;
@@ -38,7 +42,10 @@ const mocks = {
       reveal && globalThis.__queueAnimationTest.ready ? "url-" + track.id : "colour";
   `,
   "./library": "export const openTrackMenu = () => {};",
-  "./wipe": "export const coverWipe = (swaps) => globalThis.__queueAnimationTest.swaps.push(swaps);",
+  "./wipe": `
+    export const coverWipe = (swaps) => globalThis.__queueAnimationTest.swaps.push(swaps);
+    export const setCoverStyle = (body, style) => body.setAttribute("style", style);
+  `,
 };
 
 const vite = await createServer({
@@ -120,6 +127,7 @@ function snapshot(sourceId, count, cursor = 0) {
 function setup(kind = "android") {
   context.kind = kind;
   context.ready = true;
+  context.reducedMotion = false;
   context.swaps = [];
   context.snapshot = snapshot("first", 30);
   const carousel = new FakeElement();
@@ -221,4 +229,41 @@ test("an unfinished sweep is cleared before unloaded phone placeholders appear",
   assert.equal(wash.children.length, 0);
   assert.ok(!live.style.clipPath);
   assert.equal(frames.size, 0);
+});
+
+test("backgrounding settles an active sweep and later queue changes do not animate", () => {
+  const { live, wash, frames } = setup();
+  context.snapshot = snapshot("second", 30);
+  context.change();
+  assert.ok(wash.children.length > 0);
+
+  context.reducedMotion = true;
+  context.motionChanged();
+  assert.equal(wash.children.length, 0);
+  assert.ok(!live.style.clipPath);
+  assert.equal(frames.size, 0);
+
+  for (const cursor of [10, 20, 29]) {
+    context.snapshot = snapshot("second", 30, cursor);
+    context.change();
+  }
+  assert.equal(frames.size, 0);
+  assert.ok(live.children.every((card) => !card.classList.contains("is-entering")));
+  assert.ok(live.children.every((card) => !card.classList.contains("is-leaving")));
+});
+
+test("artwork requested in the background is applied without a late reveal", () => {
+  const { live } = setup();
+  context.reducedMotion = true;
+  context.motionChanged();
+  context.snapshot = snapshot("second", 30, 20);
+  context.ready = false;
+  context.change();
+
+  context.reducedMotion = false;
+  context.ready = true;
+  context.change();
+  const current = live.children.find((card) => card.dataset.slot === "20");
+  assert.equal(current?.querySelector(".card-body").style, "url-second-20");
+  assert.deepEqual(context.swaps.at(-1), []);
 });

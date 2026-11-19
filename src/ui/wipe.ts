@@ -1,5 +1,5 @@
 import { isWebKitGtk } from "../lib/device";
-import { reduceMotionActive } from "../lib/motion";
+import { reduceMotionActive, subscribeMotion } from "../lib/motion";
 
 const WIPE_MS = 600;
 
@@ -8,11 +8,15 @@ const WIPE_EASE = "cubic-bezier(0.16, 1, 0.3, 1)";
 interface Sweep {
   ready: Promise<void>;
   finished: Promise<void>;
+  skipTransition?: () => void;
 }
 
 interface SweepingDocument {
   startViewTransition?: (update: () => void) => Sweep;
 }
+
+const themeTransitions = new Set<Sweep>();
+let motionEpoch = 0;
 
 function wipeShape(progress: number): string {
   const p = -0.05 + progress * 1.1;
@@ -37,9 +41,14 @@ export function themeWipe(update: () => void): Promise<void> {
   }
 
   const transition = start.call(api, update);
+  const epoch = motionEpoch;
+  themeTransitions.add(transition);
 
   const sweep = transition.ready
     .then(() => {
+      if (epoch !== motionEpoch || reduceMotionActive()) {
+        return;
+      }
       const options = {
         duration: WIPE_MS,
         easing: WIPE_EASE,
@@ -54,9 +63,9 @@ export function themeWipe(update: () => void): Promise<void> {
     })
     .catch(() => undefined);
 
-  return Promise.all([sweep, transition.finished.catch(() => undefined)]).then(
-    () => undefined,
-  );
+  return Promise.all([sweep, transition.finished.catch(() => undefined)]).then(() => {
+    themeTransitions.delete(transition);
+  });
 }
 
 export interface CoverSwap {
@@ -65,6 +74,7 @@ export interface CoverSwap {
 }
 
 const CARD_LEAN = 0.25;
+const coverWipes = new Map<HTMLElement, { animation: Animation; overlay: HTMLElement; style: string }>();
 
 function cardShape(lead: number): string {
   const edge = lead * 100;
@@ -75,9 +85,38 @@ function cardShape(lead: number): string {
 /** Paints the covers straight away, for when the sweep cannot run. */
 function settle(swaps: CoverSwap[]): void {
   for (const swap of swaps) {
-    swap.body.setAttribute("style", swap.style);
+    setCoverStyle(swap.body, swap.style);
   }
 }
+
+export function setCoverStyle(body: HTMLElement, style: string): void {
+  cancelCoverWipe(body);
+  body.setAttribute("style", style);
+}
+
+function cancelCoverWipe(body: HTMLElement): void {
+  const active = coverWipes.get(body);
+  if (!active) {
+    return;
+  }
+  coverWipes.delete(body);
+  active.animation.cancel();
+  active.overlay.remove();
+}
+
+subscribeMotion(() => {
+  if (!reduceMotionActive()) {
+    return;
+  }
+  motionEpoch += 1;
+  for (const transition of themeTransitions) {
+    transition.skipTransition?.();
+  }
+  for (const [body, active] of coverWipes) {
+    cancelCoverWipe(body);
+    body.setAttribute("style", active.style);
+  }
+});
 
 export function coverWipe(swaps: CoverSwap[]): void {
   if (swaps.length === 0) {
@@ -103,6 +142,7 @@ export function coverWipe(swaps: CoverSwap[]): void {
   }
 
   swaps.forEach((swap, index) => {
+    cancelCoverWipe(swap.body);
     const overlay = document.createElement("div");
     overlay.className = "card-wipe";
     overlay.setAttribute("style", swap.style);
@@ -120,12 +160,24 @@ export function coverWipe(swaps: CoverSwap[]): void {
         fill: "forwards",
       },
     );
+    const active = { animation, overlay, style: swap.style };
+    coverWipes.set(swap.body, active);
 
     void animation.finished
       .then(() => {
+        if (coverWipes.get(swap.body) !== active) {
+          return;
+        }
+        coverWipes.delete(swap.body);
         swap.body.setAttribute("style", swap.style);
         overlay.remove();
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (coverWipes.get(swap.body) === active) {
+          coverWipes.delete(swap.body);
+          swap.body.setAttribute("style", swap.style);
+          overlay.remove();
+        }
+      });
   });
 }

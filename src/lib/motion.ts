@@ -1,14 +1,20 @@
 import { getState, subscribe } from "./state";
+import { isAndroidPlatform } from "./device";
 
 const query = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 const listeners = new Set<() => void>();
+let suspended = false;
 
 /**
  * Whether animations should be suppressed. The setting wins when it is set to
  * `on` or `off`; `system` follows the OS preference.
  */
 export function reduceMotionActive(): boolean {
+  return suspended || configuredReducedMotion();
+}
+
+function configuredReducedMotion(): boolean {
   const { reduceMotion } = getState().settings;
   if (reduceMotion === "on") {
     return true;
@@ -45,11 +51,12 @@ export function subscribeMotion(listener: () => void): void {
 
 export function mountMotion(): void {
   let active = false;
+  let resumeFrame: number | null = null;
 
-  const paint = (): void => {
+  const paint = (force = false): void => {
     const next = reduceMotionActive();
-    document.documentElement.classList.toggle("is-reduced-motion", next);
-    if (next === active) {
+    document.documentElement.classList.toggle("is-reduced-motion", configuredReducedMotion());
+    if (next === active && !force) {
       return;
     }
     active = next;
@@ -58,7 +65,59 @@ export function mountMotion(): void {
     }
   };
 
-  subscribe(paint);
-  query.addEventListener("change", paint);
+  const suspend = (): void => {
+    if (resumeFrame !== null) {
+      window.cancelAnimationFrame(resumeFrame);
+      resumeFrame = null;
+    }
+    if (suspended) {
+      return;
+    }
+    suspended = true;
+    document.documentElement.classList.add("is-resuming");
+    paint(true);
+    for (const animation of document.getAnimations?.() ?? []) {
+      try {
+        animation.finish();
+      } catch {
+        animation.cancel();
+      }
+    }
+  };
+
+  const resume = (): void => {
+    if (!suspended || resumeFrame !== null || document.hidden || !document.hasFocus()) {
+      return;
+    }
+    resumeFrame = requestAnimationFrame(() => {
+      resumeFrame = requestAnimationFrame(() => {
+        resumeFrame = null;
+        if (document.hidden || !document.hasFocus()) {
+          return;
+        }
+        void document.documentElement.offsetWidth;
+        suspended = false;
+        document.documentElement.classList.remove("is-resuming");
+        paint();
+      });
+    });
+  };
+
+  subscribe(() => paint());
+  query.addEventListener("change", () => paint());
+  if (isAndroidPlatform) {
+    window.addEventListener("blur", suspend);
+    window.addEventListener("focus", resume);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        suspend();
+      } else {
+        resume();
+      }
+    });
+    if (document.hidden || !document.hasFocus()) {
+      suspend();
+    }
+  }
   paint();
 }

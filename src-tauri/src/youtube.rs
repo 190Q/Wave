@@ -83,6 +83,7 @@ pub(crate) fn folder_name(url: &str) -> String {
     }
 }
 
+#[cfg(any(target_os = "android", test))]
 pub(crate) fn youtube_url(url: &str) -> Result<String, String> {
     let invalid = || "Paste a YouTube video or playlist link.".to_string();
     let parsed = reqwest::Url::parse(url.trim()).map_err(|_| invalid())?;

@@ -16,6 +16,10 @@
         ]
       },
       "rpm": {
+        "compression": {
+          "type": "zstd",
+          "level": 3
+        },
         "depends": [
           "gstreamer1-plugins-base",
           "gstreamer1-plugins-good",

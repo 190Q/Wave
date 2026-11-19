@@ -307,9 +307,9 @@ pub fn set_queue(presence: State<'_, Presence>, tracks: Vec<QueueTrack>) {
 
 /// Claims the system's media controls for the main window.
 #[cfg(desktop)]
-fn claim_controls(app: &AppHandle) -> Option<MediaControls> {
+fn claim_controls(_app: &AppHandle) -> Option<MediaControls> {
     #[cfg(windows)]
-    let hwnd = app
+    let hwnd = _app
         .get_webview_window("main")
         .and_then(|window| window.hwnd().ok())
         .map(|hwnd| hwnd.0);

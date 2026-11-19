@@ -7,6 +7,8 @@ const recovery = readFileSync(new URL("../.github/workflows/release-phone.yml", 
 const phoneTests = readFileSync(new URL("../.github/workflows/linux-phone.yml", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 const musl = readFileSync(new URL("../scripts/musl-build.sh", import.meta.url), "utf8");
 const runtime = readFileSync(new URL("../scripts/musl-runtime-test.sh", import.meta.url), "utf8");
+const linuxConfig = JSON.parse(readFileSync(new URL("../src-tauri/tauri.linux.conf.json", import.meta.url), "utf8"));
+const slimConfig = JSON.parse(readFileSync(new URL("../src-tauri/tauri.slim.conf.json", import.meta.url), "utf8"));
 
 test("release builds run after signing checks and publish only after every platform succeeds", () => {
   assert.match(workflow, /Check Android signing[\s\S]*Create the draft release/);
@@ -16,6 +18,16 @@ test("release builds run after signing checks and publish only after every platf
   assert.match(workflow, /needs: \[prepare, build, musl, android\]/);
   assert.match(workflow, /node scripts\/release\.mjs finalize "\$RELEASE_TAG"/);
   assert.match(workflow, /node scripts\/release\.mjs slim --reuse-build/);
+});
+
+test("Linux RPMs use fast compression and retain the full and slim package contents", () => {
+  assert.deepEqual(linuxConfig.bundle.linux.rpm.compression, { type: "zstd", level: 3 });
+  for (const tool of ["yt-dlp", "ffmpeg", "ffprobe", "deno"]) {
+    assert.equal(linuxConfig.bundle.resources[`tools/${tool}`], `tools/${tool}`);
+  }
+  assert.equal(slimConfig.bundle.resources, null);
+  assert.match(workflow, /name: Verify Linux RPM packages[\s\S]*rpm --checksig "\$full" "\$slim"/);
+  assert.match(workflow, /%\{PAYLOADCOMPRESSOR\}/);
 });
 
 test("phone tests run manually on ARM Alpine", () => {

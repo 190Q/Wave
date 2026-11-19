@@ -86,7 +86,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential \
-            curl wget file libxdo-dev libssl-dev \
+            curl wget file rpm libxdo-dev libssl-dev \
             libayatana-appindicator3-dev librsvg2-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
 
@@ -111,6 +111,24 @@ jobs:
 
       - name: Build the slim installers
         run: node scripts/release.mjs slim --reuse-build
+
+      - name: Verify Linux RPM packages
+        if: startsWith(matrix.platform, 'ubuntu')
+        shell: bash
+        run: |
+          version=$(tr -d '\r\n' < VERSION)
+          full="src-tauri/target/release/bundle/rpm/Wave-$version-1.$(uname -m).rpm"
+          slim="src-tauri/target/release/bundle/rpm/Wave-$version-1.$(uname -m)-slim.rpm"
+          rpm --checksig "$full" "$slim"
+          for package in "$full" "$slim"; do
+            test "$(rpm -qp --queryformat '%{PAYLOADCOMPRESSOR}' "$package")" = zstd
+          done
+          for tool in yt-dlp ffmpeg ffprobe deno; do
+            rpm -qpl "$full" | grep -Fx "/usr/lib/Wave/tools/$tool"
+            if rpm -qpl "$slim" | grep -Fx "/usr/lib/Wave/tools/$tool"; then
+              exit 1
+            fi
+          done
 
       - name: Attach the slim installers
         shell: bash

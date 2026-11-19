@@ -75,7 +75,7 @@ page](https://github.com/190Q/Wave/releases/latest).
 - **Windows 10/11:** Install the `-setup.exe` file. An MSI is also available.
 - **Linux:** Choose a `.deb`, `.rpm` or `.AppImage` for x86_64 or aarch64.
   Linux phones can use the aarch64 packages; Alpine and postmarketOS have an
-  aarch64 musl tarball.
+  aarch64 musl tarball. RPM packages need RPM 4.14 or newer with zstd support.
 - **Android:** Install `Wave_x.y.z_arm64.apk` on an arm64 device.
 
 macOS is not supported. The normal desktop builds include yt-dlp, ffmpeg and

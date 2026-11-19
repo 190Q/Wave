@@ -45,8 +45,9 @@ export function bounce(element: Element | null): void {
 }
 
 /** Runs `listener` when the setting or the OS preference changes the answer. */
-export function subscribeMotion(listener: () => void): void {
+export function subscribeMotion(listener: () => void): () => void {
   listeners.add(listener);
+  return () => listeners.delete(listener);
 }
 
 export function mountMotion(): void {

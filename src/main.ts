@@ -28,6 +28,7 @@ import { mountImportDialog, openImport } from "./ui/import-dialog";
 import { mountLibrary } from "./ui/library";
 import { mountQueue } from "./ui/queue";
 import { mountSettings, openSettings } from "./ui/settings";
+import { mountStartup } from "./ui/startup";
 import { mountTheme } from "./ui/theme";
 import { mountTitlebar } from "./ui/titlebar";
 import { focusSearch, mountTopbar } from "./ui/topbar";
@@ -40,9 +41,13 @@ function mount(): void {
   initDevice();
   if (device() === "desktop") {
     document.documentElement.classList.remove("is-starting");
+  } else {
+    void showMainWindow().catch(() => {});
   }
   mountIcons();
   mountMotion();
+  const stopStartup = mountStartup();
+  if (device() === "desktop") stopStartup();
   mountTitlebar();
   mountTopbar();
   mountHero();
@@ -61,17 +66,18 @@ function mount(): void {
   mountPresence();
   mountStatus();
   mountShortcuts();
-  revealWhenReady();
+  revealWhenReady(stopStartup);
 }
 
 /** The window stays hidden until the theme and current song are applied. */
-function revealWhenReady(): void {
+function revealWhenReady(stopStartup: () => void): void {
   void init()
     .then(() => whenArtworkReady())
     .catch(() => {
       // A failed boot should still reveal the window.
     })
     .finally(() => {
+      stopStartup();
       document.documentElement.classList.remove("is-starting");
       void showMainWindow();
     });

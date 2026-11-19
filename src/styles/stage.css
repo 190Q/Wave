@@ -29,6 +29,16 @@
   font-size: 0.875rem;
 }
 
+.startup-flow {
+  width: min(10rem, 40vw);
+  overflow: visible;
+  fill: none;
+  stroke: #648a99;
+  stroke-width: 6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .is-starting .stage,
 .is-starting .stage * {
   transition: none !important;

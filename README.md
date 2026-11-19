@@ -55,8 +55,9 @@ an equaliser and a theme that follows the artwork.
 ### For developers
 
 - **Local HTTP API:** Control playback and work with the library, playlists,
-  settings and listening history from a local program. See [API
-  documentation](docs/api.md).
+  settings and listening history from a local program. Enable it in
+  **Settings → Developer** on desktop or Linux phones; it is off by default
+  and unavailable on Android. See [API documentation](docs/api.md).
 - **Command line:** Import music, search the library, manage playlists and run
   other tasks without opening the window. Run `wave help` for the full list.
 - **Phone simulator:** Preview the interface in a browser with a mock library
@@ -265,10 +266,11 @@ The executable must be on `PATH`, or invoked by its full path. Windows
 installers do not add it to `PATH`. Commands use the same library and config as
 the app and require a desktop session on Linux.
 
-While Wave is running, the API listens on `127.0.0.1:45679` by default. It has
-no authentication, so local processes can access it. Set `WAVE_API=0` or
-`WAVE_API_PORT` in the config `.env` and restart Wave to disable it or change
-the port. See [docs/api.md](docs/api.md) for endpoints and examples.
+The API is off by default and is unavailable on Android. Enable it under
+**Settings → Developer** to listen on `127.0.0.1:45679`. It has no
+authentication, so local processes can access it. Set `WAVE_API_PORT` in the
+config `.env` to change the port. See [docs/api.md](docs/api.md) for endpoints
+and examples.
 
 ## Troubleshooting
 

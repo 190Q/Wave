@@ -45,6 +45,10 @@ export function audioStreamBase(): Promise<string> {
   return invoke("audio_stream_base");
 }
 
+export function reportPlaybackActivity(playing: boolean): Promise<void> {
+  return invoke("report_playback_activity", { playing });
+}
+
 /** Tells the system's own controls and Discord what is playing, or that nothing is. */
 export function setNowPlaying(song: NowPlaying | null): Promise<void> {
   return invoke("set_now_playing", { song });

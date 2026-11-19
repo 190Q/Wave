@@ -32,6 +32,7 @@ const DEFAULT_MINI_CORNER: u8 = 4;
 
 static MIN_FRAME: OnceLock<(u32, u32)> = OnceLock::new();
 pub const SETTINGS_EVENT: &str = "settings-changed";
+pub const STATE_CHANGED_EVENT: &str = "state-changed";
 
 // A phone has one window, filling the screen, so the frame, the slots and the
 // mini player are desktop-only from here down.
@@ -150,6 +151,8 @@ pub struct Settings {
     /// Shows the song on the Discord profile. Off until it is asked for.
     #[cfg(desktop)]
     pub discord_presence: bool,
+    #[cfg(not(target_os = "android"))]
+    pub local_api_enabled: bool,
     /// Looks for a newer release and offers to install it. On by default.
     pub auto_update: bool,
     /// Whether the equaliser is in the signal path at all.
@@ -194,6 +197,8 @@ impl Default for Settings {
             system_media_controls: true,
             #[cfg(desktop)]
             discord_presence: false,
+            #[cfg(not(target_os = "android"))]
+            local_api_enabled: false,
             auto_update: true,
             eq_enabled: false,
             eq_bands: Vec::new(),
@@ -666,10 +671,40 @@ pub(crate) fn patch_settings_with(
     notify: impl FnOnce(&PersistedState),
 ) -> Result<PersistedState, SettingsPatchError> {
     let _operation = store.settings_operation();
-    let (before, committed) = patch_settings_at_path(store, &state_path(app)?, patch)?;
+    let path = state_path(app)?;
+    let before = store.snapshot().settings;
+    let after = merge_settings(&before, patch.clone())?;
+    let (before, committed) = save_settings_with_api(app, &before, &after, || {
+        patch_settings_at_path(store, &path, patch)
+    })?;
     apply_settings_changes(app, store, &before, &committed.settings);
     notify(&committed);
     Ok(committed)
+}
+
+fn save_settings_with_api(
+    app: &AppHandle,
+    before: &Settings,
+    after: &Settings,
+    save: impl FnOnce() -> Result<(Settings, PersistedState), SettingsPatchError>,
+) -> Result<(Settings, PersistedState), SettingsPatchError> {
+    #[cfg(not(target_os = "android"))]
+    let started = !before.local_api_enabled && after.local_api_enabled;
+    #[cfg(not(target_os = "android"))]
+    if started {
+        app.state::<crate::api::Api>()
+            .set_enabled(app, true)
+            .map_err(SettingsPatchError::Failed)?;
+    }
+    #[cfg(target_os = "android")]
+    let _ = (app, before, after);
+
+    let result = save();
+    #[cfg(not(target_os = "android"))]
+    if result.is_err() && started {
+        app.state::<crate::api::Api>().shutdown();
+    }
+    result
 }
 
 #[tauri::command(async)]
@@ -688,11 +723,15 @@ pub fn set_settings(
     settings: Settings,
 ) -> Result<PersistedState, String> {
     let _operation = store.settings_operation();
-    let (before, committed) = store.try_update_at_path(&state_path(&app)?, |state| {
-        let before = state.settings.clone();
-        state.settings = settings;
-        Ok::<_, String>(before)
-    })?;
+    let path = state_path(&app)?;
+    let before = store.snapshot().settings;
+    let (before, committed) = save_settings_with_api(&app, &before, &settings, || {
+        store.try_update_at_path(&path, |state| {
+            let before = state.settings.clone();
+            state.settings = settings.clone();
+            Ok::<_, SettingsPatchError>(before)
+        })
+    }).map_err(|error| error.to_string())?;
     apply_settings_changes(&app, &store, &before, &committed.settings);
     Ok(committed)
 }
@@ -724,6 +763,11 @@ fn apply_settings_changes(app: &AppHandle, store: &Store, before: &Settings, aft
                 after.discord_presence,
             );
         }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    if before.local_api_enabled && !after.local_api_enabled {
+        let _ = app.state::<crate::api::Api>().set_enabled(app, false);
     }
 }
 
@@ -1329,6 +1373,29 @@ mod tests {
 
     fn patch(value: Value) -> Map<String, Value> {
         value.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn local_api_setting_is_opt_in_and_unavailable_on_android() {
+        let legacy: PersistedState = serde_json::from_value(serde_json::json!({
+            "settings": { "volume": 42 }
+        })).unwrap();
+        let settings = serde_json::to_value(&legacy.settings).unwrap();
+        assert_eq!(settings.get("localApiEnabled").is_some(), cfg!(not(target_os = "android")));
+        #[cfg(not(target_os = "android"))]
+        {
+            assert!(!legacy.settings.local_api_enabled);
+            let enabled = merge_settings(&legacy.settings, patch(serde_json::json!({
+                "localApiEnabled": true
+            }))).unwrap();
+            let saved = serde_json::to_string(&enabled).unwrap();
+            let restored: Settings = serde_json::from_str(&saved).unwrap();
+            assert!(restored.local_api_enabled);
+        }
+        #[cfg(target_os = "android")]
+        assert!(merge_settings(&legacy.settings, patch(serde_json::json!({
+            "localApiEnabled": true
+        }))).is_err());
     }
 
     #[test]

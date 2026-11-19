@@ -1,6 +1,6 @@
 //! A local HTTP API over the running app.
 //!
-//! It is on by default, bound to 127.0.0.1 only, and answers each request on a
+//! When enabled, it is bound to 127.0.0.1 only and answers each request on a
 //! thread of its own, so a command waiting on the window cannot hold up the
 //! port. Everything Rust owns - the library, the playlists, the settings and
 //! the listening record - is answered here directly. Playback and the live
@@ -13,10 +13,11 @@
 
 pub mod player;
 pub mod routes;
+mod server;
 
 use std::io::Cursor;
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::sync::Arc;
+use std::thread;
 use std::time::Instant;
 
 use serde::Serialize;
@@ -25,6 +26,9 @@ use tauri::AppHandle;
 use tiny_http::{Header, Request, Response, Server, StatusCode};
 
 use crate::source::read_env;
+
+pub use server::Api;
+use server::RunningServer;
 
 /// The version of the endpoint list, so a caller can tell whether it is talking
 /// to an API whose list it knows.
@@ -40,69 +44,31 @@ pub const COMMAND_EVENT: &str = "api-command";
 /// Sent to the window with a `ScanSummary` after an API scan or delete.
 pub const LIBRARY_EVENT: &str = "library-changed";
 
-/// Sent to the window with the whole `PersistedState` after an API write to
-/// likes, playlists or settings.
-pub const STATE_EVENT: &str = "state-changed";
-
 /// Every reply is JSON, so this is the one shape a handler can answer with.
 type Reply = Response<Cursor<Vec<u8>>>;
 
-/// The running server. The app keeps it so it can be stopped on the way out.
-pub struct Api {
-    server: Arc<Server>,
-    /// The accept thread, kept so the exit can wait for it.
-    thread: Mutex<Option<JoinHandle<()>>>,
-}
-
 impl Api {
-    /// Takes the port down and waits for the accept thread to finish, the way
-    /// the presence workers are stopped.
-    pub fn shutdown(&self) {
-        self.server.unblock();
-
-        let thread = self
-            .thread
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
-        if let Some(thread) = thread {
-            let _ = thread.join();
-        }
+    pub fn set_enabled(&self, app: &AppHandle, enabled: bool) -> Result<(), String> {
+        self.set_enabled_with(enabled, || start(app))
     }
 }
 
-/// Starts the server, or says on stderr why it could not start.
-///
-/// Nothing in the app depends on the API, so a port that is already taken is
-/// reported and then left alone: the window opens as it always did, and the
-/// switch in the config is the way out.
-pub fn start(app: &AppHandle) -> Option<Api> {
+fn start(app: &AppHandle) -> Result<RunningServer, String> {
     let env = read_env(app);
-    if !switched_on(env.api.as_deref()) {
-        return None;
-    }
-
     let port = port_of(env.api_port.as_deref());
     let address = format!("127.0.0.1:{port}");
-    let server = match Server::http(&address) {
-        Ok(server) => Arc::new(server),
-        Err(error) => {
-            eprintln!(
-                "the local API is not running: {address} could not be taken ({error}). \
-                 Set WAVE_API_PORT in the config to move it, or WAVE_API=0 to switch it off."
-            );
-            return None;
-        }
-    };
+    let server = server::bind(&address).map_err(|error| {
+        format!("The local API could not bind to {address}: {error}. Set WAVE_API_PORT in the config to use another port.")
+    })?;
 
     let started_at = Instant::now();
     let listening = server.clone();
     let handle = app.clone();
     let thread = thread::spawn(move || accept(listening, handle, port, started_at));
 
-    Some(Api {
+    Ok(RunningServer {
         server,
-        thread: Mutex::new(Some(thread)),
+        thread,
     })
 }
 
@@ -818,15 +784,6 @@ fn header<'r>(request: &'r Request, name: &'static str) -> Option<&'r str> {
         .map(|header| header.value.as_str())
 }
 
-/// Whether the server is switched on, from `WAVE_API`. Absent, or anything
-/// other than `0` and `off`, leaves it on.
-fn switched_on(value: Option<&str>) -> bool {
-    match value.map(|value| value.trim().to_ascii_lowercase()) {
-        Some(value) => value != "0" && value != "off",
-        None => true,
-    }
-}
-
 /// The port to publish on, from `WAVE_API_PORT`. Anything that is not a port
 /// number, and `0` with it, leaves the default in place.
 fn port_of(value: Option<&str>) -> u16 {
@@ -840,31 +797,8 @@ fn port_of(value: Option<&str>) -> u16 {
 mod tests {
     use super::*;
 
-    use crate::source::Env;
-
     #[test]
-    fn the_switch_and_the_port_are_read_out_of_the_config() {
-        // The two keys as `source::read_env` hands them over, which its own
-        // test reads out of the file.
-        let env = Env {
-            api: Some("0".to_string()),
-            api_port: Some("45680".to_string()),
-            ..Env::default()
-        };
-        assert!(!switched_on(env.api.as_deref()));
-        assert_eq!(port_of(env.api_port.as_deref()), 45680);
-
-        // Absent, or anything but `0` and `off`, leaves the API on.
-        assert!(switched_on(None));
-        assert!(switched_on(Some("")));
-        assert!(switched_on(Some("1")));
-        assert!(switched_on(Some("on")));
-        assert!(switched_on(Some("yes")));
-        assert!(!switched_on(Some("0")));
-        assert!(!switched_on(Some("OFF")));
-        assert!(!switched_on(Some(" off ")));
-
-        // The port, and what an unusable one falls back to.
+    fn the_port_is_read_out_of_the_config() {
         assert_eq!(port_of(None), DEFAULT_PORT);
         assert_eq!(port_of(Some("45680")), 45680);
         assert_eq!(port_of(Some(" 45680 ")), 45680);

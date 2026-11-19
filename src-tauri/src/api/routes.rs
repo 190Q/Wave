@@ -20,7 +20,7 @@ use crate::state::{self, PersistedState, Playlist, SettingsPatchError, Store};
 use crate::tools;
 
 use super::player::{Bridge, Command, Report};
-use super::{API_VERSION, Call, ENDPOINTS, Failure, LIBRARY_EVENT, Outcome, Route, STATE_EVENT};
+use super::{API_VERSION, Call, ENDPOINTS, Failure, LIBRARY_EVENT, Outcome, Route};
 
 /// How many lines of the download log are answered when the query says nothing.
 const DEFAULT_LOG_LINES: usize = 200;
@@ -736,7 +736,7 @@ fn tracks_of(call: &Call, ids: &[String]) -> HashMap<String, Track> {
 /// Tells the window about a change it did not make, so it follows along rather
 /// than showing something that is no longer true.
 fn announce_state(call: &Call, state: &PersistedState) {
-    let _ = call.app.emit(STATE_EVENT, state);
+    let _ = call.app.emit(state::STATE_CHANGED_EVENT, state);
 }
 
 /// Tells the window what the library holds now, in the shape a scan returns.

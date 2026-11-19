@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type { MediaControl, NowPlaying } from "../types";
 import { isAndroidPlatform } from "./device";
-import { setNowPlaying, setQueue, showMainWindow } from "./ipc";
+import { reportPlaybackActivity, setNowPlaying, setQueue, showMainWindow } from "./ipc";
 import {
   colourFor,
   currentTrack,
@@ -54,17 +54,19 @@ export function mountPresence(): void {
   let sending = false;
   let retryNeeded = false;
   let timer: number | null = null;
+  let lastPlaying: boolean | undefined;
+  let playbackRetry = false;
+  let playbackWrites = Promise.resolve();
 
   const syncTimer = (): void => {
-    const needed = showing() && (player.snapshot().playing || retryNeeded);
+    const needed = showing() && (player.snapshot().playing || retryNeeded || playbackRetry);
     if (needed && timer === null) {
       timer = window.setInterval(() => {
         if (retryNeeded) {
           sent = undefined;
           retryNeeded = false;
         }
-        push();
-        syncTimer();
+        sync();
       }, POSITION_INTERVAL_MS);
     } else if (!needed && timer !== null) {
       window.clearInterval(timer);
@@ -150,6 +152,20 @@ export function mountPresence(): void {
   };
 
   const sync = (): void => {
+    if (isAndroidPlatform) {
+      const playing = player.snapshot().playing;
+      if (playing !== lastPlaying) {
+        lastPlaying = playing;
+        playbackRetry = false;
+        playbackWrites = playbackWrites.then(() => reportPlaybackActivity(playing)).catch(() => {
+          if (lastPlaying === playing) {
+            lastPlaying = undefined;
+            playbackRetry = true;
+            syncTimer();
+          }
+        });
+      }
+    }
     push();
     syncTimer();
   };

@@ -300,12 +300,12 @@ fn run_phone(app: &AppHandle, playlist_id: &str, entry_ids: &[String]) -> Result
     }, |id| import::complete(app, id), || {
         if last_update.is_none_or(|last| last.elapsed() >= std::time::Duration::from_millis(250)) {
             last_update = Some(std::time::Instant::now());
-            let _ = app.emit(crate::api::STATE_EVENT, ());
+            let _ = app.emit(crate::state::STATE_CHANGED_EVENT, ());
         }
     });
     staging.cleanup();
     crate::loudness::schedule(app, guard);
-    let _ = app.emit(crate::api::STATE_EVENT, ());
+    let _ = app.emit(crate::state::STATE_CHANGED_EVENT, ());
     match result {
         Ok(mut outcome) => {
             import::remember_import(app, "playlist", &playlist_name(&catalog, playlist_id), &outcome);

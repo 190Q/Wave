@@ -1,6 +1,6 @@
 import "./assets/icons/icons.css";
 import { mountApi } from "./lib/api";
-import { initDevice, isTouch } from "./lib/device";
+import { initDevice, isAndroidPlatform, isTouch } from "./lib/device";
 import { showMainWindow } from "./lib/ipc";
 import { mountMotion } from "./lib/motion";
 import { mountPresence } from "./lib/presence";
@@ -54,7 +54,7 @@ function mount(): void {
   mountSettings();
   mountEq();
   mountUpdate();
-  mountApi();
+  if (!isAndroidPlatform) mountApi();
   mountPresence();
   mountStatus();
   mountShortcuts();

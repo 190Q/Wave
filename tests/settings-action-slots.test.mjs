@@ -120,6 +120,7 @@ class Element extends Events {
   getAttribute(name) { return this.attributes[name] ?? null; }
   getBoundingClientRect() { return { left: 50, top: 50, right: 350, bottom: 400, width: 300, height: 350 }; }
   closest(selector) {
+    if (selector === "[data-toggle]" && this.dataset.toggle !== undefined) return this;
     if (selector === "[data-slot-open]" && this.dataset.slotOpen !== undefined) return this;
     if (selector === "[data-slot-set]" && this.dataset.slotSet !== undefined) return this;
     if (selector === "[data-command]" && this.dataset.command !== undefined) return this;
@@ -196,7 +197,7 @@ function setup(device = "desktop", androidPlatform = false) {
     state: {
       settings: {
         shortcutSlots: [], reduceMotion: "system", searchAlgorithm: "substring",
-        showTitlebar: null, analyticsEnabled: true,
+        showTitlebar: null, analyticsEnabled: true, localApiEnabled: false,
       },
       collections: [], tracks: [], windowSlots: [], scanErrors: [],
       root: "", skipped: 0, scanning: false, analysing: null,
@@ -227,6 +228,47 @@ test("Discord presence appears on desktop and Linux phones, not Android", () => 
     assert.match(body.innerHTML, /data-toggle="systemMediaControls"/);
     assert.match(body.innerHTML, /data-toggle="normalizeVolume"/);
   }
+});
+
+test("the local API developer setting is hidden on Android and off by default", () => {
+  for (const [device, androidPlatform, visible] of [
+    ["desktop", false, true],
+    ["linuxPhone", false, true],
+    ["android", false, false],
+    ["android", true, false],
+    ["desktop", true, false],
+  ]) {
+    const { body } = setup(device, androidPlatform);
+    mountSettings();
+    openSettings();
+    assert.equal(body.innerHTML.includes('data-toggle="localApiEnabled"'), visible);
+    if (visible) {
+      assert.match(body.innerHTML, /<h3 class="settings-title">Developer<\/h3>/);
+      assert.match(body.innerHTML, /aria-checked="false" data-toggle="localApiEnabled"/);
+      assert.ok(body.innerHTML.indexOf(">Developer</h3>") < body.innerHTML.indexOf(">Updates</h3>"));
+    }
+  }
+});
+
+test("saving the local API toggle persists only the changed setting", async () => {
+  const { body, context, save } = setup();
+  mountSettings();
+  openSettings();
+  const toggle = new Element();
+  toggle.dataset.toggle = "localApiEnabled";
+  body.dispatch("click", { target: toggle });
+  assert.equal(toggle.getAttribute("aria-checked"), "true");
+  assert.equal(save.hidden, false);
+  assert.deepEqual(context.saved, []);
+  save.dispatch("click");
+  await Promise.resolve();
+  assert.deepEqual(context.saved, [{ localApiEnabled: true }]);
+  assert.equal(save.hidden, true);
+
+  body.dispatch("click", { target: toggle });
+  save.dispatch("click");
+  await Promise.resolve();
+  assert.deepEqual(context.saved[1], { localApiEnabled: false });
 });
 
 test("checking updates stays in settings until an available update is selected", async () => {

@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 #[cfg(any(target_os = "android", test))]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(any(target_os = "android", test))]
 use std::time::{Duration, Instant};
 
 use ebur128::{EbuR128, Mode};
@@ -26,6 +28,27 @@ const FINISHED_EVENT: &str = "loudness-finished";
 const ANALYSIS_SLICE: Duration = Duration::from_millis(10);
 #[cfg(target_os = "android")]
 const PLAYBACK_YIELD: Duration = Duration::from_millis(40);
+
+#[cfg(any(target_os = "android", test))]
+#[derive(Default)]
+pub struct PlaybackActivity(AtomicBool);
+
+#[cfg(any(target_os = "android", test))]
+impl PlaybackActivity {
+    fn set_playing(&self, playing: bool) {
+        self.0.store(playing, Ordering::Relaxed);
+    }
+
+    fn is_playing(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub fn report_playback_activity(activity: tauri::State<'_, PlaybackActivity>, playing: bool) {
+    activity.set_playing(playing);
+}
 
 #[cfg(any(target_os = "android", test))]
 struct AnalysisThrottle {
@@ -308,7 +331,7 @@ pub(crate) fn analyse(app: &AppHandle, track_ids: &[String]) -> LoudnessOutcome 
     let mut failures = Vec::new();
 
     #[cfg(target_os = "android")]
-    let bridge = app.try_state::<crate::api::player::Bridge>();
+    let activity = app.state::<PlaybackActivity>();
     #[cfg(target_os = "android")]
     let mut throttle = AnalysisThrottle::new(Instant::now());
 
@@ -316,7 +339,7 @@ pub(crate) fn analyse(app: &AppHandle, track_ids: &[String]) -> LoudnessOutcome 
         #[cfg(target_os = "android")]
         let reading = measure_with(&root.join(&row.rel_path), || {
             if throttle.should_yield(Instant::now(), || {
-                bridge.as_ref().is_some_and(|bridge| bridge.is_playing())
+                activity.is_playing()
             }) {
                 std::thread::sleep(PLAYBACK_YIELD);
                 throttle.reset(Instant::now());
@@ -381,6 +404,16 @@ pub async fn analyse_loudness(app: AppHandle, track_ids: Vec<String>) -> Loudnes
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn playback_activity_follows_play_and_pause() {
+        let activity = PlaybackActivity::default();
+        assert!(!activity.is_playing());
+        activity.set_playing(true);
+        assert!(activity.is_playing());
+        activity.set_playing(false);
+        assert!(!activity.is_playing());
+    }
 
     #[test]
     fn overlapping_analysis_requests_are_coalesced_and_retried() {

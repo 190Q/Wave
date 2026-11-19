@@ -170,6 +170,7 @@ export interface Settings {
   systemMediaControls: boolean;
   /** Desktop only: shows the song on the Discord profile. */
   discordPresence?: boolean;
+  localApiEnabled?: boolean;
   /** Looks for a newer release on launch, and says so when it finds one. */
   autoUpdate: boolean;
   /** Whether the equaliser is in the signal path at all. */

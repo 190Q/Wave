@@ -46,7 +46,7 @@ pub struct Env {
     pub browser: Option<String>,
     #[cfg(desktop)]
     pub discord_client_id: Option<String>,
-    pub api: Option<String>,
+    #[cfg(not(target_os = "android"))]
     pub api_port: Option<String>,
 }
 
@@ -66,6 +66,14 @@ fn env_template() -> String {
 # below, or leave this out to use the id the build carries.
 # DISCORD_CLIENT_ID=
 #
+"
+    } else {
+        ""
+    };
+    let api = if cfg!(not(target_os = "android")) {
+        "\
+# Enable the local API in Settings -> Developer. It listens on 127.0.0.1.
+# WAVE_API_PORT=45679
 "
     } else {
         ""
@@ -99,15 +107,11 @@ SPOTIFY_CLIENT_SECRET=
 # YTDLP_COOKIES_FROM_BROWSER=firefox
 # YTDLP_COOKIES=
 #
-{}# The local API lets a script or a dev tool drive the copy of Wave that is
-# already open. It is on by default and answers on 127.0.0.1 only, so nothing
-# outside this machine can reach it. WAVE_API=0 switches it off, and
-# WAVE_API_PORT moves it off 45679.
-# WAVE_API=0
-# WAVE_API_PORT=45679
+{}{}
 ",
         crate::spotify::redirect_uri(),
-        discord
+        discord,
+        api
     )
 }
 
@@ -207,7 +211,7 @@ fn parse_env(raw: &str) -> Env {
             "YTDLP_COOKIES_FROM_BROWSER" => env.browser = Some(value),
             #[cfg(desktop)]
             "DISCORD_CLIENT_ID" => env.discord_client_id = Some(value),
-            "WAVE_API" => env.api = Some(value),
+            #[cfg(not(target_os = "android"))]
             "WAVE_API_PORT" => env.api_port = Some(value),
             _ => {}
         }
@@ -337,24 +341,21 @@ not a pair
     }
 
     #[test]
-    fn reads_the_api_switches() {
-        let env = parse_env("WAVE_API=0\nWAVE_API_PORT=45680\n");
-        assert_eq!(env.api.as_deref(), Some("0"));
+    #[cfg(not(target_os = "android"))]
+    fn reads_the_api_port() {
+        let env = parse_env("WAVE_API_PORT=45680\n");
         assert_eq!(env.api_port.as_deref(), Some("45680"));
 
-        // Both are absent unless the file names them, which is what leaves the
-        // API on and on its default port.
         let absent = parse_env("SPOTIFY_CLIENT_ID=abc\n");
-        assert!(absent.api.is_none());
         assert!(absent.api_port.is_none());
     }
 
     #[test]
     fn the_template_documents_the_api() {
         let template = env_template();
-        assert!(template.contains("WAVE_API=0"));
-        assert!(template.contains("WAVE_API_PORT="));
-        assert!(template.contains("127.0.0.1"));
+        assert_eq!(template.contains("WAVE_API_PORT="), cfg!(not(target_os = "android")));
+        assert_eq!(template.contains("127.0.0.1"), cfg!(not(target_os = "android")));
+        assert!(!template.contains("WAVE_API=0"));
     }
 
     #[test]

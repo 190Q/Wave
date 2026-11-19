@@ -52,6 +52,7 @@ type ToggleKey =
   | "analyticsEnabled"
   | "systemMediaControls"
   | "discordPresence"
+  | "localApiEnabled"
   | "autoUpdate";
 
 const MOTION_OPTIONS: { value: ReduceMotionMode; label: string }[] = [
@@ -224,6 +225,7 @@ export function mountSettings(): void {
       analyticsHtml(draft, listeningStats, listeningSwell),
       searchHtml(draft),
       android ? "" : shortcutsHtml(draft, state.windowSlots, openSlot),
+      android || isAndroidPlatform ? "" : developerHtml(draft),
       updatesHtml(state, draft),
     ].join("");
     body.scrollTop = scrollTop;
@@ -883,6 +885,18 @@ function updatesHtml(state: AppState, settings: Settings): string {
       </div>
       ${errors}
     </div>`,
+  );
+}
+
+function developerHtml(settings: Settings): string {
+  return section(
+    "Developer",
+    toggleRow(
+      "localApiEnabled",
+      "Local API",
+      "Allow programs on this device to control Wave through a local HTTP API. It listens on 127.0.0.1:45679 by default and has no authentication.",
+      settings.localApiEnabled ?? false,
+    ),
   );
 }
 

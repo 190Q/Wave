@@ -1,6 +1,7 @@
 #![cfg_attr(not(desktop), allow(dead_code))]
 
 mod analytics;
+#[cfg(not(target_os = "android"))]
 mod api;
 #[cfg(any(target_os = "android", test))]
 mod audio_stream;
@@ -214,10 +215,18 @@ pub fn run() {
                 Err(error) => eprintln!("the audio stream could not start: {error}"),
             }
 
-            // The bridge is managed whether or not the port can be taken, so
-            // the report command has somewhere to put what the window sends.
-            app.manage(api::player::Bridge::default());
-            if let Some(server) = api::start(app.handle()) {
+            #[cfg(target_os = "android")]
+            app.manage(loudness::PlaybackActivity::default());
+
+            #[cfg(not(target_os = "android"))]
+            {
+                app.manage(api::player::Bridge::default());
+                let server = api::Api::default();
+                if app.state::<state::Store>().snapshot().settings.local_api_enabled {
+                    if let Err(error) = server.set_enabled(app.handle(), true) {
+                        eprintln!("{error}");
+                    }
+                }
                 app.manage(server);
             }
 
@@ -265,7 +274,10 @@ pub fn run() {
             presence::set_queue,
             #[cfg(target_os = "android")]
             audio_stream::audio_stream_base,
+            #[cfg(not(target_os = "android"))]
             api::player::api_report,
+            #[cfg(target_os = "android")]
+            loudness::report_playback_activity,
             update::check_update,
             update::update_status,
             update::install_update,
@@ -339,6 +351,7 @@ pub fn run() {
             if let Some(presence) = handle.try_state::<presence::Presence>() {
                 presence.shutdown();
             }
+            #[cfg(not(target_os = "android"))]
             if let Some(server) = handle.try_state::<api::Api>() {
                 server.shutdown();
             }

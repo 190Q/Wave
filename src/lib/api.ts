@@ -4,12 +4,14 @@ import type { ApiCommand, PlayerReport } from "../types";
 import { reportApiState } from "./ipc";
 import {
   collectionById,
+  getState,
   openCollection,
   playCollection,
   player,
   playTrackInContext,
   setVolume,
   stepTrack,
+  subscribe,
 } from "./state";
 
 /** Sent by the backend when the local API asks for something. */
@@ -24,7 +26,9 @@ const SEEK_STEP_MS = 10_000;
 /** Keeps the local API in step with the player, in both directions. */
 export function mountApi(): void {
   let timer: number | null = null;
+  let enabled = false;
   const sync = (): void => {
+    if (!enabled) return;
     report(null);
     if (player.snapshot().playing) {
       if (timer === null) {
@@ -36,9 +40,26 @@ export function mountApi(): void {
     }
   };
   player.onChange(sync);
-  player.onSeek(() => report(null));
+  player.onSeek(() => {
+    if (enabled) report(null);
+  });
+  const syncSettings = (): void => {
+    const next = getState().settings.localApiEnabled === true;
+    if (next === enabled) return;
+    enabled = next;
+    if (enabled) {
+      sentQueueRevision = -1;
+      sync();
+    } else if (timer !== null) {
+      window.clearInterval(timer);
+      timer = null;
+    }
+  };
+  subscribe(syncSettings);
+  syncSettings();
 
   void listen<ApiCommand>(COMMAND_EVENT, (event) => {
+    if (!enabled) return;
     apply(event.payload);
     // The reply carries the id, so the request waiting on it can be answered.
     report(event.payload.id);

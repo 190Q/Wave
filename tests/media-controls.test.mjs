@@ -26,6 +26,11 @@ const mocks = {
     export const setQueue = async (queue) => globalThis.__mediaControlTest.queues.push(queue);
     export const showMainWindow = async () => {};
     export const reportApiState = async (report) => globalThis.__mediaControlTest.reports.push(report);
+    export const reportPlaybackActivity = (playing) => {
+      const context = globalThis.__mediaControlTest;
+      context.playbackActivity.push(playing);
+      return context.sendPlayback ? context.sendPlayback(playing) : Promise.resolve();
+    };
   `,
   "./state": `
     const context = globalThis.__mediaControlTest;
@@ -41,7 +46,7 @@ const mocks = {
     export const colourFor = () => "#123456";
     export const setVolume = (value) => context.player.setVolume(value);
     export const stepTrack = (direction) => direction > 0 ? context.player.next() : context.player.previous();
-    export const subscribe = () => {};
+    export const subscribe = (listener) => context.subscribers.push(listener);
     export const collectionById = () => undefined;
     export const openCollection = () => {};
     export const playCollection = () => {};
@@ -117,8 +122,11 @@ function setup(PlayerClass = Player, mount = mountPresence, controls = true, sen
   context.sendSong = sendSong;
   context.queues = [];
   context.reports = [];
+  context.playbackActivity = [];
+  context.sendPlayback = null;
+  context.subscribers = [];
   context.bridgeMessages = [];
-  context.settings = { systemMediaControls: controls, discordPresence: false };
+  context.settings = { systemMediaControls: controls, discordPresence: false, localApiEnabled: true };
 
   const listeners = new Map();
   globalThis.document = {
@@ -392,6 +400,68 @@ test("API position polling stops when paused and seeks are reported immediately"
   assert.equal(context.intervals.size, 0);
   player.play();
   assert.equal(context.intervals.size, 1);
+});
+
+test("the API bridge stays idle when disabled and resyncs on enable", () => {
+  const { player } = setup(Player, () => {
+    context.settings.localApiEnabled = false;
+    mountApi();
+  });
+  assert.deepEqual(context.reports, []);
+  assert.equal(context.intervals.size, 0);
+
+  context.settings.localApiEnabled = true;
+  for (const listener of context.subscribers) listener();
+  assert.equal(context.reports.at(-1).playing, true);
+  assert.deepEqual(context.reports.at(-1).order, ["one", "two", "three"]);
+  assert.equal(context.intervals.size, 1);
+
+  context.settings.localApiEnabled = false;
+  for (const listener of context.subscribers) listener();
+  const count = context.reports.length;
+  player.pause();
+  player.seek(30000);
+  assert.equal(context.reports.length, count);
+  assert.equal(context.intervals.size, 0);
+
+  context.settings.localApiEnabled = true;
+  for (const listener of context.subscribers) listener();
+  assert.equal(context.reports.at(-1).playing, false);
+  assert.deepEqual(context.reports.at(-1).order, ["one", "two", "three"]);
+});
+
+test("Android reports playback activity independently of the local API", async () => {
+  const { player } = setup(AndroidPlayer, mountAndroidPresence, false, null, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.playbackActivity.at(-1), true);
+  player.pause();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.playbackActivity.at(-1), false);
+  player.play();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.playbackActivity.at(-1), true);
+  assert.deepEqual(context.reports, []);
+});
+
+test("Android retries a failed playback activity update while paused", async () => {
+  const { player } = setup(AndroidPlayer, mountAndroidPresence, false, null, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  let failed = false;
+  context.sendPlayback = (playing) => {
+    if (!playing && !failed) {
+      failed = true;
+      return Promise.reject(new Error("temporary IPC failure"));
+    }
+    return Promise.resolve();
+  };
+  player.pause();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.playbackActivity.at(-1), false);
+  assert.equal(context.intervals.size, 1);
+  tickIntervals();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(context.playbackActivity.slice(-2), [false, false]);
+  assert.equal(context.intervals.size, 0);
 });
 
 test("visual progress frames do not repeatedly send media presence", () => {

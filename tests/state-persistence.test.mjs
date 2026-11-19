@@ -178,8 +178,9 @@ backend = {
 await app.init();
 await tick();
 
-test("Android settings do not include Discord presence", () => {
+test("Android settings do not include Discord presence or the local API", () => {
   assert.equal("discordPresence" in app.getState().settings, false);
+  assert.equal("localApiEnabled" in app.getState().settings, false);
 });
 
 test("Android update installation clears progress after handoff and remains retryable", async () => {

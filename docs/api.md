@@ -1,14 +1,14 @@
 # The local API
 
-While Wave runs it serves a small HTTP API on the loopback interface, so a script, a test harness or a companion tool can drive the copy that is already open. It is on by default: the app binds `127.0.0.1:45679` when it starts and nothing has to be switched on. The port is a fixed default because Spotify's OAuth callback already owns 45678.
+Wave can serve a small HTTP API on the loopback interface, so a script, a test harness or a companion tool can drive the copy that is already open. The API is off by default and is not available on Android. Enable **Local API** under **Settings > Developer** and save to start it; turn it off and save to stop it. The default address is `127.0.0.1:45679` because Spotify's OAuth callback already owns 45678.
 
 Nothing leaves the machine. The server binds the loopback address only, and there is no token: it checks the `Host` header against `127.0.0.1` and `localhost`, so a page that resolves a name to 127.0.0.1 (DNS rebinding) cannot reach it, and it sends no CORS headers, so a browser cannot read a reply. It is an API for programs on the same machine.
 
 Everything Rust owns is answered in Rust. Playback is the exception, because the player lives in the window: a playback command is relayed to the window and the reply is what the window reports back. See [Playback commands and the window](#playback-commands-and-the-window).
 
-## Turning it off and moving the port
+## Changing the port
 
-Both switches live in the config `.env`, the same file the Spotify credentials and the tool overrides use. Wave writes a commented template there on first run, and the import dialog's **Spotify** section has an **Open the config folder** button. The file is:
+The port override lives in the config `.env`, the same file the Spotify credentials and the tool overrides use. Wave writes a commented template there on first run, and the import dialog's **Spotify** section has an **Open the config folder** button. The file is:
 
 - Windows: `%APPDATA%\com.wave.app\library\config\.env`
 - Linux: `~/.local/share/com.wave.app/library/config/.env`
@@ -16,15 +16,11 @@ Both switches live in the config `.env`, the same file the Spotify credentials a
 A script does not have to hard-code that path. `GET /api/library` returns it as `config`, and so does `GET /api/tools`.
 
 ```dotenv
-# Switches the local API off. 0 or off, in any case, means off; anything else,
-# or leaving the key out, leaves it on.
-WAVE_API=0
-
 # Moves the API to another port.
 WAVE_API_PORT=45700
 ```
 
-Both keys are read when Wave starts, so a change takes effect the next time the app opens. If the port is already taken, Wave says so on stderr and carries on without the server: nothing about the app depends on it, and `WAVE_API_PORT` is the way out.
+The port is read whenever the API starts. If it is already taken when enabling the API, Wave reports the error and leaves the setting off. If it is taken on launch, Wave reports the error on stderr and keeps the saved preference, but the server cannot run until the port is available. Change `WAVE_API_PORT` and toggle the setting off and on to retry. The old `WAVE_API` config switch is ignored; the saved setting controls whether the server runs.
 
 ## Replies and errors
 
@@ -638,6 +634,7 @@ curl -s http://127.0.0.1:45679/api/settings
   "analyticsEnabled": true,
   "systemMediaControls": true,
   "discordPresence": false,
+  "localApiEnabled": true,
   "autoUpdate": true
 }
 ```
@@ -645,6 +642,7 @@ curl -s http://127.0.0.1:45679/api/settings
 `reduceMotion` is `system`, `on` or `off`. `showTitlebar` is `true` or `false` to override visibility, or `null` to follow the device default. Android always hides the title bar. `searchAlgorithm` names one of the matching algorithms the window offers. `miniCorner` is `1` to `4`. `shortcutSlots` is the nine `Ctrl+Shift+1..9` action slots, empty strings where a slot is unset.
 
 `discordPresence` is available on desktop only and is not present in Android settings.
+`localApiEnabled` controls the server; setting it to `false` stops the API after the request is processed.
 
 ### PATCH /api/settings
 

@@ -287,7 +287,7 @@ const state: AppState = {
     shortcutSlots: [],
     analyticsEnabled: true,
     systemMediaControls: true,
-    ...(isAndroidPlatform ? {} : { discordPresence: false }),
+    ...(isAndroidPlatform ? {} : { discordPresence: false, localApiEnabled: false }),
     autoUpdate: true,
     eqEnabled: false,
     eqBands: [],
@@ -1131,7 +1131,7 @@ export async function init(): Promise<void> {
   watchSources();
   watchLoudness();
   watchUpdate();
-  watchApi();
+  watchExternalChanges();
   wireEq();
   mountAnalytics({
     player,
@@ -2645,16 +2645,18 @@ function watchSettings(): void {
   });
 }
 
-function watchApi(): void {
-  void listen<ScanSummary>(LIBRARY_CHANGED_EVENT, (event) => {
-    void applyScan(event.payload)
-      .then(() => emit())
-      .catch(() => {
-        // The window keeps what it holds; the API's own reply says what happened.
-      });
-  }).catch(() => {
-    // Not running inside Tauri, for example `npm run dev` in a browser.
-  });
+function watchExternalChanges(): void {
+  if (!isAndroidPlatform) {
+    void listen<ScanSummary>(LIBRARY_CHANGED_EVENT, (event) => {
+      void applyScan(event.payload)
+        .then(() => emit())
+        .catch(() => {
+          // The window keeps what it holds; the API's own reply says what happened.
+        });
+    }).catch(() => {
+      // Not running inside Tauri, for example `npm run dev` in a browser.
+    });
+  }
 
   void listen<PersistedState>(STATE_CHANGED_EVENT, () => {
     void refreshPersistedState();

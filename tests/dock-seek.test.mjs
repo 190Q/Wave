@@ -275,7 +275,7 @@ test("touches above the controls seek even when snapped to a nearby button", () 
 
 test("Android sheet swipes from the controls or seek area do not seek", () => {
   for (const startY of [150, 110]) {
-    const { elements, stage, windowEvents } = setup();
+    const { elements, windowEvents } = setup();
     mountDock();
     const target = startY < 120 ? elements.play : elements.dock;
     elements.dock.dispatch("pointerdown", pointer(target, 200, startY));
@@ -325,7 +325,7 @@ test("desktop mouse seeking still works across the dock", () => {
 
 test("phone lyrics buttons activate on tap and keyboard", () => {
   for (const kind of ["android", "linuxPhone"]) {
-    const { elements, stage } = setup(kind);
+    const { elements } = setup(kind);
     mountDock();
     const open = elements["dock-grab"];
     const close = elements["lyrics-grab"];
@@ -334,7 +334,7 @@ test("phone lyrics buttons activate on tap and keyboard", () => {
     assert.equal(open.attributes.get("aria-expanded"), "false");
 
     open.dispatch("click", { detail: 1 });
-    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "500px");
+    assert.equal(sheetTravel(elements), 500);
     assert.equal(panel.inert, false);
     assert.equal(open.attributes.get("aria-expanded"), "true");
     close.dispatch("pointerdown", pointer(close, 200, 100));
@@ -343,10 +343,10 @@ test("phone lyrics buttons activate on tap and keyboard", () => {
     assert.equal(sheetTravel(elements), 0);
 
     open.dispatch("click", { detail: 0 });
-    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "500px");
+    assert.equal(sheetTravel(elements), 500);
     assert.equal(document.activeElement, close);
     close.dispatch("click", { detail: 0 });
-    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "0px");
+    assert.equal(sheetTravel(elements), 0);
     assert.equal(panel.inert, true);
     assert.equal(document.activeElement, open);
   }
@@ -354,7 +354,7 @@ test("phone lyrics buttons activate on tap and keyboard", () => {
 
 test("lyrics drags do not turn their trailing click into a button activation", () => {
   for (const kind of ["android", "linuxPhone"]) {
-    const { elements, stage, windowEvents } = setup(kind);
+    const { elements, windowEvents } = setup(kind);
     mountDock();
     const open = elements["dock-grab"];
     const close = elements["lyrics-grab"];
@@ -362,24 +362,24 @@ test("lyrics drags do not turn their trailing click into a button activation", (
     elements.dock.dispatch("pointerdown", pointer(open, 200, 110));
     windowEvents.dispatch("pointermove", pointer(open, 200, 90));
     windowEvents.dispatch("pointerup", pointer(open, 200, 90));
-    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "0px");
+    assert.equal(sheetTravel(elements), 0);
     open.dispatch("click", { detail: 1 });
-    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "0px");
+    assert.equal(sheetTravel(elements), 0);
 
     open.dispatch("click", { detail: 0 });
     close.dispatch("pointerdown", pointer(close, 200, 100));
     close.dispatch("pointermove", pointer(close, 200, 120));
     close.dispatch("pointerup", pointer(close, 200, 120));
-    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "500px");
+    assert.equal(sheetTravel(elements), 500);
     close.dispatch("click", { detail: 1 });
-    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "500px");
+    assert.equal(sheetTravel(elements), 500);
     close.dispatch("click", { detail: 0 });
-    assert.equal(stage.style.getPropertyValue("--sheet-travel"), "0px");
+    assert.equal(sheetTravel(elements), 0);
   }
 });
 
 test("a swipe started on a phone transport control does not click it", () => {
-  const { elements, stage, windowEvents } = setup("linuxPhone");
+  const { elements, windowEvents } = setup("linuxPhone");
   mountDock();
   elements.dock.dispatch("pointerdown", pointer(elements.play, 200, 150));
   windowEvents.dispatch("pointermove", pointer(elements.play, 200, 80));

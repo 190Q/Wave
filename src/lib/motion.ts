@@ -85,6 +85,13 @@ export function mountMotion(): void {
     }
   };
 
+  const finishResume = (): void => {
+    void document.documentElement.offsetWidth;
+    suspended = false;
+    document.documentElement.classList.remove("is-resuming");
+    paint();
+  };
+
   const resume = (): void => {
     if (!suspended || resumeFrame !== null || document.hidden || !document.hasFocus()) {
       return;
@@ -95,12 +102,20 @@ export function mountMotion(): void {
         if (document.hidden || !document.hasFocus()) {
           return;
         }
-        void document.documentElement.offsetWidth;
-        suspended = false;
-        document.documentElement.classList.remove("is-resuming");
-        paint();
+        finishResume();
       });
     });
+  };
+
+  const resumeOnInput = (): void => {
+    if (!suspended || document.hidden) {
+      return;
+    }
+    if (resumeFrame !== null) {
+      window.cancelAnimationFrame(resumeFrame);
+      resumeFrame = null;
+    }
+    finishResume();
   };
 
   subscribe(() => paint());
@@ -108,6 +123,8 @@ export function mountMotion(): void {
   if (isAndroidPlatform) {
     window.addEventListener("blur", suspend);
     window.addEventListener("focus", resume);
+    window.addEventListener("pointerdown", resumeOnInput, true);
+    window.addEventListener("keydown", resumeOnInput, true);
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) {
         suspend();

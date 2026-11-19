@@ -42,6 +42,7 @@ class Element {
   listeners = new Map();
   properties = new Map();
   attributes = new Map();
+  attributeWrites = 0;
   style = { setProperty: (name, value) => this.properties.set(name, value) };
   captures = new Set();
 
@@ -55,28 +56,14 @@ class Element {
     for (const handler of this.listeners.get(type) ?? []) handler(event);
     return event;
   }
-  setAttribute(name, value) { this.attributes.set(name, value); }
+  setAttribute(name, value) { this.attributeWrites += 1; this.attributes.set(name, value); }
   setPointerCapture(id) { this.captures.add(id); }
   hasPointerCapture(id) { return this.captures.has(id); }
   releasePointerCapture(id) { this.captures.delete(id); }
   focus() { this.focused = true; }
 }
 
-test("the moving elements remain synchronized without per-frame layout reads", (t) => {
-  const { context, stage, panel, dockGrab, dock, carousel, travel, advance } = setup(t);
-  dockGrab.dispatch("click");
-  const reads = context.heightReads;
-  for (let frame = 0; frame < 10; frame += 1) {
-    advance(16);
-    assert.equal(dock.style.transform, `translateY(${-travel()}px)`);
-    assert.equal(carousel.style.transform, dock.style.transform);
-    assert.equal(panel.style.transform, `translateY(calc(100% - ${travel()}px))`);
-  }
-  assert.equal(context.heightReads, reads);
-  assert.equal(stage.properties.has("--sheet-travel"), false);
-});
-
-function setup(t) {
+function setup(t, { resizeObserver = true, initialHeight = 600 } = {}) {
   const context = { now: 0, reduced: false, state: { lyrics: [{ text: "line" }] } };
   globalThis.__lyricsSheetTest = context;
   t.mock.method(performance, "now", () => context.now);
@@ -85,11 +72,16 @@ function setup(t) {
   const topbar = new Element();
   topbar.offsetHeight = 40;
   const panel = new Element();
-  let panelHeight = 600;
+  let panelHeight = initialHeight;
   context.heightReads = 0;
+  context.inertWrites = 0;
   Object.defineProperty(panel, "clientHeight", {
     get() { context.heightReads += 1; return panelHeight; },
     set(value) { panelHeight = value; },
+  });
+  Object.defineProperty(panel, "inert", {
+    get() { return context.inert; },
+    set(value) { context.inertWrites += 1; context.inert = value; },
   });
   const grab = new Element();
   const dockGrab = new Element();
@@ -109,11 +101,14 @@ function setup(t) {
     frames.set(++frameId, callback);
     return frameId;
   };
-  globalThis.window = { cancelAnimationFrame: (id) => frames.delete(id) };
-  globalThis.ResizeObserver = class {
+  globalThis.window = {
+    cancelAnimationFrame: (id) => frames.delete(id),
+    addEventListener: (type, callback) => { if (type === "resize") context.refit = callback; },
+  };
+  globalThis.ResizeObserver = resizeObserver ? class {
     constructor(callback) { context.refit = callback; }
     observe() {}
-  };
+  } : undefined;
 
   const sheet = mountLyricsSheet();
   const travel = () => Number(panel.style.transform.match(/-\s*([\d.]+)px/)[1]);
@@ -126,6 +121,24 @@ function setup(t) {
   const pointer = (type, clientY) => ({ type, clientY, clientX: 100, button: 0, pointerId: 1 });
   return { context, sheet, stage, panel, grab, dockGrab, dock, carousel, frames, travel, advance, pointer };
 }
+
+test("the moving elements stay synchronized without per-frame layout or accessibility writes", (t) => {
+  const { context, stage, panel, dockGrab, dock, carousel, travel, advance } = setup(t);
+  dockGrab.dispatch("click");
+  const reads = context.heightReads;
+  const inertWrites = context.inertWrites;
+  const attributeWrites = dockGrab.attributeWrites;
+  for (let frame = 0; frame < 10; frame += 1) {
+    advance(16);
+    assert.equal(dock.style.transform, `translateY(${-travel()}px)`);
+    assert.equal(carousel.style.transform, dock.style.transform);
+    assert.equal(panel.style.transform, `translateY(calc(100% - ${travel()}px))`);
+  }
+  assert.equal(context.heightReads, reads);
+  assert.equal(context.inertWrites, inertWrites);
+  assert.equal(dockGrab.attributeWrites, attributeWrites);
+  assert.equal(stage.properties.has("--sheet-travel"), false);
+});
 
 test("fast and slow upward swipes carry their own release velocity into the settle", (t) => {
   const run = (slow) => {
@@ -178,6 +191,69 @@ test("a downward swipe keeps its velocity and settles closed", (t) => {
   assert.equal(travel(), 0);
   assert.equal(panel.inert, true);
   assert.equal(frames.size, 0);
+});
+
+test("fast releases near either endpoint decelerate instead of stopping in two frames", (t) => {
+  for (const direction of ["open", "close"]) {
+    const { sheet, grab, dockGrab, pointer, travel, advance } = setup(t);
+    if (direction === "open") {
+      sheet.press(pointer("pointerdown", 600));
+      advance(20);
+      sheet.move(pointer("pointermove", 500));
+      advance(80);
+      sheet.move(pointer("pointermove", 100));
+      sheet.release(pointer("pointerup", 100));
+    } else {
+      dockGrab.dispatch("click");
+      advance(1000);
+      grab.dispatch("pointerdown", { clientY: 0 });
+      advance(20);
+      grab.dispatch("pointermove", { clientY: 100 });
+      advance(80);
+      grab.dispatch("pointermove", { clientY: 500 });
+      grab.dispatch("pointerup", { clientY: 500 });
+    }
+    const remaining = () => direction === "open" ? 600 - travel() : travel();
+    const distances = [remaining()];
+    for (let i = 0; i < 3; i += 1) {
+      advance(16);
+      distances.push(remaining());
+    }
+    assert.ok(distances[3] > 1, `${direction}: ${distances}`);
+    const steps = distances.slice(1).map((distance, index) => distances[index] - distance);
+    assert.ok(steps[0] > steps[1] && steps[1] > steps[2] && steps[2] > 0, `${direction}: ${steps}`);
+    advance(1000);
+    assert.equal(remaining(), 0);
+  }
+});
+
+test("a slow release accelerates gradually instead of surging immediately", (t) => {
+  const { sheet, pointer, travel, advance } = setup(t);
+  sheet.press(pointer("pointerdown", 600));
+  advance(20);
+  sheet.move(pointer("pointermove", 400));
+  advance(150);
+  sheet.release(pointer("pointerup", 400));
+  advance(16);
+  assert.ok(travel() > 200 && travel() < 206, `first frame: ${travel()}`);
+  advance(1000);
+  assert.equal(travel(), 600);
+});
+
+test("a release moving away from its target slows before reversing at the edge", (t) => {
+  const { sheet, pointer, travel, advance } = setup(t);
+  sheet.press(pointer("pointerdown", 600));
+  advance(20);
+  sheet.move(pointer("pointermove", 60));
+  advance(100);
+  sheet.move(pointer("pointermove", 560));
+  sheet.release(pointer("pointerup", 560));
+  advance(8);
+  assert.ok(travel() > 0 && travel() < 40, `first frame: ${travel()}`);
+  advance(8);
+  assert.ok(travel() > 0 && travel() < 40, `second frame: ${travel()}`);
+  advance(1000);
+  assert.equal(travel(), 600);
 });
 
 test("holding still before release discards stale swipe momentum", (t) => {
@@ -257,6 +333,36 @@ test("resizing during a settle preserves the current position and reaches the ne
   panel.clientHeight = 500;
   context.refit();
   assert.equal(travel(), 500);
+});
+
+test("resizing while dragging updates the travel limit", (t) => {
+  const { context, sheet, panel, pointer, travel, advance } = setup(t);
+  sheet.press(pointer("pointerdown", 600));
+  sheet.move(pointer("pointermove", 400));
+  panel.clientHeight = 250;
+  context.refit();
+  sheet.move(pointer("pointermove", 200));
+  assert.equal(travel(), 250);
+  sheet.release(pointer("pointerup", 200));
+  advance(1000);
+  assert.equal(travel(), 250);
+});
+
+test("a previously hidden panel is measured when opened", (t) => {
+  const { panel, dockGrab, travel, advance } = setup(t, { initialHeight: 0 });
+  panel.clientHeight = 600;
+  dockGrab.dispatch("click");
+  advance(1000);
+  assert.equal(travel(), 600);
+});
+
+test("window resize updates the sheet when ResizeObserver is unavailable", (t) => {
+  const { context, panel, dockGrab, travel, advance } = setup(t, { resizeObserver: false });
+  dockGrab.dispatch("click");
+  advance(1000);
+  panel.clientHeight = 700;
+  context.refit();
+  assert.equal(travel(), 700);
 });
 
 test("cancelled drags and disappearing lyrics do not leave the sheet stuck", (t) => {

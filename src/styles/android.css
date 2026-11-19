@@ -99,7 +99,7 @@ html:is([data-device="android"], [data-device="linuxPhone"]) {
   border-radius: 0;
   padding: 1rem calc(1.25rem + var(--inset-right)) calc(0.7rem + var(--inset-bottom))
     calc(1.25rem + var(--inset-left));
-  transform: translateY(calc(-1 * var(--sheet-travel)));
+  transform: translateY(0);
   touch-action: none;
   overflow: visible;
 }

@@ -43,6 +43,7 @@ const doc = Object.assign(new Events(), {
     { finish: () => { throw new Error("infinite"); }, cancel: () => { cancelled += 1; } },
   ],
 });
+
 const frames = new Map();
 let frameId = 0;
 globalThis.window = win;
@@ -121,6 +122,44 @@ test("Android settles motion while unfocused and keeps it settled through the fi
   assert.equal(reduceMotionActive(), false);
   assert.equal(classes.has("is-resuming"), false);
   assert.deepEqual(changes, [true, false]);
+});
+
+test("direct input resumes Android motion even if the WebView reports no focus", () => {
+  focused = false;
+  win.dispatch("blur");
+  assert.equal(reduceMotionActive(), true);
+  assert.equal(classes.has("is-resuming"), true);
+
+  doc.hidden = true;
+  win.dispatch("pointerdown");
+  assert.equal(reduceMotionActive(), true);
+
+  doc.hidden = false;
+  win.dispatch("pointerdown");
+  assert.equal(reduceMotionActive(), false);
+  assert.equal(classes.has("is-resuming"), false);
+  focused = true;
+});
+
+test("keyboard input cancels a pending resume without overriding reduced motion", () => {
+  focused = false;
+  win.dispatch("blur");
+  focused = true;
+  win.dispatch("focus");
+  assert.equal(frames.size, 1);
+
+  state.settings.reduceMotion = "on";
+  focused = false;
+  win.dispatch("keydown");
+  assert.equal(frames.size, 0);
+  assert.equal(classes.has("is-resuming"), false);
+  assert.equal(classes.has("is-reduced-motion"), true);
+  assert.equal(reduceMotionActive(), true);
+
+  state.settings.reduceMotion = "off";
+  query.dispatch("change");
+  assert.equal(reduceMotionActive(), false);
+  focused = true;
 });
 
 test("Android window and WebView use the app's dark background", () => {

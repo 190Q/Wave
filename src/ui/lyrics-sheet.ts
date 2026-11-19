@@ -18,9 +18,11 @@ const FLICK_MS = 300;
 const FLICK_DISTANCE_PX = 40;
 
 const VELOCITY_WINDOW_MS = 100;
-const SETTLE_RATE = 16;
+const SETTLE_RATE = 10;
 const SETTLE_DISTANCE_PX = 0.5;
 const SETTLE_SPEED_PX = 5;
+const REVERSE_BRAKE_SEC = 0.08;
+const EDGE_BRAKE_SHARE = 0.8;
 
 export interface LyricsSheet {
   /** Takes a press on the dock, which may or may not turn into the sheet. */
@@ -64,6 +66,8 @@ export function mountLyricsSheet(): LyricsSheet | null {
   let settleFrame: number | null = null;
   let settleAt = 0;
   let settleVelocity = 0;
+  let settleRate = SETTLE_RATE;
+  let brakeAcceleration = 0;
   let interrupted = false;
   let originX = 0;
   let originY = 0;
@@ -110,6 +114,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
     stopSettle();
     travel = open ? room() : 0;
     settleVelocity = 0;
+    brakeAcceleration = 0;
     paint();
   };
 
@@ -120,14 +125,28 @@ export function mountLyricsSheet(): LyricsSheet | null {
       return;
     }
 
-    const elapsed = Math.max(0, (now - settleAt) / 1000);
+    let elapsed = Math.max(0, (now - settleAt) / 1000);
     settleAt = now;
     const limit = room();
     const target = open ? limit : 0;
-    // A critically damped spring carries the release velocity into the settle.
-    const next = springStep(travel, target, settleVelocity, elapsed, SETTLE_RATE);
-    travel = next.position;
-    settleVelocity = next.velocity;
+
+    if (brakeAcceleration !== 0) {
+      const brakeTime = Math.abs(settleVelocity / brakeAcceleration);
+      const step = Math.min(elapsed, brakeTime);
+      travel += settleVelocity * step + brakeAcceleration * step * step / 2;
+      settleVelocity += brakeAcceleration * step;
+      elapsed -= step;
+      if (step >= brakeTime) {
+        settleVelocity = 0;
+        brakeAcceleration = 0;
+      }
+    }
+
+    if (brakeAcceleration === 0) {
+      const next = springStep(travel, target, settleVelocity, elapsed, settleRate);
+      travel = next.position;
+      settleVelocity = next.velocity;
+    }
 
     if ((open && travel >= target) || (!open && travel <= target)) {
       finishSettle();
@@ -136,6 +155,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
     if (travel < 0 || travel > limit) {
       travel = Math.min(Math.max(travel, 0), limit);
       settleVelocity = 0;
+      brakeAcceleration = 0;
     }
     if (Math.abs(target - travel) < SETTLE_DISTANCE_PX && Math.abs(settleVelocity) < SETTLE_SPEED_PX) {
       finishSettle();
@@ -155,6 +175,22 @@ export function mountLyricsSheet(): LyricsSheet | null {
       return;
     }
     settleVelocity = velocity;
+    settleRate = SETTLE_RATE;
+    brakeAcceleration = 0;
+    const target = next ? room() : 0;
+    if ((target - travel) * velocity > 0) {
+      // Keep the spring from crossing the target at swipe speed.
+      settleRate = Math.max(settleRate, Math.abs(velocity) / Math.max(Math.abs(target - travel), SETTLE_DISTANCE_PX));
+    } else if ((target - travel) * velocity < 0) {
+      // Slow a swipe away from the target before reversing, within the sheet's bounds.
+      const available = velocity > 0 ? room() - travel : travel;
+      const duration = Math.min(REVERSE_BRAKE_SEC, 2 * Math.max(available, 0) * EDGE_BRAKE_SHARE / Math.abs(velocity));
+      if (duration > 0) {
+        brakeAcceleration = -velocity / duration;
+      } else {
+        settleVelocity = 0;
+      }
+    }
     settleAt = performance.now();
     paint();
     settleFrame = requestAnimationFrame(animateSettle);

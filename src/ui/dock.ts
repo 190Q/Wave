@@ -157,7 +157,7 @@ export function mountDock(): void {
     }
   });
 
-  const stopPress = (commit: boolean): void => {
+  const stopPress = (event: PointerEvent, commit: boolean): void => {
     if (!pressing) {
       return;
     }
@@ -172,7 +172,7 @@ export function mountDock(): void {
     if (dragged && commit) {
       suppressControlClick = true;
     }
-    sheet?.release();
+    sheet?.release(event);
 
     if (!scrubbing) {
       return;
@@ -185,10 +185,10 @@ export function mountDock(): void {
     paintProgress(player.snapshot().positionMs, player.snapshot().durationMs);
   };
 
-  window.addEventListener("pointerup", () => stopPress(true));
-  window.addEventListener("pointercancel", () => {
+  window.addEventListener("pointerup", (event) => stopPress(event, true));
+  window.addEventListener("pointercancel", (event) => {
     suppressControlClick = false;
-    stopPress(false);
+    stopPress(event, false);
   });
 
   play.addEventListener("click", () => player.toggle());

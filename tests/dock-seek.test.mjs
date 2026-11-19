@@ -15,7 +15,7 @@ const mocks = {
     export const insets = () => ({ bottom: 0 });
   `,
   "../lib/format": "export const formatDuration = (ms) => String(ms);",
-  "../lib/motion": "export const bounce = () => {}; export const reduceMotionActive = () => true;",
+  "../lib/motion": "export const bounce = () => {}; export const reduceMotionActive = () => true; export const subscribeMotion = () => {};",
   "../lib/player": "export const MIN_VOLUME = 0; export const MAX_VOLUME = 100;",
   "../lib/state": `
     export const player = globalThis.__dockTest.player;
@@ -277,7 +277,7 @@ test("Android sheet swipes from the controls or seek area do not seek", () => {
     elements.dock.dispatch("pointerdown", pointer(target, 200, startY));
     windowEvents.dispatch("pointermove", pointer(elements.dock, 200, startY - 70));
     assert.equal(elements.dock.classList.contains("is-scrubbing"), false);
-    windowEvents.dispatch("pointerup");
+    windowEvents.dispatch("pointerup", pointer(elements.dock, 200, startY - 70));
     assert.equal(stage.style.getPropertyValue("--sheet-travel"), "500px");
     assert.deepEqual(context.seeks, []);
 
@@ -357,7 +357,7 @@ test("lyrics drags do not turn their trailing click into a button activation", (
 
     elements.dock.dispatch("pointerdown", pointer(open, 200, 110));
     windowEvents.dispatch("pointermove", pointer(open, 200, 90));
-    windowEvents.dispatch("pointerup");
+    windowEvents.dispatch("pointerup", pointer(open, 200, 90));
     assert.equal(stage.style.getPropertyValue("--sheet-travel"), "0px");
     open.dispatch("click", { detail: 1 });
     assert.equal(stage.style.getPropertyValue("--sheet-travel"), "0px");
@@ -379,7 +379,7 @@ test("a swipe started on a phone transport control does not click it", () => {
   mountDock();
   elements.dock.dispatch("pointerdown", pointer(elements.play, 200, 150));
   windowEvents.dispatch("pointermove", pointer(elements.play, 200, 80));
-  windowEvents.dispatch("pointerup");
+  windowEvents.dispatch("pointerup", pointer(elements.play, 200, 80));
   let prevented = false;
   elements.dock.dispatch("click", {
     target: elements.play,

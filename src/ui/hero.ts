@@ -1,6 +1,8 @@
 import { device } from "../lib/device";
+import { createVelocitySampler, springStep } from "../lib/drag-motion";
 import { activeLyricIndex } from "../lib/lrc";
 import { escapeHtml, joinMeta } from "../lib/format";
+import { reduceMotionActive } from "../lib/motion";
 import {
   currentTrack,
   ensureColour,
@@ -20,6 +22,11 @@ const CHASE_TAU_MS = 80;
 const CHASE_LINES_PER_SEC = 40;
 const CHASE_LINE_LIMIT = 0.9;
 const CHASE_SETTLE_LINES = 0.005;
+const DRAG_VELOCITY_WINDOW_MS = 100;
+const RELEASE_PROJECTION_SEC = 0.12;
+const RELEASE_RATE = 16;
+const RELEASE_SETTLE_PX = 0.1;
+const RELEASE_SETTLE_SPEED = 2;
 
 export function mountHero(): void {
   const hero = document.getElementById("hero");
@@ -118,8 +125,12 @@ export function mountHero(): void {
   let targetLine = 0;
   let scrubbing = false;
   let dragging = false;
+  let dragPointerId: number | null = null;
   let dragOriginY = 0;
   let dragOriginCentre = 0;
+  const dragVelocity = createVelocitySampler(DRAG_VELOCITY_WINDOW_MS);
+  let settlingDrag = false;
+  let settleVelocity = 0;
   let chaseFrame: number | null = null;
   let chaseAt = 0;
   let seekedLine = -1;
@@ -218,27 +229,47 @@ export function mountHero(): void {
       window.cancelAnimationFrame(chaseFrame);
       chaseFrame = null;
     }
+    settlingDrag = false;
+    settleVelocity = 0;
     endScrub();
   };
 
   const chase = (now: number): void => {
     chaseFrame = null;
 
-    const elapsed = now - chaseAt;
+    const elapsed = Math.max(now - chaseAt, 0);
     chaseAt = now;
 
-    const gap = targetLine - shownLine;
-    const reach = Math.min(elapsed / CHASE_TAU_MS, 1);
-    const limit = Math.min(CHASE_LINE_LIMIT, (CHASE_LINES_PER_SEC * elapsed) / 1000);
-    shownLine += Math.max(-limit, Math.min(limit, gap * reach));
-    if (Math.abs(targetLine - shownLine) < CHASE_SETTLE_LINES) {
-      shownLine = targetLine;
+    if (settlingDrag) {
+      const current = centreAt(shownLine);
+      const target = centreAt(targetLine);
+      const next = springStep(current, target, settleVelocity, elapsed / 1000, RELEASE_RATE);
+      const crossed = (target - current) * (target - next.position) < 0;
+      settleVelocity = next.velocity;
+      if (
+        reduceMotionActive() || crossed ||
+        (Math.abs(target - next.position) < RELEASE_SETTLE_PX && Math.abs(settleVelocity) < RELEASE_SETTLE_SPEED)
+      ) {
+        shownLine = targetLine;
+        settleVelocity = 0;
+        settlingDrag = false;
+      } else {
+        shownLine = clampLine(lineAt(next.position));
+      }
+    } else {
+      const gap = targetLine - shownLine;
+      const reach = Math.min(elapsed / CHASE_TAU_MS, 1);
+      const limit = Math.min(CHASE_LINE_LIMIT, (CHASE_LINES_PER_SEC * elapsed) / 1000);
+      shownLine += Math.max(-limit, Math.min(limit, gap * reach));
+      if (Math.abs(targetLine - shownLine) < CHASE_SETTLE_LINES) {
+        shownLine = targetLine;
+      }
     }
 
     paintLine(shownLine);
     seekToLine(Math.round(shownLine));
 
-    if (shownLine !== targetLine) {
+    if (settlingDrag || shownLine !== targetLine) {
       chaseFrame = requestAnimationFrame(chase);
     } else if (!dragging) {
       endScrub();
@@ -257,6 +288,11 @@ export function mountHero(): void {
   /** Forgets where the scrub was, ready for a fresh set of lines. */
   const resetScrub = (): void => {
     stopChase();
+    if (dragPointerId !== null && panel.hasPointerCapture(dragPointerId)) {
+      panel.releasePointerCapture(dragPointerId);
+    }
+    dragPointerId = null;
+    dragging = false;
     activeLine = null;
     shownLine = 0;
     targetLine = 0;
@@ -326,6 +362,7 @@ export function mountHero(): void {
         return;
       }
       wheelTravel -= steps * WHEEL_STEP_PX;
+      settlingDrag = false;
       targetLine = clampLine(Math.round(targetLine) + steps);
       startChase();
     },
@@ -333,44 +370,78 @@ export function mountHero(): void {
   );
 
   panel.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || lyricLines.length === 0) {
+    if (event.button !== 0 || dragging || lyricLines.length === 0) {
       return;
     }
     // The sheet's own handle is what moves the sheet, not the lyrics.
     if ((event.target as HTMLElement).closest(".lyrics-grab")) {
       return;
     }
+    if (!scrubbing) {
+      const transform = getComputedStyle(lyricTrack).transform;
+      const offset = transform === "none" ? 0 : -new DOMMatrixReadOnly(transform).m42;
+      shownLine = clampLine(lineAt(offset));
+    }
+    if (chaseFrame !== null) {
+      window.cancelAnimationFrame(chaseFrame);
+      chaseFrame = null;
+    }
+    settlingDrag = false;
+    settleVelocity = 0;
     dragging = true;
+    dragPointerId = event.pointerId;
     dragOriginY = event.clientY;
     dragOriginCentre = centreAt(shownLine);
+    targetLine = shownLine;
+    dragVelocity.reset(dragOriginCentre);
     scrubbing = true;
     panel.classList.add("is-scrubbing");
+    paintLine(shownLine);
     panel.setPointerCapture(event.pointerId);
   });
 
+  const dragTo = (clientY: number): void => {
+    shownLine = clampLine(lineAt(dragOriginCentre + (dragOriginY - clientY)));
+    targetLine = shownLine;
+    dragVelocity.sample(centreAt(shownLine));
+    paintLine(shownLine);
+    seekToLine(Math.round(shownLine));
+  };
+
   panel.addEventListener("pointermove", (event) => {
-    if (!dragging) {
+    if (!dragging || event.pointerId !== dragPointerId) {
       return;
     }
-    // Pulling the lyrics up brings the later ones into the centre, however tall they are.
-    targetLine = clampLine(lineAt(dragOriginCentre + (dragOriginY - event.clientY)));
-    startChase();
+    dragTo(event.clientY);
   });
 
   const endDrag = (event: PointerEvent): void => {
-    if (!dragging) {
+    if (!dragging || event.pointerId !== dragPointerId) {
       return;
     }
+    if (event.type !== "pointercancel") {
+      dragTo(event.clientY);
+    }
     dragging = false;
+    dragPointerId = null;
     if (panel.hasPointerCapture(event.pointerId)) {
       panel.releasePointerCapture(event.pointerId);
     }
-    // Settle on the nearest line, so the highlight and the offset agree.
-    targetLine = clampLine(Math.round(targetLine));
-    if (shownLine === targetLine) {
+    settleVelocity = event.type === "pointercancel" ? 0 : dragVelocity.velocity();
+    const projected = centreAt(shownLine) + settleVelocity * RELEASE_PROJECTION_SEC;
+    targetLine = clampLine(Math.round(lineAt(projected)));
+    if (reduceMotionActive()) {
+      shownLine = targetLine;
+      paintLine(shownLine);
+      seekToLine(targetLine);
       endScrub();
       return;
     }
+    if (shownLine === targetLine && settleVelocity === 0) {
+      endScrub();
+      return;
+    }
+    settlingDrag = true;
     startChase();
   };
 

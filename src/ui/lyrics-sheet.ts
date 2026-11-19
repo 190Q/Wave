@@ -1,4 +1,5 @@
-import { reduceMotionActive } from "../lib/motion";
+import { createVelocitySampler, springStep } from "../lib/drag-motion";
+import { reduceMotionActive, subscribeMotion } from "../lib/motion";
 import { getState, subscribe } from "../lib/state";
 
 /** How far the finger moves before a press counts as a drag. */
@@ -16,8 +17,10 @@ const FLICK_MS = 300;
 /** How far a flick has to travel before it settles the way it was going. */
 const FLICK_DISTANCE_PX = 40;
 
-/** Matches the settle transition in the stylesheet. */
-const SETTLE_MS = 340;
+const VELOCITY_WINDOW_MS = 100;
+const SETTLE_RATE = 16;
+const SETTLE_DISTANCE_PX = 0.5;
+const SETTLE_SPEED_PX = 5;
 
 export interface LyricsSheet {
   /** Takes a press on the dock, which may or may not turn into the sheet. */
@@ -25,7 +28,7 @@ export interface LyricsSheet {
   /** True once the drag belongs to the sheet rather than to the seek bar. */
   owned(): boolean;
   move(event: PointerEvent): void;
-  release(): void;
+  release(event: PointerEvent): void;
 }
 
 /**
@@ -55,10 +58,14 @@ export function mountLyricsSheet(): LyricsSheet | null {
   let grabMoved = false;
   let suppressOpenClick = false;
   let suppressCloseClick = false;
-  let settleTimer: number | null = null;
+  let settleFrame: number | null = null;
+  let settleAt = 0;
+  let settleVelocity = 0;
+  let interrupted = false;
   let originX = 0;
   let originY = 0;
   let originTravel = 0;
+  const dragVelocity = createVelocitySampler(VELOCITY_WINDOW_MS);
   /** When the drag in hand began, which is what makes a flick a flick. */
   let startedAt = 0;
 
@@ -69,7 +76,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
   const wanted = (): boolean => getState().lyrics.length > 0;
 
   const paint = (): void => {
-    stage.style.setProperty("--sheet-travel", `${Math.round(travel)}px`);
+    stage.style.setProperty("--sheet-travel", `${travel}px`);
     panel.inert = !open;
     dockGrab.setAttribute("aria-expanded", String(open));
   };
@@ -80,25 +87,65 @@ export function mountLyricsSheet(): LyricsSheet | null {
     paint();
   };
 
-  /** Lets the sheet travel over the settle transition rather than the finger. */
-  const settleTo = (next: boolean): void => {
-    open = next;
-    travel = next ? room() : 0;
+  const stopSettle = (): boolean => {
+    if (settleFrame === null) {
+      return false;
+    }
+    window.cancelAnimationFrame(settleFrame);
+    settleFrame = null;
+    return true;
+  };
 
+  const finishSettle = (): void => {
+    stopSettle();
+    travel = open ? room() : 0;
+    settleVelocity = 0;
+    paint();
+  };
+
+  const animateSettle = (now: number): void => {
+    settleFrame = null;
     if (reduceMotionActive()) {
-      paint();
+      finishSettle();
       return;
     }
 
-    stage.classList.add("is-sheet-settling");
-    paint();
-    if (settleTimer !== null) {
-      window.clearTimeout(settleTimer);
+    const elapsed = Math.max(0, (now - settleAt) / 1000);
+    settleAt = now;
+    const limit = room();
+    const target = open ? limit : 0;
+    // A critically damped spring carries the release velocity into the settle.
+    const next = springStep(travel, target, settleVelocity, elapsed, SETTLE_RATE);
+    travel = next.position;
+    settleVelocity = next.velocity;
+
+    if ((open && travel >= target) || (!open && travel <= target)) {
+      finishSettle();
+      return;
     }
-    settleTimer = window.setTimeout(() => {
-      settleTimer = null;
-      stage.classList.remove("is-sheet-settling");
-    }, SETTLE_MS);
+    if (travel < 0 || travel > limit) {
+      travel = Math.min(Math.max(travel, 0), limit);
+      settleVelocity = 0;
+    }
+    if (Math.abs(target - travel) < SETTLE_DISTANCE_PX && Math.abs(settleVelocity) < SETTLE_SPEED_PX) {
+      finishSettle();
+      return;
+    }
+    paint();
+    settleFrame = requestAnimationFrame(animateSettle);
+  };
+
+  const settleTo = (next: boolean, velocity = 0): void => {
+    stopSettle();
+    open = next;
+    if (reduceMotionActive() || travel === (next ? room() : 0)) {
+      finishSettle();
+      return;
+    }
+    settleVelocity = velocity;
+    settleAt = performance.now();
+    paint();
+    settleFrame = requestAnimationFrame(animateSettle);
   };
 
   /** A drag that lifts the stack also lifts the sheet, so the two stay joined. */
@@ -109,12 +156,12 @@ export function mountLyricsSheet(): LyricsSheet | null {
    * was flicked, and anything slower has to have carried the sheet most of the
    * way before it stays there.
    */
-  const settle = (): void => {
+  const settle = (velocity: number): void => {
     const travelled = travel - originTravel;
     const far = Math.abs(travelled) >= room() * OPEN_SHARE;
     const quick = performance.now() - startedAt < FLICK_MS;
     const flicked = quick && Math.abs(travelled) >= FLICK_DISTANCE_PX;
-    settleTo(far || flicked ? travelled > 0 : open);
+    settleTo(far || flicked ? travelled > 0 : open, velocity);
   };
 
   const press = (event: PointerEvent): void => {
@@ -122,16 +169,19 @@ export function mountLyricsSheet(): LyricsSheet | null {
     if (open || !wanted()) {
       return;
     }
+    interrupted = stopSettle();
     owns = false;
     originX = event.clientX;
     originY = event.clientY;
     originTravel = travel;
     startedAt = performance.now();
+    dragVelocity.reset(travel);
   };
 
   const move = (event: PointerEvent): void => {
     if (owns) {
       travelTo(event.clientY);
+      dragVelocity.sample(travel);
       return;
     }
     if (open || !wanted()) {
@@ -146,15 +196,25 @@ export function mountLyricsSheet(): LyricsSheet | null {
 
     owns = true;
     travelTo(event.clientY);
+    dragVelocity.sample(travel);
   };
 
-  const release = (): void => {
+  const release = (event: PointerEvent): void => {
     if (!owns) {
+      if (interrupted) {
+        interrupted = false;
+        settleTo(open);
+      }
       return;
     }
     owns = false;
+    interrupted = false;
+    if (event.type !== "pointercancel") {
+      travelTo(event.clientY);
+      dragVelocity.sample(travel);
+    }
     suppressOpenClick = true;
-    settle();
+    settle(event.type === "pointercancel" ? 0 : dragVelocity.velocity());
   };
 
   dockGrab.addEventListener("click", (event) => {
@@ -176,12 +236,14 @@ export function mountLyricsSheet(): LyricsSheet | null {
     if (event.button !== 0 || !open || !wanted()) {
       return;
     }
+    stopSettle();
     dragging = true;
     grabMoved = false;
     suppressCloseClick = false;
     originY = event.clientY;
     originTravel = travel;
     startedAt = performance.now();
+    dragVelocity.reset(travel);
     grab.setPointerCapture(event.pointerId);
   });
 
@@ -190,6 +252,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
       grabMoved ||= Math.abs(event.clientY - originY) >= DRAG_SLOP_PX;
       if (grabMoved) {
         travelTo(event.clientY);
+        dragVelocity.sample(travel);
       }
     }
   });
@@ -203,8 +266,14 @@ export function mountLyricsSheet(): LyricsSheet | null {
       grab.releasePointerCapture(event.pointerId);
     }
     if (grabMoved) {
+      if (event.type !== "pointercancel") {
+        travelTo(event.clientY);
+        dragVelocity.sample(travel);
+      }
       suppressCloseClick = event.type !== "pointercancel";
-      settle();
+      settle(event.type === "pointercancel" ? 0 : dragVelocity.velocity());
+    } else {
+      settleTo(open);
     }
   };
 
@@ -226,7 +295,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
   /** The sheet follows the top bar, which moves with the notch and the rotation. */
   const refit = (): void => {
     root.style.setProperty("--phone-topbar", `${topbar.offsetHeight}px`);
-    if (dragging || owns) {
+    if (dragging || owns || settleFrame !== null) {
       return;
     }
     travel = open ? room() : 0;
@@ -239,8 +308,17 @@ export function mountLyricsSheet(): LyricsSheet | null {
     observer.observe(topbar);
   }
 
+  subscribeMotion(() => {
+    if (settleFrame !== null && reduceMotionActive()) {
+      finishSettle();
+    }
+  });
+
   subscribe(() => {
-    if (open && !wanted()) {
+    if (!wanted() && (open || dragging || owns || travel > 0)) {
+      dragging = false;
+      owns = false;
+      interrupted = false;
       settleTo(false);
     }
   });

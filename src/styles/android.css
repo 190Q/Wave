@@ -246,13 +246,6 @@ html:is([data-device="android"], [data-device="linuxPhone"]) {
   background: rgb(255 255 255 / 0.75);
 }
 
-/* A settled sheet travels over the same transition a drag would not. */
-:is([data-device="android"], [data-device="linuxPhone"]) .stage.is-sheet-settling .lyrics,
-:is([data-device="android"], [data-device="linuxPhone"]) .stage.is-sheet-settling .carousel,
-:is([data-device="android"], [data-device="linuxPhone"]) .stage.is-sheet-settling .dock {
-  transition: transform 0.34s var(--ease);
-}
-
 /* The library is the whole screen. */
 :is([data-device="android"], [data-device="linuxPhone"]) .sheet {
   width: 100%;

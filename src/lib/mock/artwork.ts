@@ -56,7 +56,7 @@ function paintOne(ctx: CanvasRenderingContext2D, path: string): void {
   ctx.fillRect(0, 0, SIZE, SIZE);
 
   for (let index = 0; index < 4; index += 1) {
-    const step = (seed >> (index * 5)) % 100;
+    const step = (seed >>> (index * 5)) % 100;
     ctx.fillStyle = `hsl(${(hue + 70 + index * 32) % 360} 62% ${38 + (step % 28)}% / 0.55)`;
     ctx.beginPath();
     ctx.arc(

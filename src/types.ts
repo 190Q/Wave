@@ -510,6 +510,7 @@ export interface Session {
   filter: CollectionFilter;
   sort: CollectionSort;
   queueOpen: boolean;
+  savedAt?: number;
 }
 
 /** Which part of a saved window frame a `Ctrl+Shift+<slot>` snap restores. */

@@ -403,7 +403,7 @@ export function mountQueue(): void {
       }
     }
 
-    if (reduceMotionActive()) {
+    if (reduceMotionActive() || document.documentElement.classList.contains("is-starting")) {
       return;
     }
     if (enter === "all") {

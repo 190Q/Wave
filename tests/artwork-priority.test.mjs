@@ -8,7 +8,8 @@ Object.defineProperty(globalThis, "navigator", {
   value: { userAgent: "Android" },
 });
 
-const timers = [];
+const timers = new Map();
+let nextTimer = 0;
 const started = [];
 const requests = new Map();
 let decode = () => Promise.resolve();
@@ -20,13 +21,18 @@ globalThis.Audio = class {
 globalThis.Image = class {
   decode() { return decode(this.src); }
 };
-globalThis.document = { addEventListener() {} };
+globalThis.document = {
+  addEventListener() {},
+  documentElement: { dataset: {}, style: { setProperty() {} } },
+};
 globalThis.window = {
   setInterval() {},
-  setTimeout(callback) {
-    timers.push(callback);
-    return timers.length;
+  setTimeout(callback, delay) {
+    const id = ++nextTimer;
+    timers.set(id, { callback, delay });
+    return id;
   },
+  clearTimeout(id) { timers.delete(id); },
   __TAURI_INTERNALS__: {
     invoke(command, { path }) {
       assert.equal(command, "artwork_bytes");
@@ -55,7 +61,10 @@ const {
   prioritizeNearbyArtwork,
   pruneArtworkQueue,
   subscribe,
+  player,
+  whenArtworkReady,
 } = await vite.ssrLoadModule("/src/lib/state.ts");
+const { setDevice } = await vite.ssrLoadModule("/src/lib/device.ts");
 const { mosaicHtml } = await vite.ssrLoadModule("/src/ui/artwork.ts");
 
 function tracks(prefix, count) {
@@ -65,6 +74,8 @@ function tracks(prefix, count) {
   }
   return ids;
 }
+
+const render = () => runTimer();
 
 async function finish(ids, failed = new Set()) {
   for (const id of ids) {
@@ -80,10 +91,11 @@ async function finish(ids, failed = new Set()) {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
-function render() {
-  const callback = timers.shift();
-  assert.ok(callback, "No render scheduled");
-  callback();
+function runTimer(delay = 150) {
+  const timer = [...timers].find(([, entry]) => entry.delay === delay);
+  assert.ok(timer, `No timer scheduled for ${delay}ms`);
+  timers.delete(timer[0]);
+  timer[1].callback();
 }
 
 afterEach(async () => {
@@ -93,7 +105,7 @@ afterEach(async () => {
   while (requests.size > 0) {
     await finish([...requests.keys()]);
   }
-  while (timers.length > 0) {
+  while (timers.size > 0) {
     render();
   }
   started.length = 0;
@@ -106,6 +118,44 @@ test("selects the current track and two neighbors in playback order", () => {
     ["a", "f", "e", "b", "c"]);
   assert.deepEqual(nearbyArtwork([], 0, false), []);
   assert.deepEqual(nearbyArtwork(order, -1, true), []);
+});
+
+test("mobile startup waits for current and neighboring artwork, including failures", async () => {
+  const order = tracks("startup", 7);
+  const priority = [order[3], order[2], order[4], order[1], order[5]];
+  const snapshot = player.snapshot;
+  setDevice("android");
+  player.snapshot = () => ({ order, cursor: 3, currentId: order[3], repeat: "off" });
+  try {
+    let ready = false;
+    const waiting = whenArtworkReady().then(() => { ready = true; });
+    assert.deepEqual(started, priority.slice(0, 3));
+    await finish(priority.slice(0, 3));
+    render();
+    assert.equal(ready, false);
+    await finish(priority.slice(3), new Set([priority[4]]));
+    render();
+    await waiting;
+    assert.equal(ready, true);
+  } finally {
+    player.snapshot = snapshot;
+    setDevice("desktop");
+  }
+});
+
+test("mobile startup eventually proceeds when an artwork read hangs", async () => {
+  const order = tracks("startup-timeout", 1);
+  const snapshot = player.snapshot;
+  setDevice("android");
+  player.snapshot = () => ({ order, cursor: 0, currentId: order[0], repeat: "off" });
+  try {
+    const waiting = whenArtworkReady();
+    runTimer(8000);
+    await waiting;
+  } finally {
+    player.snapshot = snapshot;
+    setDevice("desktop");
+  }
 });
 
 test("honors repeat boundaries and avoids duplicates in short queues", () => {

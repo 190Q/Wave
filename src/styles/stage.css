@@ -7,3 +7,29 @@
   overflow: hidden;
   background: var(--stage-background);
 }
+
+.is-starting .stage {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.startup {
+  display: none;
+}
+
+.is-starting .startup {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  background: #07070a;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.is-starting .stage,
+.is-starting .stage * {
+  transition: none !important;
+}

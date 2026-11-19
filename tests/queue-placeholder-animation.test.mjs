@@ -180,10 +180,18 @@ function setup(kind = "android") {
   });
   globalThis.ResizeObserver = undefined;
   mountQueue();
-  return { live: carousel.children[0], wash: carousel.children[1], frames, timers };
+  return { live: carousel.children[0], wash: carousel.children[1], frames, timers, root };
 }
 
 const { mountQueue } = await vite.ssrLoadModule("/src/ui/queue.ts");
+
+test("phone cards do not enter with an animation while the app starts", () => {
+  const { live, root } = setup();
+  root.classList.add("is-starting");
+  context.snapshot = snapshot("first", 30, 20);
+  context.change();
+  assert.ok(live.children.every((card) => !card.classList.contains("is-entering")));
+});
 
 test("unloaded phone cards appear without the entry animation after a search jump", () => {
   for (const kind of ["android", "linuxPhone"]) {

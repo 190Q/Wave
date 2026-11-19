@@ -34,6 +34,7 @@ after(() => vite.close());
 
 const animations = [];
 globalThis.document = {
+  documentElement: { classList: { contains: () => false } },
   createElement: () => {
     const overlay = {
       style: {},
@@ -99,6 +100,17 @@ test("backgrounding settles active wipes and applies later changes without anima
   assert.equal(element.style, "newest");
   assert.equal(animations.length, count);
   assert.ok(element.overlays.every((overlay) => overlay.removed));
+});
+
+test("startup applies covers without a wipe", () => {
+  context.reduced = false;
+  document.documentElement.classList = { contains: (name) => name === "is-starting" };
+  const element = body();
+  const count = animations.length;
+  coverWipe([{ body: element, style: "ready" }]);
+  assert.equal(element.style, "ready");
+  assert.equal(animations.length, count);
+  document.documentElement.classList = { contains: () => false };
 });
 
 test("a theme transition that becomes ready after focus returns stays skipped", async () => {

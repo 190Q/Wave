@@ -342,6 +342,7 @@ pub struct Session {
     pub filter: String,
     pub sort: String,
     pub queue_open: bool,
+    pub saved_at: u64,
 }
 
 impl Default for Session {
@@ -352,6 +353,7 @@ impl Default for Session {
             filter: "all".to_string(),
             sort: "name".to_string(),
             queue_open: false,
+            saved_at: 0,
         }
     }
 }
@@ -1373,6 +1375,23 @@ mod tests {
 
     fn patch(value: Value) -> Map<String, Value> {
         value.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn session_timestamps_default_for_old_state_and_round_trip() {
+        let old: Session = serde_json::from_str(r#"{"playback":{"positionMs":42000}}"#).unwrap();
+        assert_eq!(old.saved_at, 0);
+        assert_eq!(old.playback.position_ms, 42_000);
+
+        let current = Session {
+            saved_at: 123_456,
+            ..old
+        };
+        let json = serde_json::to_string(&current).unwrap();
+        assert!(json.contains(r#""savedAt":123456"#));
+        let restored: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.saved_at, 123_456);
+        assert_eq!(restored.playback.position_ms, 42_000);
     }
 
     #[test]

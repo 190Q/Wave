@@ -53,6 +53,7 @@ import { plural } from "./format";
 import { gainFor } from "./loudness";
 import { parseLrc } from "./lrc";
 import { MAX_VOLUME, MIN_VOLUME, Player, easeOutCubic } from "./player";
+import { newestSession, readSessionRecovery, SESSION_RECOVERY_KEY } from "./session-recovery";
 
 /** Follows whatever the current artwork produced. */
 export const ADAPTIVE_THEME = "adaptive";
@@ -772,13 +773,25 @@ export function prefetchArtwork(trackIds: readonly string[]): void {
   pumpArtwork();
 }
 
-/**
- * Resolves once the current track's artwork is ready to paint, so the window
- * can be revealed without the cover flashing in. Gives up after a moment.
- */
 export function whenArtworkReady(): Promise<void> {
-  const track = currentTrack();
-  if (!track?.artworkPath || artworkUrls.has(track.id)) {
+  const snapshot = player.snapshot();
+  const phone = device() !== "desktop";
+  const ids = phone
+    ? nearbyArtwork(snapshot.order, snapshot.cursor, snapshot.repeat !== "off")
+    : snapshot.currentId ? [snapshot.currentId] : [];
+  if (phone) {
+    prioritizeNearbyArtwork(snapshot.order, snapshot.cursor, snapshot.repeat !== "off");
+  } else {
+    const track = currentTrack();
+    if (track) artworkUrlFor(track, "now");
+  }
+
+  const ready = (): boolean => ids.every((id) => {
+    const track = state.tracksById.get(id);
+    return !track?.artworkPath || artworkUrls.has(id) || artworkFailed.has(id);
+  });
+  if (ready()) {
+    emit();
     return Promise.resolve();
   }
 
@@ -787,8 +800,6 @@ export function whenArtworkReady(): Promise<void> {
     let unsubscribe = (): void => {};
     let settled = false;
 
-    const ready = (): boolean => artworkUrls.has(track.id) || artworkFailed.has(track.id);
-
     const finish = (): void => {
       if (settled) {
         return;
@@ -796,6 +807,7 @@ export function whenArtworkReady(): Promise<void> {
       settled = true;
       window.clearTimeout(timer);
       unsubscribe();
+      emit();
       resolve();
     };
 
@@ -804,7 +816,7 @@ export function whenArtworkReady(): Promise<void> {
         finish();
       }
     });
-    timer = window.setTimeout(finish, 1200);
+    timer = window.setTimeout(finish, phone ? 8000 : 1200);
 
     if (ready()) {
       finish();
@@ -901,7 +913,7 @@ function startArtwork(trackId: string, tier: ArtworkWorkTier): void {
       }
       const url = URL.createObjectURL(new Blob([buffer], { type: imageMime(path, buffer) }));
       try {
-        if (isAndroidPlatform) {
+        if (isAndroidPlatform || device() !== "desktop") {
           await decodeArtwork(url);
         }
       } catch (error) {
@@ -1149,17 +1161,32 @@ export async function init(): Promise<void> {
       }
     }
     const persisted = await ipc.loadState();
+    const recovery = phoneRecoveryStorage();
+    const session = newestSession(persisted.session, recovery ? readSessionRecovery(recovery) : null);
+    lastSessionSavedAt = Math.max(persisted.session?.savedAt ?? 0, session?.savedAt ?? 0);
     applyPersisted(persisted, true, true, true);
     seedEqOrigin();
-    applySession(persisted.session);
+    applySession(session);
     player.setVolume(state.settings.volume);
-    const deferQueueRepair = device() !== "desktop" && state.settings.resumeOnLaunch &&
-      (persisted.session?.playback?.order.length ?? 0) > 0;
+    const deferQueueRepair = state.settings.resumeOnLaunch &&
+      (session?.playback?.order.length ?? 0) > 0;
     await rescan(false, deferQueueRepair);
     if (state.settings.resumeOnLaunch) {
-      restorePlayback(persisted.session?.playback);
+      const playback = session?.playback;
+      const currentId = playback?.order[playback.cursor];
+      const incomplete = playback && state.scanErrors.length > 0 &&
+        [...playback.order, ...playback.sourceOrder].some((id) => !state.tracksById.has(id));
+      if (incomplete) {
+        if (currentId && state.tracksById.has(currentId)) {
+          restorePlayback(playback);
+        }
+        pendingPlayback = playback;
+        pendingQueueRevision = player.snapshot().queueRevision;
+      } else {
+        restorePlayback(playback);
+      }
     }
-    if (deferQueueRepair && !player.currentId) {
+    if (deferQueueRepair && !player.currentId && !pendingPlayback) {
       repairQueue();
     }
     wirePersistence();
@@ -1276,7 +1303,17 @@ async function applyScan(
     return;
   }
   refreshCollections();
-  if (!deferQueueRepair) {
+  if (pendingPlayback && summary.errors.length === 0) {
+    const snapshot = player.snapshot();
+    const playback = currentSession().playback;
+    pendingPlayback = undefined;
+    pendingQueueRevision = null;
+    restorePlayback(playback);
+    if (snapshot.playing && snapshot.currentId === player.currentId) {
+      player.play();
+    }
+  }
+  if (!deferQueueRepair && !pendingPlayback) {
     repairQueue();
   }
   if (summary.changed.length > 0) {
@@ -1288,7 +1325,9 @@ async function applyScan(
     return;
   }
   applyReadState(persisted, token);
-  adoptSource();
+  if (!pendingPlayback) {
+    adoptSource();
+  }
 }
 
 /** Rescans, then fills in the genre of any song that has none. */
@@ -3040,6 +3079,9 @@ function knownSort(value: string | undefined): CollectionSort {
   }
 }
 
+let pendingPlayback: Playback | undefined;
+let pendingQueueRevision: number | null = null;
+
 function restorePlayback(playback: Playback | undefined): void {
   if (!playback || playback.order.length === 0) {
     return;
@@ -3052,19 +3094,29 @@ function restorePlayback(playback: Playback | undefined): void {
   }
 
   const sourceOrder = playback.sourceOrder.filter((id) => state.tracksById.has(id));
-  const cursor = currentId ? Math.max(order.indexOf(currentId), 0) : 0;
-  player.restore({ ...playback, order, sourceOrder, cursor });
+  const index = currentId ? order.indexOf(currentId) : -1;
+  player.restore({
+    ...playback,
+    order,
+    sourceOrder,
+    cursor: Math.max(index, 0),
+    positionMs: index < 0 ? 0 : playback.positionMs,
+  });
 }
 
 /** How long changes are coalesced before the session is written. */
 const PERSIST_DELAY_MS = 350;
 
 const AUTOSAVE_MS = 15_000;
+const PHONE_CHECKPOINT_MS = 2_000;
 
 let persistTimer: number | null = null;
 let autosaveTimer: number | null = null;
+let checkpointTimer: number | null = null;
 let autosaving = false;
 let persistenceWired = false;
+let lastSessionContent: string | null = null;
+let lastSessionSavedAt = 0;
 
 /** The session as it was last written, so an unchanged one is not rewritten. */
 let savedSession: string | null = null;
@@ -3077,12 +3129,34 @@ function wirePersistence(): void {
   }
   persistenceWired = true;
   player.onChange(schedulePersist);
+  player.onSeek(schedulePersist);
   autosaveTimer = window.setInterval(() => void autosave(), AUTOSAVE_MS);
+  if (isAndroidPlatform || device() !== "desktop") {
+    checkpointTimer = window.setInterval(() => {
+      if (state.ready && player.snapshot().playing && !checkpointSession().stored) {
+        void persistSession();
+      }
+    }, PHONE_CHECKPOINT_MS);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) void persistSession();
+    });
+    window.addEventListener("pagehide", () => void persistSession());
+  }
 }
 
 /** Writes the session soon, coalescing a burst of changes into one write. */
 function schedulePersist(): void {
-  if (!state.ready || persistTimer !== null) {
+  if (!state.ready) {
+    return;
+  }
+  if (pendingPlayback && player.snapshot().queueRevision !== pendingQueueRevision) {
+    pendingPlayback = undefined;
+    pendingQueueRevision = null;
+  }
+  if (isAndroidPlatform || device() !== "desktop") {
+    checkpointSession();
+  }
+  if (persistTimer !== null) {
     return;
   }
   persistTimer = window.setTimeout(() => {
@@ -3109,8 +3183,20 @@ async function autosave(): Promise<void> {
 
 function currentSession(): Session {
   const snapshot = player.snapshot();
+  const pendingCursor = snapshot.currentId && pendingPlayback
+    ? pendingPlayback.order.indexOf(snapshot.currentId)
+    : -1;
   return {
-    playback: {
+    playback: pendingPlayback && (!snapshot.currentId || pendingCursor >= 0) ? {
+      ...pendingPlayback,
+      ...(pendingCursor >= 0 ? {
+        cursor: pendingCursor,
+        positionMs: Math.round(snapshot.positionMs),
+        shuffle: snapshot.shuffle,
+        repeat: snapshot.repeat,
+        muted: snapshot.muted,
+      } : {}),
+    } : {
       sourceId: snapshot.sourceId,
       sourceName: snapshot.sourceName,
       sourceOrder: [...snapshot.sourceOrder],
@@ -3128,12 +3214,42 @@ function currentSession(): Session {
   };
 }
 
+function phoneRecoveryStorage(): Storage | null {
+  if (!isAndroidPlatform && device() === "desktop") return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function checkpointSession(): { session: Session; encoded: string; stored: boolean } {
+  const session = currentSession();
+  const content = JSON.stringify(session);
+  if (content !== lastSessionContent) {
+    lastSessionContent = content;
+    lastSessionSavedAt = Math.max(Date.now(), lastSessionSavedAt + 1);
+  }
+  session.savedAt = lastSessionSavedAt;
+  const encoded = JSON.stringify(session);
+  let stored = false;
+  try {
+    const storage = phoneRecoveryStorage();
+    if (storage) {
+      storage.setItem(SESSION_RECOVERY_KEY, encoded);
+      stored = true;
+    }
+  } catch {
+    // The backend save remains available when web storage is full or disabled.
+  }
+  return { session, encoded, stored };
+}
+
 async function persistSession(): Promise<void> {
   if (!state.ready) {
     return;
   }
-  const session = currentSession();
-  const encoded = JSON.stringify(session);
+  const { session, encoded } = checkpointSession();
   const operation = sessionWrites.then(async () => {
     if (encoded === savedSession) {
       return;
@@ -3161,6 +3277,10 @@ export async function flushSession(): Promise<void> {
   if (autosaveTimer !== null) {
     window.clearInterval(autosaveTimer);
     autosaveTimer = null;
+  }
+  if (checkpointTimer !== null) {
+    window.clearInterval(checkpointTimer);
+    checkpointTimer = null;
   }
   while (volumeUnsaved) {
     if (!(await saveVolume())) {

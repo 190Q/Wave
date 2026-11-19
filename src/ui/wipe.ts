@@ -123,7 +123,7 @@ export function coverWipe(swaps: CoverSwap[]): void {
     return;
   }
 
-  if (reduceMotionActive()) {
+  if (reduceMotionActive() || document.documentElement.classList.contains("is-starting")) {
     settle(swaps);
     return;
   }

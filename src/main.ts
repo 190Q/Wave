@@ -1,6 +1,6 @@
 import "./assets/icons/icons.css";
 import { mountApi } from "./lib/api";
-import { initDevice, isAndroidPlatform, isTouch } from "./lib/device";
+import { device, initDevice, isAndroidPlatform, isTouch } from "./lib/device";
 import { showMainWindow } from "./lib/ipc";
 import { mountMotion } from "./lib/motion";
 import { mountPresence } from "./lib/presence";
@@ -38,6 +38,9 @@ const NOTICE_TIMEOUT_MS = 6000;
 
 function mount(): void {
   initDevice();
+  if (device() === "desktop") {
+    document.documentElement.classList.remove("is-starting");
+  }
   mountIcons();
   mountMotion();
   mountTitlebar();
@@ -69,6 +72,7 @@ function revealWhenReady(): void {
       // A failed boot should still reveal the window.
     })
     .finally(() => {
+      document.documentElement.classList.remove("is-starting");
       void showMainWindow();
     });
 }

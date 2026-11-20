@@ -124,7 +124,7 @@
   transition: color 0.18s;
 }
 
-.icon:hover:not(:disabled) {
+:root:not([data-touch="true"]) .icon:hover:not(:disabled) {
   color: var(--text);
 }
 
@@ -138,7 +138,7 @@
   transition: color 0.18s;
 }
 
-.icon-pill:hover:not(:disabled) svg {
+:root:not([data-touch="true"]) .icon-pill:hover:not(:disabled) svg {
   color: var(--text);
 }
 
@@ -146,7 +146,7 @@
   color: var(--accent);
 }
 
-.icon-pill.is-on:hover:not(:disabled) svg {
+:root:not([data-touch="true"]) .icon-pill.is-on:hover:not(:disabled) svg {
   color: var(--accent-dim);
 }
 
@@ -157,7 +157,7 @@
   background: var(--accent);
 }
 
-.icon-main:hover:not(:disabled) {
+:root:not([data-touch="true"]) .icon-main:hover:not(:disabled) {
   color: var(--accent-ink);
   background: var(--accent);
   filter: brightness(1.12);

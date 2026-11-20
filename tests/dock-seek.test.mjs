@@ -177,6 +177,21 @@ function sheetTravel(elements) {
   return Number(elements["lyrics-panel"].style.transform.match(/-\s*([\d.]+)px/)[1]);
 }
 
+test("transport hover highlights are limited to non-touch devices", async () => {
+  const css = await readFile(new URL("../src/styles/dock.css", import.meta.url), "utf8");
+  const rules = parse(css).nodes.filter((node) => node.type === "rule");
+  const hoverRules = rules.filter((rule) =>
+    /\.icon(?:-pill|-main)?(?=[.:\s])/.test(rule.selector) && rule.selector.includes(":hover"),
+  );
+  assert.equal(hoverRules.length, 4);
+  for (const rule of hoverRules) {
+    assert.ok(rule.selector.startsWith(':root:not([data-touch="true"]) '), rule.selector);
+  }
+
+  const selected = rules.find((rule) => rule.selector === ".icon-pill.is-on svg");
+  assert.ok(selected.nodes.some((node) => node.prop === "color" && node.value === "var(--accent)"));
+});
+
 test("touch button hit areas do not extend above the buttons", async () => {
   const css = await readFile(new URL("../src/styles/android.css", import.meta.url), "utf8");
   const rule = parse(css).nodes.find((node) =>

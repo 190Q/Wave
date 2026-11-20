@@ -8,7 +8,7 @@ test("Linux phone installer and launcher", (t) => {
   let command = "sh";
   let args = [script];
   if (process.platform === "win32") {
-    const path = spawnSync("wsl.exe", ["--exec", "wslpath", "-a", script], { encoding: "utf8" });
+    const path = spawnSync("wsl.exe", ["--exec", "wslpath", "-a", script], { encoding: "utf8", timeout: 15_000 });
     if (path.status !== 0) {
       t.skip("Linux shell unavailable");
       return;

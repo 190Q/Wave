@@ -587,9 +587,12 @@ function localSection(): string {
     );
   }
 
+  const tools = device() === "linuxPhone"
+    ? "Playlist downloads use the installed yt-dlp, FFmpeg and Deno."
+    : "Playlist downloads use the yt-dlp, ffmpeg and Deno that ship with Wave.";
   return section(
     "Local import",
-    `<p class="import-hint">Bring in a music folder, or import a Wave playlist to download its songs without Spotify. Playlist downloads use the yt-dlp, ffmpeg and Deno that ship with Wave.</p>
+    `<p class="import-hint">Bring in a music folder, or import a Wave playlist to download its songs without Spotify. ${tools}</p>
     <div class="import-actions">
       <button class="pill" type="button" data-import="folder">Import folder</button>
       <button class="pill" type="button" data-import="wavelist">Import Wave playlist</button>

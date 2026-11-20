@@ -8,6 +8,7 @@
     "windows": [
       {
         "title": "Wave",
+        "url": "index.html?device=linuxPhone",
         "width": 360,
         "height": 720,
         "minWidth": 320,

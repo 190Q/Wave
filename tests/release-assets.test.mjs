@@ -113,9 +113,10 @@ test("musl releases archive the launcher and the compiled phone executable", (t)
   const root = mkdtempSync(join(tmpdir(), "wave-release-musl-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, "scripts"));
-  for (const file of ["release.mjs", "release-assets.mjs", "musl-launcher.sh"]) {
+  for (const file of ["release.mjs", "release-assets.mjs", "musl-launcher.sh", "wave-webkit.py"]) {
     copyFileSync(fileURLToPath(new URL(`../scripts/${file}`, import.meta.url)), join(root, "scripts", file));
   }
+  copyFileSync(fileURLToPath(new URL("../install.sh", import.meta.url)), join(root, "install.sh"));
   writeFileSync(join(root, "VERSION"), "1.2.3\n");
   const mock = join(root, "mock-build.cjs");
   writeFileSync(mock, `
@@ -145,7 +146,7 @@ test("musl releases archive the launcher and the compiled phone executable", (t)
   assert.equal(result.status, 0, result.stderr);
   assert.match(readFileSync(join(root, "build-command"), "utf8"), /--target aarch64-unknown-linux-musl --config src-tauri\/tauri\.phone\.conf\.json/);
   const archive = JSON.parse(readFileSync(join(root, "archive.json"), "utf8"));
-  assert.deepEqual(archive.args.slice(-2), ["wave", "wave-bin"]);
+  assert.deepEqual(archive.args.slice(-5), ["wave", "wave-bin", "wave-webkit.py", "install.sh", "VERSION"]);
   assert.match(archive.args[1], /Wave_1\.2\.3_aarch64_musl\.tar\.gz$/);
   assert.match(archive.launcher, /WAVE_WEBKIT_HELPER_DIR/);
   assert.equal(archive.binary, "compiled binary");
@@ -212,6 +213,7 @@ test("preparation creates a draft but leaves an existing release untouched", (t)
   assert.ok(call.args.includes("--verify-tag"));
   assert.match(call.input, /^## New features\n\n- A feature/);
   assert.match(call.input, /## Downloads/);
+  assert.match(call.input, /yt-dlp, FFmpeg, Deno and the YouTube solver/);
 
   const existing = releaseFixture(t, { isDraft: false });
   const result = existing.run(["prepare", "v1.2.3"]);

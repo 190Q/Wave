@@ -318,6 +318,10 @@ export function assetUrl(path: string): string {
   return sourceUrl(path);
 }
 
+export function trackAudioPath(path: string, id: string, streamBase: string | null): string {
+  return streamBase ? `${streamBase}/${encodeURIComponent(id)}` : path;
+}
+
 /** The asset URL for a library file, or the bare path outside Tauri. */
 function sourceUrl(path: string): string {
   if (path.startsWith("http://127.0.0.1:")) {

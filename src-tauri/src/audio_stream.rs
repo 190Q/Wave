@@ -1,31 +1,31 @@
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 use std::sync::{Arc, Mutex};
 use std::thread;
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 use std::thread::JoinHandle;
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 use tauri::{AppHandle, Manager};
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 use tiny_http::Request;
 use tiny_http::{Header, Method, Response, ResponseBox, Server, StatusCode};
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 use crate::catalog::Catalog;
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 use crate::library;
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 pub struct AudioStream {
     base: String,
     server: Arc<Server>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 impl AudioStream {
     pub fn start(app: &AppHandle) -> Result<Self, String> {
         let root = library::library_root(app)?
@@ -66,7 +66,7 @@ impl AudioStream {
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 #[tauri::command]
 pub fn audio_stream_base(app: AppHandle) -> Result<String, String> {
     app.try_state::<AudioStream>()
@@ -74,7 +74,7 @@ pub fn audio_stream_base(app: AppHandle) -> Result<String, String> {
         .ok_or_else(|| "the local audio stream could not start".to_string())
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 fn serve(request: Request, app: &AppHandle, root: &Path, token: &str, port: u16) {
     let host = request
         .headers()

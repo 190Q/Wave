@@ -1,11 +1,8 @@
 #!/bin/sh
 # Builds the aarch64 musl package, inside Alpine.
 #
-# The release workflow runs this through docker on an arm64 runner, so nothing
-# is cross-compiled: the container is musl and the machine is aarch64. Alpine's
-# own packages are the toolchain, and the phone config is the one used, so the
-# download tools are neither fetched nor carried: they are glibc builds, and
-# ffmpeg and Deno publish no musl build at all.
+# The release workflow runs this in Alpine on an arm64 runner. Runtime and
+# download tools are installed from Alpine packages by the phone installer.
 #
 # The tarball is written by scripts/release.mjs, which the workflow then hands
 # to `release.mjs upload-musl`.

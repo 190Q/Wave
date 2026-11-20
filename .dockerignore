@@ -1,0 +1,7 @@
+*
+!install.sh
+!scripts
+scripts/*
+!scripts/phone-lab.Dockerfile
+!scripts/phone-lab-entry.sh
+!scripts/phone-lab-session.sh

@@ -3,7 +3,7 @@
 mod analytics;
 #[cfg(not(target_os = "android"))]
 mod api;
-#[cfg(any(target_os = "android", test))]
+#[cfg(any(target_os = "android", target_os = "linux", test))]
 mod audio_stream;
 #[cfg(target_os = "android")]
 mod apk;
@@ -51,6 +51,18 @@ mod update;
 mod window_frame;
 
 use tauri::Manager;
+
+struct FrontendHealth(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+#[tauri::command]
+fn report_frontend_startup(ready: bool, detail: String, health: tauri::State<'_, FrontendHealth>) {
+    if ready {
+        health.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        eprintln!("wave: frontend ready ({detail})");
+    } else {
+        eprintln!("wave: frontend startup error: {detail}");
+    }
+}
 
 /// Reveals the main window once the UI has applied the saved theme and song.
 #[tauri::command]
@@ -207,7 +219,17 @@ pub fn run() {
         .setup(|app| {
             prepare(app.handle()).map_err(std::io::Error::other)?;
 
-            #[cfg(target_os = "android")]
+            let frontend_ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            app.manage(FrontendHealth(frontend_ready.clone()));
+            #[cfg(target_os = "linux")]
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                if !frontend_ready.load(std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!("wave: frontend did not report ready; check WebKit processes and the session logs");
+                }
+            });
+
+            #[cfg(any(target_os = "android", target_os = "linux"))]
             match audio_stream::AudioStream::start(app.handle()) {
                 Ok(stream) => {
                     app.manage(stream);
@@ -259,6 +281,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             show_main_window,
+            report_frontend_startup,
             state::get_state,
             state::set_settings,
             state::patch_settings,
@@ -272,7 +295,7 @@ pub fn run() {
             state::set_likes,
             presence::set_now_playing,
             presence::set_queue,
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", target_os = "linux"))]
             audio_stream::audio_stream_base,
             #[cfg(not(target_os = "android"))]
             api::player::api_report,
@@ -344,7 +367,7 @@ pub fn run() {
         // The media controls have to be let go of while the app is still here,
         // or the song stays in the system's own controls after it has closed.
         if let tauri::RunEvent::Exit = event {
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", target_os = "linux"))]
             if let Some(stream) = handle.try_state::<audio_stream::AudioStream>() {
                 stream.shutdown();
             }

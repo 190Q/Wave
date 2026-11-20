@@ -64,12 +64,16 @@ MOCK
 chmod +x "$work/bin/"*
 
 cp "$root/scripts/musl-launcher.sh" "$work/archive/wave"
+cp "$root/scripts/wave-webkit.py" "$work/archive/wave-webkit.py"
+cp "$root/install.sh" "$work/archive/install.sh"
+printf '1.2.3\n' > "$work/archive/VERSION"
 cat > "$work/archive/wave-bin" <<'MOCK'
 #!/bin/sh
 printf '%s\n' "$@" > "$HOME/launched"
+printf '%s\n' "${GTK_USE_PORTAL-unset}" > "$HOME/portal"
 MOCK
 chmod +x "$work/archive/wave" "$work/archive/wave-bin"
-tar -czf "$MOCK_ARCHIVE" -C "$work/archive" wave wave-bin
+tar -czf "$MOCK_ARCHIVE" -C "$work/archive" wave wave-bin wave-webkit.py install.sh VERSION
 cat > "$MOCK_JSON" <<'JSON'
 {"browser_download_url": "https://example.test/Wave_1.2.3_aarch64_musl.tar.gz"}
 {"browser_download_url": "https://example.test/Wave_1.2.3_aarch64.AppImage"}
@@ -80,14 +84,37 @@ prefix="$work/custom prefix"
 sh "$root/install.sh" --version 1.2.3 --dir "$prefix"
 grep -q 'apk add .*webkit2gtk-4.1' "$MOCK_LOG"
 grep -q 'gst-plugins-good' "$MOCK_LOG"
-[ -x "$prefix/bin/wave" ] && [ -x "$prefix/bin/wave-bin" ]
+grep -q 'yt-dlp ffmpeg deno' "$MOCK_LOG"
+grep -q 'yt-dlp-ejs-rt-deno' "$MOCK_LOG"
+grep -q 'glib-networking' "$MOCK_LOG"
+grep -q 'mesa-dri-gallium' "$MOCK_LOG"
+grep -q 'mesa-gles' "$MOCK_LOG"
+grep -q 'xdg-desktop-portal-phosh' "$MOCK_LOG"
+[ -x "$prefix/bin/wave" ] && [ -x "$prefix/bin/wave-bin" ] && [ -f "$prefix/bin/wave-webkit.py" ]
 grep -Fq "Exec=\"$prefix/bin/wave\"" "$HOME/.local/share/applications/wave.desktop"
 "$prefix/bin/wave" help
 grep -qx help "$HOME/launched"
+grep -qx 1 "$HOME/portal"
+GTK_USE_PORTAL=0 "$prefix/bin/wave" help
+grep -qx 0 "$HOME/portal"
 sh "$root/install.sh" --dir "$prefix" --uninstall
-[ ! -e "$prefix/bin/wave" ] && [ ! -e "$prefix/bin/wave-bin" ]
+[ ! -e "$prefix/bin/wave" ] && [ ! -e "$prefix/bin/wave-bin" ] && [ ! -e "$prefix/bin/wave-webkit.py" ]
 [ ! -e "$HOME/.local/share/applications/wave.desktop" ]
 printf 'musl installation, launch, and uninstall passed\n'
+
+: > "$MOCK_LOG"
+MOCK_CURL_FAIL=1 sh "$work/archive/install.sh" --local --dir "$prefix"
+[ -x "$prefix/bin/wave-bin" ] && [ -f "$prefix/bin/wave-webkit.py" ]
+printf 'extracted phone archives install without downloading another archive\n'
+
+mkdir "$work/legacy-archive"
+cp "$work/archive/wave-bin" "$work/legacy-archive/wave"
+WAVE_LOCAL_PACKAGE_DIR="$work/legacy-archive" MOCK_DEPS_INSTALLED=1 \
+  sh "$root/install.sh" --local --dir "$prefix"
+[ ! -e "$prefix/bin/wave-bin" ] && [ ! -e "$prefix/bin/wave-webkit.py" ]
+"$prefix/bin/wave" old-local-release
+grep -qx old-local-release "$HOME/launched"
+printf 'legacy extracted phone archives install with the current installer\n'
 
 : > "$MOCK_LOG"
 MOCK_DEPS_INSTALLED=1 sh "$root/install.sh" --version 1.2.3 --dir "$prefix"
@@ -106,6 +133,15 @@ if MOCK_CURL_FAIL=1 sh "$root/install.sh" --version 1.2.3 --dir "$prefix"; then
 fi
 grep -qx 'existing install' "$prefix/bin/wave"
 printf 'failed installs preserve the existing executable\n'
+
+tar -czf "$MOCK_ARCHIVE" -C "$work/archive" wave
+if MOCK_DEPS_INSTALLED=1 sh "$root/install.sh" --version 1.2.3 --dir "$prefix"; then
+  printf 'incomplete phone package unexpectedly succeeded\n' >&2
+  exit 1
+fi
+grep -qx 'existing install' "$prefix/bin/wave"
+tar -czf "$MOCK_ARCHIVE" -C "$work/archive" wave wave-bin wave-webkit.py install.sh VERSION
+printf 'incomplete phone packages preserve the existing executable\n'
 
 printf '%s\n' '{"browser_download_url": "https://example.test/Wave_1.2.3_aarch64.AppImage"}' > "$MOCK_JSON"
 if sh "$root/install.sh" --version 1.2.3 --dir "$prefix"; then
@@ -150,50 +186,98 @@ MOCK_DEPS_INSTALLED=1 sh "$root/install.sh" --version 1.2.3 --dir "$prefix"
 grep -qx old-release "$HOME/launched"
 printf 'legacy single-binary tarballs still install\n'
 
-if command -v bwrap >/dev/null 2>&1 && bwrap --ro-bind / / -- /bin/true 2>/dev/null; then
-  mkdir -p "$work/launcher" "$work/helpers/custom"
+if command -v python3 >/dev/null 2>&1; then
+  mkdir -p "$work/launcher" "$work/helpers/custom" "$work/bundle"
   cp "$root/scripts/musl-launcher.sh" "$work/launcher/wave"
+  cp "$root/scripts/wave-webkit.py" "$work/launcher/wave-webkit.py"
   cat > "$work/launcher/wave-bin" <<'MOCK'
 #!/bin/sh
-[ "$(cat "$WAVE_TEST_PARENT/keep")" = preserved ]
-[ -x "$WAVE_WEBKIT_HELPER_TARGET/WebKitNetworkProcess" ]
-[ -x "$WAVE_WEBKIT_HELPER_TARGET/WebKitWebProcess" ]
+dir="${LD_LIBRARY_PATH%%:*}"
+if [ -n "${WAVE_WEBKIT_HELPER_DIR:-}" ]; then
+  [ "$(readlink -f "$dir/h")" = "$(readlink -f "$WAVE_WEBKIT_HELPER_DIR")" ]
+  case ":$LD_LIBRARY_PATH:" in *":$(readlink -f "$WAVE_WEBKIT_HELPER_DIR"):"*) ;; *) exit 1 ;; esac
+fi
+if [ -n "${WAVE_WEBKIT_BUNDLE_DIR:-}" ]; then
+  [ "$(readlink -f "$dir/b")" = "$(readlink -f "$WAVE_WEBKIT_BUNDLE_DIR")" ]
+  case ":$LD_LIBRARY_PATH:" in *":$(readlink -f "$WAVE_WEBKIT_BUNDLE_DIR"):"*) ;; *) exit 1 ;; esac
+fi
+test -f "$dir/libwebkit2gtk-4.1.so.0"
+printf '%s\n' "$dir" > "$HOME/override-dir"
 printf '%s\n' "$@" > "$HOME/override-args"
 MOCK
   chmod +x "$work/launcher/"*
-  printf 'preserved\n' > "$work/helpers/keep"
   for helper in WebKitNetworkProcess WebKitWebProcess; do
     printf '#!/bin/sh\nexit 0\n' > "$work/helpers/custom/$helper"
     chmod +x "$work/helpers/custom/$helper"
   done
-  WAVE_TEST_PARENT="$work/helpers" \
+  : > "$work/bundle/libwebkit2gtkinjectedbundle.so"
+  printf '\000/usr/libexec/webkit2gtk-4.1\000/usr/lib/webkit2gtk-4.1/injected-bundle/\000' > "$work/libwebkit.so"
+  WAVE_WEBKIT_LIBRARY="$work/libwebkit.so" \
     WAVE_WEBKIT_HELPER_DIR="$work/helpers/custom" \
-    WAVE_WEBKIT_HELPER_TARGET="$work/helpers/webkit" \
+    WAVE_WEBKIT_BUNDLE_DIR="$work/bundle" \
     "$work/launcher/wave" 'argument with spaces'
   grep -qx 'argument with spaces' "$HOME/override-args"
-  [ ! -e "$work/helpers/webkit" ]
-  [ "$(cat "$work/helpers/keep")" = preserved ]
-  if WAVE_WEBKIT_HELPER_DIR="$work/helpers/custom" \
-    WAVE_WEBKIT_HELPER_TARGET=relative \
+  [ ! -e "$(cat "$HOME/override-dir")" ]
+  WAVE_WEBKIT_LIBRARY="$work/libwebkit.so" \
+    WAVE_WEBKIT_HELPER_DIR="$work/helpers/custom" \
+    "$work/launcher/wave" helper-only
+  grep -qx helper-only "$HOME/override-args"
+  WAVE_WEBKIT_LIBRARY="$work/libwebkit.so" \
+    WAVE_WEBKIT_BUNDLE_DIR="$work/bundle" \
+    "$work/launcher/wave" bundle-only
+  grep -qx bundle-only "$HOME/override-args"
+  mkdir "$work/helpers:colon"
+  cp "$work/helpers/custom/"* "$work/helpers:colon/"
+  if WAVE_WEBKIT_LIBRARY="$work/libwebkit.so" \
+    WAVE_WEBKIT_HELPER_DIR="$work/helpers:colon" \
     "$work/launcher/wave"; then
-    printf 'relative helper target unexpectedly succeeded\n' >&2
+    printf 'WebKit helper paths containing colons unexpectedly succeeded\n' >&2
     exit 1
   fi
-  if TMPDIR="$work/helpers" \
+  cat > "$work/launcher/wave-bin" <<'MOCK'
+#!/bin/sh
+dir="${LD_LIBRARY_PATH%%:*}"
+trap 'sleep 1; test -f "$dir/libwebkit2gtk-4.1.so.0" || exit 71; printf terminated > "$HOME/terminated"; exit 0' TERM
+printf '%s\n' "$dir" > "$HOME/signal-dir"
+while :; do sleep 1; done
+MOCK
+  chmod +x "$work/launcher/wave-bin"
+  WAVE_WEBKIT_LIBRARY="$work/libwebkit.so" \
     WAVE_WEBKIT_HELPER_DIR="$work/helpers/custom" \
-    WAVE_WEBKIT_HELPER_TARGET="$work/helpers/webkit" \
+    "$work/launcher/wave" &
+  launcher_pid=$!
+  attempt=0
+  while [ ! -f "$HOME/signal-dir" ] && [ "$attempt" -lt 20 ]; do
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+  [ -f "$HOME/signal-dir" ] || { kill "$launcher_pid" 2>/dev/null || true; exit 1; }
+  kill -TERM "$launcher_pid"
+  status=0
+  wait "$launcher_pid" || status=$?
+  [ "$status" -eq 143 ] && [ -f "$HOME/terminated" ] && [ ! -e "$(cat "$HOME/signal-dir")" ]
+  if WAVE_WEBKIT_LIBRARY="$work/libwebkit.so" \
+    WAVE_WEBKIT_HELPER_DIR="$work/helpers/custom" \
+    WAVE_WEBKIT_HELPER_TARGET=/wrong/path \
     "$work/launcher/wave"; then
-    printf 'nested temporary directory unexpectedly succeeded\n' >&2
+    printf 'incorrect compiled-in helper path unexpectedly succeeded\n' >&2
     exit 1
   fi
   rm "$work/helpers/custom/WebKitWebProcess"
-  if WAVE_WEBKIT_HELPER_DIR="$work/helpers/custom" \
-    WAVE_WEBKIT_HELPER_TARGET="$work/helpers/webkit" \
+  if WAVE_WEBKIT_LIBRARY="$work/libwebkit.so" \
+    WAVE_WEBKIT_HELPER_DIR="$work/helpers/custom" \
     "$work/launcher/wave"; then
     printf 'incomplete helper directory unexpectedly succeeded\n' >&2
     exit 1
   fi
-  printf 'helper override uses a private mount and preserves arguments\n'
+  rm "$work/bundle/libwebkit2gtkinjectedbundle.so"
+  if WAVE_WEBKIT_LIBRARY="$work/libwebkit.so" \
+    WAVE_WEBKIT_BUNDLE_DIR="$work/bundle" \
+    "$work/launcher/wave"; then
+    printf 'incomplete injected bundle directory unexpectedly succeeded\n' >&2
+    exit 1
+  fi
+  printf 'helper and injected bundle overrides use a private relocated library\n'
 else
-  printf 'helper namespace test skipped: bubblewrap is unavailable\n'
+  printf 'helper override test skipped: python3 is unavailable\n'
 fi

@@ -95,34 +95,45 @@ curl -fsSL https://raw.githubusercontent.com/190Q/Wave/main/install.sh | sh
 ### Linux phones (Alpine and postmarketOS)
 
 On aarch64 musl systems, the Linux installer selects the phone tarball and
-installs WebKitGTK 4.1, the other runtime libraries, and GStreamer audio
-plugins using `apk`. It may ask for `sudo` or `doas`. The executable and
-launcher are installed under `~/.local/bin`; set `WAVE_PREFIX` or use
-`--dir` with a saved copy of the installer to change the prefix. The installer
-also creates a desktop entry. Its `--uninstall` option removes Wave but leaves
-the shared system dependencies installed.
+installs WebKitGTK, graphics and audio libraries, yt-dlp, FFmpeg, Deno and its
+YouTube solver using `apk`. Community repositories must be enabled; `sudo` or
+`doas` may be required. To install a downloaded tarball, extract it and run
+`sh install.sh --local` from the extracted directory. The archive depends on
+system packages rather than containing all libraries. The phone launcher uses
+the desktop's file chooser portal; on Phosh this provides an adaptive picker.
+Alpine controls the available yt-dlp version, which may need updating as
+YouTube changes.
 
-The tarball is not self-contained: a manual installation also needs
-`webkit2gtk-4.1`, `libayatana-appindicator`, `librsvg`, `xdotool`, `openssl`,
-`gst-plugins-base`, `gst-plugins-good`, and `gst-libav`. Extract both `wave`
-and `wave-bin` into the same directory and run `wave`. The musl build does not
-include yt-dlp, ffmpeg or Deno; install compatible copies separately for link
-imports.
+Wave installs under `~/.local/bin` and creates a desktop entry. Set
+`WAVE_PREFIX` or use `--dir` to change the prefix; `--uninstall` removes Wave
+but leaves shared packages installed. WebKit normally uses its installed
+helpers. If they are elsewhere, set `WAVE_WEBKIT_HELPER_DIR` to the directory
+containing `WebKitWebProcess` and `WebKitNetworkProcess`. Set
+`WAVE_WEBKIT_BUNDLE_DIR` separately to the directory containing
+`libwebkit2gtkinjectedbundle.so`. Both must match the installed WebKit
+library version, and their resolved paths cannot contain `:`. The launcher
+redirects its compiled-in paths using a private
+temporary library copy, without modifying `/usr/libexec`. If discovery fails,
+`WAVE_WEBKIT_LIBRARY` selects the library file, while
+`WAVE_WEBKIT_HELPER_TARGET` and `WAVE_WEBKIT_BUNDLE_TARGET` identify its
+compiled-in paths. Set these variables in the desktop session environment for
+graphical launches; `WEBKIT_EXEC_PATH` is unreliable in production builds.
 
-WebKitGTK normally uses the helper executables installed with its own library.
-If they are elsewhere, set `WAVE_WEBKIT_HELPER_DIR` to the directory containing
-`WebKitNetworkProcess` and `WebKitWebProcess` before launching Wave. The
-helpers must match the installed WebKitGTK library version. The launcher uses
-Bubblewrap and an unprivileged mount namespace to expose that directory at the
-path expected by WebKit, without changing system files. The default expected
-path is `/usr/libexec/webkit2gtk-4.1`; set `WAVE_WEBKIT_HELPER_TARGET` if the
-installed WebKit library was built with a different path. Its parent directory
-must exist. Bubblewrap and user namespaces must be available, and the override
-may not work inside another container or sandbox.
-
-For a graphical launcher, export these variables in the desktop session
-environment as well as in a terminal. `WEBKIT_EXEC_PATH` is not a reliable
-override for production WebKitGTK builds.
+To test the downloaded ARM phone app from this checkout, start Docker Desktop
+or Docker Engine and run `npm run phone:lab`. Open
+<http://127.0.0.1:6080/vnc.html> after installation. To hear playback, open
+<http://127.0.0.1:6082/stream.mp3> in another tab and press play; the stream
+has some delay and supports one listener. To select a release, run
+`node scripts/phone-lab.mjs --version 0.3.2` or
+`node scripts/phone-lab.mjs --archive /path/to/Wave_0.3.2_aarch64_musl.tar.gz`.
+Optionally add `--music /path/to/music` to expose a read-only folder at
+`/music`. Press Ctrl+C to stop the lab and remove its container and library;
+`docker stop wave-phone-lab` also stops it. The lab uses ARM
+emulation, X11 and software rendering, and disables WebKit's sandbox inside
+the container; it does not replace testing on a real phone or postmarketOS
+Wayland VM. Release tests also install the ARM archive, exercise its graphical
+UI and compare it with the uploaded download. A blank screen can be diagnosed
+by launching `wave` in a terminal and checking the frontend and WebKit logs.
 
 ## Getting started
 

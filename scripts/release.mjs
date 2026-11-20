@@ -68,8 +68,7 @@ const WORKFLOW = join(root, ".github", "workflows", "release.yml");
 
 // Passed to the CLI, which reads it from the repo root.
 const SLIM_CONFIG = "src-tauri/tauri.slim.conf.json";
-// The phone config: a phone-sized window, the device forced to linuxPhone in
-// dev, and no download tools, which are glibc builds that musl cannot run.
+// The phone config uses a phone-sized window and Alpine's native download tools.
 const PHONE_CONFIG = "src-tauri/tauri.phone.conf.json";
 
 // What a slim installer is called, so the two builds of a version cannot be
@@ -284,8 +283,8 @@ const BODY = [
   "Linux builds target glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+,",
   "Fedora 36+) and come for x86_64 and aarch64. postmarketOS and Alpine are",
   "musl, where the glibc packages cannot run, so they get an aarch64 tarball",
-  "of their own. Its installer installs WebKitGTK 4.1 and the other Alpine",
-  "runtime dependencies. Download tools are not bundled for musl.",
+  "of their own. Its installer uses Alpine packages for WebKitGTK, runtime",
+  "dependencies, yt-dlp, FFmpeg, Deno and the YouTube solver.",
   "",
   "The Android APK is for a phone. Install it once by hand, and Wave offers each",
   "later release in **Settings → Updates**: it downloads the APK and hands it to",
@@ -690,8 +689,7 @@ function muslName(version) {
  * the glibc installers cannot.
  *
  * There is no bundle, so nothing is named for an architecture by tauri and the
- * tarball is named here instead. The phone config is what it is built with, so
- * the download tools, which are glibc builds, are left out and never fetched.
+ * tarball is named here instead. The installer supplies Alpine's download tools.
  * It has to run on Linux inside Alpine, which is what the release workflow
  * puts it in; nothing else has the musl toolchain.
  */
@@ -710,9 +708,12 @@ function commandMusl() {
   try {
     copyFileSync(binary, join(staging, "wave-bin"));
     copyFileSync(join(root, "scripts", "musl-launcher.sh"), join(staging, "wave"));
+    copyFileSync(join(root, "scripts", "wave-webkit.py"), join(staging, "wave-webkit.py"));
+    copyFileSync(join(root, "install.sh"), join(staging, "install.sh"));
+    copyFileSync(VERSION_FILE, join(staging, "VERSION"));
     chmodSync(join(staging, "wave"), 0o755);
     chmodSync(join(staging, "wave-bin"), 0o755);
-    run("tar", ["-czf", archive, "-C", staging, "wave", "wave-bin"]);
+    run("tar", ["-czf", archive, "-C", staging, "wave", "wave-bin", "wave-webkit.py", "install.sh", "VERSION"]);
   } finally {
     rmSync(staging, { recursive: true, force: true });
   }

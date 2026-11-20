@@ -164,6 +164,8 @@ type Handler = (args: Record<string, unknown>) => unknown;
 const handlers: Record<string, Handler> = {
   get_state: () => snapshot(),
 
+  audio_stream_base: () => null,
+
   set_now_playing: ({ song }) => {
     nowPlayingSong = isObject(song) ? (song as unknown as NowPlaying) : null;
   },

@@ -41,12 +41,12 @@ import type {
 } from "../types";
 import { flushAnalytics, mountAnalytics, notePlaybackError, noteTrackEnded, recordEvent, rememberTracks } from "./analytics";
 import { nearbyArtwork } from "./artwork-priority";
-import { AudioEngine, assetUrl } from "./audio";
+import { AudioEngine, assetUrl, trackAudioPath } from "./audio";
 import { mountAudioWatchdog } from "./audio-watchdog";
 import type { EqProfile } from "./autoeq";
 import { COLLECTION_FILTERS, buildCollections, findCollection, isUnknownCollection, sortAlbumTracks } from "./collections";
 import { FALLBACK_COLOUR, colourFromId, isUsableAccent } from "./colour";
-import { device, isAndroidPlatform } from "./device";
+import { device, isAndroidPlatform, isWebKitGtk } from "./device";
 import { DEFAULT_EQ_BANDS, EqChain } from "./eq";
 import * as ipc from "./ipc";
 import { plural } from "./format";
@@ -521,9 +521,7 @@ let engineCors = false;
 let audioStreamBase: string | null = null;
 
 function audioPath(track: Track): string {
-  return isAndroidPlatform && audioStreamBase
-    ? `${audioStreamBase}/${encodeURIComponent(track.id)}`
-    : track.path;
+  return trackAudioPath(track.path, track.id, audioStreamBase);
 }
 
 /** Set while the check below is running, so only one is ever in flight. */
@@ -1138,7 +1136,7 @@ function scheduleEmit(): void {
   }, 150);
 }
 
-export async function init(): Promise<void> {
+export async function init(): Promise<string | null> {
   watchSettings();
   watchSources();
   watchLoudness();
@@ -1152,8 +1150,9 @@ export async function init(): Promise<void> {
     enabled: () => state.settings.analyticsEnabled,
   });
   await readAppVersion();
+  let startupError: string | null = null;
   try {
-    if (isAndroidPlatform) {
+    if (isAndroidPlatform || isWebKitGtk) {
       try {
         audioStreamBase = await ipc.audioStreamBase();
       } catch (error) {
@@ -1192,7 +1191,8 @@ export async function init(): Promise<void> {
     wirePersistence();
     state.ready = true;
   } catch (error) {
-    state.notice = describe(error);
+    startupError = describe(error);
+    state.notice = startupError;
     state.ready = true;
   }
   if (!isAndroidPlatform) {
@@ -1203,6 +1203,7 @@ export async function init(): Promise<void> {
   void loadPlayCounts();
   void startUpdater();
   emit();
+  return startupError ?? state.scanErrors[0] ?? null;
 }
 
 /** The version the binary reports, which is what a release is compared against. */

@@ -1,52 +1,41 @@
 #!/bin/sh
 set -eu
 
-binary="$(dirname "$0")/wave-bin"
-source_dir="${WAVE_WEBKIT_HELPER_DIR:-}"
+dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)"
+binary="$dir/wave-bin"
+helper_dir="${WAVE_WEBKIT_HELPER_DIR:-}"
+bundle_dir="${WAVE_WEBKIT_BUNDLE_DIR:-}"
+export GTK_USE_PORTAL="${GTK_USE_PORTAL-1}"
 
-if [ -z "$source_dir" ]; then
+if [ -z "$helper_dir" ] && [ -z "$bundle_dir" ]; then
   exec "$binary" "$@"
 fi
 
 die() { printf 'wave: %s\n' "$*" >&2; exit 1; }
-command -v bwrap >/dev/null 2>&1 || die "WAVE_WEBKIT_HELPER_DIR requires bubblewrap"
-source_dir="$(readlink -f "$source_dir")" || die "the WebKit helper directory does not exist"
-[ -d "$source_dir" ] || die "the WebKit helper directory does not exist"
-for helper in WebKitNetworkProcess WebKitWebProcess; do
-  [ -x "$source_dir/$helper" ] || die "$source_dir/$helper is missing or not executable"
-done
+command -v python3 >/dev/null 2>&1 || die "WebKit path overrides require python3"
+[ -f "$dir/wave-webkit.py" ] || die "wave-webkit.py is missing; reinstall Wave"
 
-target="${WAVE_WEBKIT_HELPER_TARGET:-/usr/libexec/webkit2gtk-4.1}"
-case "$target" in
-  /*) ;;
-  *) die "WAVE_WEBKIT_HELPER_TARGET must be an absolute directory path" ;;
-esac
-name="$(basename "$target")"
-case "$name" in
-  .|..|/) die "WAVE_WEBKIT_HELPER_TARGET must name a directory" ;;
-esac
-parent="$(readlink -f "$(dirname "$target")")" || die "the WebKit helper target's parent directory does not exist"
-[ -d "$parent" ] || die "the WebKit helper target's parent directory does not exist"
-[ "$parent" != / ] || die "the WebKit helper target cannot be directly under /"
-target="$parent/$name"
-[ "$source_dir" != "$target" ] || exec "$binary" "$@"
+library="${WAVE_WEBKIT_LIBRARY:-}"
+if [ -z "$library" ]; then
+  library="$(ldd "$binary" | awk '$1 ~ /^libwebkit2gtk-4[.]1[.]so/ && $2 == "=>" { print $3; exit }')"
+fi
+[ -f "$library" ] || die "could not find libwebkit2gtk-4.1; set WAVE_WEBKIT_LIBRARY"
 
-temp="$(mktemp -d "${TMPDIR:-/tmp}/wave-webkit.XXXXXX")" || die "could not create a temporary directory"
-trap 'rm -rf "$temp"' 0
-trap 'exit 130' INT
-trap 'exit 143' TERM
-case "$(readlink -f "$temp")" in
-  "$parent"/*) die "TMPDIR must be outside the WebKit helper target's parent directory" ;;
-esac
-mkdir "$temp/original" "$temp/overlay" "$temp/overlay/$name"
-for entry in "$parent"/* "$parent"/.[!.]* "$parent"/..?*; do
-  [ -e "$entry" ] || [ -L "$entry" ] || continue
-  entry_name="$(basename "$entry")"
-  [ "$entry_name" = "$name" ] && continue
-  ln -s "$temp/original/$entry_name" "$temp/overlay/$entry_name"
+temp="$(mktemp -d /tmp/wv.XXXXXX)" || die "could not create a private WebKit directory"
+trap 'rm -rf "$temp"' EXIT
+python3 "$dir/wave-webkit.py" "$library" "$temp" || exit 1
+# WebKit mounts library search paths inside its sandbox.
+search_path="$temp"
+for override in "$helper_dir" "$bundle_dir"; do
+  [ -n "$override" ] || continue
+  resolved="$(readlink -f "$override")" || die "could not resolve WebKit directory $override"
+  case "$resolved" in *:*) die "WebKit override directories cannot contain ':'" ;; esac
+  search_path="$search_path:$resolved"
 done
-bwrap --bind / / \
-  --ro-bind "$parent" "$temp/original" \
-  --ro-bind "$temp/overlay" "$parent" \
-  --ro-bind "$source_dir" "$target" \
-  -- "$binary" "$@"
+export LD_LIBRARY_PATH="$search_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+"$binary" "$@" &
+pid=$!
+trap 'kill -INT "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; exit 130' INT
+trap 'kill -TERM "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; exit 143' TERM
+wait "$pid"

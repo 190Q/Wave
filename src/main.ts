@@ -1,9 +1,10 @@
 import "./assets/icons/icons.css";
 import { mountApi } from "./lib/api";
 import { device, initDevice, isAndroidPlatform, isTouch } from "./lib/device";
-import { showMainWindow } from "./lib/ipc";
+import { reportFrontendStartup, showMainWindow } from "./lib/ipc";
 import { mountMotion } from "./lib/motion";
 import { mountPresence } from "./lib/presence";
+import { reportInitialization } from "./lib/startup-health";
 import {
   getState,
   init,
@@ -71,11 +72,7 @@ function mount(): void {
 
 /** The window stays hidden until the theme and current song are applied. */
 function revealWhenReady(stopStartup: () => void): void {
-  void init()
-    .then(() => whenArtworkReady())
-    .catch(() => {
-      // A failed boot should still reveal the window.
-    })
+  void reportInitialization(init, whenArtworkReady, device, reportFrontendStartup)
     .finally(() => {
       stopStartup();
       document.documentElement.classList.remove("is-starting");

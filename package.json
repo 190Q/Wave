@@ -14,6 +14,7 @@
     "tools": "node scripts/tools.mjs",
     "release": "node scripts/release.mjs",
     "phone": "node scripts/phone.mjs",
+    "phone:lab": "node scripts/phone-lab.mjs",
     "version:sync": "node scripts/release.mjs sync"
   },
   "dependencies": {

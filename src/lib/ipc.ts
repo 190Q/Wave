@@ -110,6 +110,10 @@ export function showMainWindow(): Promise<void> {
   return invoke("show_main_window");
 }
 
+export function reportFrontendStartup(ready: boolean, detail: string): Promise<void> {
+  return invoke("report_frontend_startup", { ready, detail });
+}
+
 export function createPlaylist(name: string): Promise<PersistedState> {
   return invoke("create_playlist", { name });
 }

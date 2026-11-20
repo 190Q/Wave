@@ -2,6 +2,35 @@ name: linux phone tests
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "public/**"
+      - "src-tauri/**"
+      - "scripts/**"
+      - "tests/**"
+      - "install.sh"
+      - "index.html"
+      - "VERSION"
+      - "package*.json"
+      - ".github/workflows/linux-phone.yml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-phone.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "public/**"
+      - "src-tauri/**"
+      - "scripts/**"
+      - "tests/**"
+      - "install.sh"
+      - "index.html"
+      - "VERSION"
+      - "package*.json"
+      - ".github/workflows/linux-phone.yml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-phone.yml"
 
 permissions:
   contents: read
@@ -14,7 +43,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - run: node --test tests/linux-phone.test.mjs tests/release-assets.test.mjs tests/release-workflow.test.mjs
+      - run: npm ci
+      - run: node --test tests/linux-phone.test.mjs tests/audio-stream-path.test.mjs tests/phone-lab.test.mjs tests/startup-diagnostics.test.mjs tests/release-assets.test.mjs tests/release-workflow.test.mjs
 
   musl:
     runs-on: ubuntu-22.04-arm
@@ -51,5 +81,20 @@ jobs:
           done
       - name: Verify installation in a clean Alpine runtime
         run: |
-          docker run --rm --volume "$PWD:/wave:ro" --workdir /wave \
+          docker run --rm --shm-size 512m --security-opt seccomp=unconfined \
+            --env WAVE_TEST_WEBKIT_SANDBOX=1 --volume "$PWD:/wave:ro" --workdir /wave \
             alpine:3.22 sh scripts/musl-runtime-test.sh
+      - name: Verify the interactive phone lab
+        run: |
+          version=$(tr -d '\r\n' < VERSION)
+          archive="$PWD/src-tauri/target/musl/Wave_${version}_aarch64_musl.tar.gz"
+          docker build --platform linux/arm64 -f scripts/phone-lab.Dockerfile -t wave-phone-lab-ci .
+          docker run -d --name wave-phone-lab-ci --shm-size 512m \
+            --mount "type=bind,source=$archive,target=/input/wave.tar.gz,readonly" \
+            --mount "type=bind,source=$PWD/tests,target=/wave-tests,readonly" wave-phone-lab-ci
+          trap 'docker logs wave-phone-lab-ci; docker rm -f wave-phone-lab-ci' EXIT
+          docker exec -u wave -e HOME=/home/wave -e XDG_RUNTIME_DIR=/home/wave/runtime -e DISPLAY=:0 \
+            wave-phone-lab-ci sh /wave-tests/phone-lab-audio.test.sh
+          docker exec wave-phone-lab-ci apk add --no-cache xwd imagemagick
+          docker exec -u wave -e HOME=/home/wave -e XDG_RUNTIME_DIR=/home/wave/runtime -e DISPLAY=:0 \
+            wave-phone-lab-ci sh /wave-tests/phone-lab-picker.test.sh

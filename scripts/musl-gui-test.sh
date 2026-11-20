@@ -6,6 +6,7 @@ work="$(mktemp -d)"
 pid=""
 server_pid=""
 capture_pid=""
+wm_pid=""
 pulse_started=""
 cleanup() {
   if [ -n "$capture_pid" ]; then
@@ -19,6 +20,10 @@ cleanup() {
   if [ -n "$server_pid" ]; then
     kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
+  fi
+  if [ -n "$wm_pid" ]; then
+    kill "$wm_pid" 2>/dev/null || true
+    wait "$wm_pid" 2>/dev/null || true
   fi
   if [ -n "$pulse_started" ]; then
     pulseaudio -k 2>/dev/null || true
@@ -95,6 +100,24 @@ wait_ready() {
   done
   cat "$work/app.log" >&2
   printf 'Wave did not finish loading the phone UI\n' >&2
+  exit 1
+}
+
+wait_for_exit() {
+  for attempt in $(seq 1 60); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      if ! wait "$pid"; then
+        cat "$work/app.log" >&2
+        printf 'Wave exited with an error after %s\n' "$1" >&2
+        exit 1
+      fi
+      pid=""
+      return
+    fi
+    sleep 1
+  done
+  cat "$work/app.log" >&2
+  printf 'Wave remained running after %s\n' "$1" >&2
   exit 1
 }
 
@@ -218,9 +241,12 @@ for attempt in $(seq 1 60); do
   [ "$attempt" -lt 60 ] || { printf 'The library button did not visibly open the library\n' >&2; exit 1; }
   sleep 1
 done
-kill "$pid"
-wait "$pid" || true
-pid=""
+fluxbox -no-toolbar -log "$work/fluxbox.log" &
+wm_pid=$!
+sleep 2
+xdotool windowfocus "$window"
+xdotool key alt+F4
+wait_for_exit "the window was closed"
 
 mkdir "$work/helpers with spaces" "$work/injected bundle"
 for name in WebKitWebProcess WebKitNetworkProcess WebKitGPUProcess; do
@@ -245,4 +271,23 @@ if grep -Fq 'wave: frontend startup error:' "$work/app.log"; then
   cat "$work/app.log" >&2
   exit 1
 fi
-printf 'Installed phone package rendered the UI, imported through the phone picker, played audio, and used the custom WebKit paths\n'
+if [ "${WAVE_TEST_MPRIS_QUIT:-1}" = 1 ]; then
+  for attempt in $(seq 1 60); do
+    if gdbus call --session --dest org.mpris.MediaPlayer2.wave \
+      --object-path /org/mpris/MediaPlayer2 --method org.freedesktop.DBus.Properties.Get \
+      org.mpris.MediaPlayer2 CanQuit >/dev/null 2>&1; then
+      break
+    fi
+    [ "$attempt" -lt 60 ] || { cat "$work/app.log" >&2; printf 'Wave did not register its media controls\n' >&2; exit 1; }
+    sleep 1
+  done
+  gdbus call --session --dest org.mpris.MediaPlayer2.wave \
+    --object-path /org/mpris/MediaPlayer2 --method org.mpris.MediaPlayer2.Quit
+  wait_for_exit "the media controls requested quit"
+else
+  window="$(xdotool search --onlyvisible --name '^Wave$' | sed -n '1p')"
+  xdotool windowfocus "$window"
+  xdotool key alt+F4
+  wait_for_exit "the window was closed"
+fi
+printf 'Installed phone package rendered the UI, imported through the phone picker, played audio, used the custom WebKit paths, and exited on close\n'

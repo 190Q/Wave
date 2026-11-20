@@ -372,6 +372,19 @@ fn run_system(app: AppHandle, mut controls: MediaControls, receiver: Receiver<Sy
                 break;
             }
             SystemMessage::Pressed(event) => {
+                if matches!(event, MediaControlEvent::Quit) {
+                    match app.get_webview_window("main") {
+                        Some(window) => {
+                            if let Err(error) = window.close() {
+                                eprintln!("the window could not close: {error}");
+                                app.exit(0);
+                            }
+                        }
+                        None => app.exit(0),
+                    }
+                    continue;
+                }
+
                 // MPRIS expects the player to publish the volume it accepted,
                 // and only that backend has a setter for it.
                 #[cfg(target_os = "linux")]

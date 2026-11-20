@@ -88,7 +88,8 @@ jobs:
       - name: Verify the musl installer in a clean Alpine runtime
         run: |
           docker run --rm --shm-size 512m \
-            --env WAVE_TEST_WEBKIT_SANDBOX=0 --volume "$PWD:/wave:ro" --workdir /wave \
+            --env WAVE_TEST_WEBKIT_SANDBOX=0 --env WAVE_TEST_MPRIS_QUIT=0 \
+            --volume "$PWD:/wave:ro" --workdir /wave \
             alpine:3.22 sh scripts/musl-runtime-test.sh
 
       - name: Attach and verify the package

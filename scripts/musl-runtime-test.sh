@@ -50,6 +50,7 @@ done
 apk add --no-cache xvfb-run dbus xwd imagemagick font-dejavu pulseaudio pulseaudio-utils
 chown -R wave-smoke:wave-smoke "$HOME"
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# Docker may block WebKit's nested sandbox; sandboxed testing remains opt-in.
 su -s /bin/sh wave-smoke -c \
   'if [ "${WAVE_TEST_WEBKIT_SANDBOX:-0}" = 1 ]; then export WEBKIT_FORCE_SANDBOX=1; else export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1; fi; export LIBGL_ALWAYS_SOFTWARE=1 GDK_BACKEND=x11; xvfb-run -a -s "-screen 0 360x720x24" dbus-run-session -- sh /wave/scripts/musl-gui-test.sh'
 

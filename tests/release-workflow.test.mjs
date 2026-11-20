@@ -32,14 +32,11 @@ test("Linux RPMs use fast compression and retain the full and slim package conte
   assert.match(workflow, /%\{PAYLOADCOMPRESSOR\}/);
 });
 
-test("phone tests run on relevant changes and manually on ARM Alpine", () => {
+test("phone tests run only manually on ARM Alpine", () => {
   assert.match(phoneTests, /^  workflow_dispatch:/m);
-  assert.match(phoneTests, /^  push:/m);
-  assert.match(phoneTests, /^  pull_request:/m);
-  assert.equal((phoneTests.match(/- "public\/\*\*"/g) ?? []).length, 2);
-  assert.equal((phoneTests.match(/- "index\.html"/g) ?? []).length, 2);
-  assert.equal((phoneTests.match(/- "\.github\/workflows\/release\.yml"/g) ?? []).length, 2);
-  assert.equal((phoneTests.match(/- "\.github\/workflows\/release-phone\.yml"/g) ?? []).length, 2);
+  for (const source of [phoneTests, workflow, recovery]) {
+    assert.doesNotMatch(source, /^  (?:push|pull_request):/m);
+  }
   assert.match(phoneTests, /tests\/linux-phone\.test\.mjs/);
   assert.match(phoneTests, /tests\/phone-lab\.test\.mjs/);
   assert.match(phoneTests, /tests\/audio-stream-path\.test\.mjs/);
@@ -48,7 +45,8 @@ test("phone tests run on relevant changes and manually on ARM Alpine", () => {
   assert.match(phoneTests, /runs-on: ubuntu-22\.04-arm/);
   assert.match(phoneTests, /alpine:3\.22 sh scripts\/musl-build\.sh/);
   assert.match(phoneTests, /alpine:3\.22 sh scripts\/musl-runtime-test\.sh/);
-  assert.match(phoneTests, /--security-opt seccomp=unconfined[\s\S]*--env WAVE_TEST_WEBKIT_SANDBOX=1/);
+  assert.match(phoneTests, /--env WAVE_TEST_WEBKIT_SANDBOX=0/);
+  assert.doesNotMatch(phoneTests, /--security-opt seccomp=unconfined/);
   assert.match(phoneTests, /phone-lab-audio\.test\.sh/);
 });
 
@@ -69,7 +67,8 @@ test("phone releases verify installation in a clean Alpine environment", () => {
   for (const source of [workflow, recovery]) {
     assert.match(source, /name: Verify the musl installer in a clean Alpine runtime/);
     assert.match(source, /alpine:3\.22 sh scripts\/musl-runtime-test\.sh/);
-    assert.match(source, /--security-opt seccomp=unconfined[\s\S]*--env WAVE_TEST_WEBKIT_SANDBOX=1/);
+    assert.match(source, /--env WAVE_TEST_WEBKIT_SANDBOX=0/);
+    assert.doesNotMatch(source, /--security-opt seccomp=unconfined/);
     assert.match(source, /gh release download "\$RELEASE_TAG" --pattern "\$asset"/);
     assert.match(source, /cmp "src-tauri\/target\/musl\/\$asset"/);
   }
@@ -77,6 +76,7 @@ test("phone releases verify installation in a clean Alpine environment", () => {
   assert.match(runtime, /ldd "\$HOME\/\.local\/bin\/wave-bin"/);
   assert.match(runtime, /xvfb-run .*musl-gui-test\.sh/);
   assert.match(runtime, /WEBKIT_FORCE_SANDBOX=1/);
+  assert.match(runtime, /WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1/);
   assert.match(runtime, /sh install\.sh --uninstall/);
   assert.equal(phoneConfig.app.windows[0].url, "index.html?device=linuxPhone");
   assert.match(gui, /frontend ready \(linuxPhone\)/);

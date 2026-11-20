@@ -151,6 +151,13 @@ original songs first preserves the original files; see the migration guide
 Local playback works offline. Imports can look up missing metadata online, and
 update checks and generated playlists also use the network.
 
+On Android 10 and later, uninstalling Wave through system settings may offer a
+checkbox to keep its app data, including the library, playlists, settings and
+listening history. Select it to keep the data for a later reinstall of Wave
+with the same package and signing key. The version being uninstalled must already
+include this option, so update Wave before uninstalling. This is not a backup:
+the data remains on the device and is deleted if the option is not selected.
+
 ### Migrating to Android
 
 The most reliable way to move your music and playlists is to copy the audio

@@ -78,12 +78,15 @@ export class EqChain {
   private readonly elements = new Set<HTMLAudioElement>();
   private readonly sources = new Map<HTMLAudioElement, MediaElementAudioSourceNode>();
   private readonly statusListeners = new Set<() => void>();
+  private readonly outputListeners = new Set<() => void>();
   private lastLive = false;
 
   private settings: Settings | null = null;
   private blocked: EqBlocked = null;
   private preampDbValue = 0;
-  private appliedOutput: string | null = null;
+  private appliedOutput = "";
+  private pendingOutput: string | null = null;
+  private desiredOutput = "";
 
   /** The shape the chain is currently wired in, so it is only rebuilt when it moves. */
   private wiring = "";
@@ -150,6 +153,15 @@ export class EqChain {
     return constructor !== null && "setSinkId" in constructor.prototype;
   }
 
+  get outputId(): string {
+    return this.context && (this.enabled || this.sources.size > 0) ? this.appliedOutput : "";
+  }
+
+  onOutputChange(listener: () => void): () => void {
+    this.outputListeners.add(listener);
+    return () => this.outputListeners.delete(listener);
+  }
+
   /** The frequencies the curve is sampled at, empty until the chain is started. */
   get frequencies(): Curve {
     return this.freqs;
@@ -172,12 +184,24 @@ export class EqChain {
   /** Points the graph at an output, where the engine supports choosing one. */
   setOutput(deviceId: string): void {
     const context = this.context as SinkableContext | null;
-    if (!context?.setSinkId || deviceId === this.appliedOutput) {
+    if (!context?.setSinkId) {
       return;
     }
-    this.appliedOutput = deviceId;
-    void context.setSinkId(deviceId).catch(() => {
-      // A device that has gone away falls back to the system default.
+    this.desiredOutput = deviceId;
+    if (this.pendingOutput !== null || deviceId === this.appliedOutput) {
+      return;
+    }
+    this.pendingOutput = deviceId;
+    void context.setSinkId(deviceId).then(() => {
+      this.appliedOutput = deviceId;
+    }).catch(() => {}).finally(() => {
+      this.pendingOutput = null;
+      if (this.desiredOutput !== deviceId) {
+        this.setOutput(this.desiredOutput);
+      }
+      for (const listener of this.outputListeners) {
+        listener();
+      }
     });
   }
 
@@ -222,6 +246,7 @@ export class EqChain {
       if (this.context) {
         this.rebuild();
         this.applyPreamp();
+        this.setOutput(settings.eqOutputId);
       }
       this.notifyStatus();
       return;

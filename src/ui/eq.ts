@@ -15,6 +15,7 @@ import {
   getState,
   importEqProfile,
   player,
+  refreshEqOutputs,
   removeEqBand,
   removeEqContextRule,
   saveEqPreset,
@@ -161,15 +162,14 @@ export function mountEq(): void {
     const presets = settings.eqPresets.map((preset) => ({ value: preset.id, label: preset.name }));
 
     if (key === "output") {
-      const outputs = eqStatus().outputs.map((output) => ({ value: output.id, label: output.label }));
+      const outputs = eqStatus().sinkOutputs.map((output) => ({ value: output.id, label: output.label }));
       return { chosen: settings.eqOutputId, options: [{ value: "", label: "System default" }, ...outputs] };
     }
 
-    if (key === "output-rule") {
-      return { chosen: settings.eqDeviceRules[settings.eqOutputId] ?? "", options: [none, ...presets] };
-    }
-
     const [kind, subject] = splitKey(key);
+    if (kind === "output-rule") {
+      return { chosen: settings.eqDeviceRules[subject] ?? "", options: [none, ...presets] };
+    }
     if (kind === "shape") {
       const band = settings.eqBands.find((entry) => entry.id === subject);
       return {
@@ -189,12 +189,12 @@ export function mountEq(): void {
       setEqOutput(value);
       return;
     }
-    if (key === "output-rule") {
-      setEqDeviceRule(getState().settings.eqOutputId, value);
+    const [kind, subject] = splitKey(key);
+    if (kind === "output-rule") {
+      setEqDeviceRule(subject, value);
       return;
     }
 
-    const [kind, subject] = splitKey(key);
     if (kind === "shape") {
       updateEqBand(subject, { kind: value as EqBandKind });
       return;
@@ -448,7 +448,7 @@ export function mountEq(): void {
     const chosen = choices?.options.find((option) => option.value === choices.chosen);
     return `
       <button class="eq-drop" type="button" data-drop="${escapeHtml(key)}" aria-haspopup="listbox" aria-expanded="false" aria-label="${escapeHtml(label)}">
-        <span class="eq-drop-label">${escapeHtml(chosen?.label ?? "None")}</span>
+        <span class="eq-drop-label">${escapeHtml(chosen?.label ?? (key === "output" ? "Unavailable output" : "None"))}</span>
         <span class="sort-chevron" aria-hidden="true"></span>
       </button>`;
   };
@@ -966,17 +966,16 @@ export function mountEq(): void {
     followRow("artist", "Artist", currentTrack()?.artist);
     followRow("genre", "Genre", currentTrack()?.genre);
 
-    const named = status.outputs.some((output) => !/^Output \d+$/.test(output.label));
-    const outputRows = status.canChooseOutput
-      ? `
-        ${field("Send audio to", "output", "Send audio to")}
-        ${settings.eqOutputId ? field("Curve for it", "output-rule", "Curve for this output") : ""}
-        <p class="eq-note">${
-          named
-            ? "A curve can follow the output in use."
-            : "This system will not name its outputs without microphone access, so only the default can be picked."
-        }</p>`
-      : `<p class="eq-note">This build cannot pick an output device, so a curve cannot follow one.</p>`;
+    const outputRows = status.outputs.map((output) =>
+      field(
+        `${shorten(output.label)}${status.activeOutputIds.includes(output.id) ? " (matched route)" : ""}`,
+        `output-rule|${output.id}`,
+        output.label,
+      ),
+    ).join("");
+    const canRoute = status.canChooseOutput && status.sinkOutputs.some(
+      (output) => !/^Output \d+$/.test(output.label),
+    );
 
     const presetRows =
       settings.eqPresets.length === 0
@@ -1038,7 +1037,13 @@ export function mountEq(): void {
 
       <div class="eq-group">
         <span class="eq-group-title">Follows the output</span>
-        ${outputRows}
+        ${canRoute || settings.eqOutputId ? field("Send audio to", "output", "Send audio to") : ""}
+        ${outputRows || `<p class="eq-note">No named outputs are available.</p>`}
+        ${status.nativeOutputs && !status.routeKnown
+          ? `<p class="eq-note">The current media output cannot be detected automatically.</p>`
+          : !status.nativeOutputs
+            ? `<p class="eq-note">Output names and automatic detection depend on this webview.</p>`
+            : `<p class="eq-note">Curves follow the selected or system media output.</p>`}
       </div>`;
   };
 
@@ -1052,6 +1057,10 @@ export function mountEq(): void {
       state.settings.eqAutoPreamp,
       state.settings.eqLimiter,
       status.outputs,
+      status.sinkOutputs,
+      status.activeOutputIds,
+      status.nativeOutputs,
+      status.routeKnown,
       status.canChooseOutput,
       player.snapshot().sourceName,
       currentTrack()?.album ?? "",
@@ -1245,6 +1254,7 @@ export function mountEq(): void {
 
     claimPopup(close);
     modal.hidden = false;
+    void refreshEqOutputs();
     // A first look at the equaliser starts from a full set of bands.
     seedEqBands();
     paint();

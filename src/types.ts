@@ -133,10 +133,16 @@ export interface EqContextRule {
   presetId: string;
 }
 
-/** An output the webview will admit to, as the device rules key on it. */
+/** An audio output as the system or webview identifies it. */
 export interface EqOutput {
   id: string;
   label: string;
+}
+
+export interface AudioOutputs {
+  outputs: EqOutput[];
+  activeIds: string[];
+  routeKnown: boolean;
 }
 
 export interface Settings {

@@ -215,3 +215,35 @@ test("reenabling routes elements that arrived while the equalizer was off", asyn
   assert.equal(eq.live, true);
   assert.deepEqual(context.sources, [first, next]);
 });
+
+test("output changes are confirmed, serialized, and still work with a disabled graph", async () => {
+  const requests = [];
+  FakeContext.prototype.setSinkId = function(id) {
+    return new Promise((resolve, reject) => requests.push({ id, resolve, reject }));
+  };
+  const eq = new EqChain();
+  eq.attach({ crossOrigin: "anonymous" });
+  eq.apply(settings());
+  const context = FakeContext.instances.at(-1);
+  context.finishResume();
+  await Promise.resolve();
+
+  eq.setOutput("first");
+  eq.setOutput("second");
+  assert.equal(eq.outputId, "");
+  assert.deepEqual(requests.map((request) => request.id), ["first"]);
+  requests[0].resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(eq.outputId, "first");
+  assert.deepEqual(requests.map((request) => request.id), ["first", "second"]);
+  requests[1].reject(new Error("unavailable"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(eq.outputId, "first");
+
+  eq.apply({ ...settings(false), eqOutputId: "" });
+  assert.equal(requests[2].id, "");
+  requests[2].resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(eq.outputId, "");
+  delete FakeContext.prototype.setSinkId;
+});

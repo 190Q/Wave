@@ -71,6 +71,12 @@ struct LogFile<'a> {
 pub struct Session(PluginHandle<Wry>);
 
 impl Session {
+    pub fn audio_outputs(&self) -> Result<crate::audio_outputs::AudioOutputs, String> {
+        self.0
+            .run_mobile_plugin("getAudioOutputs", ())
+            .map_err(|error| format!("the audio outputs could not be read: {error}"))
+    }
+
     pub fn open_music_folder(&self) -> Result<(), String> {
         self.0
             .run_mobile_plugin::<serde_json::Value>("openMusicFolder", ())

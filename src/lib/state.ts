@@ -1,4 +1,5 @@
 import { getVersion } from "@tauri-apps/api/app";
+import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import type {
@@ -1675,7 +1676,6 @@ async function fillCovers(trackIds: string[]): Promise<string> {
     state.coversProgress = failedProgress(message);
     message = "";
   }
-  emit();
   return message;
 }
 
@@ -3237,6 +3237,12 @@ let eqApplied: string | null = null;
 
 /** The outputs the engine last admitted to, so a rule can be named. */
 let eqOutputsKnown: EqOutput[] = [];
+let eqSinkOutputs: EqOutput[] = [];
+let eqActiveOutputs: string[] = [];
+let eqNativeOutputs = false;
+let eqRouteKnown = false;
+let eqOutputRefresh = 0;
+let eqAwaitingInitialOutput = false;
 
 /** How long a burst of changes is left to settle before the curve is written. */
 const EQ_SAVE_MS = 400;
@@ -3244,6 +3250,27 @@ let eqTimer: number | null = null;
 let eqUnsaved: Partial<Settings> | null = null;
 let eqSaving = 0;
 let eqWired = false;
+
+eq.onOutputChange(() => {
+  syncEqOrigin();
+  emit();
+});
+
+function activeEqOutputs(): string[] {
+  const selected = eq.outputId;
+  if (!selected || selected === "default") {
+    return eqActiveOutputs;
+  }
+  const sink = eqSinkOutputs.find((output) => output.id === selected);
+  if (!sink) {
+    return [];
+  }
+  if (!eqNativeOutputs) {
+    return [selected];
+  }
+  const matches = eqOutputsKnown.filter((output) => output.label === sink.label);
+  return matches.length === 1 ? [matches[0].id] : [];
+}
 
 /** Where the curve in force came from, so the overlay can say what picked it. */
 export interface EqOrigin {
@@ -3261,6 +3288,10 @@ export interface EqStatus {
   autoPreampDb: number;
   canChooseOutput: boolean;
   outputs: EqOutput[];
+  sinkOutputs: EqOutput[];
+  activeOutputIds: string[];
+  nativeOutputs: boolean;
+  routeKnown: boolean;
   origin: EqOrigin | null;
 }
 
@@ -3272,6 +3303,10 @@ export function eqStatus(): EqStatus {
     autoPreampDb: eq.autoPreampDb(),
     canChooseOutput: eq.canChooseOutput,
     outputs: eqOutputsKnown,
+    sinkOutputs: eqSinkOutputs,
+    activeOutputIds: activeEqOutputs(),
+    nativeOutputs: eqNativeOutputs,
+    routeKnown: eqRouteKnown,
     origin: eqOrigin(),
   };
 }
@@ -3358,33 +3393,82 @@ function wireEq(): void {
   window.addEventListener("keydown", () => eq.resume(), true);
   void refreshEqOutputs();
   navigator.mediaDevices?.addEventListener("devicechange", () => {
-    void refreshEqOutputs().then(() => syncEqOrigin());
+    void refreshEqOutputs();
   });
+  window.addEventListener("wave:audio-outputs-changed", () => void refreshEqOutputs());
+  window.addEventListener("focus", () => void refreshEqOutputs());
+  if (isTauri() && (isAndroidPlatform || /Windows/i.test(navigator.userAgent))) {
+    window.setInterval(() => {
+      if (!document.hidden || Object.keys(state.settings.eqDeviceRules).length > 0) {
+        void refreshEqOutputs();
+      }
+    }, 5000);
+  }
 }
 
-/** The output devices the engine will admit to without a microphone grant. */
 export async function refreshEqOutputs(): Promise<void> {
+  const request = ++eqOutputRefresh;
+  const nativeSupported = isTauri() && (isAndroidPlatform || /Windows/i.test(navigator.userAgent));
   const devices = navigator.mediaDevices;
-  if (!devices?.enumerateDevices) {
-    eqOutputsKnown = [];
+  const sinksRequest = nativeSupported && document.hidden
+    ? Promise.resolve(eqSinkOutputs)
+    : (async (): Promise<EqOutput[]> => {
+        try {
+          const found = await devices?.enumerateDevices?.() ?? [];
+          return found
+            .filter((device) => device.kind === "audiooutput")
+            .map((device, index) => ({
+              id: device.deviceId,
+              label: device.label || `Output ${index + 1}`,
+            }))
+            .filter((output) => output.id && output.id !== "default" && output.id !== "communications");
+        } catch {
+          return [];
+        }
+      })();
+  let native = null;
+  if (nativeSupported) {
+    try {
+      native = await ipc.audioOutputs();
+    } catch {
+      // Keep the webview fallback.
+    }
+  }
+  if (request !== eqOutputRefresh) {
     return;
   }
-  try {
-    const found = await devices.enumerateDevices();
-    eqOutputsKnown = found
-      .filter((device) => device.kind === "audiooutput")
-      .map((device, index) => ({
-        id: device.deviceId,
-        label: device.label || `Output ${index + 1}`,
-      }));
-  } catch {
-    eqOutputsKnown = [];
+  if (native) {
+    updateEqOutputs(native.outputs, eqSinkOutputs, native.activeIds, true, native.routeKnown);
+  } else if (nativeSupported && eqNativeOutputs) {
+    updateEqOutputs(eqOutputsKnown, eqSinkOutputs, [], true, false);
   }
+  const sinks = await sinksRequest;
+  if (request === eqOutputRefresh) {
+    const keepNative = native !== null || (nativeSupported && eqNativeOutputs);
+    updateEqOutputs(native?.outputs ?? (keepNative ? eqOutputsKnown : sinks), sinks,
+      native?.activeIds ?? [], keepNative, native?.routeKnown ?? false);
+  }
+}
+
+function updateEqOutputs(
+  outputs: EqOutput[], sinks: EqOutput[], active: string[], native: boolean, routeKnown: boolean,
+): void {
+  const before = JSON.stringify([eqOutputsKnown, eqSinkOutputs, eqActiveOutputs, eqNativeOutputs, eqRouteKnown]);
+  eqOutputsKnown = outputs;
+  eqSinkOutputs = sinks;
+  eqActiveOutputs = active;
+  eqNativeOutputs = native;
+  eqRouteKnown = routeKnown;
+  if (before === JSON.stringify([eqOutputsKnown, eqSinkOutputs, eqActiveOutputs, eqNativeOutputs, eqRouteKnown])) {
+    return;
+  }
+  syncEqOrigin();
   emit();
 }
 
 export function setEqEnabled(on: boolean): void {
   applyEqPatch({ eqEnabled: on });
+  syncEqOrigin();
 }
 
 export function setEqAutoPreamp(on: boolean): void {
@@ -3597,6 +3681,7 @@ function eqContextKey(): string {
     track?.album ?? "",
     track?.artist ?? "",
     track?.genre ?? "",
+    ...activeEqOutputs(),
   ].join("\u0000");
 }
 
@@ -3627,10 +3712,11 @@ function eqRule(): EqOrigin | null {
     }
   }
 
-  const outputId = state.settings.eqOutputId;
-  const byDevice = outputId ? state.settings.eqDeviceRules[outputId] : undefined;
-  if (byDevice && presetById(byDevice)) {
-    return { kind: "device", label: outputLabel(outputId), presetId: byDevice };
+  for (const outputId of activeEqOutputs()) {
+    const byDevice = state.settings.eqDeviceRules[outputId];
+    if (byDevice && presetById(byDevice)) {
+      return { kind: "device", label: outputLabel(outputId), presetId: byDevice };
+    }
   }
 
   return null;
@@ -3653,12 +3739,24 @@ export function eqOrigin(): EqOrigin | null {
 }
 
 function outputLabel(id: string): string {
-  return eqOutputsKnown.find((output) => output.id === id)?.label ?? "This output";
+  return [...eqOutputsKnown, ...eqSinkOutputs].find((output) => output.id === id)?.label ?? "This output";
 }
 
 /** Follows what is playing, so a rule picks the curve that goes with it. */
 function syncEqOrigin(): void {
   const key = eqContextKey();
+  if (eqAwaitingInitialOutput && activeEqOutputs().length > 0) {
+    eqAwaitingInitialOutput = false;
+    if (eqManual) {
+      eqManual.key = key;
+    } else {
+      const initial = eqRule();
+      if (initial && initial.presetId === state.settings.eqActivePresetId) {
+        eqApplied = `${initial.kind}\u0000${initial.presetId}`;
+        return;
+      }
+    }
+  }
   if (eqManual && eqManual.key !== key) {
     eqManual = null;
   }
@@ -3679,8 +3777,14 @@ function syncEqOrigin(): void {
  * curve where it was left rather than putting a preset back over the edits.
  */
 function seedEqOrigin(): void {
+  eqAwaitingInitialOutput = activeEqOutputs().length === 0;
   const rule = eqRule();
-  eqApplied = rule ? `${rule.kind}\u0000${rule.presetId}` : "";
+  if (rule && rule.presetId !== state.settings.eqActivePresetId) {
+    eqApplied = null;
+    syncEqOrigin();
+  } else {
+    eqApplied = rule ? `${rule.kind}\u0000${rule.presetId}` : "";
+  }
 }
 
 function newEqId(): string {

@@ -1,6 +1,8 @@
 #![cfg_attr(not(desktop), allow(dead_code))]
 
 mod analytics;
+#[cfg(any(windows, target_os = "android"))]
+mod audio_outputs;
 #[cfg(not(target_os = "android"))]
 mod api;
 #[cfg(any(target_os = "android", target_os = "linux", test))]
@@ -282,6 +284,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             show_main_window,
             report_frontend_startup,
+            #[cfg(any(windows, target_os = "android"))]
+            audio_outputs::get_audio_outputs,
             state::get_state,
             state::set_settings,
             state::patch_settings,

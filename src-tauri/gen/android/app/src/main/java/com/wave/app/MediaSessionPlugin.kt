@@ -9,6 +9,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Typeface
+import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -39,7 +43,9 @@ import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import java.io.File
 import java.io.RandomAccessFile
+import java.util.UUID
 import java.util.WeakHashMap
+import org.json.JSONArray
 
 /** The song the front end is playing, in the shape `media_session.rs` sends it. */
 @InvokeArg
@@ -164,12 +170,18 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
   private var insets: Insets? = null
   private var startScript: ScriptHandler? = null
   private var playing = false
+  private val audioManager by lazy { activity.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+  private val audioDevices = object : AudioDeviceCallback() {
+    override fun onAudioDevicesAdded(addedDevices: Array<AudioDeviceInfo>) = outputsChanged()
+    override fun onAudioDevicesRemoved(removedDevices: Array<AudioDeviceInfo>) = outputsChanged()
+  }
 
   /** True once the keep-alive has been said out loud for the current song. */
   private var keepAliveLogged = false
 
   override fun load(webView: WebView) {
     this.webView = webView
+    audioManager.registerAudioDeviceCallback(audioDevices, playbackHandler)
     MediaPlayback.onControl = { action, value -> report(action, value) }
     registerPlaybackBridge(webView) { update ->
       when (update) {
@@ -178,6 +190,53 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
       }
     }
     watchInsets()
+  }
+
+  private fun outputsChanged() {
+    webView?.evaluateJavascript("window.dispatchEvent(new Event('wave:audio-outputs-changed'));", null)
+  }
+
+  private fun outputId(device: AudioDeviceInfo): String {
+    val address = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) device.address else ""
+    val identity = "${device.type}:${if (address.isEmpty() || address == "02:00:00:00:00:00") device.productName else address}"
+    return "android:${UUID.nameUUIDFromBytes(identity.toByteArray(Charsets.UTF_8))}"
+  }
+
+  @Command
+  fun getAudioOutputs(invoke: Invoke) {
+    try {
+      val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+      val outputs = JSONArray()
+      for (device in devices) {
+        val label = when (device.type) {
+          AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Phone speaker"
+          AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "Phone earpiece"
+          else -> device.productName.toString().ifBlank { "Audio output" }
+        }
+        outputs.put(JSObject().apply {
+          put("id", outputId(device))
+          put("label", label)
+        })
+      }
+      val active = JSONArray()
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        try {
+          val attributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).build()
+          for (device in audioManager.getAudioDevicesForAttributes(attributes)) {
+            active.put(outputId(device))
+          }
+        } catch (error: Exception) {
+          Log.w("Wave", "the media output could not be read", error)
+        }
+      }
+      invoke.resolve(JSObject().apply {
+        put("outputs", outputs)
+        put("activeIds", active)
+        put("routeKnown", active.length() > 0)
+      })
+    } catch (error: Exception) {
+      invoke.reject(error.message ?: "Could not read audio outputs")
+    }
   }
 
   @Command

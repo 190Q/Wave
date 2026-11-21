@@ -149,7 +149,7 @@ function session(savedAt, cursor, positionMs) {
   };
 }
 
-async function boot(saved, resumeOnLaunch = true) {
+async function boot(saved, resumeOnLaunch = true, settings = {}) {
   intervals.clear();
   timeouts.clear();
   doc.listeners.clear();
@@ -158,7 +158,7 @@ async function boot(saved, resumeOnLaunch = true) {
   setDevice("android");
   const app = await vite.ssrLoadModule(`/src/lib/state.ts?boot=${++bootNumber}`);
   backend = {
-    settings: { ...clone(app.getState().settings), autoUpdate: false, resumeOnLaunch },
+    settings: { ...clone(app.getState().settings), autoUpdate: false, resumeOnLaunch, ...settings },
     likes: [], playlists: [], windowSlots: [], recentImports: [], artworkColours: {},
     session: clone(saved),
   };
@@ -365,4 +365,51 @@ test("invalid recovery data and older snapshots cannot override a valid save", (
   assert.equal(newestSession(saved, session(99, 1, 0)), saved);
   assert.equal(newestSession(saved, session(100, 1, 0)), saved);
   assert.equal(newestSession(saved, session(101, 1, 0)).playback.cursor, 1);
+});
+
+test("a delayed initial output preserves edits to the matching saved curve", async () => {
+  values.clear();
+  const edited = { id: "band", kind: "peaking", freq: 1000, gain: 4, q: 1, enabled: true };
+  const curve = { id: "curve", name: "Curve", source: "manual", bands: [{ ...edited, gain: 0 }],
+    autoPreamp: false, preampDb: 0, limiter: false };
+  let finishOutput;
+  globalThis.isTauri = true;
+  globalThis.__recoveryIpc.audioOutputs = () => new Promise((resolve) => { finishOutput = resolve; });
+  try {
+    const app = await boot(null, false, {
+      eqPresets: [curve], eqActivePresetId: curve.id,
+      eqBands: [edited], eqDeviceRules: { speaker: curve.id },
+    });
+    assert.equal(app.getState().settings.eqBands[0].gain, 4);
+    finishOutput({ outputs: [{ id: "speaker", label: "Speaker" }], activeIds: ["speaker"], routeKnown: true });
+    await tick();
+    assert.equal(app.getState().settings.eqBands[0].gain, 4);
+    assert.equal(app.eqStatus().origin?.kind, "device");
+  } finally {
+    delete globalThis.__recoveryIpc.audioOutputs;
+    delete globalThis.isTauri;
+  }
+});
+
+test("a delayed initial output applies a different device curve", async () => {
+  values.clear();
+  const band = { id: "band", kind: "peaking", freq: 1000, gain: 0, q: 1, enabled: true };
+  const curve = { id: "curve", name: "Curve", source: "manual", bands: [band],
+    autoPreamp: false, preampDb: 0, limiter: false };
+  let finishOutput;
+  globalThis.isTauri = true;
+  globalThis.__recoveryIpc.audioOutputs = () => new Promise((resolve) => { finishOutput = resolve; });
+  try {
+    const app = await boot(null, false, {
+      eqPresets: [curve], eqActivePresetId: null,
+      eqBands: [{ ...band, gain: 4 }], eqDeviceRules: { speaker: curve.id },
+    });
+    finishOutput({ outputs: [{ id: "speaker", label: "Speaker" }], activeIds: ["speaker"], routeKnown: true });
+    await tick();
+    assert.equal(app.getState().settings.eqActivePresetId, curve.id);
+    assert.equal(app.getState().settings.eqBands[0].gain, 0);
+  } finally {
+    delete globalThis.__recoveryIpc.audioOutputs;
+    delete globalThis.isTauri;
+  }
 });

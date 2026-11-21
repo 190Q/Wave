@@ -98,11 +98,14 @@ webpki-root-certs = "1"
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
 windows = { version = "0.62", features = [
+  "Win32_Devices_FunctionDiscovery",
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
+  "Win32_Media_Audio",
   "Win32_System_Com",
   "Win32_System_Console",
   "Win32_UI_Shell",
+  "Win32_UI_Shell_PropertiesSystem",
   "Win32_UI_WindowsAndMessaging",
 ] }
 

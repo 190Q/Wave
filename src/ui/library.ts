@@ -1064,7 +1064,7 @@ function syncLikes(root: ParentNode, state: AppState): void {
 /** One collection's row, which is what a windowed list draws. */
 function entryRowHtml(state: AppState, collection: Collection, activeId: string | null): string {
   const editable = isEditable(collection);
-  const active = collection.id === activeId;
+  const active = state.query.trim() !== "" && collection.id === activeId;
 
   return `
       <div class="entry${isPinned(collection) ? " is-pinned" : ""}${active ? " is-active" : ""}" data-collection="${escapeHtml(collection.id)}" role="button" tabindex="0"${active ? ' aria-current="true"' : ""}>

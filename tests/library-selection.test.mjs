@@ -16,7 +16,7 @@ const mocks = {
     const context = globalThis.__librarySelectionTest;
     export const getState = () => context.state;
     export const collectionById = (id) => context.state.collections.find((collection) => collection.id === id);
-    export const subscribe = () => {};
+    export const subscribe = (listener) => { context.render = listener; };
     export const setTracksLiked = (ids, liked) => context.liked.push({ ids, liked });
     export const playFromCollection = (collectionId, id) => context.played.push({ collectionId, id });
     export const createPlaylist = () => {}, deletePlaylist = () => {},
@@ -26,7 +26,8 @@ const mocks = {
       playTrackInContext = () => {}, refreshRecommendStatus = () => {}, replaceTrackCover = () => {},
       removeTracksFromPlaylist = (id, ids) => context.removed.push({ id, ids }),
       renamePlaylist = (id, name) => context.renamed.push({ id, name }), reorderPlaylist = () => {},
-      setFilter = () => {}, setQuery = () => {}, setSort = () => {}, shuffleCollection = () => {},
+      setFilter = () => {}, setQuery = (query) => { context.state.query = query; context.render(); },
+      setSort = () => {}, shuffleCollection = () => {},
       toggleLibrary = () => {}, toggleLikeTrack = () => {};
   `,
   "./add-to-playlist": "export const closeAddToPlaylist = () => {}, openAddToPlaylist = () => {};",
@@ -114,7 +115,7 @@ globalThis.document = {
 
 const { mountLibrary } = await vite.ssrLoadModule("/src/ui/library.ts");
 
-function setup({ touch = false, kind = "playlist", pending = false } = {}) {
+function setup({ touch = false, kind = "playlist", pending = false, open = true, extraCollections = [] } = {}) {
   const tracks = ["one", "two", "three"].map((id) => ({
     id, title: id, artist: null, durationMs: 1000,
   }));
@@ -135,7 +136,7 @@ function setup({ touch = false, kind = "playlist", pending = false } = {}) {
     settings: { searchAlgorithm: "substring" },
     tracks, tracksById: new Map(tracks.map((track) => [track.id, track])),
     pendingById: new Map(pending ? [["waiting", { id: "waiting", title: "Waiting", artists: ["Artist"] }]] : []),
-    likes: new Set(), collections: [collection],
+    likes: new Set(), collections: [collection, ...extraCollections],
     collectionsRevision: 1, playCounts: new Map(), scanErrors: [], scanning: false,
   };
   context.elements = Object.fromEntries([
@@ -154,13 +155,43 @@ function setup({ touch = false, kind = "playlist", pending = false } = {}) {
     : selector === ".detail-rename" && pane.innerHTML.includes('class="search detail-rename"') ? renameInput
     : null;
   mountLibrary();
-  list.dispatch("click", new FakeElement({ collection: collection.id }));
+  if (open) list.dispatch("click", new FakeElement({ collection: collection.id }));
   return { list, pane, rows, renameInput, progress };
 }
 
 function rightClick(list, row) {
   return list.dispatch("contextmenu", row, { clientX: 30, clientY: 40 });
 }
+
+test("collection highlight only appears for search results and follows keyboard navigation", () => {
+  const second = { id: "second", kind: "playlist", name: "Playlist two", subtitle: "0 songs", entries: [], trackIds: [] };
+  const { pane } = setup({ open: false, extraCollections: [second] });
+  const search = context.elements["sheet-search"];
+  const host = context.elements["library-rows"];
+
+  assert.doesNotMatch(host.innerHTML, /is-active|aria-current/);
+
+  search.value = "   ";
+  search.dispatch("input", search);
+  assert.doesNotMatch(host.innerHTML, /is-active|aria-current/);
+
+  search.value = "playlist";
+  search.dispatch("input", search);
+  assert.match(host.innerHTML, /class="entry is-active" data-collection="playlist"[^>]*aria-current="true"/);
+
+  search.dispatch("keydown", search, { key: "ArrowDown" });
+  assert.match(host.innerHTML, /class="entry is-active" data-collection="second"[^>]*aria-current="true"/);
+
+  search.value = "";
+  search.dispatch("input", search);
+  assert.doesNotMatch(host.innerHTML, /is-active|aria-current/);
+
+  search.value = "playlist";
+  search.dispatch("input", search);
+  search.dispatch("keydown", search, { key: "ArrowDown" });
+  search.dispatch("keydown", search, { key: "Enter" });
+  assert.match(pane.innerHTML, /class="detail-name">Playlist two/);
+});
 
 test("desktop song selection never adds a toolbar and keeps the context menu", () => {
   const { list, pane, rows } = setup();

@@ -7,7 +7,7 @@ const mocks = {
   "../lib/audio": "export const assetUrl = (path) => path;",
   "../lib/device": 'export const device = () => "desktop";',
   "../lib/ipc": "export const loadLyrics = async () => globalThis.__songEditorTest.lyrics ?? null; export const editorWaveform = async () => [];",
-  "../lib/motion": "export const reduceMotionActive = () => true;",
+  "../lib/motion": "export const reduceMotionActive = () => globalThis.__songEditorTest.reducedMotion ?? true;",
   "../lib/state": `
     export const getState = () => globalThis.__songEditorTest.state;
     export const player = { pause() {}, finishTransitions() {} };
@@ -47,11 +47,26 @@ const { openSongEditor } = await vite.ssrLoadModule("/src/ui/song-editor.ts");
 class Element {
   constructor() {
     this.listeners = new Map();
-    this.style = {};
-    this.classList = { add() {}, remove() {}, toggle() {} };
+    this.style = {
+      setProperty(name, value) { this[name] = value; },
+      removeProperty(name) { delete this[name]; },
+    };
+    const classes = new Set();
+    this.classList = {
+      add(...names) { names.forEach((name) => classes.add(name)); },
+      remove(...names) { names.forEach((name) => classes.delete(name)); },
+      contains(name) { return classes.has(name); },
+      toggle(name, on = !classes.has(name)) {
+        if (on) classes.add(name);
+        else classes.delete(name);
+        return on;
+      },
+    };
     this.clientWidth = 100;
     this.clientHeight = 100;
     this.scrollLeft = 0;
+    this.scrollTop = 0;
+    this.scrollCalls = [];
     this.textContent = "";
     this.hidden = false;
     this.dataset = {};
@@ -82,6 +97,10 @@ class Element {
   getBoundingClientRect() { return { left: 0 }; }
   getContext() { return null; }
   focus() {}
+  scrollTo(options) {
+    this.scrollCalls.push(options);
+    this.scrollTop = options.top;
+  }
 }
 
 class Audio extends Element {
@@ -201,6 +220,87 @@ test("song editor timeline navigation and lyric selection", async (t) => {
   reopenedAudio.currentTime = 9;
   advance();
   assert.equal(viewport.scrollLeft, 70);
+
+  await t.test("one highlight follows active lyrics and respects reduced motion", async () => {
+    globalThis.__songEditorTest.lyrics = "[00:01.000]First\n[00:02.000]Second\n[00:03.000]Third";
+    openSongEditor(track.id);
+    await Promise.resolve();
+    globalThis.__songEditorTest.reducedMotion = false;
+
+    const lines = element("lines");
+    const content = element("lines-content");
+    lines.scrollTop = 0;
+    lines.scrollCalls = [];
+    lines.getBoundingClientRect = () => ({ top: 0, bottom: 100, height: 100 });
+    globalThis.getComputedStyle = () => ({ height: "200px" });
+    const rows = [0, 120, 240].map((top, index) => {
+      const row = new Element();
+      row.dataset.line = String(index);
+      row.offsetTop = top;
+      row.offsetHeight = 40;
+      row.classList.toggle = (name, on) => { if (name === "is-active") row.active = on; };
+      row.getBoundingClientRect = () => ({
+        top: (top - lines.scrollTop) / 2,
+        bottom: (top + 40 - lines.scrollTop) / 2,
+      });
+      return row;
+    });
+    lines.querySelectorAll = (selector) => selector === "[data-line]" ? rows : [];
+    const audio = globalThis.__songEditorTest.audio;
+
+    audio.currentTime = 1;
+    audio.dispatch("timeupdate");
+    assert.equal(rows[0].active, true);
+    assert.equal(content.classList.contains("is-highlighted"), true);
+    assert.equal(content.style["--lyric-highlight-top"], "0px");
+    assert.equal(content.style["--lyric-highlight-height"], "40px");
+    assert.deepEqual(lines.scrollCalls.at(-1), { top: 0, behavior: "smooth" });
+
+    audio.currentTime = 3;
+    audio.dispatch("timeupdate");
+    assert.equal(rows[0].active, false);
+    assert.equal(rows[2].active, true);
+    assert.equal(content.classList.contains("is-highlighted"), true);
+    assert.equal(content.style["--lyric-highlight-top"], "240px");
+    assert.deepEqual(lines.scrollCalls.at(-1), { top: 80, behavior: "smooth" });
+    const calls = lines.scrollCalls.length;
+    audio.dispatch("timeupdate");
+    assert.equal(lines.scrollCalls.length, calls);
+
+    rows[2].offsetTop = 250;
+    rows[2].offsetHeight = 50;
+    windowEvents.dispatch("resize");
+    assert.equal(content.style["--lyric-highlight-top"], "250px");
+    assert.equal(content.style["--lyric-highlight-height"], "50px");
+
+    element("shift-forward").dispatch("click");
+    assert.equal(content.classList.contains("is-highlighted"), true);
+    assert.equal(content.style["--lyric-highlight-top"], "120px");
+    element("undo").dispatch("click");
+    assert.equal(content.classList.contains("is-highlighted"), true);
+    assert.equal(content.style["--lyric-highlight-top"], "250px");
+
+    globalThis.__songEditorTest.reducedMotion = true;
+    audio.currentTime = 1;
+    audio.dispatch("timeupdate");
+    assert.equal(content.style["--lyric-highlight-top"], "0px");
+    assert.deepEqual(lines.scrollCalls.at(-1), { top: 0, behavior: "instant" });
+    audio.currentTime = 0;
+    audio.dispatch("timeupdate");
+    assert.deepEqual(lines.scrollCalls.at(-1), { top: 0, behavior: "instant" });
+    assert.equal(rows[0].active, false);
+    assert.equal(content.classList.contains("is-highlighted"), false);
+    assert.equal(content.style["--lyric-highlight-top"], undefined);
+
+    globalThis.__songEditorTest.reducedMotion = false;
+    audio.currentTime = 3;
+    audio.dispatch("timeupdate");
+    assert.equal(content.classList.contains("is-highlighted"), true);
+    assert.equal(content.style["--lyric-highlight-top"], "250px");
+    globalThis.__songEditorTest.reducedMotion = true;
+
+    lines.querySelectorAll = () => [];
+  });
 
   await t.test("lyric selection clears outside its fields and timeline chip", async () => {
     globalThis.__songEditorTest.lyrics = "[00:01.000]First\n[00:02.000]Second";

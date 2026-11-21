@@ -75,7 +75,9 @@ export function createSongEditor(): HTMLElement {
                 <button class="pill" id="song-editor-import-lyrics" type="button">Import lyrics</button>
               </div>
             </div>
-            <div class="song-editor-lines" id="song-editor-lines"></div>
+            <div class="song-editor-lines" id="song-editor-lines">
+              <div class="song-editor-lines-content" id="song-editor-lines-content"></div>
+            </div>
             <p class="settings-hint song-editor-note">Leave a time blank for an untimed line. Times refer to the original audio until saved.</p>
             <input id="song-editor-lyrics-file" type="file" accept=".lrc,.txt,text/plain" hidden />
           </section>

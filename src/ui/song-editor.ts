@@ -63,6 +63,7 @@ function mountSongEditor(): void {
   const end = byId<HTMLInputElement>("cut-end");
   const cutsList = byId("cuts");
   const lines = byId("lines");
+  const linesContent = byId("lines-content");
   const lyricFile = byId<HTMLInputElement>("lyrics-file");
   let audio: HTMLAudioElement;
   let disconnectPreview: (() => void) | null = null;
@@ -89,7 +90,8 @@ function mountSongEditor(): void {
   let followPlayback = true;
   let selectedLine: number | null = null;
   let selectedRange: AudioCut | null = null;
-  let activeLine = -1;
+  let activeLine: number | null = null;
+  let activeRow: HTMLElement | null = null;
 
   const showError = (message: string): void => {
     error.textContent = message;
@@ -243,8 +245,8 @@ function mountSongEditor(): void {
   };
 
   const paintLines = (): void => {
-    activeLine = -1;
-    lines.innerHTML = lyrics.lines.length ? lyrics.lines.map((line, index) => `
+    activeLine = null;
+    linesContent.innerHTML = lyrics.lines.length ? lyrics.lines.map((line, index) => `
       <div class="song-editor-line" data-line="${index}">
         <input data-lyric-time="${index}" aria-label="Time for line ${index + 1}" placeholder="mm:ss.ms" value="${line.timeMs === null ? "" : formatEditTime(line.timeMs)}" />
         <input data-lyric-text="${index}" aria-label="Text for line ${index + 1}" value="${escapeHtml(line.text)}" />
@@ -252,7 +254,22 @@ function mountSongEditor(): void {
         <button class="pill" type="button" data-lyric-mark="${index}" title="Set to playhead" aria-label="Set line ${index + 1} to playhead">Set</button>
         <button class="pill icon-only" type="button" data-lyric-remove="${index}" title="Remove line" aria-label="Remove line ${index + 1}"><span class="btn-icon" data-icon="close"></span></button>
       </div>`).join("") : `<p class="song-editor-empty">No lyrics yet. Import a file or add a line.</p>`;
-    fillIcons(lines);
+    fillIcons(linesContent);
+  };
+
+  const paintHighlight = (row: HTMLElement | null): void => {
+    if (!row) {
+      linesContent.classList.remove("is-highlighted");
+      linesContent.style.removeProperty("--lyric-highlight-top");
+      linesContent.style.removeProperty("--lyric-highlight-height");
+      return;
+    }
+    linesContent.style.setProperty("--lyric-highlight-top", `${row.offsetTop}px`);
+    linesContent.style.setProperty("--lyric-highlight-height", `${row.offsetHeight}px`);
+    if (!linesContent.classList.contains("is-highlighted")) {
+      void linesContent.offsetWidth;
+      linesContent.classList.add("is-highlighted");
+    }
   };
 
   const paintClock = (): void => {
@@ -269,20 +286,28 @@ function mountSongEditor(): void {
         latest = line.timeMs;
       }
     });
-    let activeRow: HTMLElement | null = null;
+    let nextRow: HTMLElement | null = null;
     for (const row of lines.querySelectorAll<HTMLElement>("[data-line]")) {
       const on = Number(row.dataset.line) === active;
       row.classList.toggle("is-active", on);
-      if (on) activeRow = row;
+      if (on) nextRow = row;
     }
     if (active !== activeLine) {
       activeLine = active;
+      activeRow = nextRow;
+      paintHighlight(activeRow);
       if (activeRow) {
         const bounds = lines.getBoundingClientRect();
         const row = activeRow.getBoundingClientRect();
         const scale = bounds.height / (parseFloat(getComputedStyle(lines).height) || 1) || 1;
-        if (row.top < bounds.top) lines.scrollTop += (row.top - bounds.top) / scale;
-        else if (row.bottom > bounds.bottom) lines.scrollTop += (row.bottom - bounds.bottom) / scale;
+        const offset = row.top < bounds.top ? row.top - bounds.top
+          : row.bottom > bounds.bottom ? row.bottom - bounds.bottom : 0;
+        lines.scrollTo({
+          top: lines.scrollTop + offset / scale,
+          behavior: reduceMotionActive() ? "instant" : "smooth",
+        });
+      } else {
+        lines.scrollTo({ top: lines.scrollTop, behavior: "instant" });
       }
     }
     for (const chip of lyricTrack.querySelectorAll<HTMLElement>("[data-chip]")) {
@@ -588,7 +613,17 @@ function mountSongEditor(): void {
       viewport.scrollLeft += event.deltaY || event.deltaX;
     }
   }, { passive: false });
-  window.addEventListener("resize", () => { if (!modal.hidden) paintTimeline(); });
+  window.addEventListener("resize", () => {
+    if (!modal.hidden) {
+      paintTimeline();
+      paintHighlight(activeRow);
+    }
+  });
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(() => {
+      if (activeRow) paintHighlight(activeRow);
+    }).observe(linesContent);
+  }
   ruler.addEventListener("pointerdown", (event) => { if (event.button === 0) seekTo(timeAt(event.clientX)); });
   waveTrack.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || !duration()) return;

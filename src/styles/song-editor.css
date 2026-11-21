@@ -280,13 +280,45 @@
   flex: 1;
   flex-direction: column;
   min-height: 0;
-  gap: 0.4rem;
   overflow-y: auto;
   margin-top: 0.9rem;
   padding-right: 0.3rem;
 }
 
+.song-editor-lines-content {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.song-editor-lines-content::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: var(--lyric-highlight-height, 0px);
+  border: 0.0625rem solid rgb(255 255 255 / 0.08);
+  border-radius: 0.8rem;
+  background: rgb(255 255 255 / 0.06);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(var(--lyric-highlight-top, 0px)) scale(0.96);
+  content: "";
+}
+
+.song-editor-lines-content.is-highlighted::before {
+  opacity: 1;
+  transform: translateY(var(--lyric-highlight-top, 0px)) scale(1);
+  transition: transform 0.16s ease-out, height 0.16s ease-out, opacity 0.18s ease-in;
+}
+
+:root.is-reduced-motion .song-editor-lines-content::before {
+  transition: none;
+}
+
 .song-editor-line {
+  position: relative;
   display: grid;
   grid-template-columns: 6.5rem minmax(5rem, 1fr) auto auto auto;
   align-items: center;
@@ -294,11 +326,6 @@
   padding: 0.2rem;
   border: 0.0625rem solid transparent;
   border-radius: 0.8rem;
-}
-
-.song-editor-line.is-active {
-  border-color: rgb(255 255 255 / 0.08);
-  background: rgb(255 255 255 / 0.06);
 }
 
 .song-editor-line input {

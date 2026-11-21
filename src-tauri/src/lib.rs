@@ -57,6 +57,9 @@ use tauri::Manager;
 
 struct FrontendHealth(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
+#[cfg(desktop)]
+static MAIN_WINDOW_REVEALED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[tauri::command]
 fn report_frontend_startup(ready: bool, detail: String, health: tauri::State<'_, FrontendHealth>) {
     if ready {
@@ -116,6 +119,10 @@ fn reveal_main_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
+    #[cfg(desktop)]
+    if MAIN_WINDOW_REVEALED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
     if window.is_visible().unwrap_or(false) {
         return;
     }
@@ -129,7 +136,10 @@ fn reveal_main_window(app: &tauri::AppHandle) {
         state::apply_window_settings(app, &store, store.snapshot().settings.mini_player);
     }
 
-    let _ = window.show();
+    if window.show().is_err() {
+        #[cfg(desktop)]
+        MAIN_WINDOW_REVEALED.store(false, std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// The store, the listening record and the catalog, which the window and the

@@ -283,12 +283,16 @@ function apply(control: MediaControl): void {
 
 /** Brings the window up, for a click on the desktop's own media widget. */
 function raise(): void {
-  void showMainWindow().catch(() => {
+  const shown = showMainWindow().catch(() => {
     // Not running inside Tauri.
   });
 
   try {
-    void getCurrentWindow().setFocus().catch(() => {
+    const appWindow = getCurrentWindow();
+    void shown.then(async () => {
+      if (!isAndroidPlatform) await appWindow.unminimize().catch(() => {});
+      await appWindow.setFocus();
+    }).catch(() => {
       // The window refused the focus, which is not worth reporting.
     });
   } catch {

@@ -53,6 +53,9 @@ static MINI_INNER: Mutex<Option<PhysicalSize<u32>>> = Mutex::new(None);
 #[cfg(desktop)]
 static NORMAL_FRAME: Mutex<Option<WindowGeometry>> = Mutex::new(None);
 
+#[cfg(desktop)]
+static LAST_FRAME: Mutex<Option<WindowGeometry>> = Mutex::new(None);
+
 /// One band of the equaliser.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -840,32 +843,45 @@ fn sanitise_geometries(state: &mut PersistedState) {
 
 #[cfg(desktop)]
 fn read_frame<R: Runtime>(window: &WebviewWindow<R>) -> Option<WindowGeometry> {
-    if window.is_minimized().unwrap_or(false) {
-        return None;
-    }
-    let live = read_window_geometry(window).ok()?;
-    Some(frame_to_remember(live, last_normal_frame()))
+    let live = if window.is_minimized().unwrap_or(false) {
+        None
+    } else {
+        Some(read_window_geometry(window).ok()?)
+    };
+    frame_to_remember(live, last_normal_frame(), last_frame())
 }
 
-/// Picks the frame to keep: the live one, unless it is the maximised one.
+/// Picks the last usable frame, preserving the normal size when maximised.
 #[cfg(desktop)]
-fn frame_to_remember(live: WindowGeometry, normal: Option<WindowGeometry>) -> WindowGeometry {
+fn frame_to_remember(
+    live: Option<WindowGeometry>,
+    normal: Option<WindowGeometry>,
+    last: Option<WindowGeometry>,
+) -> Option<WindowGeometry> {
+    let Some(live) = live else {
+        return last;
+    };
     if !live.maximized {
-        return live;
+        return Some(live);
     }
     match normal {
         Some(mut normal) => {
+            if live.monitor.is_some() && live.monitor != normal.monitor {
+                normal.x = live.x;
+                normal.y = live.y;
+                normal.monitor = live.monitor;
+            }
             normal.maximized = true;
-            normal
+            Some(normal)
         }
         // Nothing was seen before it was maximised, so this is all there is.
-        None => live,
+        None => Some(live),
     }
 }
 
 #[cfg(desktop)]
 fn read_window_geometry<R: Runtime>(window: &WebviewWindow<R>) -> Result<WindowGeometry, String> {
-    let maximized = window.is_maximized().unwrap_or(false);
+    let maximized = window_is_maximized(window);
 
     let scale = window.scale_factor().unwrap_or(1.0);
     let size = window
@@ -892,6 +908,15 @@ fn read_window_geometry<R: Runtime>(window: &WebviewWindow<R>) -> Result<WindowG
 }
 
 #[cfg(desktop)]
+fn window_is_maximized<R: Runtime>(window: &WebviewWindow<R>) -> bool {
+    #[cfg(windows)]
+    if let Ok(hwnd) = window.hwnd() {
+        return unsafe { windows::Win32::UI::WindowsAndMessaging::IsZoomed(hwnd) }.as_bool();
+    }
+    window.is_maximized().unwrap_or(false)
+}
+
+#[cfg(desktop)]
 fn apply_geometry<R: Runtime>(
     app: &AppHandle<R>,
     window: &WebviewWindow<R>,
@@ -905,7 +930,7 @@ fn apply_geometry<R: Runtime>(
 
     note_programmatic_change();
 
-    if window.is_maximized().unwrap_or(false) && !(part == SnapPart::Frame && geometry.maximized) {
+    if window_is_maximized(window) && !(part == SnapPart::Frame && geometry.maximized) {
         let _ = window.unmaximize();
     }
 
@@ -914,7 +939,7 @@ fn apply_geometry<R: Runtime>(
     }
 
     if matches!(part, SnapPart::Frame | SnapPart::Position) {
-        move_to(app, window, geometry);
+        let _ = window.set_position(tauri::PhysicalPosition::new(geometry.x, geometry.y));
     }
 
     if part == SnapPart::Frame && geometry.maximized {
@@ -922,9 +947,11 @@ fn apply_geometry<R: Runtime>(
         // It fills the screen now, so the size just applied is the one to keep.
         let mut frame = geometry.clone();
         clamp_geometry(&mut frame);
-        remember_normal_frame(frame);
+        remember_normal_frame(frame.clone());
+        remember_last_frame(frame);
     } else if let Ok(frame) = read_window_geometry(window) {
-        remember_normal_frame(frame);
+        remember_normal_frame(frame.clone());
+        remember_last_frame(frame);
     }
 }
 
@@ -998,21 +1025,6 @@ fn lands_on_screen<R: Runtime>(
     })
 }
 
-/// Puts the window back where it sat, while the monitor it lived on is around.
-#[cfg(desktop)]
-fn move_to<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>, geometry: &WindowGeometry) {
-    let monitor_present = match &geometry.monitor {
-        Some(name) => app
-            .available_monitors()
-            .map(|monitors| monitors.iter().any(|m| m.name().map(|n| n == name).unwrap_or(false)))
-            .unwrap_or(false),
-        None => true,
-    };
-    if monitor_present {
-        let _ = window.set_position(tauri::PhysicalPosition::new(geometry.x, geometry.y));
-    }
-}
-
 #[cfg(desktop)]
 pub fn apply_window_settings<R: Runtime>(app: &AppHandle<R>, store: &Store, was_mini: bool) {
     let Some(window) = app.get_webview_window("main") else {
@@ -1079,8 +1091,9 @@ pub fn watch_window<R: Runtime>(app: &AppHandle<R>) {
     window.on_window_event(move |event| match event {
         tauri::WindowEvent::Resized(size) => {
             note_resized(&handle, *size);
-            note_normal_frame(&handle, *size);
+            note_window_frame(&handle);
         }
+        tauri::WindowEvent::Moved(_) => note_window_frame(&handle),
         tauri::WindowEvent::ScaleFactorChanged { .. } => note_programmatic_change(),
         _ => {}
     });
@@ -1116,6 +1129,9 @@ fn note_resized<R: Runtime>(app: &AppHandle<R>, size: PhysicalSize<u32>) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
+    if window.is_minimized().unwrap_or(false) {
+        return;
+    }
 
     if let Ok(next) = store.update_saved(app, |state| state.settings.mini_player = false) {
         let _ = app.emit(SETTINGS_EVENT, next.settings.clone());
@@ -1126,18 +1142,24 @@ fn note_resized<R: Runtime>(app: &AppHandle<R>, size: PhysicalSize<u32>) {
 }
 
 #[cfg(desktop)]
-fn note_normal_frame<R: Runtime>(app: &AppHandle<R>, size: PhysicalSize<u32>) {
-    if applying() || is_mini_size(size) {
+fn note_window_frame<R: Runtime>(app: &AppHandle<R>) {
+    let Some(store) = app.try_state::<Store>() else {
+        return;
+    };
+    if store.guard().settings.mini_player {
         return;
     }
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
-    if window.is_maximized().unwrap_or(false) || window.is_minimized().unwrap_or(false) {
+    if window.is_minimized().unwrap_or(false) {
         return;
     }
-    if let Ok(geometry) = read_window_geometry(&window) {
-        remember_normal_frame(geometry);
+    if let Some(geometry) = read_frame(&window) {
+        if !geometry.maximized {
+            remember_normal_frame(geometry.clone());
+        }
+        remember_last_frame(geometry);
     }
 }
 
@@ -1150,6 +1172,18 @@ fn remember_normal_frame(geometry: WindowGeometry) {
 #[cfg(desktop)]
 fn last_normal_frame() -> Option<WindowGeometry> {
     let recorded = NORMAL_FRAME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    recorded.clone()
+}
+
+#[cfg(desktop)]
+fn remember_last_frame(geometry: WindowGeometry) {
+    let mut recorded = LAST_FRAME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *recorded = Some(geometry);
+}
+
+#[cfg(desktop)]
+fn last_frame() -> Option<WindowGeometry> {
+    let recorded = LAST_FRAME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     recorded.clone()
 }
 
@@ -1176,7 +1210,8 @@ pub fn restore_window_geometry<R: Runtime>(app: &AppHandle<R>, store: &Store) {
     };
     // The frame the window opens at, for a maximise before the first resize.
     if let Ok(geometry) = read_window_geometry(&window) {
-        remember_normal_frame(geometry);
+        remember_normal_frame(geometry.clone());
+        remember_last_frame(geometry);
     }
 
     let state = store.snapshot();
@@ -1755,7 +1790,11 @@ mod tests {
     #[cfg(desktop)]
     #[test]
     fn a_maximised_window_remembers_the_size_it_had_before() {
-        let kept = frame_to_remember(frame(1920, 1080, true), Some(frame(900, 655, false)));
+        let kept = frame_to_remember(
+            Some(frame(1920, 1080, true)),
+            Some(frame(900, 655, false)),
+            None,
+        ).unwrap();
 
         assert_eq!(kept.width, 900);
         assert_eq!(kept.height, 655);
@@ -1768,7 +1807,7 @@ mod tests {
     fn a_maximised_window_with_nothing_remembered_keeps_its_own_frame() {
         let live = frame(1920, 1080, true);
 
-        assert_eq!(frame_to_remember(live.clone(), None), live);
+        assert_eq!(frame_to_remember(Some(live.clone()), None, None), Some(live));
     }
 
     #[cfg(desktop)]
@@ -1776,7 +1815,54 @@ mod tests {
     fn a_window_that_was_not_maximised_keeps_its_own_frame() {
         let live = frame(900, 655, false);
 
-        assert_eq!(frame_to_remember(live.clone(), Some(frame(400, 300, false))), live);
+        assert_eq!(
+            frame_to_remember(Some(live.clone()), Some(frame(400, 300, false)), None),
+            Some(live),
+        );
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn a_minimised_window_keeps_its_last_frame_after_moving() {
+        let old = frame(900, 655, false);
+        let mut moved = old.clone();
+        moved.x = 2100;
+        moved.monitor = Some("second".into());
+        let last = frame_to_remember(Some(moved.clone()), Some(old.clone()), None);
+
+        assert_eq!(frame_to_remember(None, Some(old), last), Some(moved));
+        assert_eq!(frame_to_remember(None, None, None), None);
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn a_maximised_window_moved_to_another_monitor_keeps_that_monitor() {
+        let mut normal = frame(900, 655, false);
+        normal.monitor = Some("first".into());
+        let mut live = frame(1920, 1080, true);
+        live.x = 1920;
+        live.y = 0;
+        live.monitor = Some("second".into());
+
+        let kept = frame_to_remember(Some(live), Some(normal), None).unwrap();
+        assert_eq!((kept.width, kept.height), (900, 655));
+        assert_eq!((kept.x, kept.y), (1920, 0));
+        assert_eq!(kept.monitor.as_deref(), Some("second"));
+        assert!(kept.maximized);
+        assert_eq!(frame_to_remember(None, None, Some(kept.clone())), Some(kept));
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn an_unknown_current_monitor_does_not_discard_the_normal_position() {
+        let mut normal = frame(900, 655, false);
+        normal.monitor = Some("second".into());
+        normal.x = 2100;
+        let live = frame(1920, 1080, true);
+
+        let kept = frame_to_remember(Some(live), Some(normal.clone()), None).unwrap();
+        assert_eq!((kept.x, kept.y), (normal.x, normal.y));
+        assert_eq!(kept.monitor, normal.monitor);
     }
 
     #[test]

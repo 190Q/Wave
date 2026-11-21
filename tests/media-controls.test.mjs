@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
@@ -14,7 +15,16 @@ const mocks = {
       return () => {};
     };
   `,
-  "@tauri-apps/api/window": "export const getCurrentWindow = () => ({ setFocus: async () => {} });",
+  "@tauri-apps/api/window": `
+    export const getCurrentWindow = () => ({
+      unminimize: async () => {
+        const context = globalThis.__mediaControlTest;
+        context.windowActions.push("unminimize");
+        if (context.failUnminimize) throw new Error("unavailable");
+      },
+      setFocus: async () => globalThis.__mediaControlTest.windowActions.push("focus"),
+    });
+  `,
   "./device": "export const isAndroidPlatform = false;",
   "android-device": "export const isAndroidPlatform = true;",
   "./ipc": `
@@ -24,7 +34,7 @@ const mocks = {
       return context.sendSong ? context.sendSong(song) : Promise.resolve();
     };
     export const setQueue = async (queue) => globalThis.__mediaControlTest.queues.push(queue);
-    export const showMainWindow = async () => {};
+    export const showMainWindow = async () => globalThis.__mediaControlTest.windowActions.push("show");
     export const reportApiState = async (report) => globalThis.__mediaControlTest.reports.push(report);
     export const reportPlaybackActivity = (playing) => {
       const context = globalThis.__mediaControlTest;
@@ -123,6 +133,8 @@ function setup(PlayerClass = Player, mount = mountPresence, controls = true, sen
   context.queues = [];
   context.reports = [];
   context.playbackActivity = [];
+  context.windowActions = [];
+  context.failUnminimize = false;
   context.sendPlayback = null;
   context.subscribers = [];
   context.bridgeMessages = [];
@@ -195,6 +207,31 @@ function finishFrames() {
     if (context.frames.delete(id)) callback(performance.now() + 400);
   }
 }
+
+test("desktop media controls restore the window before focusing it", async () => {
+  setup();
+  press("raise");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(context.windowActions, ["show", "unminimize", "focus"]);
+  const capability = JSON.parse(readFileSync(new URL("../src-tauri/capabilities/default.json", import.meta.url), "utf8"));
+  assert.ok(capability.permissions.includes("core:window:allow-unminimize"));
+  assert.ok(capability.permissions.includes("core:window:allow-set-focus"));
+});
+
+test("Android media controls do not call the desktop unminimize API", async () => {
+  setup(AndroidPlayer, mountAndroidPresence, false);
+  context.androidControl({ detail: { action: "raise" } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(context.windowActions, ["show", "focus"]);
+});
+
+test("desktop media controls still focus if unminimizing fails", async () => {
+  setup();
+  context.failUnminimize = true;
+  press("raise");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(context.windowActions, ["show", "unminimize", "focus"]);
+});
 
 test("Android forwards play, pause and queue updates with both optional surfaces disabled", async () => {
   const { player } = setup(AndroidPlayer, mountAndroidPresence, false);

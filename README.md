@@ -47,8 +47,9 @@ an equaliser and a theme that follows the artwork.
   and can be disabled or cleared in **Settings → Wave Swell**.
 - **Appearance:** Use an accent colour from the current artwork or pick your
   own, and adjust motion effects.
-- **Desktop window and shortcuts:** Use the always-on-top mini player, remember
-  window position, and assign actions to nine keyboard shortcut slots.
+- **Desktop window and shortcuts:** Press M to toggle the always-on-top mini
+  player. Drag its title to move it, or hold M and press 1–4 to place it in a
+  corner. Remember window position and assign actions to nine shortcut slots.
 - **System controls and Discord:** Control playback from the system media
   controls or media keys. Desktop Discord presence is available as an opt-in
   setting.

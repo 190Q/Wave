@@ -908,6 +908,9 @@ export function mountQueue(): void {
     flushEntering();
   };
 
+  const titlebar = document.getElementById("titlebar");
+  const dock = document.getElementById("dock");
+
   /**
    * The carousel is paid for out of the hero's height, so it is only offered
    * while the stage can spare its room. Once it cannot, the carousel and its
@@ -919,8 +922,6 @@ export function mountQueue(): void {
     const declared = parseFloat(root.getPropertyValue("--carousel-space"));
     const reserved = Number.isFinite(declared) ? declared * rootPx : carousel.offsetHeight;
 
-    const titlebar = document.getElementById("titlebar");
-    const dock = document.getElementById("dock");
     const dockStyles = dock ? getComputedStyle(dock) : null;
     const dockBox = dock
       ? dock.offsetHeight +
@@ -940,7 +941,10 @@ export function mountQueue(): void {
   };
 
   if (typeof ResizeObserver !== "undefined") {
-    new ResizeObserver(fitCarousel).observe(stage);
+    const observer = new ResizeObserver(fitCarousel);
+    observer.observe(stage);
+    if (dock) observer.observe(dock);
+    if (titlebar) observer.observe(titlebar);
   }
   fitCarousel();
 

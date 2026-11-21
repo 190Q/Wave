@@ -49,6 +49,7 @@ export const KEYBIND_GROUPS: KeybindGroup[] = [
       { keys: "Right-click a song", action: "Like, add to a playlist, remove from the playlist or delete, for the whole selection" },
       { keys: "Wheel over the queue", action: "Previous or next track" },
       { keys: "Drag the dock", action: "Scrub the current track" },
+      { keys: "Drag the mini player title", action: "Move the mini player" },
       { keys: "Drag the queue", action: "Browse the queue" },
       { keys: "Drag a track row", action: "Reorder a playlist, carrying the selection when one is picked" },
     ],

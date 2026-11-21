@@ -39,7 +39,8 @@ export function mountDockTitle(): void {
   const overflow = (): number => Math.max(0, strip.scrollWidth - viewport.clientWidth);
 
   const wanted = (): boolean =>
-    document.documentElement.classList.contains("is-title-folded") &&
+    (document.documentElement.classList.contains("is-title-folded") ||
+      document.documentElement.classList.contains("is-mini-player")) &&
     (currentTrack()?.title ?? "").length > 0;
 
   const moveTo = (offset: number, durationMs: number): void => {

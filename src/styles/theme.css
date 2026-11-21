@@ -40,6 +40,8 @@
 .theme-dialog-head h2 {
   font-size: 1.05rem;
   font-weight: 700;
+  user-select: none;
+  pointer-events: none;
 }
 
 .picker-area {

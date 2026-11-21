@@ -37,9 +37,9 @@ pub const STATE_CHANGED_EVENT: &str = "state-changed";
 // A phone has one window, filling the screen, so the frame, the slots and the
 // mini player are desktop-only from here down.
 #[cfg(desktop)]
-const MINI_WIDTH: f64 = MIN_WIDTH as f64;
+const MINI_WIDTH: f64 = 340.0;
 #[cfg(desktop)]
-const MINI_HEIGHT: f64 = MIN_HEIGHT as f64;
+const MINI_HEIGHT: f64 = 92.0;
 #[cfg(desktop)]
 const MINI_CORNER_COUNT: u8 = 4;
 #[cfg(desktop)]
@@ -49,6 +49,9 @@ static APPLYING_SINCE: Mutex<Option<Instant>> = Mutex::new(None);
 
 #[cfg(desktop)]
 static MINI_INNER: Mutex<Option<PhysicalSize<u32>>> = Mutex::new(None);
+
+#[cfg(desktop)]
+static MINI_RETURN_FRAME: Mutex<Option<WindowGeometry>> = Mutex::new(None);
 
 #[cfg(desktop)]
 static NORMAL_FRAME: Mutex<Option<WindowGeometry>> = Mutex::new(None);
@@ -1036,17 +1039,23 @@ pub fn apply_window_settings<R: Runtime>(app: &AppHandle<R>, store: &Store, was_
     let _ = window.set_always_on_top(mini || current.settings.always_on_top);
 
     if mini {
-        if !was_mini && current.settings.remember_window {
-            // Remember the frame, so leaving mini mode puts it back.
+        if !was_mini || mini_return_frame().is_none() {
             if let Some(geometry) = read_frame(&window) {
-                store.edit(|state| state.window = Some(geometry));
+                remember_mini_return_frame(Some(geometry.clone()));
+                if !was_mini && current.settings.remember_window {
+                    store.edit(|state| state.window = Some(geometry));
+                    let _ = store.save(app);
+                }
             }
         }
         let monitor = window.current_monitor().ok().flatten();
         note_programmatic_change();
         let _ = window.unmaximize();
-        let inner = resize_outer(&window, tauri::LogicalSize::new(MINI_WIDTH, MINI_HEIGHT));
-        remember_mini_size(inner);
+        let size = tauri::LogicalSize::new(MINI_WIDTH, MINI_HEIGHT);
+        let _ = window.set_min_size(Some(size));
+        let scale = window.scale_factor().unwrap_or(1.0);
+        remember_mini_size(size.to_physical::<u32>(scale));
+        let _ = window.set_size(size);
         if let Some(monitor) = monitor {
             place_in_corner(&window, &monitor, current.settings.mini_corner);
         }
@@ -1054,9 +1063,13 @@ pub fn apply_window_settings<R: Runtime>(app: &AppHandle<R>, store: &Store, was_
     }
 
     if was_mini {
-        if let Some(geometry) = current.window {
+        note_programmatic_change();
+        let (width, height) = min_frame();
+        let _ = window.set_min_size(Some(tauri::LogicalSize::new(width, height)));
+        if let Some(geometry) = mini_return_frame().or(current.window) {
             apply_geometry(app, &window, &geometry, SnapPart::Frame);
         }
+        remember_mini_return_frame(None);
     }
 }
 
@@ -1135,6 +1148,10 @@ fn note_resized<R: Runtime>(app: &AppHandle<R>, size: PhysicalSize<u32>) {
 
     if let Ok(next) = store.update_saved(app, |state| state.settings.mini_player = false) {
         let _ = app.emit(SETTINGS_EVENT, next.settings.clone());
+        note_programmatic_change();
+        let (width, height) = min_frame();
+        let _ = window.set_min_size(Some(tauri::LogicalSize::new(width, height)));
+        remember_mini_return_frame(None);
         let _ = window.set_always_on_top(next.settings.always_on_top);
     } else {
         let _ = window.set_always_on_top(store.snapshot().settings.always_on_top);
@@ -1184,6 +1201,18 @@ fn remember_last_frame(geometry: WindowGeometry) {
 #[cfg(desktop)]
 fn last_frame() -> Option<WindowGeometry> {
     let recorded = LAST_FRAME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    recorded.clone()
+}
+
+#[cfg(desktop)]
+fn remember_mini_return_frame(geometry: Option<WindowGeometry>) {
+    let mut recorded = MINI_RETURN_FRAME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *recorded = geometry;
+}
+
+#[cfg(desktop)]
+fn mini_return_frame() -> Option<WindowGeometry> {
+    let recorded = MINI_RETURN_FRAME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     recorded.clone()
 }
 

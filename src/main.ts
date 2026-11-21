@@ -27,6 +27,7 @@ import { mountHero } from "./ui/hero";
 import { mountIcons } from "./ui/icons";
 import { mountImportDialog, openImport } from "./ui/import-dialog";
 import { mountLibrary } from "./ui/library";
+import { mountMiniPlayer } from "./ui/mini-player";
 import { mountQueue } from "./ui/queue";
 import { mountSettings, openSettings } from "./ui/settings";
 import { mountStartup } from "./ui/startup";
@@ -47,6 +48,7 @@ function mount(): void {
   }
   mountIcons();
   mountMotion();
+  mountMiniPlayer();
   const stopStartup = mountStartup();
   if (device() === "desktop") stopStartup();
   mountTitlebar();
@@ -175,6 +177,7 @@ function mountShortcuts(): void {
     }
 
     const windowed = !isTouch();
+    const mini = root.classList.contains("is-mini-player");
 
     if (windowed && event.ctrlKey && event.shiftKey && !event.altKey) {
       const digit = /^Digit([1-9])$/.exec(event.code)?.[1];
@@ -183,7 +186,9 @@ function mountShortcuts(): void {
         const action = getState().settings.shortcutSlots[slot];
         if (action) {
           event.preventDefault();
-          void runSlotAction(action, slot);
+          if (!mini || !["toggle-queue", "focus-search", "open-swell"].includes(action)) {
+            void runSlotAction(action, slot);
+          }
           return;
         }
       }
@@ -229,7 +234,7 @@ function mountShortcuts(): void {
       case "o":
       case "O":
         event.preventDefault();
-        focusSearch();
+        if (!mini) focusSearch();
         break;
       case "s":
       case "S":
@@ -244,17 +249,17 @@ function mountShortcuts(): void {
       case "q":
       case "Q":
         event.preventDefault();
-        toggleQueue();
+        if (!mini) toggleQueue();
         break;
       case "i":
       case "I":
         event.preventDefault();
-        openImport();
+        if (!mini) openImport();
         break;
       case "p":
       case "P":
         event.preventDefault();
-        openSettings();
+        if (!mini) openSettings();
         break;
       case "t":
       case "T":

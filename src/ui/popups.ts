@@ -23,3 +23,7 @@ export function releasePopup(dismiss: Dismiss): void {
     showing = null;
   }
 }
+
+export function dismissPopup(): void {
+  showing?.();
+}

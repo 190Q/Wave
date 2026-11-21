@@ -139,8 +139,9 @@ function snapshot(sourceId, count, cursor = 0) {
   return { sourceId, order, cursor, currentId: order[cursor], repeat: "off", travel: 0 };
 }
 
-function setup(kind = "android") {
+function setup(kind = "android", observeSize = false) {
   context.kind = kind;
+  context.state = { queueOpen: true, collections: [] };
   context.ready = true;
   context.readyIds = null;
   context.missing = new Set();
@@ -150,6 +151,9 @@ function setup(kind = "android") {
   const carousel = new FakeElement();
   const stage = new FakeElement();
   const root = new FakeElement();
+  const dock = new FakeElement();
+  const titlebar = new FakeElement();
+  let resizeObserver;
   const frames = new Map();
   const timers = new Map();
   let nextFrame = 0;
@@ -170,20 +174,78 @@ function setup(kind = "android") {
   };
   globalThis.document = {
     documentElement: root,
-    getElementById: (id) => id === "carousel" ? carousel : null,
+    getElementById: (id) => id === "carousel" ? carousel
+      : observeSize && id === "dock" ? dock
+      : observeSize && id === "titlebar" ? titlebar
+      : null,
     querySelector: (selector) => selector === ".stage" ? stage : null,
     createElement: () => new FakeElement(),
   };
   globalThis.getComputedStyle = () => ({
     fontSize: "16px",
+    marginTop: "0px",
+    marginBottom: "0px",
     getPropertyValue: (name) => name === "--card-spacing" ? "9" : "14",
   });
-  globalThis.ResizeObserver = undefined;
+  globalThis.ResizeObserver = observeSize ? class {
+    constructor(callback) {
+      this.callback = callback;
+      this.observed = new Set();
+      resizeObserver = this;
+    }
+    observe(element) { this.observed.add(element); }
+    resize(element) {
+      if (this.observed.has(element)) this.callback();
+    }
+  } : undefined;
   mountQueue();
-  return { live: carousel.children[0], wash: carousel.children[1], frames, timers, root };
+  return { live: carousel.children[0], wash: carousel.children[1], frames, timers, root, stage, dock, titlebar, resizeObserver };
 }
 
 const { mountQueue } = await vite.ssrLoadModule("/src/ui/queue.ts");
+
+test("the queue follows dock size changes when leaving mini mode", () => {
+  for (const open of [true, false]) {
+    const { root, stage, dock, titlebar, resizeObserver } = setup("desktop", true);
+    context.state.queueOpen = open;
+    context.render();
+
+    stage.clientHeight = 92;
+    dock.offsetHeight = 92;
+    titlebar.offsetHeight = 0;
+    resizeObserver.resize(stage);
+    assert.equal(root.classList.contains("is-cramped"), true);
+    assert.equal(context.state.queueOpen, open);
+
+    stage.clientHeight = 800;
+    dock.offsetHeight = 800;
+    resizeObserver.resize(stage);
+    assert.equal(root.classList.contains("is-cramped"), true);
+
+    dock.offsetHeight = 100;
+    titlebar.offsetHeight = 36;
+    resizeObserver.resize(dock);
+    assert.equal(root.classList.contains("is-cramped"), false);
+    assert.equal(stage.classList.contains("queue-open"), open);
+
+    context.state.queueOpen = !open;
+    context.render();
+    assert.equal(stage.classList.contains("queue-open"), !open);
+  }
+});
+
+test("the queue is refitted when the titlebar changes without a window resize", () => {
+  const { root, stage, titlebar, resizeObserver } = setup("desktop", true);
+  stage.clientHeight = 500;
+  titlebar.offsetHeight = 100;
+  resizeObserver.resize(stage);
+  assert.equal(root.classList.contains("is-cramped"), true);
+
+  titlebar.offsetHeight = 0;
+  resizeObserver.resize(titlebar);
+  assert.equal(root.classList.contains("is-cramped"), false);
+  assert.equal(stage.classList.contains("queue-open"), true);
+});
 
 test("phone cards do not enter with an animation while the app starts", () => {
   const { live, root } = setup();

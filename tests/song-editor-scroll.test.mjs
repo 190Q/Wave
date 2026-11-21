@@ -6,7 +6,7 @@ import { createServer } from "vite";
 const mocks = {
   "../lib/audio": "export const assetUrl = (path) => path;",
   "../lib/device": 'export const device = () => "desktop";',
-  "../lib/ipc": "export const loadLyrics = async () => null; export const editorWaveform = async () => [];",
+  "../lib/ipc": "export const loadLyrics = async () => globalThis.__songEditorTest.lyrics ?? null; export const editorWaveform = async () => [];",
   "../lib/motion": "export const reduceMotionActive = () => true;",
   "../lib/state": `
     export const getState = () => globalThis.__songEditorTest.state;
@@ -63,6 +63,10 @@ class Element {
     this.listeners.set(type, callbacks);
   }
 
+  removeEventListener(type, callback) {
+    this.listeners.set(type, (this.listeners.get(type) ?? []).filter((entry) => entry !== callback));
+  }
+
   dispatch(type, values = {}) {
     const event = {
       target: this, button: 0, deltaX: 0, deltaY: 0, ctrlKey: false, shiftKey: false,
@@ -73,6 +77,8 @@ class Element {
 
   querySelector() { return null; }
   querySelectorAll() { return []; }
+  closest() { return null; }
+  contains() { return false; }
   getBoundingClientRect() { return { left: 0 }; }
   getContext() { return null; }
   focus() {}
@@ -102,7 +108,7 @@ class Audio extends Element {
   removeAttribute() {}
 }
 
-test("manual timeline navigation does not fight playback and seeking restores follow", async () => {
+test("song editor timeline navigation and lyric selection", async (t) => {
   const elements = new Map();
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, new Element());
@@ -117,7 +123,16 @@ test("manual timeline navigation does not fight playback and seeking restores fo
   const track = { id: "track", path: "audio", title: "Song", artist: "Artist", durationMs: 120000 };
   globalThis.__songEditorTest = { modal, state: { tracksById: new Map([[track.id, track]]) } };
   globalThis.Audio = Audio;
-  globalThis.window = { addEventListener() {}, devicePixelRatio: 1 };
+  globalThis.HTMLInputElement = class extends Element {
+    blur() { globalThis.document.activeElement = null; }
+  };
+  globalThis.document = { activeElement: null };
+  const windowEvents = new Element();
+  globalThis.window = {
+    addEventListener: windowEvents.addEventListener.bind(windowEvents),
+    removeEventListener: windowEvents.removeEventListener.bind(windowEvents),
+    devicePixelRatio: 1,
+  };
 
   const frames = new Map();
   let frameId = 0;
@@ -186,4 +201,58 @@ test("manual timeline navigation does not fight playback and seeking restores fo
   reopenedAudio.currentTime = 9;
   advance();
   assert.equal(viewport.scrollLeft, 70);
+
+  await t.test("lyric selection clears outside its fields and timeline chip", async () => {
+    globalThis.__songEditorTest.lyrics = "[00:01.000]First\n[00:02.000]Second";
+    openSongEditor(track.id);
+    await Promise.resolve();
+
+    const lines = element("lines");
+    const lyricTrack = element("lyric-track");
+    const input = new HTMLInputElement();
+    input.dataset.lyricText = "0";
+    input.value = "Edited";
+    input.closest = (selector) => selector === "[data-lyric-time], [data-lyric-text]" ? input : null;
+    lines.contains = (target) => target === input;
+    const selected = () => lyricTrack.innerHTML.match(/song-editor-chip is-selected"\s+data-chip="(\d+)"/)?.[1] ?? null;
+
+    document.activeElement = input;
+    lines.dispatch("focusin", { target: input });
+    lines.dispatch("input", { target: input });
+    assert.equal(selected(), "0");
+    modal.dispatch("pointerdown", { target: input });
+    assert.equal(selected(), "0");
+    assert.equal(document.activeElement, input);
+
+    modal.dispatch("pointerdown", { target: new Element() });
+    assert.equal(selected(), null);
+    assert.equal(document.activeElement, null);
+
+    document.activeElement = input;
+    lines.dispatch("focusin", { target: input });
+    modal.dispatch("pointerdown", { target: element("wave-track") });
+    assert.equal(selected(), null);
+    assert.equal(document.activeElement, null);
+
+    document.activeElement = input;
+    lines.dispatch("focusin", { target: input });
+    const chip = new Element();
+    chip.dataset.chip = "1";
+    chip.closest = (selector) => selector === "[data-chip]" ? chip : null;
+    modal.dispatch("pointerdown", { target: chip });
+    lyricTrack.dispatch("pointerdown", { target: chip, pointerId: 1 });
+    windowEvents.dispatch("pointerup", { pointerId: 1 });
+    assert.equal(selected(), "1");
+    assert.equal(document.activeElement, null);
+
+    modal.dispatch("pointerdown", { target: chip });
+    assert.equal(selected(), "1");
+    modal.dispatch("pointerdown", { target: input });
+    assert.equal(selected(), null);
+    document.activeElement = input;
+    lines.dispatch("focusin", { target: input });
+    assert.equal(selected(), "0");
+    modal.dispatch("pointerdown", { target: element("play") });
+    assert.equal(selected(), null);
+  });
 });

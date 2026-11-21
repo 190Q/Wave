@@ -498,6 +498,17 @@ function mountSongEditor(): void {
   byId("discard-confirm").addEventListener("click", forceClose);
   undo.addEventListener("click", () => restore(history?.undo() ?? null));
   redo.addEventListener("click", () => restore(history?.redo() ?? null));
+  modal.addEventListener("pointerdown", (event) => {
+    if (selectedLine === null) return;
+    const target = event.target as Element;
+    const input = target.closest<HTMLInputElement>("[data-lyric-time], [data-lyric-text]");
+    if ((input?.dataset.lyricTime ?? input?.dataset.lyricText) === String(selectedLine)) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLInputElement && lines.contains(active)) active.blur();
+    if (target.closest("[data-chip]")) return;
+    selectedLine = null;
+    paintChips();
+  }, true);
   window.addEventListener("keydown", (event) => {
     if (modal.hidden) return;
     if (event.key === "Escape") {

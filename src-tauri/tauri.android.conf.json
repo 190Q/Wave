@@ -19,6 +19,9 @@
     ]
   },
   "bundle": {
+    "android": {
+      "debugApplicationIdSuffix": ".dev"
+    },
     "resources": null
   }
 }

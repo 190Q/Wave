@@ -42,6 +42,10 @@ class ApkArgs {
 class ApkInstallPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun installApk(invoke: Invoke) {
+    if (BuildConfig.DEBUG) {
+      invoke.reject("Release updates cannot be installed from Wave Dev.")
+      return
+    }
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
       !activity.packageManager.canRequestPackageInstalls()) {
       try {

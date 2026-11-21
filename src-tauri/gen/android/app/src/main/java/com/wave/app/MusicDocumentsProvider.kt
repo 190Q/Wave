@@ -38,7 +38,7 @@ class MusicDocumentsProvider : DocumentsProvider() {
     result.newRow().apply {
       add(DocumentsContract.Root.COLUMN_ROOT_ID, ROOT_ID)
       add(DocumentsContract.Root.COLUMN_DOCUMENT_ID, ROOT_ID)
-      add(DocumentsContract.Root.COLUMN_TITLE, "Wave music")
+      add(DocumentsContract.Root.COLUMN_TITLE, "${context!!.getString(R.string.app_name)} music")
       add(DocumentsContract.Root.COLUMN_ICON, context!!.applicationInfo.icon)
       add(DocumentsContract.Root.COLUMN_FLAGS, 0)
       add(DocumentsContract.Root.COLUMN_MIME_TYPES, "*/*")
@@ -106,7 +106,7 @@ class MusicDocumentsProvider : DocumentsProvider() {
     }
     cursor.newRow().apply {
       add(DocumentsContract.Document.COLUMN_DOCUMENT_ID, id)
-      add(DocumentsContract.Document.COLUMN_DISPLAY_NAME, if (id == ROOT_ID) "Wave music" else file.name)
+      add(DocumentsContract.Document.COLUMN_DISPLAY_NAME, if (id == ROOT_ID) "${context!!.getString(R.string.app_name)} music" else file.name)
       add(DocumentsContract.Document.COLUMN_MIME_TYPE, mime)
       add(DocumentsContract.Document.COLUMN_FLAGS, 0)
       add(DocumentsContract.Document.COLUMN_SIZE, if (file.isFile) file.length() else null)

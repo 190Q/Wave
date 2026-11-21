@@ -148,7 +148,6 @@ test("a reused element treats a new CORS failure as an unloaded track", (t) => {
     onCorsRefused: () => { refusals += 1; },
     onError: () => { errors += 1; },
   });
-  engine.enableCors();
   engine.load("http://127.0.0.1:1234/one");
   engine.element.emit("loadedmetadata");
   engine.load("http://127.0.0.1:1234/two");

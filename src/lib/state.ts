@@ -41,7 +41,7 @@ import type {
 } from "../types";
 import { flushAnalytics, mountAnalytics, notePlaybackError, noteTrackEnded, recordEvent, rememberTracks } from "./analytics";
 import { nearbyArtwork } from "./artwork-priority";
-import { AudioEngine, assetUrl, trackAudioPath } from "./audio";
+import { AudioEngine, trackAudioPath } from "./audio";
 import { mountAudioWatchdog } from "./audio-watchdog";
 import type { EqProfile } from "./autoeq";
 import { COLLECTION_FILTERS, buildCollections, findCollection, isUnknownCollection, sortAlbumTracks } from "./collections";
@@ -385,7 +385,6 @@ function applySettingsFields(
   }
   state.settings = { ...state.settings, ...patch };
   eq.apply(state.settings);
-  void syncEqReading();
 }
 
 function applyPlaylists(playlists: Playlist[]): void {
@@ -488,15 +487,38 @@ const eq = new EqChain(isAndroidPlatform ? { latencyHint: "playback" } : undefin
 /** The chain itself, so the overlay can read the curve and the spectrum. */
 export const eqChain = eq;
 
+let corsRetryTrack: string | null = null;
+
 const engine = new AudioEngine({
+  onBeforeLoad: () => {
+    if (corsRetryTrack !== null && corsRetryTrack !== player.currentId) {
+      corsRetryTrack = null;
+      engine.enableCors();
+    }
+  },
   onEnded: () => {
     noteTrackEnded();
     player.handleEnded();
   },
-  onLoaded: () => player.handleLoaded(),
+  onLoaded: () => {
+    if (corsRetryTrack !== null && engine.element.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      corsRetryTrack = null;
+      eq.block("cors");
+      if (state.settings.eqEnabled) {
+        setNotice("This system will not let Wave read the audio, so the equaliser is off.");
+      } else {
+        emit();
+      }
+    }
+    player.handleLoaded();
+  },
   onPlaying: () => player.handlePlaying(),
   onPause: () => player.handlePaused(),
   onError: () => {
+    if (corsRetryTrack !== null) {
+      corsRetryTrack = null;
+      engine.enableCors();
+    }
     const title = currentTrack()?.title;
     setNotice(title ? `Could not play "${title}".` : "That song could not be played.");
     notePlaybackError();
@@ -516,111 +538,20 @@ const engine = new AudioEngine({
   },
 });
 
-/** Set while the engine is asking for files in a way Web Audio can read. */
-let engineCors = false;
 let audioStreamBase: string | null = null;
 
 function audioPath(track: Track): string {
   return trackAudioPath(track.path, track.id, audioStreamBase);
 }
 
-/** Set while the check below is running, so only one is ever in flight. */
-let corsChecking = false;
-
 /**
  * A file that will not be handed to Web Audio is loaded again without it, so
  * the equaliser steps aside rather than costing plain playback.
  */
 function handleCorsRefused(): void {
-  engineCors = false;
   engine.disableCors();
-  eq.block("cors");
+  corsRetryTrack = player.currentId;
   player.reloadCurrent();
-  setNotice("This system will not let Wave read the audio, so the equaliser is off.");
-}
-
-/**
- * Whether the protocol will hand a file over in a way Web Audio can read. It is
- * asked of a throwaway element, which is the exact request the engine would
- * make, so nothing about the track being played is disturbed.
- */
-function readableWithCors(path: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const probe = new Audio();
-    let settled = false;
-
-    const finish = (readable: boolean): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      window.clearTimeout(timer);
-      probe.removeEventListener("loadedmetadata", loaded);
-      probe.removeEventListener("error", failed);
-      probe.removeAttribute("src");
-      probe.load();
-      resolve(readable);
-    };
-
-    const loaded = (): void => finish(true);
-    const failed = (): void => finish(false);
-    // A probe that never answers is treated as a refusal, which only ever costs
-    // the curve rather than the sound.
-    const timer = window.setTimeout(() => finish(false), CORS_PROBE_MS);
-
-    probe.crossOrigin = "anonymous";
-    probe.preload = "metadata";
-    probe.addEventListener("loadedmetadata", loaded);
-    probe.addEventListener("error", failed);
-    probe.src = assetUrl(path);
-  });
-}
-
-/** How long a CORS check is given before it is read as a refusal. */
-const CORS_PROBE_MS = 5000;
-
-async function syncEqReading(): Promise<void> {
-  const wanted = state.settings.eqEnabled && eq.blockedReason === null;
-
-  if (!wanted) {
-    if (engineCors) {
-      engineCors = false;
-      engine.disableCors();
-    }
-    return;
-  }
-
-  if (engineCors || corsChecking) {
-    return;
-  }
-
-  const track = currentTrack();
-  const path = track ? audioPath(track) : undefined;
-  if (path === undefined) {
-    return;
-  }
-
-  corsChecking = true;
-  const readable = await readableWithCors(path);
-  corsChecking = false;
-
-  // The curve may have been switched off while the check was running.
-  if (!state.settings.eqEnabled || eq.blockedReason !== null) {
-    return;
-  }
-
-  if (!readable) {
-    eq.block("cors");
-    setNotice("This system will not let Wave read the audio, so the equaliser is off.");
-    emit();
-    return;
-  }
-
-  engineCors = true;
-  engine.enableCors();
-  if (engine.hasFile) {
-    player.reloadCurrent();
-  }
 }
 
 export const player = new Player(engine, (trackId) => {
@@ -2949,7 +2880,6 @@ function applyPersisted(next: PersistedState, settings = false, likes = false, p
   applyColours(next.artworkColours ?? {});
   refreshCollections();
   eq.apply(state.settings);
-  void syncEqReading();
 }
 
 /** True when two sets of likes hold the same songs. */
@@ -3351,7 +3281,6 @@ function applyEqPatch(patch: Partial<Settings>): void {
   markSettingsPatch(patch);
   state.settings = { ...state.settings, ...patch };
   eq.apply(state.settings);
-  void syncEqReading();
   scheduleEqSave(patch);
   emit();
 }
@@ -3424,7 +3353,6 @@ function wireEq(): void {
   }
   eqWired = true;
   player.onChange(syncEqOrigin);
-  player.onChange(() => void syncEqReading());
   player.onChange(() => eq.resume());
   window.addEventListener("pointerdown", () => eq.resume(), true);
   window.addEventListener("keydown", () => eq.resume(), true);

@@ -5,6 +5,7 @@ import { FADE_MS, smoothstep } from "./fade";
 export interface AudioEngineHandlers {
   /** The track ran to its end. */
   onEnded?: () => void;
+  onBeforeLoad?: () => void;
   /** Metadata arrived, so the duration and the seekable range are known. */
   onLoaded?: () => void;
   /** The file could not be read or decoded. */
@@ -35,7 +36,7 @@ export class AudioEngine {
   /** The file the element is holding, so a reload can ask for it again. */
   private loadedPath: string | null = null;
 
-  private cors = false;
+  private cors = true;
 
   /** Whether the element in hand got as far as reporting its metadata. */
   private elementLoaded = false;
@@ -99,6 +100,7 @@ export class AudioEngine {
   load(path: string, options: LoadOptions = {}): void {
     const { autoplay = false, positionMs = 0 } = options;
 
+    this.handlers.onBeforeLoad?.();
     this.requestedMs = null;
     this.loadedPath = path;
     this.swap();
@@ -107,6 +109,10 @@ export class AudioEngine {
     this.waitingAt = null;
     // `preload` is read when the load starts, so it has to be set first.
     this.el.preload = autoplay ? "auto" : "metadata";
+    const crossOrigin = this.cors ? "anonymous" : null;
+    if (this.el.crossOrigin !== crossOrigin) {
+      this.el.crossOrigin = crossOrigin;
+    }
     this.el.src = sourceUrl(path);
 
     this.seek(positionMs);

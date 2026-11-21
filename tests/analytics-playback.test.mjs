@@ -5,6 +5,10 @@ import { createServer } from "vite";
 
 const records = [];
 globalThis.__analyticsRecords = records;
+globalThis.__analyticsWrite = async (record) => {
+  if (globalThis.__analyticsFailWrite) throw new Error("listen write failed");
+  records.push(record);
+};
 const vite = await createServer({
   configFile: false,
   root: fileURLToPath(new URL("..", import.meta.url)),
@@ -22,7 +26,7 @@ const vite = await createServer({
     load(id) {
       if (id === "\0analytics-test:./device") return "export const isAndroidPlatform = false;";
       if (id === "\0analytics-test:./ipc") {
-        return "export const recordPlay = async (record) => globalThis.__analyticsRecords.push(record);";
+        return "export const recordPlay = (record) => globalThis.__analyticsWrite(record);";
       }
     },
   }],
@@ -84,6 +88,14 @@ test("listens follow real media progress through background gaps and boundaries"
     window.checkpoint();
     await Promise.resolve();
     assert.equal(records.at(-1).msPlayed, 65000);
+    const listenId = records.at(-1).listenId;
+    await analytics.prepareAnalyticsTransfer();
+    assert.equal(records.at(-1).listenId, listenId);
+    assert.equal(records.at(-1).reason, "open");
+    assert.equal(records.at(-1).msPlayed, 65000);
+    globalThis.__analyticsFailWrite = true;
+    await assert.rejects(analytics.prepareAnalyticsTransfer(), /listen write failed/);
+    globalThis.__analyticsFailWrite = false;
 
     clock += 10000;
     player.sampleListening();

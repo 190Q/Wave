@@ -52,6 +52,8 @@ function deferred() {
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const clone = (value) => structuredClone(value);
 const listeners = new Map();
+const remembered = [];
+globalThis.__testRemembered = remembered;
 globalThis.__testListen = (name, callback) => {
   listeners.set(name, callback);
   return Promise.resolve(() => listeners.delete(name));
@@ -84,7 +86,7 @@ const vite = await createServer({
         return ipcNames.map((name) => `export const ${name} = (...args) => globalThis.__testIpc.${name}(...args);`).join("\n");
       }
       if (id === "\0test-analytics") {
-        return "export const flushAnalytics = async () => {}; export const mountAnalytics = () => {}; export const notePlaybackError = () => {}; export const noteTrackEnded = () => {}; export const recordEvent = () => {}; export const rememberTracks = () => {};";
+        return "export const flushAnalytics = async () => {}; export const mountAnalytics = () => {}; export const notePlaybackError = () => {}; export const noteTrackEnded = () => {}; export const recordEvent = () => {}; export const rememberTracks = (tracks) => globalThis.__testRemembered.push(tracks.map((track) => track.id));";
       }
       if (id === "\0test-watchdog") return "export const mountAudioWatchdog = () => {};";
     },
@@ -103,6 +105,7 @@ const sessions = [];
 const linkCalls = [];
 const audioPickerCalls = [];
 const playlistDownloads = [];
+const waveImports = [];
 let holdReads = null;
 let deleteError = null;
 let importErrors = ["Cannot copy this file"];
@@ -154,7 +157,10 @@ globalThis.__testIpc = new Proxy({
   importPhoneFolder: async () => outcome(),
   scanPhoneMusic: async () => outcome(),
   pickWaveList: async () => "playlist.wavelist",
-  importWaveList: async () => ({ ...outcome(), playlist: "Test", playlistId: "wave-list", skipped: waveWaiting, errors: [] }),
+  importWaveList: async (path, createPlaylist) => {
+    waveImports.push([path, createPlaylist]);
+    return { ...outcome(), playlist: createPlaylist ? "Test" : null, playlistId: createPlaylist ? "wave-list" : null, skipped: waveWaiting, errors: [] };
+  },
   downloadPlaylist: async (id, entries) => { playlistDownloads.push([id, entries]); return { ...outcome(), errors: [] }; },
   youtubePlan: async (url) => { linkCalls.push(["youtubePlan", url]); return { name: "video", total: 1, duplicates: 0, examples: [] }; },
   spotifyPlan: async (url) => { linkCalls.push(["spotifyPlan", url]); return null; },
@@ -452,13 +458,24 @@ test("folder, file, and phone music imports show the first detailed error", asyn
 test("Android playlist import starts downloads only for waiting songs", async () => {
   playlistDownloads.length = 0;
   waveWaiting = 5;
-  await app.importWaveList();
+  await app.importWaveList(async () => true);
   await tick();
   assert.deepEqual(playlistDownloads, [["wave-list", []]]);
   waveWaiting = 0;
-  await app.importWaveList();
+  await app.importWaveList(async () => true);
   await tick();
   assert.equal(playlistDownloads.length, 1);
+});
+
+test("Wave playlist import forwards songs-only choice and ignores dismissal", async () => {
+  waveImports.length = 0;
+  playlistDownloads.length = 0;
+  waveWaiting = 0;
+  await app.importWaveList(async () => null);
+  assert.deepEqual(waveImports, []);
+  await app.importWaveList(async () => false);
+  assert.deepEqual(waveImports, [["playlist.wavelist", false]]);
+  assert.deepEqual(playlistDownloads, []);
 });
 
 test("delete failures force a full rescan and reconcile confirmed deletions with scan warnings", async () => {
@@ -508,4 +525,12 @@ test("Android requests playback latency when starting the equalizer", () => {
   } finally {
     delete globalThis.AudioContext;
   }
+});
+
+test("refreshing restored analytics snapshots the destination library", async () => {
+  scanTracks = [{ id: "destination-song", title: "Song", path: "song", durationMs: 1000, artist: null, album: null, genre: null }];
+  await app.rescan(true);
+  remembered.length = 0;
+  await app.refreshAnalytics();
+  assert.deepEqual(remembered, [["destination-song"]]);
 });

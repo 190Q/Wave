@@ -1,11 +1,15 @@
-import { forgetCaptured } from "../lib/analytics";
+import { forgetCaptured, prepareAnalyticsTransfer } from "../lib/analytics";
 import { device, isAndroidPlatform, titlebarVisible } from "../lib/device";
 import { escapeHtml, formatTotalDuration, plural } from "../lib/format";
 import {
   analyticsStats,
   analyticsSwell,
   clearAnalytics,
+  exportAnalytics,
+  importAnalytics,
   openLibraryFolder,
+  pickAnalyticsExport,
+  pickAnalyticsImport,
   resetWindowGeometry,
 } from "../lib/ipc";
 import { swellWindow } from "../lib/swell";
@@ -18,6 +22,7 @@ import {
   fixTagsAndCovers,
   getState,
   jobRunning,
+  refreshAnalytics,
   rescanLibrary,
   setNotice,
   subscribe,
@@ -34,6 +39,7 @@ import type {
   WindowGeometry,
 } from "../types";
 import { createPanel } from "./drop";
+import { confirmDialog } from "./confirm";
 import { mountCollectionPicker } from "./collection-picker";
 import { openEq } from "./eq";
 import { fillIcons } from "./icons";
@@ -93,6 +99,7 @@ export function mountSettings(): void {
   let lastBodyScrollTop = body.scrollTop;
 
   let closeTimer: number | null = null;
+  let analyticsTransferPending = false;
   let exportId = "all";
   const selectedExport = () => getState().collections.find((collection) => collection.id === exportId)
     ?? getState().collections[0];
@@ -384,6 +391,36 @@ export function mountSettings(): void {
           await openLibraryFolder();
         } catch (error) {
           setNotice(typeof error === "string" ? error : "Could not open the library folder.");
+        }
+        return;
+      }
+      case "export-analytics":
+      case "import-analytics": {
+        if (analyticsTransferPending) return;
+        analyticsTransferPending = true;
+        try {
+          const importing = command === "import-analytics";
+          const path = await (importing ? pickAnalyticsImport() : pickAnalyticsExport());
+          if (!path) return;
+          if (importing && !(await confirmDialog({
+            title: "Import listening record",
+            message: "This replaces the current listening record with the imported one. Export the current record first if you want to keep it.",
+            confirmLabel: "Replace record",
+            danger: true,
+          }))) return;
+          await prepareAnalyticsTransfer();
+          if (importing) {
+            await importAnalytics(path);
+            await Promise.all([loadAnalytics(), refreshAnalytics()]);
+            setNotice("Listening record imported.");
+          } else {
+            await exportAnalytics(path);
+            setNotice("Listening record exported.");
+          }
+        } catch (error) {
+          setNotice(error instanceof Error ? error.message : String(error));
+        } finally {
+          analyticsTransferPending = false;
         }
         return;
       }
@@ -794,7 +831,10 @@ function analyticsHtml(
       }
       <p class="settings-hint">${escapeHtml(notes.join(". "))}.</p>
       ${figures}
+      <p class="settings-hint">Export a backup or import one to replace this listening record.</p>
       <div class="settings-actions">
+        <button class="pill" type="button" data-command="import-analytics">Import</button>
+        <button class="pill" type="button" data-command="export-analytics">Export</button>
         <button class="pill" type="button" data-command="clear-analytics"${
           stats && stats.plays > 0 ? "" : " disabled"
         }>Clear</button>

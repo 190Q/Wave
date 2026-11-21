@@ -288,8 +288,8 @@ export async function pickWaveList(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
-export function importWaveList(path: string): Promise<ImportOutcome> {
-  return invoke("import_wavelist", { path });
+export function importWaveList(path: string, createPlaylist: boolean): Promise<ImportOutcome> {
+  return invoke("import_wavelist", { path, createPlaylist });
 }
 
 export async function exportWaveList(name: string, trackIds: string[], playlistId: string | null = null): Promise<number | null> {
@@ -447,6 +447,31 @@ export function analyticsStats(): Promise<AnalyticsStats> {
 /** Drops every row of the listening record. */
 export function clearAnalytics(): Promise<void> {
   return invoke("analytics_clear");
+}
+
+export async function pickAnalyticsImport(): Promise<string | null> {
+  const selected = await open({
+    multiple: false,
+    title: "Import a listening record",
+    filters: [{ name: "Wave listening record", extensions: ["waveanalytics"] }],
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function pickAnalyticsExport(): Promise<string | null> {
+  return save({
+    title: "Export the listening record",
+    defaultPath: "listening-record.waveanalytics",
+    filters: [{ name: "Wave listening record", extensions: ["waveanalytics"] }],
+  });
+}
+
+export function importAnalytics(path: string): Promise<void> {
+  return invoke("import_analytics", { path });
+}
+
+export function exportAnalytics(path: string): Promise<void> {
+  return invoke("export_analytics", { path });
 }
 
 /**

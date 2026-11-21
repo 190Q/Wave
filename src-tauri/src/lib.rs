@@ -1,6 +1,7 @@
 #![cfg_attr(not(desktop), allow(dead_code))]
 
 mod analytics;
+mod analytics_transfer;
 #[cfg(any(windows, target_os = "android"))]
 mod audio_outputs;
 #[cfg(not(target_os = "android"))]
@@ -374,6 +375,8 @@ pub fn run() {
             analytics::analytics_recommendation_seeds,
             analytics::analytics_stats,
             analytics::analytics_clear,
+            analytics_transfer::export_analytics,
+            analytics_transfer::import_analytics,
         ])
         .build(context)
         .expect("error while running tauri application");

@@ -385,6 +385,8 @@ const handlers: Record<string, Handler> = {
   analytics_recommendation_seeds: (): RecommendationSeeds => emptySeeds(),
   analytics_stats: () => null,
   analytics_clear: () => undefined,
+  import_analytics: () => undefined,
+  export_analytics: () => undefined,
 
   check_update: () => (updateAvailable ? offeredUpdate() : null),
   update_status: () => (updateAvailable ? offeredUpdate() : null),

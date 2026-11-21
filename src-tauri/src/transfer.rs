@@ -27,6 +27,43 @@ use crate::tools;
 
 const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024;
 
+pub(crate) fn read_bytes(app: &AppHandle, path: &str) -> Result<Vec<u8>, String> {
+    #[cfg(target_os = "android")]
+    let file = {
+        let selected = FilePath::from_str(path).map_err(|e| e.to_string())?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        app.fs().open(selected, options).map_err(|e| format!("Could not open the export: {e}"))?
+    };
+    #[cfg(not(target_os = "android"))]
+    let file = {
+        let _ = app;
+        fs::File::open(path).map_err(|e| format!("Could not open the export: {e}"))?
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err("The export is too large to read.".into());
+    }
+    Ok(bytes)
+}
+
+pub(crate) fn write_bytes(app: &AppHandle, path: &str, bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err("The export is too large to save.".into());
+    }
+    #[cfg(target_os = "android")]
+    if path.starts_with("content://") {
+        let target = FilePath::from_str(path).map_err(|e| e.to_string())?;
+        let mut options = OpenOptions::new();
+        options.write(true).truncate(true);
+        let mut file = app.fs().open(target, options).map_err(|e| format!("Could not save the export: {e}"))?;
+        return file.write_all(bytes).map_err(|e| format!("Could not save the export: {e}"));
+    }
+    let _ = app;
+    fs::write(path, bytes).map_err(|e| format!("Could not save the export: {e}"))
+}
+
 const VERSION: u32 = 2;
 
 pub const PROGRESS_EVENT: &str = "wavelist-import";
@@ -205,11 +242,12 @@ pub(crate) fn run(
     app: &AppHandle,
     path: &Path,
     report: &mut Reporter,
+    create_playlist: bool,
 ) -> Result<ImportOutcome, String> {
     let list = read(path)?;
     let catalog = app.state::<Catalog>();
 
-    let existing = import_source::catalog_index(&catalog)?;
+    let mut existing = import_source::catalog_index(&catalog)?;
 
     // The download tools are only needed for the songs the library is missing.
     let wanted = list
@@ -276,6 +314,9 @@ pub(crate) fn run(
                     images += usize::from(song.cover || done.cover);
                     lyrics += usize::from(song.lyrics || done.lyrics);
                     similar += usize::from(song.similar);
+                    if let Some(row) = catalog.track(&song.id)? {
+                        import_source::remember(&mut existing, row);
+                    }
                     ids[position] = Some(song.id);
                 }
                 Err(error) => report.fail(format!("{label}: {error}")),
@@ -297,7 +338,7 @@ pub(crate) fn run(
         };
 
         let playlist: Vec<String> = ids.into_iter().flatten().collect();
-        if !playlist.is_empty() {
+        if create_playlist && !playlist.is_empty() {
             outcome.playlist = Some(playlists::write(app, &list.name, &playlist)?);
         }
 
@@ -334,7 +375,7 @@ fn imported_entries(
 }
 
 #[cfg(target_os = "android")]
-fn run_phone(app: &AppHandle, path: &str, report: &mut Reporter) -> Result<ImportOutcome, String> {
+fn run_phone(app: &AppHandle, path: &str, report: &mut Reporter, create_playlist: bool) -> Result<ImportOutcome, String> {
     let selected = FilePath::from_str(path).map_err(|e| e.to_string())?;
     let mut options = OpenOptions::new();
     options.read(true);
@@ -343,6 +384,9 @@ fn run_phone(app: &AppHandle, path: &str, report: &mut Reporter) -> Result<Impor
     let list = read_list(file)?;
     report.phase("resolving", "Matching songs in your library.");
     let catalog = app.state::<Catalog>();
+    if !create_playlist {
+        return import_phone_songs(app, &catalog, &list, report);
+    }
     let existing = import_source::catalog_index(&catalog)?;
     let (entries, pending, matched) = imported_entries(&list.tracks, &existing);
     let playlist_id = catalog.create_imported_playlist(&list.name, &entries, &pending)?;
@@ -353,6 +397,78 @@ fn run_phone(app: &AppHandle, path: &str, report: &mut Reporter) -> Result<Impor
         playlist_id: Some(playlist_id),
         ..ImportOutcome::default()
     };
+    import::remember_import(app, "wavelist", &list.name, &outcome);
+    outcome.refresh_state(app, &app.state::<Store>());
+    Ok(outcome)
+}
+
+#[cfg(any(target_os = "android", test))]
+fn import_songs(
+    catalog: &Catalog,
+    tracks: &[TrackMeta],
+    report: &mut Reporter,
+    mut fetch: impl FnMut(usize, &TrackMeta) -> Result<import::Landed, String>,
+    mut complete: impl FnMut(&str) -> import::Complete,
+) -> Result<ImportOutcome, String> {
+    let mut known = import_source::catalog_index(catalog)?;
+    let mut outcome = ImportOutcome::default();
+    report.phase("downloading", "Downloading missing songs.");
+    report.count(tracks.len());
+    for (position, meta) in tracks.iter().enumerate() {
+        let label = import_source::track_label(meta);
+        report.at(position + 1, &label);
+        if import_source::held(&known, meta).is_some() {
+            outcome.duplicates += 1;
+            report.reuse(&label);
+            continue;
+        }
+        match fetch(position, meta) {
+            Ok(song) => {
+                outcome.songs += usize::from(!song.duplicate);
+                outcome.duplicates += usize::from(song.duplicate);
+                outcome.similar += usize::from(song.similar);
+                let done = complete(&song.id);
+                outcome.images += usize::from(song.cover || done.cover);
+                outcome.lyrics += usize::from(song.lyrics || done.lyrics);
+                if let Some(row) = catalog.track(&song.id)? {
+                    import_source::remember(&mut known, row);
+                }
+            }
+            Err(error) => report.fail(format!("{label}: {error}")),
+        }
+    }
+    outcome.errors = report.failures().to_vec();
+    Ok(outcome)
+}
+
+#[cfg(target_os = "android")]
+fn import_phone_songs(
+    app: &AppHandle,
+    catalog: &Catalog,
+    list: &WaveList,
+    report: &mut Reporter,
+) -> Result<ImportOutcome, String> {
+    let guard = crate::library_work::Guard::start(app, "Importing songs");
+    let staging = staging_dir(app)?;
+    let mut yt = None;
+    let result = import_songs(catalog, &list.tracks, report, |position, meta| {
+        if yt.is_none() {
+            yt = Some(crate::youtube_phone::extractor()?);
+        }
+        let job = download::Job {
+            key: position,
+            meta,
+            dir: staging.path().join(position.to_string()),
+            cover: None,
+        };
+        let result = crate::youtube_phone::fetch_matching(yt.as_ref().unwrap(), &job)
+            .and_then(|file| import::land(app, &file));
+        let _ = fs::remove_dir_all(&job.dir);
+        result
+    }, |id| import::complete(app, id));
+    staging.cleanup();
+    crate::loudness::schedule(app, guard);
+    let mut outcome = result?;
     import::remember_import(app, "wavelist", &list.name, &outcome);
     outcome.refresh_state(app, &app.state::<Store>());
     Ok(outcome)
@@ -395,13 +511,13 @@ pub async fn export_wavelist(
 }
 
 #[tauri::command]
-pub async fn import_wavelist(app: AppHandle, path: String) -> Result<ImportOutcome, String> {
+pub async fn import_wavelist(app: AppHandle, path: String, create_playlist: bool) -> Result<ImportOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut report = Reporter::new(&app, PROGRESS_EVENT, Output::Events);
         #[cfg(target_os = "android")]
-        let result = run_phone(&app, &path, &mut report);
+        let result = run_phone(&app, &path, &mut report, create_playlist);
         #[cfg(not(target_os = "android"))]
-        let result = run(&app, Path::new(&path), &mut report);
+        let result = run(&app, Path::new(&path), &mut report, create_playlist);
         match &result {
             Ok(_) => report.phase("done", "Finished."),
             Err(error) => report.phase("failed", error),
@@ -589,6 +705,40 @@ mod tests {
         catalog.remove_from_playlist(&id, &entries).unwrap();
         assert!(catalog.pending_tracks(&id).unwrap().is_empty());
         assert!(catalog.playlist_entries(&id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn songs_only_import_reuses_and_downloads_without_creating_a_playlist() {
+        let catalog = Catalog::in_memory().unwrap();
+        catalog.upsert_track(&TrackRow {
+            id: "held".into(), rel_path: "held.mp3".into(), title: "Song".into(),
+            artist: Some("Artist".into()), album: Some("Album".into()), ..TrackRow::default()
+        }).unwrap();
+        let mut tracks = list().tracks;
+        tracks.push(TrackMeta {
+            title: "New".into(), artists: vec!["Artist".into()], ..TrackMeta::default()
+        });
+        tracks.push(tracks[1].clone());
+        tracks.push(TrackMeta {
+            title: "Failed".into(), artists: vec!["Artist".into()], ..TrackMeta::default()
+        });
+        let mut fetched = Vec::new();
+        let mut report = Reporter::quiet();
+        let outcome = import_songs(&catalog, &tracks, &mut report, |_, meta| {
+            fetched.push(meta.title.clone());
+            if meta.title == "Failed" {
+                return Err("offline".into());
+            }
+            catalog.upsert_track(&TrackRow {
+                id: "new".into(), rel_path: "new.mp3".into(), title: meta.title.clone(),
+                artist: Some("Artist".into()), ..TrackRow::default()
+            }).unwrap();
+            Ok(import::Landed { id: "new".into(), duplicate: false, similar: false, cover: false, lyrics: false })
+        }, |_| import::Complete::default()).unwrap();
+        assert_eq!(fetched, ["New", "Failed"]);
+        assert_eq!((outcome.songs, outcome.duplicates, outcome.errors.len()), (1, 2, 1));
+        assert!(outcome.playlist.is_none());
+        assert!(catalog.playlists().unwrap().is_empty());
     }
 
 }

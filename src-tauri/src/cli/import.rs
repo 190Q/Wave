@@ -18,7 +18,7 @@ pub fn run(app: &AppHandle, options: &Import) -> Result<(), String> {
         return folder(app, &path, options);
     }
     if path.is_file() {
-        return file(app, &path);
+        return file(app, &path, options);
     }
     if looks_like_a_link(target) || options.from.is_some() {
         return link(app, target, options);
@@ -59,7 +59,7 @@ fn folder(app: &AppHandle, path: &Path, options: &Import) -> Result<(), String> 
 }
 
 /// A file: the one kind Wave imports by itself is a Wave playlist.
-fn file(app: &AppHandle, path: &Path) -> Result<(), String> {
+fn file(app: &AppHandle, path: &Path, options: &Import) -> Result<(), String> {
     if !path
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("wavelist"))
@@ -71,7 +71,7 @@ fn file(app: &AppHandle, path: &Path) -> Result<(), String> {
     }
 
     let mut report = Reporter::new(app, crate::transfer::PROGRESS_EVENT, Output::Console);
-    let outcome = crate::transfer::run(app, path, &mut report);
+    let outcome = crate::transfer::run(app, path, &mut report, !options.no_playlist);
 
     match &outcome {
         Ok(_) => report.phase("done", "Finished."),
@@ -85,8 +85,8 @@ fn file(app: &AppHandle, path: &Path) -> Result<(), String> {
 fn link(app: &AppHandle, url: &str, options: &Import) -> Result<(), String> {
     if options.playlist.is_some() || options.no_playlist {
         return Err(
-            "--playlist and --no-playlist are for a folder; a link's playlist is named after \
-             what the link points at"
+            "--playlist is for a folder and --no-playlist is for a folder or .wavelist; \
+             a link's playlist is named after what the link points at"
                 .to_string(),
         );
     }

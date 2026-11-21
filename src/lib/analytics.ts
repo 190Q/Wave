@@ -63,6 +63,13 @@ let lastId: string | null = null;
 let flushTimer: number | null = null;
 let checkpointTimer: number | null = null;
 let counter = 0;
+const pendingWrites = new Set<Promise<void>>();
+
+function trackWrite(write: Promise<void>): Promise<void> {
+  pendingWrites.add(write);
+  void write.then(() => pendingWrites.delete(write), () => pendingWrites.delete(write));
+  return write;
+}
 
 /** Starts following the player. Does nothing if it is already following one. */
 export function mountAnalytics(next: AnalyticsContext): void {
@@ -78,14 +85,14 @@ export function mountAnalytics(next: AnalyticsContext): void {
 }
 
 /** Snapshots the library, so a song that is deleted later still has a name. */
-export function rememberTracks(tracks: Track[]): void {
+export function rememberTracks(tracks: Track[]): Promise<void> {
   if (!context?.enabled() || tracks.length === 0) {
-    return;
+    return Promise.resolve();
   }
   const snapshots = tracks.map(snapshotOf);
-  void ipc.rememberTracks(snapshots).catch(() => {
+  return trackWrite(ipc.rememberTracks(snapshots).catch(() => {
     // The record is a nicety; a failed write must not disturb the library.
-  });
+  }));
 }
 
 /** Records a signal that is not a play: a like, a playlist edit, and so on. */
@@ -102,9 +109,9 @@ export function recordEvent(kind: AnalyticsEventKind, options: EventOptions = {}
       ? [{ at, kind, trackId: null, playlistId, value }]
       : trackIds.map((trackId) => ({ at, kind, trackId, playlistId, value }));
 
-  void ipc.recordAnalyticsEvents(events).catch(() => {
+  void trackWrite(ipc.recordAnalyticsEvents(events).catch(() => {
     // Same as above.
-  });
+  }));
 }
 
 /** The current song ran to its end, so its listen is finished. */
@@ -133,6 +140,27 @@ export function forgetCaptured(): void {
   }
 }
 
+export async function prepareAnalyticsTransfer(): Promise<void> {
+  context?.player.sampleListening();
+  if (flushTimer !== null) {
+    window.clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  const batch = queued;
+  queued = [];
+  await Promise.all([...pendingWrites]);
+  for (let index = 0; index < batch.length; index += 1) {
+    try {
+      await ipc.recordPlay(batch[index]);
+    } catch (error) {
+      queued = [...batch.slice(index), ...queued];
+      scheduleFlush();
+      throw error;
+    }
+  }
+  await checkpoint(true);
+}
+
 /** Writes everything outstanding. Awaited before the window is allowed to go. */
 export async function flushAnalytics(): Promise<void> {
   if (context?.enabled()) {
@@ -150,6 +178,7 @@ export async function flushAnalytics(): Promise<void> {
 
   const batch = queued;
   queued = [];
+  await Promise.all([...pendingWrites]);
   await writeBatch(batch);
 }
 
@@ -240,7 +269,7 @@ function toRecord(current: ListenDraft, ended: boolean, reason: PlayReason): Pla
 
 function startCheckpoint(): void {
   stopCheckpoint();
-  checkpointTimer = window.setInterval(() => void checkpoint(), CHECKPOINT_MS);
+  checkpointTimer = window.setInterval(() => void trackWrite(checkpoint()), CHECKPOINT_MS);
 }
 
 function stopCheckpoint(): void {
@@ -251,7 +280,7 @@ function stopCheckpoint(): void {
 }
 
 /** Writes the listen in progress as it stands, so a crash loses little of it. */
-async function checkpoint(): Promise<void> {
+async function checkpoint(strict = false): Promise<void> {
   context?.player.sampleListening();
   const current = draft;
   if (!current || !context?.enabled()) {
@@ -259,7 +288,8 @@ async function checkpoint(): Promise<void> {
   }
   try {
     await ipc.recordPlay(toRecord(current, false, "open"));
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     // Best effort; the next checkpoint tries again.
   }
 }
@@ -272,7 +302,7 @@ function scheduleFlush(): void {
     flushTimer = null;
     const batch = queued;
     queued = [];
-    void writeBatch(batch);
+    void trackWrite(writeBatch(batch));
   }, FLUSH_DELAY_MS);
 }
 

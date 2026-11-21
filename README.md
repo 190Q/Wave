@@ -146,10 +146,17 @@ can also pick individual audio files, scan the phone's music folders, or
 import a copied Wave `songs` folder with its artwork and lyrics.
 
 To move a playlist, export a collection from **Settings → Library** on desktop
-and import the resulting `.wavelist` from **Import**. Wave matches songs already
-in the library and searches YouTube for missing audio. For Android, copying the
-original songs first preserves the original files; see the migration guide
+and import the resulting `.wavelist` from **Import**. Choose whether to create
+a playlist or import only its songs. Wave matches songs already in the library
+and searches YouTube for missing audio. For Android, copying the original songs
+first preserves the original files; see the migration guide
 [below](#migrating-to-android).
+
+To move listening history, import the songs first, then use **Settings → Wave
+Swell → Export** on the source device and **Import** on the destination. A
+`.waveanalytics` backup replaces the destination's current listening record
+after confirmation. It includes listening activity, not audio, playlists,
+likes, or settings. Songs are matched by ID or unambiguous metadata.
 
 Local playback works offline. Imports can look up missing metadata online, and
 update checks and generated playlists also use the network.
@@ -180,8 +187,8 @@ and names derived only from the original filenames may not survive the copy.
    `songs` folder inside a folder such as `Music/Wave transfer`.
 4. On Android, open **Import → Import folder**, select the copied `songs`
    folder and grant access when prompted. Wait for the import to finish.
-5. Open **Import → Import Wave playlist** and select each `.wavelist` in turn.
-   Wave creates playlists, matches imported songs, and searches YouTube for
+5. Open **Import → Import Wave playlist**, select each `.wavelist` in turn,
+   and choose **As a playlist**. Wave matches imported songs and searches YouTube for
    missing audio. Downloaded matches may differ from the original recordings.
    Entries that cannot be downloaded remain in the playlist; use **Download**
    there to retry, or import their audio later.
@@ -190,8 +197,9 @@ and names derived only from the original filenames may not survive the copy.
    a song and choose **Select all**; long-press again and choose **Like** if
    offered to restore the likes.
 
-Settings and listening history are not transferred. Wave copies the audio into
-its own library, so allow enough space for both copies during import. After
+Settings are not transferred. Listening history can be transferred separately
+using **Settings → Wave Swell → Export** and **Import**. Wave copies the audio
+into its own library, so allow enough space for both copies during import. After
 checking the songs and playlists, you can remove the temporary copy from phone
 storage.
 

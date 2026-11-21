@@ -382,7 +382,12 @@ export function mountImportDialog(): void {
         return;
       case "wavelist":
         close();
-        void importWaveList();
+        void importWaveList(() => choiceDialog({
+          title: "Import this Wave playlist",
+          message: "Add the songs to your library, or also create a playlist? Songs already in your library are reused.",
+          confirmLabel: "As a playlist",
+          cancelLabel: "Songs only",
+        }));
         return;
       case "link-panel":
         open(fallback, true);

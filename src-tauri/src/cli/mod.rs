@@ -609,13 +609,13 @@ searched for and tagged exactly as they are from the import dialog, using the
 yt-dlp, ffmpeg and Deno that ship with Wave.
 
 A playlist, album or channel becomes a Wave playlist named after it. A folder
-becomes one too unless --no-playlist is given. Songs the library already has are
+or .wavelist becomes one too unless --no-playlist is given. Songs the library already has are
 skipped unless --duplicates is given.
 
     --plan             read the link and say what it holds, downloading nothing
     --duplicates       download songs the library already has as well
     --playlist <name>  the name of the playlist a folder import creates
-    --no-playlist      import a folder without creating a playlist
+    --no-playlist      import a folder or .wavelist without creating a playlist
     --from <service>   read the link as spotify, deezer or youtube
 
 A link is read as Deezer if it names Deezer, as YouTube if it names YouTube, and

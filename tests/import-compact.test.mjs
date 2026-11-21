@@ -12,7 +12,7 @@ const mocks = {
     export const getState = () => context().state;
     export const importLogPath = async () => "";
     export const importFolder = () => { context().actions.push("folder"); };
-    export const importWaveList = () => { context().actions.push("wavelist"); };
+    export const importWaveList = (choose) => { context().actions.push("wavelist"); context().chooseWave = choose; };
     export const collectionById = () => undefined;
     export const fetchCovers = () => {}, fetchGenres = () => {}, fetchLyrics = () => {};
     export const fixTagsAndCovers = () => {}, importPhoneFolder = () => {};
@@ -25,7 +25,7 @@ const mocks = {
     export const jobRunning = () => false, serviceOf = () => "youtube";
     export const setNotice = () => {}, subscribe = () => {};
   `,
-  "./confirm": "export const choiceDialog = () => {}; export const confirmDialog = () => {};",
+  "./confirm": "export const choiceDialog = async (options) => { globalThis.__importTest.choice = options; return false; }; export const confirmDialog = () => {};",
   "./highlight": "export const highlightHtml = (value) => value;",
   "./icons": "export const fillIcons = () => {};",
   "./picker": "export const placePicker = () => {}; export const windowFrame = () => {};",
@@ -116,6 +116,18 @@ function actions(html) {
 }
 
 const { mountImportDialog } = await vite.ssrLoadModule("/src/ui/import-dialog.ts");
+
+test("Wave playlist import offers a playlist or songs only", async () => {
+  const { context, elements } = setup("desktop", 350);
+  mountImportDialog();
+  elements["import-open"].dispatch("click");
+  elements["import-drop-list"].dispatch("click", {
+    target: { closest: () => ({ dataset: { import: "wavelist" } }) },
+  });
+  assert.equal(await context.chooseWave(), false);
+  assert.equal(context.choice.confirmLabel, "As a playlist");
+  assert.equal(context.choice.cancelLabel, "Songs only");
+});
 
 test("desktop compact import shows and runs only the local import actions", () => {
   const { context, elements, dialog } = setup("desktop", 350);

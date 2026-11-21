@@ -121,6 +121,8 @@ export function mountLibrary(): void {
   let creating = false;
   let renaming: string | null = null;
   let openCollectionId: string | null = null;
+  let analyticsRevision = getState().analyticsRevision;
+  let swellRefreshPending = false;
   let view: string | null = null;
   let dragIds: string[] | null = null;
   let dropAt: { index: number; after: boolean } | null = null;
@@ -320,6 +322,11 @@ export function mountLibrary(): void {
     }
 
     swellReading = false;
+    if (swellRefreshPending) {
+      swellRefreshPending = false;
+      void readSwell();
+      return;
+    }
     render();
 
     if (swellLoad && !swellLoad.summaries[swellPeriod]) {
@@ -345,6 +352,11 @@ export function mountLibrary(): void {
     }
 
     swellReading = false;
+    if (swellRefreshPending) {
+      swellRefreshPending = false;
+      void readSwell();
+      return;
+    }
     render();
   };
 
@@ -921,7 +933,18 @@ export function mountLibrary(): void {
     }
   };
 
-  subscribe(render);
+  subscribe(() => {
+    const revision = getState().analyticsRevision;
+    if (revision !== analyticsRevision) {
+      analyticsRevision = revision;
+      swellLoad = null;
+      if (openCollectionId === SWELL_ID) {
+        if (swellReading) swellRefreshPending = true;
+        else void readSwell();
+      }
+    }
+    render();
+  });
   render();
 }
 

@@ -4,13 +4,14 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 
 const mocks = {
-  "../lib/analytics": "export const forgetCaptured = () => {};",
+  "../lib/analytics": "export const forgetCaptured = () => {}; export const prepareAnalyticsTransfer = async () => globalThis.__settingsTest.transfer.push('prepare');",
   "../lib/device": `
     export const device = () => globalThis.__settingsTest.device;
     export let isAndroidPlatform = false;
     export const setAndroidPlatform = (value) => { isAndroidPlatform = value; };
     export const titlebarVisible = (value) => value ?? true;
   `,
+  "./confirm": "export const confirmDialog = async () => globalThis.__settingsTest.confirm;",
   "../lib/format": `
     export const escapeHtml = (value) => String(value);
     export const formatTotalDuration = (value) => String(value);
@@ -20,6 +21,10 @@ const mocks = {
     export const analyticsStats = () => globalThis.__settingsTest.analytics;
     export const analyticsSwell = () => globalThis.__settingsTest.analytics;
     export const clearAnalytics = async () => {};
+    export const pickAnalyticsImport = async () => globalThis.__settingsTest.importPath;
+    export const pickAnalyticsExport = async () => globalThis.__settingsTest.exportPath;
+    export const importAnalytics = async (path) => globalThis.__settingsTest.transfer.push(['import', path]);
+    export const exportAnalytics = async (path) => globalThis.__settingsTest.transfer.push(['export', path]);
     export const openLibraryFolder = async () => {};
     export const resetWindowGeometry = async () => {};
   `,
@@ -43,8 +48,9 @@ const mocks = {
     export const exportCollection = async () => {};
     export const fixTagsAndCovers = async () => {};
     export const jobRunning = () => false;
+    export const refreshAnalytics = async () => context().transfer.push('refresh');
     export const rescanLibrary = async () => {};
-    export const setNotice = () => {};
+    export const setNotice = (value) => { context().notice = value; };
   `,
   "./drop": `
     export const createPanel = ({ show }) => ({
@@ -193,6 +199,10 @@ function setup(device = "desktop", androidPlatform = false) {
     saved: [],
     updateChecks: 0,
     updateOpens: 0,
+    transfer: [],
+    importPath: null,
+    exportPath: null,
+    confirm: false,
     checkResult: null,
     state: {
       settings: {
@@ -211,6 +221,37 @@ function setup(device = "desktop", androidPlatform = false) {
 
 const { mountSettings, openSettings } = await vite.ssrLoadModule("/src/ui/settings.ts");
 const { setAndroidPlatform } = await vite.ssrLoadModule("\0settings-test:../lib/device");
+
+test("listening-record transfers honor cancellation and confirm replacement", async () => {
+  const { body, context } = setup();
+  context.analytics = Promise.resolve({ path: "analytics.db", plays: 0 });
+  mountSettings();
+  openSettings();
+  assert.match(body.innerHTML, /data-command="import-analytics"/);
+  assert.match(body.innerHTML, /data-command="export-analytics"/);
+  const command = (name) => {
+    const button = new Element();
+    button.dataset.command = name;
+    body.dispatch("click", { target: button });
+  };
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+  command("export-analytics");
+  await tick();
+  assert.deepEqual(context.transfer, []);
+  context.exportPath = "backup.waveanalytics";
+  command("export-analytics");
+  await tick();
+  assert.deepEqual(context.transfer, ["prepare", ["export", "backup.waveanalytics"]]);
+  context.importPath = "backup.waveanalytics";
+  command("import-analytics");
+  await tick();
+  assert.equal(context.transfer.length, 2);
+  context.confirm = true;
+  command("import-analytics");
+  await tick();
+  assert.deepEqual(context.transfer.slice(2), ["prepare", ["import", "backup.waveanalytics"], "refresh"]);
+  assert.equal(context.notice, "Listening record imported.");
+});
 
 test("Discord presence appears on desktop and Linux phones, not Android", () => {
   for (const [device, androidPlatform, visible] of [

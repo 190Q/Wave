@@ -137,6 +137,7 @@ export interface AppState {
   sort: CollectionSort;
   /** Track id -> how often it has been streamed, for the orders that need it. */
   playCounts: Map<string, number>;
+  analyticsRevision: number;
   libraryOpen: boolean;
   queueOpen: boolean;
   recents: string[];
@@ -182,6 +183,13 @@ export interface AppState {
   updateProgress: UpdateProgress | null;
   /** What a check or an install said when it went wrong. */
   updateError: string | null;
+}
+
+export async function refreshAnalytics(): Promise<void> {
+  await rememberTracks(state.tracks);
+  state.analyticsRevision += 1;
+  emit();
+  await Promise.all([loadPlayCounts(true), refreshRecommendStatus()]);
 }
 
 function applyLikes(likes: string[]): void {
@@ -306,6 +314,7 @@ const state: AppState = {
   query: "",
   sort: "name",
   playCounts: new Map(),
+  analyticsRevision: 0,
   libraryOpen: false,
   queueOpen: false,
   recents: [],
@@ -1448,7 +1457,7 @@ export async function importPhoneMusic(): Promise<void> {
 
 let transferPending = false;
 
-export async function importWaveList(): Promise<void> {
+export async function importWaveList(choose: () => Promise<boolean | null>): Promise<void> {
   if (transferPending || jobRunning(state.transferProgress)) {
     return;
   }
@@ -1458,13 +1467,17 @@ export async function importWaveList(): Promise<void> {
     if (!path) {
       return;
     }
+    const createPlaylist = await choose();
+    if (createPlaylist === null) {
+      return;
+    }
     state.transferProgress = {
       phase: "resolving", done: 0, total: 0, label: "",
       message: "Reading the Wave playlist...", failures: [], reused: 0,
       startedAt: Date.now(),
     };
     emit();
-    const outcome = await ipc.importWaveList(path);
+    const outcome = await ipc.importWaveList(path, createPlaylist);
     applyPersisted(outcome.state);
     await rescan();
     const message = importSummary(outcome, isAndroidPlatform);
@@ -2000,22 +2013,26 @@ export function setQuery(query: string): void {
 
 /** Set while the play counts are being read, so a second read waits its turn. */
 let countsReading = false;
+let countsRequest = 0;
 
 /** Reads how often each song has been streamed, for the orders that need it. */
-async function loadPlayCounts(): Promise<void> {
-  if (countsReading) {
+async function loadPlayCounts(force = false): Promise<void> {
+  if (countsReading && !force) {
     return;
   }
   countsReading = true;
+  const request = ++countsRequest;
 
   try {
     const counts = await ipc.analyticsPlayCounts();
-    state.playCounts = new Map(Object.entries(counts));
-    emit();
+    if (request === countsRequest) {
+      state.playCounts = new Map(Object.entries(counts));
+      emit();
+    }
   } catch {
     // Left as it stands; every song simply counts as unplayed.
   } finally {
-    countsReading = false;
+    if (request === countsRequest) countsReading = false;
   }
 }
 

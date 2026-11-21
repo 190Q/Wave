@@ -306,6 +306,10 @@ impl Analytics {
         })
     }
 
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// A throwaway database, used when the real one cannot be opened so the app
     /// still runs. Nothing written to it is kept.
     pub fn in_memory() -> Self {
@@ -332,7 +336,7 @@ impl Analytics {
         Ok(())
     }
 
-    fn guard(&self) -> MutexGuard<'_, Connection> {
+    pub(crate) fn guard(&self) -> MutexGuard<'_, Connection> {
         // A poisoned lock only means another command panicked mid-write.
         self.conn
             .lock()

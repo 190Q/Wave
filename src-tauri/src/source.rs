@@ -91,7 +91,7 @@ fn env_template() -> String {
 # 3. Paste the app's Client ID and Client Secret below.
 #
 # Deezer and YouTube need no credentials at all: a Deezer link is read from the
-# public catalogue, and a YouTube link is downloaded exactly as it is. yt-dlp,
+# public catalogue, and videos from YouTube links are downloaded directly. yt-dlp,
 # ffmpeg and Deno all ship with Wave, so the three paths below are only for
 # pointing at a copy of your own.
 SPOTIFY_CLIENT_ID=

@@ -42,6 +42,7 @@ mod search;
 mod source;
 mod spotify;
 mod youtube;
+mod youtube_mix;
 #[cfg(any(target_os = "android", test))]
 mod youtube_phone;
 mod spotify_import;

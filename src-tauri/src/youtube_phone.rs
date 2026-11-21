@@ -207,6 +207,9 @@ fn resolve(yt: &PhoneYoutube, url: &str, report: &mut Reporter) -> Result<Link, 
 }
 
 fn resolve_with_limit(yt: &PhoneYoutube, url: &str, report: &mut Reporter, limit: usize) -> Result<Link, String> {
+    if crate::youtube_mix::is_mix(url) {
+        return crate::youtube_mix::resolve(url, report, limit);
+    }
     report.phase("resolving", "Reading the YouTube link.");
     let playlist_title = if url.contains("/playlist?") { playlist_title(url) } else { None };
     tauri::async_runtime::block_on(async {
@@ -226,7 +229,7 @@ fn resolve_with_limit(yt: &PhoneYoutube, url: &str, report: &mut Reporter, limit
                 }, report, limit).await?;
                 (Kind::Collection, name, tracks)
             }
-            _ => return Err("Paste a YouTube video or playlist link.".to_string()),
+            _ => return Err("Paste a YouTube video, playlist or mix link.".to_string()),
         };
         if tracks.is_empty() {
             return Err("That YouTube link has no videos to download.".to_string());
@@ -536,6 +539,32 @@ mod tests {
                 Some("https://www.youtube.com/watch?v=O5xeyoRL95U"),
             ],
         );
+    }
+
+    #[test]
+    #[ignore = "requires YouTube network access"]
+    fn downloads_a_real_youtube_mix_entry() {
+        #[cfg(target_os = "android")]
+        crate::install_tls_provider();
+        let yt = extractor().unwrap();
+        let mut report = Reporter::quiet();
+        let link = resolve_with_limit(
+            &yt,
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ",
+            &mut report,
+            1,
+        ).unwrap();
+        assert_eq!(link.kind, Kind::Collection);
+        assert_eq!(link.tracks.len(), 1);
+        let dir = std::env::temp_dir().join(format!("wave-youtube-mix-{}", crate::identity::new_id()));
+        let job = Job { key: 0, meta: &link.tracks[0], dir: dir.clone(), cover: None };
+        let path = fetch(&yt, &job).unwrap();
+        assert!(fs::metadata(&path).unwrap().len() > 10_000);
+        let tags = lofty::read_from_path(&path).unwrap();
+        use lofty::prelude::{Accessor, TaggedFileExt};
+        assert_eq!(tags.primary_tag().and_then(|tag| tag.title()).as_deref(), Some(link.tracks[0].title.as_str()));
+        assert!(tags.primary_tag().is_some_and(|tag| !tag.pictures().is_empty()));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

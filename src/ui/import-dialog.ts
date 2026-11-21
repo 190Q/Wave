@@ -606,8 +606,8 @@ function localSection(): string {
 function linkSection(): string {
   const android = device() === "android";
   const hint = android
-    ? "Paste a YouTube video or playlist link to download its audio to your library."
-    : "Paste a Spotify, Deezer or YouTube link: a track, a playlist, or a Deezer album. A YouTube link is downloaded exactly as it is, so nothing is guessed at. Spotify needs the credentials below; Deezer and YouTube need nothing else.";
+    ? "Paste a YouTube video, playlist or mix link to download its audio to your library. Playlists import up to 500 videos. Mixes import up to 50 videos without signing in."
+    : "Paste a Spotify, Deezer or YouTube link: a track, playlist, YouTube mix, or Deezer album. YouTube playlists import up to 500 videos. YouTube mixes import up to 50 videos without signing in. YouTube videos are downloaded directly. Spotify needs the credentials below; Deezer and YouTube need nothing else.";
   const placeholder = android ? "https://www.youtube.com/..." : "https://open.spotify.com/... or https://www.youtube.com/...";
   const label = android ? "YouTube link" : "Spotify, Deezer or YouTube link";
   return section(

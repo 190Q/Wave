@@ -124,7 +124,7 @@ pub fn resolve_link(
     match service {
         Service::Spotify => crate::spotify_import::resolve(app, url, report),
         Service::Deezer => crate::deezer_import::resolve(url, report, enrich),
-        Service::Youtube => crate::youtube::resolve(app, url, report),
+        Service::Youtube => crate::youtube::resolve(app, url, enrich, report),
     }
 }
 

@@ -1,3 +1,6 @@
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
 use serde::Serialize;
 use tauri::AppHandle;
 
@@ -16,6 +19,9 @@ use crate::tools;
 
 /// How many songs one pasted link may bring in.
 const LIMIT: usize = 500;
+const CHECKED_FOR: Duration = Duration::from_secs(600);
+type CheckedLink = (Instant, String, Link);
+static CHECKED_MIX: Mutex<Option<CheckedLink>> = Mutex::new(None);
 
 /// What a pasted link needs: the download tools, and nothing else.
 #[derive(Debug, Clone, Serialize)]
@@ -32,12 +38,33 @@ pub struct YoutubeStatus {
 
 /// Reads a link the user pasted and turns it into the songs it points at. The
 /// audio comes from the very upload they linked, so nothing is guessed at.
-pub(crate) fn resolve(app: &AppHandle, url: &str, report: &mut Reporter) -> Result<Link, String> {
+pub(crate) fn resolve(app: &AppHandle, url: &str, importing: bool, report: &mut Reporter) -> Result<Link, String> {
+    let url = youtube_url(url)?;
+    if crate::youtube_mix::is_mix(&url) {
+        if importing {
+            if let Some(link) = take_checked(
+                &mut CHECKED_MIX.lock().unwrap_or_else(|error| error.into_inner()),
+                &url,
+                Instant::now(),
+            ) {
+                report.phase("resolving", "Using the checked YouTube mix.");
+                return Ok(link);
+            }
+        } else {
+            *CHECKED_MIX.lock().unwrap_or_else(|error| error.into_inner()) = None;
+        }
+        let link = crate::youtube_mix::resolve(&url, report, crate::youtube_mix::LIMIT)?;
+        if !importing {
+            *CHECKED_MIX.lock().unwrap_or_else(|error| error.into_inner()) =
+                Some((Instant::now(), url, link.clone()));
+        }
+        return Ok(link);
+    }
     let bundled = tools::bundled_dir(app);
     let tools = download::resolve_tools(&read_env(app), bundled.as_deref())?;
 
     report.phase("resolving", "Reading the link.");
-    let (name, entries) = download::read_link(&tools, url, LIMIT)?;
+    let (name, entries) = download::read_link(&tools, &url, LIMIT)?;
 
     let tracks: Vec<TrackMeta> = entries
         .into_iter()
@@ -52,15 +79,20 @@ pub(crate) fn resolve(app: &AppHandle, url: &str, report: &mut Reporter) -> Resu
         .collect();
 
     Ok(Link {
-        kind: if tracks.len() == 1 {
-            Kind::Single
-        } else {
-            Kind::Collection
-        },
-        id: folder_name(url),
+        kind: link_kind(&url),
+        id: folder_name(&url),
         name,
         tracks,
     })
+}
+
+fn take_checked(slot: &mut Option<CheckedLink>, url: &str, now: Instant) -> Option<Link> {
+    let (created, checked_url, link) = slot.take()?;
+    (checked_url == url && now.saturating_duration_since(created) <= CHECKED_FOR).then_some(link)
+}
+
+fn link_kind(url: &str) -> Kind {
+    if url.contains("list=") { Kind::Collection } else { Kind::Single }
 }
 
 /// A folder name for the link, so each one stages on its own.
@@ -83,9 +115,8 @@ pub(crate) fn folder_name(url: &str) -> String {
     }
 }
 
-#[cfg(any(target_os = "android", test))]
 pub(crate) fn youtube_url(url: &str) -> Result<String, String> {
-    let invalid = || "Paste a YouTube video or playlist link.".to_string();
+    let invalid = || "Paste a YouTube video, playlist or mix link.".to_string();
     let parsed = reqwest::Url::parse(url.trim()).map_err(|_| invalid())?;
     if parsed.scheme() != "https" || parsed.port().is_some() || !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(invalid());
@@ -117,6 +148,9 @@ pub(crate) fn youtube_url(url: &str) -> Result<String, String> {
     };
     let valid_id = |id: &str| id.len() == 11
         && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-');
+    if id.as_deref().is_some_and(|id| !valid_id(id)) {
+        return Err(invalid());
+    }
     if (host == "youtu.be" || !matches!(parsed.path(), "/watch" | "/playlist" | "/playlist/"))
         && !id.as_deref().is_some_and(valid_id)
     {
@@ -127,6 +161,9 @@ pub(crate) fn youtube_url(url: &str) -> Result<String, String> {
             || !list.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
         {
             return Err(invalid());
+        }
+        if let Some(id) = id.as_deref().filter(|_| list.starts_with("RD")) {
+            return Ok(format!("https://www.youtube.com/watch?v={id}&list={list}"));
         }
         return Ok(format!("https://www.youtube.com/playlist?list={list}"));
     }
@@ -208,7 +245,7 @@ pub async fn youtube_status(app: AppHandle) -> Result<YoutubeStatus, String> {
         let bundled = tools::bundled_dir(&handle);
         let found = tools::status(&read_env(&handle), bundled.as_deref());
         let message = found.problem().unwrap_or_else(|| {
-            "A pasted link is downloaded exactly as it is, so nothing is guessed at.".to_string()
+            "The videos in a YouTube link are downloaded directly.".to_string()
         });
 
         Ok(YoutubeStatus {
@@ -232,6 +269,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_one_video_playlist_is_still_a_collection() {
+        assert_eq!(link_kind(&youtube_url("https://youtube.com/playlist?list=PL123").unwrap()), Kind::Collection);
+        assert_eq!(link_kind(&youtube_url("https://youtube.com/watch?v=dQw4w9WgXcQ").unwrap()), Kind::Single);
+        assert_eq!(link_kind(&youtube_url("https://youtube.com/watch?v=dQw4w9WgXcQ&list=RDMM").unwrap()), Kind::Collection);
+    }
+
+    #[test]
+    fn checked_mixes_are_used_once_only_for_the_same_recent_url() {
+        let now = Instant::now();
+        let link = Link { kind: Kind::Collection, id: "id".into(), name: "mix".into(), tracks: vec![] };
+        let mut slot = Some((now, "url".into(), link.clone()));
+        assert_eq!(take_checked(&mut slot, "url", now).unwrap().name, "mix");
+        assert!(take_checked(&mut slot, "url", now).is_none());
+        slot = Some((now, "url".into(), link.clone()));
+        assert!(take_checked(&mut slot, "other", now).is_none());
+        slot = Some((now, "url".into(), link));
+        assert!(take_checked(&mut slot, "url", now + CHECKED_FOR + Duration::from_secs(1)).is_none());
+    }
+
+    #[test]
     fn accepts_only_youtube_videos_and_playlists() {
         let video = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
         assert_eq!(youtube_url(" https://youtu.be/dQw4w9WgXcQ?t=1 ").unwrap(), video);
@@ -241,6 +298,16 @@ mod tests {
             youtube_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL_123").unwrap(),
             "https://www.youtube.com/playlist?list=PL_123"
         );
+        let mix = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ";
+        assert_eq!(youtube_url(mix).unwrap(), mix);
+        assert_eq!(
+            youtube_url("https://youtu.be/dQw4w9WgXcQ?list=RDdQw4w9WgXcQ&index=2").unwrap(),
+            mix
+        );
+        assert_eq!(
+            youtube_url("https://music.youtube.com/playlist?list=RDMM").unwrap(),
+            "https://www.youtube.com/playlist?list=RDMM"
+        );
         for bad in [
             "https://open.spotify.com/track/123",
             "https://youtube.com.evil.example/watch?v=dQw4w9WgXcQ",
@@ -249,6 +316,7 @@ mod tests {
             "https://youtube.com/@channel",
             "https://youtube.com/@channel?list=PL123",
             "https://youtube.com/watch?v=bad",
+            "https://youtube.com/watch?v=bad&list=RDMM",
             "https://youtube.com:444/watch?v=dQw4w9WgXcQ",
             "https://youtube.com/watch?v=dQw4w9WgXcQ&list=",
             "https://youtu.be/bad?list=PL123",

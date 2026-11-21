@@ -611,6 +611,7 @@ pub fn read_link(tools: &Tools, url: &str, limit: usize) -> Result<(String, Vec<
     command.args(js_args(tools));
     command
         .arg("--flat-playlist")
+        .arg("--yes-playlist")
         .arg("--dump-json")
         .arg("--skip-download")
         .arg("--no-warnings")

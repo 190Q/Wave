@@ -48,7 +48,7 @@ export function createSongEditor(): HTMLElement {
               <div class="song-editor-playhead" id="song-editor-playhead"></div>
             </div>
           </div>
-          <p class="settings-hint song-editor-timeline-hint">Drag the waveform to select a cut, or drag a lyric to retime it. Ctrl + scroll zooms; Shift + scroll moves sideways. Space plays or pauses.</p>
+          <p class="settings-hint song-editor-timeline-hint">Drag the waveform to select a cut, or drag a lyric to retime it. Ctrl + scroll zooms; Shift + scroll moves sideways. Click the waveform to seek and resume following. Space plays or pauses.</p>
         </section>
         <div class="song-editor-lower">
           <section class="song-editor-card song-editor-cuts-panel" aria-labelledby="song-editor-cuts-title">

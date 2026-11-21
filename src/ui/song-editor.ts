@@ -86,6 +86,7 @@ function mountSongEditor(): void {
   let closeTimer: number | null = null;
   let pixelsPerSecond = 10;
   let timelineWidth = 0;
+  let followPlayback = true;
   let selectedLine: number | null = null;
   let selectedRange: AudioCut | null = null;
   let activeLine = -1;
@@ -167,6 +168,7 @@ function mountSongEditor(): void {
   };
   const seekTo = (ms: number): void => {
     if (duration() <= 0) return;
+    followPlayback = true;
     audio.currentTime = Math.min(duration(), Math.max(0, ms)) / 1000;
     paintClock();
   };
@@ -401,6 +403,7 @@ function mountSongEditor(): void {
   };
 
   const followPlayhead = (): void => {
+    if (!followPlayback) return;
     const x = xAt(current());
     if (x > viewport.scrollLeft + viewport.clientWidth * 0.85 || x < viewport.scrollLeft) {
       viewport.scrollLeft = Math.max(0, x - viewport.clientWidth * 0.2);
@@ -453,6 +456,7 @@ function mountSongEditor(): void {
     selectedLine = null;
     selectedRange = null;
     pixelsPerSecond = 10;
+    followPlayback = true;
     loaded = false;
     discard.hidden = true;
     showError("");
@@ -549,7 +553,11 @@ function mountSongEditor(): void {
 
   play.addEventListener("click", togglePlay);
   viewport.addEventListener("scroll", () => { paintRuler(); paintWave(); });
+  viewport.addEventListener("pointerdown", (event) => {
+    if (event.button === 1) followPlayback = false;
+  });
   viewport.addEventListener("wheel", (event) => {
+    if (event.ctrlKey || event.shiftKey || event.deltaX !== 0) followPlayback = false;
     if (event.ctrlKey) {
       event.preventDefault();
       event.stopPropagation();

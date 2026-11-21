@@ -1,21 +1,33 @@
 use std::fs;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(target_os = "android")]
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
+#[cfg(target_os = "android")]
 use tauri::AppHandle;
 use ytdown::{CollectionKind, Container, MediaInfo, VideoInfo, Ytdown};
 use ytdown::extractor::{Extractor, ExtractorContext, youtube::YoutubeExtractor};
 use ytdown::transport::{HttpClient, HttpRequest, HttpResponse, ReqwestClient};
 
-use crate::download::{self, Fetched, Job};
+use crate::download::{self, Job};
+#[cfg(target_os = "android")]
+use crate::download::Fetched;
+#[cfg(target_os = "android")]
 use crate::import::ImportOutcome;
-use crate::import_source::{self, ImportPlan, Kind, Link};
-use crate::progress::{Output, Reporter};
+use crate::import_source::{Kind, Link};
+#[cfg(target_os = "android")]
+use crate::import_source::{self, ImportPlan};
+use crate::progress::Reporter;
+#[cfg(target_os = "android")]
+use crate::progress::Output;
 use crate::source::TrackMeta;
-use crate::youtube::{folder_name, youtube_url};
+use crate::youtube::folder_name;
+#[cfg(target_os = "android")]
+use crate::youtube::youtube_url;
 
 const LIMIT: usize = 500;
 const LOOKUPS: usize = 4;
@@ -23,6 +35,7 @@ const SEARCH_HITS: usize = 12;
 const SEARCH_MATCHES: usize = 4;
 const CHECKED_FOR: Duration = Duration::from_secs(600);
 type CheckedLink = (Instant, String, Link);
+#[cfg(target_os = "android")]
 static CHECKED_LINK: Mutex<Option<CheckedLink>> = Mutex::new(None);
 
 const VISION_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
@@ -120,6 +133,7 @@ fn playlist_title(url: &str) -> Option<String> {
     value.get("title")?.as_str().map(str::trim).filter(|name| !name.is_empty()).map(str::to_string)
 }
 
+#[cfg(target_os = "android")]
 pub(crate) fn plan(app: &AppHandle, url: &str) -> Result<ImportPlan, String> {
     let url = youtube_url(url)?;
     let yt = extractor()?;
@@ -135,6 +149,7 @@ pub(crate) fn plan(app: &AppHandle, url: &str) -> Result<ImportPlan, String> {
     Ok(plan)
 }
 
+#[cfg(target_os = "android")]
 pub(crate) fn run(app: &AppHandle, url: &str, duplicates: bool) -> Result<ImportOutcome, String> {
     let url = youtube_url(url)?;
     let yt = extractor()?;

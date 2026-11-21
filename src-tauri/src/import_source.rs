@@ -153,7 +153,7 @@ pub fn run(
     outcome
 }
 
-#[cfg(any(target_os = "android", test))]
+#[cfg(target_os = "android")]
 pub(crate) fn run_phone(
     app: &AppHandle,
     download_duplicates: bool,

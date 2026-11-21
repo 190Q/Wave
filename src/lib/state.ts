@@ -6,6 +6,7 @@ import type {
   Collection,
   CollectionFilter,
   CollectionSort,
+  AudioCut,
   CoversOutcome,
   DeezerStatus,
   EqBand,
@@ -554,6 +555,15 @@ function audioPath(track: Track): string {
   return trackAudioPath(track.path, track.id, audioStreamBase);
 }
 
+export function previewAudioPath(track: Track): string {
+  return audioPath(track);
+}
+
+export function previewStagedAudioPath(path: string): string {
+  const id = /(?:^|[\\/])\.song-editor-([0-9a-f-]+)\.[^.]+$/i.exec(path)?.[1];
+  return audioStreamBase && id ? `${audioStreamBase}/editor-${id}` : path;
+}
+
 /**
  * A file that will not be handed to Web Audio is loaded again without it, so
  * the equaliser steps aside rather than costing plain playback.
@@ -597,6 +607,29 @@ export function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
+  };
+}
+
+export function connectPreviewAudio(
+  element: HTMLAudioElement, trackId: string, originalAudio: () => boolean,
+): () => void {
+  const routed = element.crossOrigin === "anonymous";
+  if (routed) eq.attach(element);
+  const sync = (): void => {
+    const track = state.tracksById.get(trackId);
+    const gain = originalAudio() && track ? trackGain(track) : 1;
+    element.volume = Math.min(Math.max(player.levelForGain(gain), 0), 1);
+  };
+  const resume = (): void => eq.resume();
+  const unsubscribePlayer = player.onChange(sync);
+  const unsubscribeState = subscribe(sync);
+  element.addEventListener("play", resume);
+  sync();
+  return () => {
+    element.removeEventListener("play", resume);
+    unsubscribePlayer();
+    unsubscribeState();
+    if (routed) eq.detach(element);
   };
 }
 
@@ -2261,6 +2294,45 @@ export async function editTrack(trackId: string, metadata: TrackMetadata): Promi
   emit();
   await rescan();
   setNotice(`Updated "${track.title}".`);
+}
+
+export async function saveEditedSong(
+  trackId: string,
+  expectedPath: string,
+  expectedLyrics: string | null,
+  lyrics: string | null,
+  stagedAudio: string | null,
+  cuts: AudioCut[],
+): Promise<void> {
+  const track = await ipc.saveSongEdit(trackId, expectedPath, expectedLyrics, lyrics, stagedAudio, cuts);
+  scanSequence += 1;
+  state.tracksById = new Map(state.tracksById).set(track.id, track);
+  state.tracks = state.tracks.map((entry) => entry.id === track.id ? track : entry);
+  refreshCollections();
+  rememberTracks([track]);
+  if (player.currentId === trackId && track.path !== expectedPath) {
+    player.refreshCurrentSource();
+    player.finishTransitions();
+  }
+  if (state.lyricsTrackId === trackId) {
+    state.lyricsTrackId = null;
+    void ensureLyrics(track);
+  }
+  emit();
+  if (track.path !== expectedPath) {
+    try {
+      await ipc.cleanupEditedAudio(trackId, expectedPath);
+    } catch {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
+      try {
+        await ipc.cleanupEditedAudio(trackId, expectedPath);
+      } catch {
+        setNotice("Saved, but the old library copy could not be removed. The original is also in audio-backups.");
+        return;
+      }
+    }
+  }
+  setNotice(`Audio and lyrics saved for "${track.title}".`);
 }
 
 export async function replaceTrackCover(trackId: string): Promise<void> {

@@ -225,6 +225,23 @@ impl Catalog {
             .map_err(|e| format!("could not finish a catalog write: {e}"))
     }
 
+    pub fn replace_audio_track(&self, row: &TrackRow) -> Result<(), String> {
+        let mut connection = self.guard();
+        let transaction = connection
+            .transaction()
+            .map_err(|e| format!("could not start a catalog write: {e}"))?;
+        write_row(&transaction, row)?;
+        transaction
+            .execute(
+                "UPDATE tracks SET lufs = NULL, peak = NULL, loudness_bytes = NULL WHERE id = ?1",
+                params![row.id],
+            )
+            .map_err(|e| format!("could not clear the old loudness reading: {e}"))?;
+        transaction
+            .commit()
+            .map_err(|e| format!("could not finish a catalog write: {e}"))
+    }
+
     #[cfg(test)]
     pub fn in_memory() -> Result<Self, String> {
         let connection =

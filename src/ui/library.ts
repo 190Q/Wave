@@ -1667,6 +1667,12 @@ export function openTrackMenu(
     items.push({ label: "Add to playlist", action: () => openAddToPlaylist(addAnchor(row), trackIds) });
     if (!many) {
       items.push({ label: "Edit song", action: () => openTrackEditor(trackIds[0]) });
+      if (device() === "desktop") {
+        items.push({
+          label: "Edit audio & lyrics",
+          action: () => import("./song-editor").then(({ openSongEditor }) => openSongEditor(trackIds[0])),
+        });
+      }
       items.push({ label: "Replace cover", action: () => void replaceTrackCover(trackIds[0]) });
     }
   }

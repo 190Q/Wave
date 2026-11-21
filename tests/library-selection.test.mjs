@@ -42,6 +42,7 @@ const mocks = {
     };
   `,
   "./track-editor": "export const openTrackEditor = () => {};",
+  "./song-editor": "export const openSongEditor = (id) => globalThis.__librarySelectionTest.edited.push(id);",
 };
 
 const vite = await createServer({
@@ -131,6 +132,7 @@ function setup({ touch = false, kind = "playlist", pending = false, open = true,
   context.downloaded = [];
   context.renamed = [];
   context.confirmed = [];
+  context.edited = [];
   context.state = {
     libraryOpen: true, filter: "playlists", query: "", sort: "name",
     settings: { searchAlgorithm: "substring" },
@@ -193,7 +195,7 @@ test("collection highlight only appears for search results and follows keyboard 
   assert.match(pane.innerHTML, /class="detail-name">Playlist two/);
 });
 
-test("desktop song selection never adds a toolbar and keeps the context menu", () => {
+test("desktop song selection never adds a toolbar and keeps the context menu", async () => {
   const { list, pane, rows } = setup();
   assert.doesNotMatch(pane.innerHTML, /selection-bar|data-select=/);
   assert.match(pane.innerHTML, /class="tracks"/);
@@ -204,9 +206,11 @@ test("desktop song selection never adds a toolbar and keeps the context menu", (
   assert.deepEqual(context.menu.at, { x: 30, y: 40 });
   assert.deepEqual(context.menu.options, { fitViewport: true });
   const labels = context.menu.items.map(({ label }) => label);
-  for (const label of ["Like", "Add to playlist", "Edit song", "Remove from this playlist", "Delete song"]) {
+  for (const label of ["Like", "Add to playlist", "Edit song", "Edit audio & lyrics", "Remove from this playlist", "Delete song"]) {
     assert.ok(labels.includes(label));
   }
+  await context.menu.items.find(({ label }) => label === "Edit audio & lyrics").action();
+  assert.deepEqual(context.edited, ["one"]);
   assert.doesNotMatch(pane.innerHTML, /selection-bar|data-select=/);
 
   list.dispatch("click", rows[1], { ctrlKey: true });
@@ -247,6 +251,7 @@ test("Android imported playlists offer bulk and individual pending downloads", (
 test("touch selection retains Select all and Clear selection in the menu", () => {
   const { list, pane, rows } = setup({ touch: true, kind: "generated" });
   rightClick(list, rows[0]);
+  assert.ok(!context.menu.items.some(({ label }) => label === "Edit audio & lyrics"));
   assert.deepEqual(context.menu.options, { fitViewport: true });
   context.menu.items.find(({ label }) => label === "Select all").action();
   assert.ok(rows.every((row) => row.classes.has("is-selected")));

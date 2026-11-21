@@ -39,6 +39,11 @@ export interface TrackMetadata {
   discNo: number | null;
 }
 
+export interface AudioCut {
+  startMs: number;
+  endMs: number;
+}
+
 export type PlaylistKind = "custom" | "generated";
 export type PlaylistMode = "taste" | "genre";
 

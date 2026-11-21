@@ -4,6 +4,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
   AnalyticsEvent,
   AnalyticsStats,
+  AudioCut,
   AudioOutputs,
   CoversOutcome,
   DeezerStatus,
@@ -174,6 +175,42 @@ export function deleteTracks(trackIds: string[]): Promise<PersistedState> {
 
 export function editTrack(trackId: string, metadata: TrackMetadata): Promise<Track> {
   return invoke("edit_track", { trackId, metadata });
+}
+
+export async function pickEditorAudio(): Promise<string | null> {
+  const selected = await open({
+    multiple: false,
+    title: "Choose replacement audio",
+    filters: [{ name: "Audio", extensions: ["mp3", "flac", "m4a", "m4b", "aac", "ogg", "opus", "wav", "aiff", "aif", "wma"] }],
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
+export function stageEditorAudio(path: string): Promise<string> {
+  return invoke("stage_editor_audio", { path });
+}
+
+export function discardEditorAudio(path: string): Promise<void> {
+  return invoke("discard_editor_audio", { path });
+}
+
+export function editorWaveform(trackId: string, stagedAudio: string | null): Promise<number[]> {
+  return invoke("editor_waveform", { trackId, stagedAudio });
+}
+
+export function saveSongEdit(
+  trackId: string,
+  expectedPath: string,
+  expectedLyrics: string | null,
+  lyrics: string | null,
+  stagedAudio: string | null,
+  cuts: AudioCut[],
+): Promise<Track> {
+  return invoke("save_song_edit", { trackId, expectedPath, expectedLyrics, lyrics, stagedAudio, cuts });
+}
+
+export function cleanupEditedAudio(trackId: string, oldPath: string): Promise<void> {
+  return invoke("cleanup_edited_audio", { trackId, oldPath });
 }
 
 export function scanLibrary(full: boolean): Promise<ScanSummary> {

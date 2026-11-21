@@ -216,6 +216,21 @@ test("reenabling routes elements that arrived while the equalizer was off", asyn
   assert.deepEqual(context.sources, [first, next]);
 });
 
+test("new elements follow the existing output while the equalizer is off", async () => {
+  const eq = new EqChain();
+  const main = { crossOrigin: "anonymous" };
+  const preview = { crossOrigin: "anonymous" };
+  eq.attach(main);
+  eq.apply(settings());
+  const context = FakeContext.instances.at(-1);
+  context.finishResume();
+  await Promise.resolve();
+  eq.apply(settings(false));
+  eq.attach(preview);
+  assert.deepEqual(context.sources, [main, preview]);
+  assert.equal(eq.live, false);
+});
+
 test("output changes are confirmed, serialized, and still work with a disabled graph", async () => {
   const requests = [];
   FakeContext.prototype.setSinkId = function(id) {

@@ -27,6 +27,11 @@ an equaliser and a theme that follows the artwork.
   equaliser and output selection support depends on the webview.
 - **Lyrics and metadata:** Read synced `.lrc` lyrics and look up missing lyrics,
   cover art and genres for a collection.
+- **Desktop song editor:** Right-click a song to edit its audio and lyrics
+  together, import replacements, cut audio and drag lyric timings. Ctrl+scroll
+  zooms the timeline, Shift+scroll pans, and Ctrl+Z / Ctrl+Shift+Z undo and
+  redo edits. Audio edits keep a backup in `config/audio-backups` in the library.
+  Waveforms and FLAC cuts require FFmpeg, included in normal desktop builds.
 - **Link imports:** Import YouTube videos, playlists or mixes on Android and desktop.
   On desktop, Spotify and Deezer links are also supported. Spotify
   and Deezer provide the track information; Wave searches YouTube for matching

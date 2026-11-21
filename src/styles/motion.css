@@ -46,6 +46,7 @@
     transition: none;
   }
 
+  .fullscreen-panel,
   .eq-panel,
   .eq-picker {
     transition: none;
@@ -87,6 +88,7 @@
   transition: none;
 }
 
+:root.is-reduced-motion .fullscreen-panel,
 :root.is-reduced-motion .eq-panel,
 :root.is-reduced-motion .eq-picker {
   transition: none;

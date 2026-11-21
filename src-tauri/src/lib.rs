@@ -41,6 +41,8 @@ mod progress;
 mod recommend;
 mod search;
 mod source;
+#[cfg(desktop)]
+mod song_editor;
 mod spotify;
 mod youtube;
 mod youtube_mix;
@@ -323,6 +325,16 @@ pub fn run() {
             library::scan_library,
             library::reread_tags,
             library::edit_track,
+            #[cfg(desktop)]
+            song_editor::stage_editor_audio,
+            #[cfg(desktop)]
+            song_editor::discard_editor_audio,
+            #[cfg(desktop)]
+            song_editor::save_song_edit,
+            #[cfg(desktop)]
+            song_editor::cleanup_edited_audio,
+            #[cfg(desktop)]
+            song_editor::editor_waveform,
             library::library_info,
             library::open_library_folder,
             library::delete_tracks,

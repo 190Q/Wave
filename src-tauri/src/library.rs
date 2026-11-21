@@ -732,8 +732,20 @@ pub(crate) fn replace_cover(
 }
 
 pub(crate) fn lyrics_in(dir: &Path) -> Option<PathBuf> {
-    let path = dir.join(LYRICS_NAME);
-    path.is_file().then_some(path)
+    fs::read_dir(dir).ok()?.flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            if !path.is_file() || !has_extension(path, LYRICS_EXTENSIONS) {
+                return false;
+            }
+            let stem = file_stem_lower(path);
+            stem == "lyrics" || stem.strip_prefix("lyrics-").is_some_and(|version| {
+                version.split_once('-').is_some_and(|(stamp, id)| {
+                    stamp.len() == 20 && stamp.bytes().all(|byte| byte.is_ascii_digit()) && identity::is_id(id)
+                })
+            })
+        })
+        .max_by_key(|path| file_stem_lower(path))
 }
 
 fn write_cover(dir: &Path, data: &[u8], extension: &str) -> Option<PathBuf> {

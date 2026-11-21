@@ -15,7 +15,7 @@ use tiny_http::{Header, Method, Response, ResponseBox, Server, StatusCode};
 
 #[cfg(any(target_os = "android", target_os = "linux"))]
 use crate::catalog::Catalog;
-#[cfg(any(target_os = "android", target_os = "linux"))]
+#[cfg(any(target_os = "android", target_os = "linux", test))]
 use crate::library;
 
 #[cfg(any(target_os = "android", target_os = "linux"))]
@@ -23,6 +23,23 @@ pub struct AudioStream {
     base: String,
     server: Arc<Server>,
     thread: Mutex<Option<JoinHandle<()>>>,
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn resolve_staged_audio(base: &Path, id: &str) -> Option<PathBuf> {
+    if !crate::identity::is_id(id) {
+        return None;
+    }
+    let config = base.join(library::CONFIG_DIR).canonicalize().ok()?;
+    for extension in library::AUDIO_EXTENSIONS {
+        let path = config.join(format!(".song-editor-{id}.{extension}"));
+        if let Ok(path) = path.canonicalize() {
+            if path.parent() == Some(config.as_path()) && path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(any(target_os = "android", target_os = "linux"))]
@@ -92,11 +109,18 @@ fn serve(request: Request, app: &AppHandle, root: &Path, token: &str, port: u16)
     }
 
     let catalog = app.state::<Catalog>();
-    let track = catalog.track(id).ok().flatten().filter(|row| !row.missing);
-    let path = track.and_then(|row| {
-        library::library_root(app)
-            .ok()
-            .and_then(|base| resolve_audio(&base, root, &row.rel_path))
+    #[cfg(target_os = "linux")]
+    let staged = id.strip_prefix("editor-").and_then(|id| {
+        library::library_root(app).ok().and_then(|base| resolve_staged_audio(&base, id))
+    });
+    #[cfg(not(target_os = "linux"))]
+    let staged: Option<PathBuf> = None;
+    let path = staged.or_else(|| {
+        catalog.track(id).ok().flatten().filter(|row| !row.missing).and_then(|row| {
+            library::library_root(app)
+                .ok()
+                .and_then(|base| resolve_audio(&base, root, &row.rel_path))
+        })
     });
     let Some(path) = path else {
         let _ = request.respond(empty(404));
@@ -326,6 +350,20 @@ mod tests {
         assert!(resolve_audio(&base, &root, "songs/audio.mp3").is_some());
         assert!(resolve_audio(&base, &root, "private.txt").is_none());
         assert!(resolve_audio(&base, &root, "songs/../private.txt").is_none());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn staged_audio_requires_a_valid_id_and_editor_filename() {
+        let base = std::env::temp_dir().join(format!("wave-stream-editor-{}", uuid::Uuid::new_v4()));
+        let config = base.join(library::CONFIG_DIR);
+        std::fs::create_dir_all(&config).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let staged = config.join(format!(".song-editor-{id}.wav"));
+        std::fs::write(&staged, b"audio").unwrap();
+        assert_eq!(resolve_staged_audio(&base, &id), staged.canonicalize().ok());
+        assert!(resolve_staged_audio(&base, "../private").is_none());
+        assert!(resolve_staged_audio(&base, &uuid::Uuid::new_v4().to_string()).is_none());
         std::fs::remove_dir_all(base).unwrap();
     }
 

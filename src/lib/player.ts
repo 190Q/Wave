@@ -98,6 +98,16 @@ export class Player {
     document.addEventListener("visibilitychange", this.settleLevelIfHidden);
   }
 
+  refreshCurrentSource(): void {
+    if (!this.currentId) {
+      return;
+    }
+    const position = Math.min(this.engine.positionMs, this.sourceOf(this.currentId)?.durationMs ?? 0);
+    this.loadCurrent(this.playing, position);
+    this.emitChange();
+    this.emitProgress();
+  }
+
   onChange(listener: ChangeListener): () => void {
     this.changeListeners.add(listener);
     return () => {
@@ -655,6 +665,10 @@ export class Player {
     }
     const id = this.currentId;
     const gain = id ? (this.sourceOf(id)?.gain ?? 1) : 1;
+    return this.levelForGain(gain);
+  }
+
+  levelForGain(gain: number): number {
     if (isAndroidPlatform) {
       return Math.min(1, gain);
     }

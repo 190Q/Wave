@@ -19,19 +19,6 @@
   flex-direction: column;
 }
 
-.settings-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex: none;
-  padding: 1.25rem 1.25rem 0.75rem;
-}
-
-.settings-head h2 {
-  font-size: 1.05rem;
-  font-weight: 700;
-}
-
 .settings-body {
   flex: 1;
   min-height: 0;
@@ -47,16 +34,6 @@
   padding: 0.85rem 1.25rem 1.25rem;
   border-top: 0.0625rem solid rgb(255 255 255 / 0.08);
   min-height: 4.1rem;
-}
-
-.settings-section {
-  padding: 0.9rem 0;
-  border-top: 0.0625rem solid rgb(255 255 255 / 0.08);
-}
-
-.settings-section:first-child {
-  padding-top: 0.25rem;
-  border-top: 0;
 }
 
 .settings-title {
@@ -91,55 +68,10 @@
   font-size: 0.85rem;
 }
 
-.settings-hint {
-  display: block;
-  font-size: 0.75rem;
-  color: var(--muted);
-  overflow-wrap: anywhere;
-}
-
-/* Flags a control that is stored but not acted on yet. */
-.settings-hint.is-pending {
-  color: var(--accent);
-}
-
 .settings-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
-}
-
-.switch {
-  flex: none;
-  width: 2.4rem;
-  height: 1.4rem;
-  padding: 0.15rem;
-  border: 0;
-  border-radius: 62rem;
-  background: var(--raise);
-  transition: background 0.2s;
-}
-
-.switch:hover {
-  background: var(--raise-strong);
-}
-
-.switch.is-on {
-  background: var(--accent);
-}
-
-.switch-knob {
-  display: block;
-  width: 1.1rem;
-  height: 1.1rem;
-  border-radius: 50%;
-  background: var(--text);
-  transition: transform 0.2s var(--ease), background 0.2s;
-}
-
-.switch.is-on .switch-knob {
-  transform: translateX(1rem);
-  background: var(--accent-ink);
 }
 
 .segmented {

@@ -396,7 +396,7 @@ export class EqChain {
 
   /** Builds a source node for an element, once, and feeds it into the chain. */
   private route(element: HTMLAudioElement): void {
-    if (!this.enabled || !this.start()) {
+    if ((!this.enabled && this.sources.size === 0) || !this.start()) {
       return;
     }
     if (this.sources.has(element)) {

@@ -11,6 +11,7 @@ export MOCK_LOG="$work/log"
 export MOCK_ARCHIVE="$work/phone.tar.gz"
 export MOCK_JSON="$work/release.json"
 export MOCK_ARCH=aarch64 MOCK_LIBC=musl
+unset WAVE_PREFIX
 : > "$MOCK_LOG"
 
 cat > "$work/bin/uname" <<'MOCK'
@@ -23,7 +24,7 @@ printf '%s\n' "${MOCK_LIBC:-musl}"
 MOCK
 cat > "$work/bin/id" <<'MOCK'
 #!/bin/sh
-printf '1000\n'
+printf '%s\n' "${MOCK_UID:-1000}"
 MOCK
 cat > "$work/bin/apk" <<'MOCK'
 #!/bin/sh
@@ -79,6 +80,28 @@ cat > "$MOCK_JSON" <<'JSON'
 {"browser_download_url": "https://example.test/Wave_1.2.3_aarch64.AppImage"}
 {"browser_download_url": "https://example.test/Wave_1.2.3_arm64.deb"}
 JSON
+
+MOCK_DEPS_INSTALLED=1 sh "$root/install.sh" --version 1.2.3 > "$work/default.log" 2> "$work/default.err"
+[ -x "$HOME/.local/bin/wave" ] && [ -x "$HOME/.local/bin/wave-bin" ] && [ -f "$HOME/.local/bin/wave-webkit.py" ]
+grep -Fxq "Wave 1.2.3 installed to $HOME/.local/bin/wave" "$work/default.log"
+grep -Fq "Exec=\"$HOME/.local/bin/wave\"" "$HOME/.local/share/applications/wave.desktop"
+! grep -Fq "warning: Running as root:" "$work/default.err"
+MOCK_DEPS_INSTALLED=1 sh "$work/archive/install.sh" --local > "$work/default.log" 2> "$work/default.err"
+grep -Fxq "Wave 1.2.3 installed to $HOME/.local/bin/wave" "$work/default.log"
+MOCK_UID=0 MOCK_DEPS_INSTALLED=1 sh "$work/archive/install.sh" --local > "$work/root.log" 2> "$work/root.err"
+grep -Fq "warning: Running as root: the desktop entry and default install use $HOME." "$work/root.err"
+sh "$root/install.sh" --uninstall
+[ ! -e "$HOME/.local/bin/wave" ] && [ ! -e "$HOME/.local/bin/wave-bin" ] && [ ! -e "$HOME/.local/bin/wave-webkit.py" ]
+[ ! -e "$HOME/.local/share/applications/wave.desktop" ]
+printf 'default installation uses the current home and warns when run as root\n'
+
+env_prefix="$work/environment prefix"
+WAVE_PREFIX="$env_prefix" MOCK_DEPS_INSTALLED=1 sh "$work/archive/install.sh" --local
+[ -x "$env_prefix/bin/wave" ] && [ -x "$env_prefix/bin/wave-bin" ]
+grep -Fq "Exec=\"$env_prefix/bin/wave\"" "$HOME/.local/share/applications/wave.desktop"
+WAVE_PREFIX="$env_prefix" sh "$root/install.sh" --uninstall
+[ ! -e "$env_prefix/bin/wave" ] && [ ! -e "$HOME/.local/share/applications/wave.desktop" ]
+printf 'WAVE_PREFIX changes the install location\n'
 
 prefix="$work/custom prefix"
 sh "$root/install.sh" --version 1.2.3 --dir "$prefix"
@@ -170,9 +193,10 @@ printf 'glibc systems still select the native package\n'
 
 printf '%s\n' '{"browser_download_url": "https://example.test/Wave_1.2.3_aarch64.AppImage"}' > "$MOCK_JSON"
 appimage_prefix="$work/appimage"
-MOCK_LIBC=glibc sh "$root/install.sh" --version 1.2.3 --dir "$appimage_prefix"
+MOCK_LIBC=glibc MOCK_UID=0 sh "$root/install.sh" --version 1.2.3 --dir "$appimage_prefix" 2> "$work/root.err"
 [ -x "$appimage_prefix/bin/wave" ]
 [ ! -e "$appimage_prefix/bin/wave-bin" ]
+grep -Fq "warning: Running as root: the desktop entry and default install use $HOME." "$work/root.err"
 sh "$root/install.sh" --dir "$appimage_prefix" --uninstall
 [ ! -e "$appimage_prefix/bin/wave" ]
 printf 'glibc AppImage installation and uninstall still work\n'

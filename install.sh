@@ -158,7 +158,14 @@ local_installed() {
   esac
 }
 
+warn_if_root() {
+  if [ "$(id -u)" -eq 0 ]; then
+    warn "Running as root: the desktop entry and default install use $HOME. Run the installer without sudo or doas to install for your user."
+  fi
+}
+
 if [ "$MUSL" -eq 1 ]; then
+  warn_if_root
   if [ "$LOCAL" -eq 1 ]; then
     [ -f "$local_dir/wave" ] && [ ! -L "$local_dir/wave" ] || die "the phone package is missing wave"
     cp "$local_dir/wave" "$TMP/wave"
@@ -243,6 +250,7 @@ elif [ -n "$rpm" ] && command -v rpm >/dev/null 2>&1; then
   fi
   say "Wave $VERSION installed. Launch it with: wave"
 elif [ -n "$appimage" ]; then
+  warn_if_root
   # No root, no package manager: the AppImage goes somewhere on the PATH.
   mkdir -p "$PREFIX/bin"
   fetch "$appimage" "$PREFIX/bin/wave"

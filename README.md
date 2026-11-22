@@ -106,21 +106,27 @@ curl -fsSL https://raw.githubusercontent.com/190Q/Wave/main/install.sh | sh
 On aarch64 musl systems, the Linux installer selects the phone tarball and
 installs WebKitGTK, graphics and audio libraries, yt-dlp, FFmpeg, Deno and its
 YouTube solver using `apk`. Community repositories must be enabled; `sudo` or
-`doas` may be required. To install a downloaded tarball, extract it and run
-`sh install.sh --local` from the extracted directory. The archive depends on
-system packages rather than containing all libraries. The phone launcher uses
-the desktop's file chooser portal; on Phosh this provides an adaptive picker.
-Alpine controls the available yt-dlp version, which may need updating as
-YouTube changes.
+`doas` may be required for installing packages. Run the installer as your
+normal user, without `sudo` or `doas` on the installer itself; it uses them
+when needed for `apk`. To install a downloaded tarball, extract it and run
+`sh install.sh --local` from the extracted directory. Extracting the archive
+alone does not install Wave. The archive depends on system packages rather
+than containing all libraries. The phone launcher uses the desktop's file
+chooser portal; on Phosh this provides an adaptive picker. Alpine controls the
+available yt-dlp version, which may need updating as YouTube changes.
 
-Wave installs under `~/.local/bin` and creates a desktop entry. Set
-`WAVE_PREFIX` or use `--dir` to change the prefix; `--uninstall` removes Wave
-but leaves shared packages installed. WebKit normally uses its installed
-helpers. If they are elsewhere, set `WAVE_WEBKIT_HELPER_DIR` to the directory
-containing `WebKitWebProcess` and `WebKitNetworkProcess`. Set
-`WAVE_WEBKIT_BUNDLE_DIR` separately to the directory containing
-`libwebkit2gtkinjectedbundle.so`. Both must match the installed WebKit
-library version, and their resolved paths cannot contain `:`. The launcher
+By default, the installer places the launcher at `~/.local/bin/wave`, with its
+supporting files in the same directory, and creates
+`~/.local/share/applications/wave.desktop`. If `~/.local/bin` is not on
+`PATH`, run the launcher by its full path or add the directory to `PATH`.
+Running the installer as root instead uses root's `HOME`, usually `/root`.
+Set `WAVE_PREFIX` or use `--dir` to change the installation prefix;
+`--uninstall` removes Wave but leaves shared packages installed. WebKit
+normally uses its installed helpers. If they are elsewhere, set
+`WAVE_WEBKIT_HELPER_DIR` to the directory containing `WebKitWebProcess` and
+`WebKitNetworkProcess`. Set `WAVE_WEBKIT_BUNDLE_DIR` to the directory
+containing `libwebkit2gtkinjectedbundle.so`. Both must match the installed
+WebKit library version, and their resolved paths cannot contain `:`. The launcher
 redirects its compiled-in paths using a private
 temporary library copy, without modifying `/usr/libexec`. If discovery fails,
 `WAVE_WEBKIT_LIBRARY` selects the library file, while

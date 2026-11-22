@@ -186,7 +186,10 @@ function mountShortcuts(): void {
         const action = getState().settings.shortcutSlots[slot];
         if (action) {
           event.preventDefault();
-          if (!mini || !["toggle-queue", "focus-search", "open-swell"].includes(action)) {
+          if (!mini || ![
+            "toggle-queue", "focus-search", "open-swell", "toggle-always-on-top",
+            "snap-window", "snap-window-size", "toggle-maximise",
+          ].includes(action)) {
             void runSlotAction(action, slot);
           }
           return;
@@ -264,7 +267,7 @@ function mountShortcuts(): void {
       case "t":
       case "T":
         event.preventDefault();
-        void toggleAlwaysOnTop();
+        if (!mini) void toggleAlwaysOnTop();
         break;
       case "m":
       case "M":

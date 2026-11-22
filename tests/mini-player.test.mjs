@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 import { createServer } from "vite";
 
 const { parse } = createRequire(import.meta.resolve("vite"))("postcss");
@@ -189,4 +191,74 @@ test("mini-player styles leave only the dock and hide its side controls", async 
   assert.ok(dock.nodes.some((node) => node.prop === "height" && node.value === "100%"));
   assert.ok(dock.nodes.some((node) => node.prop === "border" && node.value === "0"));
   assert.ok(dock.nodes.some((node) => node.prop === "border-radius" && node.value === "0"));
+});
+
+test("mini-player shortcuts cannot change pinning or resize the window", async () => {
+  const source = await readFile(new URL("../src/main.ts", import.meta.url), "utf8");
+  const start = source.indexOf("function mountShortcuts()");
+  const end = source.indexOf('\nif (document.readyState', start);
+  assert.ok(start >= 0 && end > start);
+  const script = ts.transpile(source.slice(start, end));
+  const handlers = new Map();
+  const calls = [];
+  const state = { settings: { shortcutSlots: [] } };
+  let mini = false;
+  const root = { classList: { contains: () => mini, add() {}, remove() {} } };
+  runInNewContext(`${script}\nmountShortcuts();`, {
+    document: { documentElement: root },
+    window: { addEventListener(type, handler) {
+      const list = handlers.get(type) ?? [];
+      list.push(handler);
+      handlers.set(type, list);
+    } },
+    HTMLInputElement: class {},
+    HTMLSelectElement: class {},
+    HTMLTextAreaElement: class {},
+    isTouch: () => false,
+    getState: () => state,
+    toggleAlwaysOnTop: () => calls.push("pin"),
+    runSlotAction: (action) => calls.push(action),
+  });
+  const press = (key, options = {}) => {
+    const event = {
+      key, code: "", target: {}, ctrlKey: false, shiftKey: false,
+      altKey: false, metaKey: false, preventDefault() {}, ...options,
+    };
+    for (const handler of handlers.get("keydown")) handler(event);
+  };
+
+  press("t");
+  press("T");
+  assert.deepEqual(calls, ["pin", "pin"]);
+  mini = true;
+  press("t");
+  press("T");
+  assert.deepEqual(calls, ["pin", "pin"]);
+
+  for (const action of ["toggle-always-on-top", "snap-window", "snap-window-size", "toggle-maximise"]) {
+    state.settings.shortcutSlots[0] = action;
+    press("1", { code: "Digit1", ctrlKey: true, shiftKey: true });
+  }
+  assert.deepEqual(calls, ["pin", "pin"]);
+
+  for (const action of ["snap-window-position", "toggle-mini-player", "play-pause"]) {
+    state.settings.shortcutSlots[0] = action;
+    press("1", { code: "Digit1", ctrlKey: true, shiftKey: true });
+  }
+  assert.deepEqual(calls.slice(2), ["snap-window-position", "toggle-mini-player", "play-pause"]);
+
+  mini = false;
+  state.settings.shortcutSlots[0] = "snap-window-size";
+  press("1", { code: "Digit1", ctrlKey: true, shiftKey: true });
+  press("t");
+  assert.deepEqual(calls.slice(-2), ["snap-window-size", "pin"]);
+});
+
+test("native mini-player sizing locks and restores window resizing", async () => {
+  const source = await readFile(new URL("../src-tauri/src/state.rs", import.meta.url), "utf8");
+  assert.match(source, /window\.set_resizable\(false\);[\s\S]*?window\.set_maximizable\(false\);[\s\S]*?window\.set_size\(size\)/);
+  assert.match(source, /if was_mini \{\s*let _ = window\.set_resizable\(true\);[\s\S]*?apply_geometry/);
+  assert.match(source, /window\.set_maximizable\(true\)/);
+  assert.match(source, /state\.settings\.mini_player && part != SnapPart::Position/);
+  assert.doesNotMatch(source, /fn note_resized/);
 });

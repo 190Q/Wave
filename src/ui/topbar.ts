@@ -298,6 +298,12 @@ export function mountTopbar(): void {
   let cratesFitAt = Number.POSITIVE_INFINITY;
 
   const measureCrates = (): void => {
+    if (recents.clientWidth === 0) {
+      cratesNatural = null;
+      cratesFitAt = Number.POSITIVE_INFINITY;
+      return;
+    }
+
     const compact = recents.classList.contains("is-compact");
     recents.classList.add("no-anim");
     recents.classList.remove("is-compact");
@@ -315,6 +321,10 @@ export function mountTopbar(): void {
   };
 
   const decideCrates = (): void => {
+    if (recents.clientWidth === 0) {
+      return;
+    }
+
     if (linuxPhone) {
       const compact = recents.classList.contains("is-compact");
       recents.classList.add("no-anim", "is-compact");

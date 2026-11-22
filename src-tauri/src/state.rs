@@ -2,13 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
-#[cfg(desktop)]
-use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 #[cfg(desktop)]
-use tauri::{Emitter, Monitor, PhysicalSize, WebviewWindow};
+use tauri::{Monitor, PhysicalSize, WebviewWindow};
 use tauri::{AppHandle, Manager, Runtime, State};
 
 use crate::identity;
@@ -42,14 +40,6 @@ const MINI_WIDTH: f64 = 340.0;
 const MINI_HEIGHT: f64 = 92.0;
 #[cfg(desktop)]
 const MINI_CORNER_COUNT: u8 = 4;
-#[cfg(desktop)]
-const APPLY_QUIET_MS: u64 = 400;
-#[cfg(desktop)]
-static APPLYING_SINCE: Mutex<Option<Instant>> = Mutex::new(None);
-
-#[cfg(desktop)]
-static MINI_INNER: Mutex<Option<PhysicalSize<u32>>> = Mutex::new(None);
-
 #[cfg(desktop)]
 static MINI_RETURN_FRAME: Mutex<Option<WindowGeometry>> = Mutex::new(None);
 
@@ -931,8 +921,6 @@ fn apply_geometry<R: Runtime>(
         return;
     }
 
-    note_programmatic_change();
-
     if window_is_maximized(window) && !(part == SnapPart::Frame && geometry.maximized) {
         let _ = window.unmaximize();
     }
@@ -1049,12 +1037,11 @@ pub fn apply_window_settings<R: Runtime>(app: &AppHandle<R>, store: &Store, was_
             }
         }
         let monitor = window.current_monitor().ok().flatten();
-        note_programmatic_change();
         let _ = window.unmaximize();
         let size = tauri::LogicalSize::new(MINI_WIDTH, MINI_HEIGHT);
         let _ = window.set_min_size(Some(size));
-        let scale = window.scale_factor().unwrap_or(1.0);
-        remember_mini_size(size.to_physical::<u32>(scale));
+        let _ = window.set_resizable(false);
+        let _ = window.set_maximizable(false);
         let _ = window.set_size(size);
         if let Some(monitor) = monitor {
             place_in_corner(&window, &monitor, current.settings.mini_corner);
@@ -1063,7 +1050,8 @@ pub fn apply_window_settings<R: Runtime>(app: &AppHandle<R>, store: &Store, was_
     }
 
     if was_mini {
-        note_programmatic_change();
+        let _ = window.set_resizable(true);
+        let _ = window.set_maximizable(true);
         let (width, height) = min_frame();
         let _ = window.set_min_size(Some(tauri::LogicalSize::new(width, height)));
         if let Some(geometry) = mini_return_frame().or(current.window) {
@@ -1093,7 +1081,7 @@ fn place_in_corner<R: Runtime>(window: &WebviewWindow<R>, monitor: &Monitor, cor
     let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
-/// Watches the main window, so a resize the user drags it to ends mini mode.
+/// Watches the main window to remember its normal frame.
 #[cfg(desktop)]
 pub fn watch_window<R: Runtime>(app: &AppHandle<R>) {
     let Some(window) = app.get_webview_window("main") else {
@@ -1102,60 +1090,10 @@ pub fn watch_window<R: Runtime>(app: &AppHandle<R>) {
 
     let handle = app.clone();
     window.on_window_event(move |event| match event {
-        tauri::WindowEvent::Resized(size) => {
-            note_resized(&handle, *size);
-            note_window_frame(&handle);
-        }
+        tauri::WindowEvent::Resized(_) => note_window_frame(&handle),
         tauri::WindowEvent::Moved(_) => note_window_frame(&handle),
-        tauri::WindowEvent::ScaleFactorChanged { .. } => note_programmatic_change(),
         _ => {}
     });
-}
-
-#[cfg(desktop)]
-fn note_programmatic_change() {
-    let mut since = APPLYING_SINCE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    *since = Some(Instant::now());
-}
-
-/// True while the app is still settling a move it made itself.
-#[cfg(desktop)]
-fn applying() -> bool {
-    let since = APPLYING_SINCE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    since
-        .map(|at| at.elapsed() < Duration::from_millis(APPLY_QUIET_MS))
-        .unwrap_or(false)
-}
-
-#[cfg(desktop)]
-fn note_resized<R: Runtime>(app: &AppHandle<R>, size: PhysicalSize<u32>) {
-    if applying() || is_mini_size(size) {
-        return;
-    }
-
-    let Some(store) = app.try_state::<Store>() else {
-        return;
-    };
-    if !store.snapshot().settings.mini_player {
-        return;
-    }
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
-    if window.is_minimized().unwrap_or(false) {
-        return;
-    }
-
-    if let Ok(next) = store.update_saved(app, |state| state.settings.mini_player = false) {
-        let _ = app.emit(SETTINGS_EVENT, next.settings.clone());
-        note_programmatic_change();
-        let (width, height) = min_frame();
-        let _ = window.set_min_size(Some(tauri::LogicalSize::new(width, height)));
-        remember_mini_return_frame(None);
-        let _ = window.set_always_on_top(next.settings.always_on_top);
-    } else {
-        let _ = window.set_always_on_top(store.snapshot().settings.always_on_top);
-    }
 }
 
 #[cfg(desktop)]
@@ -1214,21 +1152,6 @@ fn remember_mini_return_frame(geometry: Option<WindowGeometry>) {
 fn mini_return_frame() -> Option<WindowGeometry> {
     let recorded = MINI_RETURN_FRAME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     recorded.clone()
-}
-
-#[cfg(desktop)]
-fn remember_mini_size(size: PhysicalSize<u32>) {
-    let mut recorded = MINI_INNER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    *recorded = Some(size);
-}
-
-#[cfg(desktop)]
-fn is_mini_size(size: PhysicalSize<u32>) -> bool {
-    let recorded = MINI_INNER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(recorded) = *recorded else {
-        return false;
-    };
-    size.width.abs_diff(recorded.width) < 3 && size.height.abs_diff(recorded.height) < 3
 }
 
 /// Applies the remembered geometry to the main window, before it is shown.
@@ -1323,6 +1246,9 @@ pub fn apply_window_slot(
     part: SnapPart,
 ) -> Result<(), String> {
     let state = store.snapshot();
+    if state.settings.mini_player && part != SnapPart::Position {
+        return Ok(());
+    }
     let Some(Some(geometry)) = state.window_slots.get(slot) else {
         return Err("no window frame is saved for that slot".to_string());
     };

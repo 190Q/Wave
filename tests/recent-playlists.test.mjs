@@ -82,6 +82,7 @@ class Element {
   removeAttribute() {}
   getBoundingClientRect() { return { left: 0, top: 0, width: 0, height: 0 }; }
   get scrollWidth() {
+    if (this.hiddenForMini) return 0;
     const count = (this.innerHTML.match(/class="crate"/g) ?? []).length;
     const width = count * (this.classes.has("is-compact") ? 60 : 180) + Math.max(0, count - 1) * 8;
     return Math.max(this.clientWidth, width);
@@ -180,6 +181,50 @@ test("desktop and Android retain their existing history behavior", () => {
       assert.equal(elements.recents.innerHTML, "");
     }
   }
+});
+
+test("desktop history is measured after returning from a hidden mini player", () => {
+  const { context, elements } = setup("desktop");
+  const recents = elements.recents;
+  recents.clientWidth = 0;
+  recents.hiddenForMini = true;
+  mountTopbar();
+  assert.equal(recents.classList.contains("is-compact"), false);
+
+  recents.hiddenForMini = false;
+  recents.clientWidth = 200;
+  context.resize();
+  assert.equal(recents.classList.contains("is-compact"), true);
+
+  recents.clientWidth = 400;
+  context.resize();
+  assert.equal(recents.classList.contains("is-compact"), false);
+
+  recents.clientWidth = 200;
+  context.resize();
+  assert.equal(recents.classList.contains("is-compact"), true);
+});
+
+test("history changes while hidden are remeasured when the mini player closes", () => {
+  const { context, elements } = setup("desktop");
+  const recents = elements.recents;
+  recents.clientWidth = 400;
+  mountTopbar();
+  assert.equal(recents.classList.contains("is-compact"), false);
+
+  recents.clientWidth = 0;
+  recents.hiddenForMini = true;
+  context.resize();
+  context.state.recents = ["first", "second", "third"];
+  context.render();
+
+  recents.hiddenForMini = false;
+  recents.clientWidth = 400;
+  context.resize();
+  assert.equal(recents.classList.contains("is-compact"), true);
+  recents.clientWidth = 600;
+  context.resize();
+  assert.equal(recents.classList.contains("is-compact"), false);
 });
 
 test("hidden history keeps its layout space but cannot be seen", async () => {

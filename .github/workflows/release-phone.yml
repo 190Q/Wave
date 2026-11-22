@@ -39,7 +39,7 @@ jobs:
 
       - name: Use the current release tooling with the tagged source
         run: |
-          cp .release-tools/scripts/release.mjs .release-tools/scripts/release-assets.mjs .release-tools/scripts/musl-build.sh .release-tools/scripts/musl-launcher.sh .release-tools/scripts/musl-runtime-test.sh .release-tools/scripts/musl-gui-test.sh .release-tools/scripts/check-webkit-paths.py .release-tools/scripts/wave-webkit.py scripts/
+          cp .release-tools/scripts/release.mjs .release-tools/scripts/release-assets.mjs .release-tools/scripts/musl-build.sh .release-tools/scripts/musl-launcher.sh .release-tools/scripts/musl-runtime-test.sh .release-tools/scripts/musl-gui-test.sh .release-tools/scripts/test-mpris.py .release-tools/scripts/check-webkit-paths.py .release-tools/scripts/wave-webkit.py scripts/
           cp .release-tools/install.sh install.sh
 
       - name: Check the release
@@ -88,7 +88,7 @@ jobs:
       - name: Verify the musl installer in a clean Alpine runtime
         run: |
           docker run --rm --shm-size 512m \
-            --env WAVE_TEST_WEBKIT_SANDBOX=0 --env WAVE_TEST_MPRIS_QUIT=0 \
+            --env WAVE_TEST_WEBKIT_SANDBOX=0 --env WAVE_TEST_MPRIS_QUIT=0 --env WAVE_TEST_MPRIS_PLAYBACK=0 \
             --volume "$PWD:/wave:ro" --workdir /wave \
             alpine:3.22 sh scripts/musl-runtime-test.sh
 

@@ -1,8 +1,9 @@
+import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type { MediaControl, NowPlaying } from "../types";
-import { isAndroidPlatform } from "./device";
+import { isAndroidPlatform, isWebKitGtk } from "./device";
 import { reportPlaybackActivity, setNowPlaying, setQueue, showMainWindow } from "./ipc";
 import {
   colourFor,
@@ -57,6 +58,8 @@ export function mountPresence(): void {
   let lastPlaying: boolean | undefined;
   let playbackRetry = false;
   let playbackWrites = Promise.resolve();
+  const webkitSession = isWebKitGtk && !isAndroidPlatform && isTauri() ? navigator.mediaSession : null;
+  let webkitMetadata = "";
 
   const syncTimer = (): void => {
     const needed = showing() && (player.snapshot().playing || retryNeeded || playbackRetry);
@@ -152,6 +155,15 @@ export function mountPresence(): void {
   };
 
   const sync = (): void => {
+    if (webkitSession && typeof MediaMetadata !== "undefined") {
+      const track = getState().settings.systemMediaControls ? currentTrack() : null;
+      const metadata = track ? { title: track.title, artist: track.artist ?? "", album: track.album ?? "" } : null;
+      const key = JSON.stringify(metadata);
+      if (key !== webkitMetadata) {
+        webkitMetadata = key;
+        webkitSession.metadata = metadata ? new MediaMetadata(metadata) : null;
+      }
+    }
     if (isAndroidPlatform) {
       const playing = player.snapshot().playing;
       if (playing !== lastPlaying) {
@@ -175,6 +187,38 @@ export function mountPresence(): void {
   player.onSeek(sync);
   subscribe(sync);
   subscribe(pushQueue);
+
+  if (webkitSession) {
+    const actions: [MediaSessionAction, MediaSessionActionHandler][] = [
+      ["play", () => apply({ action: "play", value: null })],
+      ["pause", () => {
+        apply({ action: "pause", value: null });
+        // WebKit decides PlayPause from the audio element's paused state.
+        player.finishTransitions();
+      }],
+      ["stop", () => {
+        apply({ action: "stop", value: null });
+        player.finishTransitions();
+      }],
+      ["nexttrack", () => apply({ action: "next", value: null })],
+      ["previoustrack", () => apply({ action: "previous", value: null })],
+      ["seekbackward", ({ seekOffset }) => apply({ action: "seekBy", value: -(seekOffset ?? 10) * 1000 })],
+      ["seekforward", ({ seekOffset }) => apply({ action: "seekBy", value: (seekOffset ?? 10) * 1000 })],
+      // WebKitGTK sends MPRIS Seek offsets as seekto times.
+      ["seekto", ({ seekTime }) => {
+        if (seekTime !== undefined) apply({ action: "seekBy", value: seekTime * 1000 });
+      }],
+    ];
+    for (const [action, handler] of actions) {
+      try {
+        webkitSession.setActionHandler(action, (details) => {
+          if (getState().settings.systemMediaControls) handler(details);
+        });
+      } catch {
+        // Older WebKit versions may not support every action.
+      }
+    }
+  }
 
   if (isAndroidPlatform) {
     window.addEventListener("wave:media-control", (event) => {

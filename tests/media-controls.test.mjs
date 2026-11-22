@@ -8,6 +8,7 @@ const context = {};
 globalThis.__mediaControlTest = context;
 
 const mocks = {
+  "@tauri-apps/api/core": "export const isTauri = () => globalThis.__mediaControlTest.tauri;",
   "@tauri-apps/api/event": `
     export const listen = async (event, callback) => {
       if (event === "api-command") globalThis.__mediaControlTest.apiControl = callback;
@@ -25,8 +26,9 @@ const mocks = {
       setFocus: async () => globalThis.__mediaControlTest.windowActions.push("focus"),
     });
   `,
-  "./device": "export const isAndroidPlatform = false;",
-  "android-device": "export const isAndroidPlatform = true;",
+  "./device": "export const isAndroidPlatform = false; export const isWebKitGtk = false;",
+  "android-device": "export const isAndroidPlatform = true; export const isWebKitGtk = false;",
+  "webkit-device": "export const isAndroidPlatform = false; export const isWebKitGtk = true;",
   "./ipc": `
     export const setNowPlaying = (song) => {
       const context = globalThis.__mediaControlTest;
@@ -80,6 +82,9 @@ const vite = await createServer({
       if (source === "./device" && /(player|presence)\.ts\?android/.test(importer)) {
         return "\0media-control-test:android-device";
       }
+      if (source === "./device" && /presence\.ts\?webkit/.test(importer)) {
+        return "\0media-control-test:webkit-device";
+      }
       if (/[\\/]src[\\/]lib[\\/](api|presence|player)\.ts/.test(importer)) {
         return `\0media-control-test:${source}`;
       }
@@ -96,6 +101,7 @@ const { Player } = await vite.ssrLoadModule("/src/lib/player.ts");
 const { Player: AndroidPlayer } = await vite.ssrLoadModule("/src/lib/player.ts?android");
 const { mountPresence } = await vite.ssrLoadModule("/src/lib/presence.ts");
 const { mountPresence: mountAndroidPresence } = await vite.ssrLoadModule("/src/lib/presence.ts?android");
+const { mountPresence: mountWebKitPresence } = await vite.ssrLoadModule("/src/lib/presence.ts?webkit");
 const { mountApi } = await vite.ssrLoadModule("/src/lib/api.ts");
 
 class FakeAudio {
@@ -119,7 +125,7 @@ class FakeAudio {
   load() {}
 }
 
-function setup(PlayerClass = Player, mount = mountPresence, controls = true, sendSong = null, bridge = false) {
+function setup(PlayerClass = Player, mount = mountPresence, controls = true, sendSong = null, bridge = false, tauri = true) {
   context.elements = [];
   context.frames = new Map();
   context.nextFrame = 1;
@@ -138,6 +144,8 @@ function setup(PlayerClass = Player, mount = mountPresence, controls = true, sen
   context.sendPlayback = null;
   context.subscribers = [];
   context.bridgeMessages = [];
+  context.tauri = tauri;
+  context.mediaActions = new Map();
   context.settings = { systemMediaControls: controls, discordPresence: false, localApiEnabled: true };
 
   const listeners = new Map();
@@ -151,6 +159,13 @@ function setup(PlayerClass = Player, mount = mountPresence, controls = true, sen
     dispatch(name) {
       for (const listener of listeners.get(name) ?? []) listener();
     },
+  };
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { mediaSession: { setActionHandler: (action, handler) => context.mediaActions.set(action, handler) } },
+  });
+  globalThis.MediaMetadata = class {
+    constructor(metadata) { Object.assign(this, metadata); }
   };
   globalThis.window = {
     cancelAnimationFrame: (id) => context.frames.delete(id),
@@ -654,6 +669,61 @@ test("Windows and Linux system seeking moves by the requested offset and clamps 
   assert.equal(engine.positionMs, 120000);
   press("seekTo", 25000);
   assert.equal(engine.positionMs, 25000);
+});
+
+test("WebKitGTK media actions use the player and interpret MPRIS seek offsets", () => {
+  const { engine, player } = setup(Player, mountWebKitPresence);
+  context.mediaActions.get("pause")({ action: "pause" });
+  assert.equal(engine.element.paused, true);
+  player.seek(70000);
+  context.mediaActions.get("seekto")({ action: "seekto", seekTime: -10 });
+  assert.equal(engine.positionMs, 60000);
+  context.mediaActions.get("seekto")({ action: "seekto", seekTime: 10 });
+  assert.equal(engine.positionMs, 70000);
+  context.mediaActions.get("seekbackward")({ action: "seekbackward", seekOffset: 5 });
+  assert.equal(engine.positionMs, 65000);
+  context.mediaActions.get("seekforward")({ action: "seekforward" });
+  assert.equal(engine.positionMs, 75000);
+  context.mediaActions.get("play")({ action: "play" });
+  finishFrames();
+  assert.equal(engine.element.paused, false);
+  context.mediaActions.get("nexttrack")({ action: "nexttrack" });
+  assert.equal(player.currentId, "two");
+  context.mediaActions.get("previoustrack")({ action: "previoustrack" });
+  assert.equal(player.currentId, "one");
+  context.mediaActions.get("stop")({ action: "stop" });
+  assert.equal(engine.element.paused, true);
+  assert.equal(engine.positionMs, 0);
+});
+
+test("WebKitGTK media handlers respect the system controls setting", () => {
+  const { engine, player } = setup(Player, mountWebKitPresence, false);
+  player.seek(70000);
+  context.mediaActions.get("seekto")({ action: "seekto", seekTime: -10 });
+  context.mediaActions.get("pause")({ action: "pause" });
+  assert.equal(engine.positionMs, 70000);
+  assert.equal(player.snapshot().playing, true);
+  context.settings.systemMediaControls = true;
+  context.mediaActions.get("seekto")({ action: "seekto", seekTime: -10 });
+  assert.ok(engine.positionMs >= 60000 && engine.positionMs < 60100);
+});
+
+test("WebKitGTK media metadata follows the track and the controls setting", () => {
+  const { player } = setup(Player, mountWebKitPresence);
+  assert.equal(navigator.mediaSession.metadata.title, "one");
+  player.next();
+  assert.equal(navigator.mediaSession.metadata.title, "two");
+  context.settings.systemMediaControls = false;
+  for (const listener of context.subscribers) listener();
+  assert.equal(navigator.mediaSession.metadata, null);
+  context.settings.systemMediaControls = true;
+  for (const listener of context.subscribers) listener();
+  assert.equal(navigator.mediaSession.metadata.title, "two");
+});
+
+test("the WebKitGTK workaround does not affect ordinary browsers", () => {
+  setup(Player, mountWebKitPresence, true, null, false, false);
+  assert.equal(context.mediaActions.size, 0);
 });
 
 test("system seeking keeps the current song playing", () => {

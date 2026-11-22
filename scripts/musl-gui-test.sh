@@ -57,7 +57,7 @@ deno --version
 ffmpeg -version
 
 mkdir "$work/music"
-ffmpeg -v error -f lavfi -i sine=frequency=440:duration=20 \
+ffmpeg -v error -f lavfi -i sine=frequency=440:duration=180 \
   -metadata title=WaveSmoke -metadata artist=WaveTest "$work/music/smoke.mp3"
 mkdir "$HOME/WaveGuiImport"
 ffmpeg -v error -f lavfi -i sine=frequency=523:duration=2 \
@@ -160,8 +160,12 @@ then
   cat "$work/app.log" >&2
   exit 1
 fi
-xdotool key space
-sleep 1
+if [ "${WAVE_TEST_MPRIS_PLAYBACK:-1}" = 1 ]; then
+  python3 "$(dirname "$0")/test-mpris.py" wave_test.monitor WaveSmoke
+else
+  xdotool key space
+  sleep 1
+fi
 xwd -silent -id "$window" -out "$work/window.xwd"
 colours="$(magick "$work/window.xwd" -format '%k' info:)"
 [ "$colours" -gt 30 ] || { printf 'Wave rendered an almost blank window (%s colours)\n' "$colours" >&2; exit 1; }

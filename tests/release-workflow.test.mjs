@@ -69,6 +69,8 @@ test("phone recovery uses tagged application source and current build tooling", 
   assert.match(recovery, /\.release-tools\/scripts\/musl-build\.sh/);
   assert.match(recovery, /This tag lacks the phone UI fixes/);
   assert.match(recovery, /--env WAVE_TEST_MPRIS_QUIT=0/);
+  assert.match(recovery, /--env WAVE_TEST_MPRIS_PLAYBACK=0/);
+  assert.match(recovery, /\.release-tools\/scripts\/test-mpris\.py/);
   assert.match(recovery, /node scripts\/release\.mjs upload-musl "\$RELEASE_TAG"/);
   assert.match(recovery, /node scripts\/release\.mjs organize "\$RELEASE_TAG"/);
   assert.match(musl, /CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=-crt-static"/);
@@ -100,6 +102,7 @@ test("phone releases verify installation in a clean Alpine environment", () => {
   assert.match(gui, /WAVE_WEBKIT_HELPER_DIR=/);
   assert.match(gui, /WAVE_WEBKIT_BUNDLE_DIR=/);
   assert.match(gui, /WAVE_TEST_MPRIS_QUIT:-1/);
+  assert.match(gui, /test-mpris\.py.*wave_test\.monitor/);
   assert.match(gui, /org\.mpris\.MediaPlayer2\.Quit/);
   assert.match(gui, /yt-dlp --ignore-config/);
   assert.match(gui, /"\$wave" import "\$work\/music"/);

@@ -46,7 +46,7 @@ with open(sys.argv[1], encoding="utf-8") as source:
 assert tools["ytDlp"] and tools["ffmpeg"] and tools["deno"], tools
 PY
 
-flatpak run --command=ffmpeg com.wave.app -v error -f lavfi -i sine=frequency=440:duration=20 \
+flatpak run --command=ffmpeg com.wave.app -v error -f lavfi -i sine=frequency=440:duration=180 \
   -metadata title=WaveFlatpakSmoke "$work/music/smoke.mp3"
 wave import "$work/music" --no-playlist
 wave list --json > "$work/songs.json"
@@ -111,6 +111,8 @@ with open(sys.argv[1], "rb") as source:
 if not samples or max(abs(sample) for sample in samples) < 256:
     raise SystemExit("The Flatpak did not produce audible audio")
 PY
+
+python3 "$(dirname "$0")/test-mpris.py" wave_flatpak_test.monitor WaveFlatpakSmoke
 
 for attempt in $(seq 1 60); do
   if gdbus call --session --dest org.mpris.MediaPlayer2.wave \

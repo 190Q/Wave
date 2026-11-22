@@ -255,6 +255,13 @@ html:is([data-device="android"], [data-device="linuxPhone"]) {
   overflow-y: auto;
 }
 
+:is([data-device="android"], [data-device="linuxPhone"]) .seek-dialog {
+  inset: var(--inset-top) var(--inset-right) var(--inset-bottom) var(--inset-left);
+  max-width: max(0px, calc(100vw - var(--inset-left) - var(--inset-right) - 2rem));
+  max-height: max(0px, calc(100vh - var(--inset-top) - var(--inset-bottom) - 2rem));
+  overflow-y: auto;
+}
+
 /* Dialogs are full screen, and the safe area is the padding they keep. */
 :is([data-device="android"], [data-device="linuxPhone"]) .theme-dialog,
 :is([data-device="android"], [data-device="linuxPhone"]) .settings-dialog,

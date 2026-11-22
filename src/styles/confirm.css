@@ -1,4 +1,5 @@
-.confirm-dialog {
+.confirm-dialog,
+.seek-dialog {
   width: min(20rem, 92vw);
 }
 

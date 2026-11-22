@@ -111,6 +111,24 @@ test("the action is not offered for missing or multiple songs", () => {
   closeMenu();
 });
 
+test("phone menus offer jumping only for the current song", () => {
+  getState().tracksById.set("other", { id: "other", title: "Other" });
+  player.order = ["song", "other"];
+  player.cursor = 0;
+  for (const device of ["android", "linuxPhone", "desktop"]) {
+    setDevice(device);
+    openTrackMenu(row, null, ["song"], { x: 100, y: 100 });
+    assert.equal(menu.innerHTML.includes(">Jump to time</button>"), device !== "desktop");
+    closeMenu();
+    openTrackMenu(row, null, ["other"], { x: 100, y: 100 });
+    assert.doesNotMatch(menu.innerHTML, />Jump to time<\/button>/);
+    closeMenu();
+    openTrackMenu(row, null, ["song", "other"], { x: 100, y: 100 });
+    assert.doesNotMatch(menu.innerHTML, />Jump to time<\/button>/);
+    closeMenu();
+  }
+});
+
 test("replacing a cover refreshes the track and rejects an old colour result", async () => {
   const track = {
     id: "song",

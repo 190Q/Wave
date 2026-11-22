@@ -14,6 +14,7 @@ import {
   toggleQueue,
 } from "../lib/state";
 import { mountLyricsSheet, type LyricsSheet } from "./lyrics-sheet";
+import { openSeekTime } from "./seek-time";
 import { mountTouch } from "./touch";
 
 
@@ -29,7 +30,8 @@ export function stepVolumeFromKey(direction: number): void {
 export function mountDock(): void {
   const dock = element("dock");
   const controls = dock?.querySelector<HTMLElement>(".dock-row");
-  const timeNow = element("time-now");
+  const timeNow = element<HTMLButtonElement>("time-now");
+  const timePhone = element("time-now-phone");
   const timeTotal = element("time-total");
   const like = element<HTMLButtonElement>("like");
   const shuffle = element<HTMLButtonElement>("shuffle");
@@ -44,13 +46,16 @@ export function mountDock(): void {
   const grab = element<HTMLButtonElement>("dock-grab");
 
   if (
-    !dock || !controls || !timeNow || !timeTotal || !like || !shuffle || !previous ||
+    !dock || !controls || !timeNow || !timePhone || !timeTotal || !like || !shuffle || !previous ||
     !play || !next || !repeat || !queueToggle || !volume || !volumeBars || !position
   ) {
     return;
   }
 
   mountTouch();
+  timeNow.addEventListener("click", () => {
+    if (device() === "desktop") openSeekTime();
+  });
   const sheet: LyricsSheet | null = device() !== "desktop" ? mountLyricsSheet() : null;
 
   let scrubbing = false;
@@ -59,6 +64,17 @@ export function mountDock(): void {
   /** How far along the bar is, `0` to `1`; the stylesheet draws the fill and its edge. */
   const setProgress = (fraction: number): void => {
     dock.style.setProperty("--progress", String(fraction));
+  };
+
+  const setTime = (positionMs: number): void => {
+    const time = formatDuration(positionMs);
+    if (timeNow.textContent !== time) {
+      timeNow.textContent = time;
+      timeNow.setAttribute("aria-label", `Elapsed time ${time}. Jump to time`);
+    }
+    if (timePhone.textContent !== time) {
+      timePhone.textContent = time;
+    }
   };
 
   const fractionAt = (clientX: number): number => {
@@ -74,7 +90,7 @@ export function mountDock(): void {
   const previewSeek = (fraction: number): void => {
     scrubFraction = fraction;
     setProgress(fraction);
-    timeNow.textContent = formatDuration(fraction * player.snapshot().durationMs);
+    setTime(fraction * player.snapshot().durationMs);
   };
 
   /** Gives the seek preview up, for a drag that has turned into the sheet. */
@@ -286,10 +302,7 @@ export function mountDock(): void {
     }
     const fraction = durationMs > 0 ? Math.min(positionMs / durationMs, 1) : 0;
     setProgress(fraction);
-    const time = formatDuration(positionMs);
-    if (timeNow.textContent !== time) {
-      timeNow.textContent = time;
-    }
+    setTime(positionMs);
   };
 
   let lastPlaying: boolean | null = null;
@@ -304,6 +317,7 @@ export function mountDock(): void {
     const snapshot = player.snapshot();
     const track = currentTrack();
     const idle = !track;
+    timeNow.disabled = idle;
 
     // The handle only leads somewhere while the song has lyrics to show.
     if (grab) {

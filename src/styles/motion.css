@@ -55,7 +55,9 @@
   .settings-dialog,
   .settings-dialog *,
   .confirm-dialog,
-  .confirm-dialog * {
+  .confirm-dialog *,
+  .seek-dialog,
+  .seek-dialog * {
     transition: none;
   }
 }
@@ -97,6 +99,8 @@
 :root.is-reduced-motion .settings-dialog,
 :root.is-reduced-motion .settings-dialog *,
 :root.is-reduced-motion .confirm-dialog,
-:root.is-reduced-motion .confirm-dialog * {
+:root.is-reduced-motion .confirm-dialog *,
+:root.is-reduced-motion .seek-dialog,
+:root.is-reduced-motion .seek-dialog * {
   transition: none;
 }

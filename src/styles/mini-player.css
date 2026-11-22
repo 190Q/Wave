@@ -1,5 +1,35 @@
-.is-mini-player .stage > :not(.dock) {
+.is-mini-player .stage > :not(.dock):not(.seek-dialog) {
   display: none !important;
+}
+
+.is-mini-player .seek-dialog {
+  width: calc(100vw - 1rem);
+  max-height: calc(100vh - 0.5rem);
+  padding: 0.5rem;
+}
+
+.is-mini-player .seek-dialog form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.is-mini-player .seek-dialog .confirm-title,
+.is-mini-player .seek-dialog .confirm-message,
+.is-mini-player .seek-dialog .seek-label,
+.is-mini-player .seek-dialog .seek-error {
+  display: none;
+}
+
+.is-mini-player .seek-dialog .track-editor-fields {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+.is-mini-player .seek-dialog .confirm-actions {
+  flex: none;
+  margin: 0;
 }
 
 .is-mini-player .dock {

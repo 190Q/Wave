@@ -15,6 +15,7 @@ const mocks = {
   "../lib/state": `
     const context = globalThis.__librarySelectionTest;
     export const getState = () => context.state;
+    export const player = { snapshot: () => ({ currentId: null }) };
     export const collectionById = (id) => context.state.collections.find((collection) => collection.id === id);
     export const subscribe = (listener) => { context.render = listener; };
     export const setTracksLiked = (ids, liked) => context.liked.push({ ids, liked });
@@ -42,6 +43,7 @@ const mocks = {
     };
   `,
   "./track-editor": "export const openTrackEditor = () => {};",
+  "./seek-time": "export const openSeekTime = () => {};",
   "./song-editor": "export const openSongEditor = (id) => globalThis.__librarySelectionTest.edited.push(id);",
 };
 

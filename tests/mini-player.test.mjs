@@ -181,7 +181,7 @@ test("the track title is shown in mini mode even when the hero has not folded", 
 test("mini-player styles leave only the dock and hide its side controls", async () => {
   const css = await readFile(new URL("../src/styles/mini-player.css", import.meta.url), "utf8");
   const rules = parse(css).nodes.filter((node) => node.type === "rule");
-  for (const selector of [".is-mini-player .stage > :not(.dock)", ".is-mini-player .dock-side"]) {
+  for (const selector of [".is-mini-player .stage > :not(.dock):not(.seek-dialog)", ".is-mini-player .dock-side"]) {
     const rule = rules.find((node) => node.selector === selector);
     assert.ok(rule, `Missing ${selector}`);
     assert.ok(rule.nodes.some((node) => node.prop === "display" && node.value === "none"));

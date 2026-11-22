@@ -29,6 +29,7 @@ import { mountImportDialog, openImport } from "./ui/import-dialog";
 import { mountLibrary } from "./ui/library";
 import { mountMiniPlayer } from "./ui/mini-player";
 import { mountQueue } from "./ui/queue";
+import { mountSeekTime, openSeekTime } from "./ui/seek-time";
 import { mountSettings, openSettings } from "./ui/settings";
 import { mountStartup } from "./ui/startup";
 import { mountTheme } from "./ui/theme";
@@ -60,6 +61,7 @@ function mount(): void {
   mountLibrary();
   mountImportDialog();
   mountConfirm();
+  mountSeekTime();
   mountTrackEditor();
   mountTheme();
   mountSettings();
@@ -238,6 +240,11 @@ function mountShortcuts(): void {
       case "O":
         event.preventDefault();
         if (!mini) focusSearch();
+        break;
+      case "g":
+      case "G":
+        event.preventDefault();
+        if (!event.repeat) openSeekTime();
         break;
       case "s":
       case "S":

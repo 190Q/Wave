@@ -2,6 +2,7 @@
 .settings-dialog,
 .import-dialog,
 .confirm-dialog,
+.seek-dialog,
 .track-editor-dialog,
 .update-dialog {
   margin: auto;
@@ -22,6 +23,7 @@
 .settings-dialog.is-closed,
 .import-dialog.is-closed,
 .confirm-dialog.is-closed,
+.seek-dialog.is-closed,
 .track-editor-dialog.is-closed,
 .update-dialog.is-closed {
   transform: scale(0.12);
@@ -32,6 +34,7 @@
 .settings-dialog::backdrop,
 .import-dialog::backdrop,
 .confirm-dialog::backdrop,
+.seek-dialog::backdrop,
 .track-editor-dialog::backdrop,
 .update-dialog::backdrop {
   background: rgb(0 0 0 / 0.6);
@@ -43,6 +46,7 @@
 .settings-dialog.is-closed::backdrop,
 .import-dialog.is-closed::backdrop,
 .confirm-dialog.is-closed::backdrop,
+.seek-dialog.is-closed::backdrop,
 .track-editor-dialog.is-closed::backdrop,
 .update-dialog.is-closed::backdrop {
   opacity: 0;

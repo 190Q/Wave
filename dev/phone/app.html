@@ -191,7 +191,10 @@
 
         <div class="dock-inner">
           <div class="seek-row">
-            <span class="time" id="time-now">0:00</span>
+            <span class="time">
+              <button class="time-button" id="time-now" type="button" aria-label="Elapsed time 0:00. Jump to time" aria-haspopup="dialog" title="Jump to time (G)">0:00</button>
+              <span class="time-phone" id="time-now-phone">0:00</span>
+            </span>
             <p class="dock-title" id="dock-title" aria-hidden="true">
               <span class="dock-title-text" id="dock-title-text"></span>
             </p>
@@ -364,6 +367,23 @@
           <div class="confirm-actions">
             <button class="pill" id="track-editor-cancel" type="button">Cancel</button>
             <button class="pill pill-strong" id="track-editor-save" type="submit">Save</button>
+          </div>
+        </form>
+      </dialog>
+
+      <dialog class="seek-dialog" id="seek-dialog" aria-labelledby="seek-title" aria-describedby="seek-hint">
+        <form id="seek-form" novalidate>
+          <h2 class="confirm-title" id="seek-title">Jump to time</h2>
+          <p class="confirm-message" id="seek-hint"></p>
+          <div class="track-editor-fields">
+            <label><span class="seek-label">Time</span>
+              <input id="seek-input" type="text" aria-label="Time" aria-describedby="seek-hint seek-error" autocomplete="off" spellcheck="false" />
+            </label>
+          </div>
+          <p class="track-editor-error seek-error" id="seek-error" role="alert" hidden></p>
+          <div class="confirm-actions">
+            <button class="pill" id="seek-cancel" type="button">Cancel</button>
+            <button class="pill pill-strong" type="submit">Jump</button>
           </div>
         </form>
       </dialog>

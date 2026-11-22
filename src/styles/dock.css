@@ -70,6 +70,37 @@
   text-align: right;
 }
 
+.time-button {
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font-size: inherit;
+  font-variant-numeric: inherit;
+  transition: color 0.18s;
+}
+
+:root:not([data-touch="true"]) .time-button:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.time-button:disabled {
+  opacity: 1;
+  pointer-events: none;
+}
+
+.time-phone {
+  display: none;
+}
+
+:is([data-device="android"], [data-device="linuxPhone"]) .time-button {
+  display: none;
+}
+
+:is([data-device="android"], [data-device="linuxPhone"]) .time-phone {
+  display: inline;
+}
+
 .dock-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);

@@ -13,6 +13,7 @@ import {
   playCollection,
   playFromCollection,
   playTrackInContext,
+  player,
   refreshRecommendStatus,
   replaceTrackCover,
   removeTracksFromPlaylist,
@@ -66,6 +67,7 @@ import { fillIcons } from "./icons";
 import { highlightHtml } from "./highlight";
 import { openImport } from "./import-dialog";
 import { openMenu, type MenuItem, type MenuPoint } from "./menu";
+import { openSeekTime } from "./seek-time";
 import { openTrackEditor } from "./track-editor";
 import { WindowedList } from "./windowed";
 
@@ -723,7 +725,7 @@ export function mountLibrary(): void {
     if (
       sheet.contains(target) ||
       target.closest(
-        ".menu, .results, .theme-dialog, .settings-dialog, .import-dialog, .confirm-dialog, .track-editor-dialog, .add-to",
+        ".menu, .results, .theme-dialog, .settings-dialog, .import-dialog, .confirm-dialog, .track-editor-dialog, .seek-dialog, .add-to",
       )
     ) {
       return;
@@ -1653,6 +1655,15 @@ export function openTrackMenu(
           playTrackInContext(trackIds[0]);
         }
       }),
+    });
+  }
+
+  if (device() !== "desktop" && !many && everyHeld && player.snapshot().currentId === trackIds[0]) {
+    items.push({
+      label: "Jump to time",
+      action: () => {
+        if (player.snapshot().currentId === trackIds[0]) openSeekTime();
+      },
     });
   }
 

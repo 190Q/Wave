@@ -28,6 +28,7 @@ const mocks = {
     export const toggleQueue = () => {};
   `,
   "./touch": "export const mountTouch = () => {};",
+  "./seek-time": "export const openSeekTime = () => { globalThis.__dockTest.opens += 1; };",
 };
 
 const context = {
@@ -35,6 +36,7 @@ const context = {
   touch: true,
   seeks: [],
   toggles: 0,
+  opens: 0,
   state: { lyrics: [{}], likes: new Set(), queueOpen: false },
   player: {
     snapshot: () => ({
@@ -108,14 +110,15 @@ function setup(kind = "android") {
   context.touch = kind !== "desktop";
   context.seeks.length = 0;
   context.toggles = 0;
+  context.opens = 0;
   context.state.lyrics = [{}];
 
   const ids = [
-    "dock", "time-now", "time-total", "like", "shuffle", "prev", "play", "next",
+    "dock", "time-now", "time-now-phone", "time-total", "like", "shuffle", "prev", "play", "next",
     "repeat", "queue-toggle", "volume-bars", "dock-position", "dock-grab",
     "lyrics-panel", "lyrics-grab", "carousel",
   ];
-  const buttons = new Set(["like", "shuffle", "prev", "play", "next", "repeat", "queue-toggle", "dock-grab", "lyrics-grab"]);
+  const buttons = new Set(["time-now", "like", "shuffle", "prev", "play", "next", "repeat", "queue-toggle", "dock-grab", "lyrics-grab"]);
   const elements = Object.fromEntries(ids.map((id) => [id, new FakeElement({ button: buttons.has(id) })]));
   elements.volume = new HTMLInputElement();
   elements.dock.rect = { left: 0, width: 400, top: 80, bottom: 200 };
@@ -206,6 +209,19 @@ test("touch button hit areas do not extend above the buttons", async () => {
   assert.match(top, /^0(?:[a-z%]+)?$/i);
 });
 
+test("the elapsed-time button is replaced by a text label on phones", async () => {
+  const css = parse(await readFile(new URL("../src/styles/dock.css", import.meta.url), "utf8"));
+  const rules = css.nodes.filter((node) => node.type === "rule");
+  for (const [selector, display] of [
+    [".time-phone", "none"],
+    [':is([data-device="android"], [data-device="linuxPhone"]) .time-button', "none"],
+    [':is([data-device="android"], [data-device="linuxPhone"]) .time-phone', "inline"],
+  ]) {
+    const rule = rules.find((node) => node.selector === selector);
+    assert.equal(rule?.nodes.find((node) => node.prop === "display")?.value, display);
+  }
+});
+
 test("touch seeking starts only above the control row", () => {
   for (const kind of ["android", "linuxPhone"]) {
     const { elements, controls, windowEvents } = setup(kind);
@@ -213,6 +229,7 @@ test("touch seeking starts only above the control row", () => {
 
     elements.dock.dispatch("pointerdown", pointer(elements.dock, 200, 119));
     assert.equal(elements.dock.classList.contains("is-scrubbing"), true);
+    assert.equal(elements["time-now-phone"].textContent, "60000");
     windowEvents.dispatch("pointerup");
     assert.deepEqual(context.seeks, [0.5]);
 
@@ -336,6 +353,24 @@ test("desktop mouse seeking still works across the dock", () => {
   elements.dock.dispatch("pointerdown", pointer(elements.dock, 300, 150));
   windowEvents.dispatch("pointerup");
   assert.deepEqual(context.seeks, [0.75]);
+});
+
+test("the elapsed time opens the dialog on desktop without scrubbing", () => {
+  const { elements, windowEvents } = setup("desktop");
+  mountDock();
+  elements.dock.dispatch("pointerdown", pointer(elements["time-now"], 20, 100));
+  windowEvents.dispatch("pointerup");
+  elements["time-now"].dispatch("click");
+  assert.deepEqual(context.seeks, []);
+  assert.equal(context.opens, 1);
+
+  for (const kind of ["android", "linuxPhone"]) {
+    const phone = setup(kind);
+    mountDock();
+    assert.equal(phone.elements["time-now-phone"].textContent, "10000");
+    phone.elements["time-now"].dispatch("click");
+    assert.equal(context.opens, 0);
+  }
 });
 
 test("phone lyrics buttons activate on tap and keyboard", () => {

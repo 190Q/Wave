@@ -245,6 +245,10 @@
   list-style: none;
 }
 
+.import-log-hint {
+  margin-top: 0.5rem;
+}
+
 .import-history-row {
   display: flex;
   align-items: baseline;

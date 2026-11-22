@@ -581,7 +581,7 @@ export interface PersistedState {
 /** One entry in the import history. */
 export interface ImportRecord {
   /** Where it came from. */
-  source: "spotify" | "deezer" | "youtube" | "folder" | "wavelist";
+  source: "spotify" | "deezer" | "youtube" | "folder" | "wavelist" | "files" | "phone";
   /** The playlist or folder it brought in. */
   name: string;
   /** A short summary, such as `12 songs`. */

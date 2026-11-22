@@ -146,10 +146,10 @@ by launching `wave` in a terminal and checking the frontend and WebKit logs.
 
 ## Getting started
 
-Open **Import** and choose a music folder. Wave copies the audio into its own
-library; it does not play directly from the original folder. On Android, you
-can also pick individual audio files, scan the phone's music folders, or
-import a copied Wave `songs` folder with its artwork and lyrics.
+Open **Import** and choose individual audio files or a music folder. Wave copies
+the audio into its own library; it does not play directly from the original
+files. On Android, you can also scan the phone's music folders or import a
+copied Wave `songs` folder with its artwork and lyrics.
 
 To move a playlist, export a collection from **Settings → Library** on desktop
 and import the resulting `.wavelist` from **Import**. Choose whether to create

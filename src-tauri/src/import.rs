@@ -280,7 +280,7 @@ pub fn import_picked_files(app: AppHandle, paths: Vec<String>) -> Result<ImportO
         (uri, name)
     });
     let mut outcome = import_selected(&app, selected);
-    remember_import(&app, "phone", "Picked files", &outcome);
+    remember_import(&app, "files", "Picked files", &outcome);
     outcome.state = store.snapshot();
     #[cfg(target_os = "android")]
     crate::loudness::schedule(&app, guard);

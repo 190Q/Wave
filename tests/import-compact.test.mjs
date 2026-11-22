@@ -10,15 +10,15 @@ const mocks = {
   "../lib/state": `
     const context = () => globalThis.__importTest;
     export const getState = () => context().state;
-    export const importLogPath = async () => "";
+    export const importLogPath = async () => context().logPath ?? "";
     export const importFolder = () => { context().actions.push("folder"); };
     export const importWaveList = (choose) => { context().actions.push("wavelist"); context().chooseWave = choose; };
     export const collectionById = () => undefined;
     export const fetchCovers = () => {}, fetchGenres = () => {}, fetchLyrics = () => {};
     export const fixTagsAndCovers = () => {}, importPhoneFolder = () => {};
-    export const importPhoneMusic = () => {}, importPickedFiles = () => {};
+    export const importPhoneMusic = () => {}, importPickedFiles = () => { context().actions.push("files"); };
     export const importLink = async (url, duplicates) => { context().actions.push(["importLink", url, duplicates]); };
-    export const openImportLog = () => {}, openSpotifyConfig = () => {};
+    export const openImportLog = () => { context().actions.push("log"); }, openSpotifyConfig = () => {};
     export const planLink = async (url) => { context().actions.push(["planLink", url]); return { duplicates: 0 }; };
     export const refreshDeezerStatus = () => {};
     export const refreshSpotifyStatus = () => {}, refreshYoutubeStatus = () => {};
@@ -136,16 +136,44 @@ test("desktop compact import shows and runs only the local import actions", () =
 
   assert.equal(dialog.open, false);
   assert.equal(elements["import-toggle"].classList.contains("is-open"), true);
-  assert.deepEqual(actions(elements["import-drop-list"].innerHTML), ["folder", "wavelist"]);
+  assert.deepEqual(actions(elements["import-drop-list"].innerHTML), ["folder", "files", "wavelist"]);
 
-  for (const action of ["folder", "wavelist"]) {
+  for (const action of ["folder", "files", "wavelist"]) {
     elements["import-drop-list"].dispatch("click", {
       target: { closest: () => ({ dataset: { import: action } }) },
     });
     assert.equal(elements["import-toggle"].classList.contains("is-open"), false);
     elements["import-open"].dispatch("click");
   }
-  assert.deepEqual(context.actions, ["folder", "wavelist"]);
+  assert.deepEqual(context.actions, ["folder", "files", "wavelist"]);
+});
+
+test("desktop import places file selection beside folders and the log in recent imports", async () => {
+  const { context, elements } = setup("desktop", 800);
+  context.logPath = "D:\\Wave\\import.log";
+  context.state.recentImports = [{ source: "files", name: "Picked files", detail: "2 songs" }];
+  const history = { innerHTML: "" };
+  const hint = { textContent: "" };
+  elements["import-body"].querySelector = (selector) =>
+    selector === "#import-history" ? history : selector === "#import-log-hint" ? hint : null;
+  mountImportDialog();
+  elements["import-open"].dispatch("click");
+  await Promise.resolve();
+
+  const sections = elements["import-body"].innerHTML.match(/<section class="import-section">[\s\S]*?<\/section>/g);
+  const local = sections.find((section) => section.includes("Local import"));
+  const recent = sections.find((section) => section.includes("Recent imports"));
+  assert.deepEqual(actions(local), ["folder", "files", "wavelist"]);
+  assert.deepEqual(actions(recent), ["log"]);
+  assert.match(hint.textContent, /D:\\Wave\\import\.log/);
+  assert.match(history.innerHTML, /import-history-source">Files<\/span>/);
+
+  for (const action of ["log", "files"]) {
+    elements["import-body"].dispatch("click", {
+      target: { closest: (selector) => selector === "[data-import]" ? { dataset: { import: action } } : null },
+    });
+  }
+  assert.deepEqual(context.actions, ["log", "files"]);
 });
 
 test("the full desktop import panel still offers all fetch sections", () => {
@@ -173,6 +201,7 @@ test("Android full import offers YouTube without Spotify or desktop tools", () =
   assert.match(html, /Playlists import up to 500 videos/);
   assert.match(html, /Mixes import up to 50 videos/);
   assert.doesNotMatch(html, /Spotify|Deezer|yt-dlp|data-import="config"/);
+  assert.doesNotMatch(html, /data-import="log"/);
 });
 
 test("Android compact import opens the link field and keeps it open when the keyboard resizes", async () => {

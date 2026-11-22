@@ -597,13 +597,12 @@ function localSection(): string {
     : "Playlist downloads use the yt-dlp, ffmpeg and Deno that ship with Wave.";
   return section(
     "Local import",
-    `<p class="import-hint">Bring in a music folder, or import a Wave playlist to download its songs without Spotify. ${tools}</p>
+    `<p class="import-hint">Bring in music files or a folder, or import a Wave playlist to download its songs without Spotify. ${tools}</p>
     <div class="import-actions">
       <button class="pill" type="button" data-import="folder">Import folder</button>
+      <button class="pill" type="button" data-import="files">Import files</button>
       <button class="pill" type="button" data-import="wavelist">Import Wave playlist</button>
-      <button class="pill" type="button" data-import="log">Open the download log</button>
     </div>
-    <p class="import-hint" id="import-log-hint">${escapeHtml(logHint())}</p>
     <div id="import-transfer-state" aria-live="polite"></div>`,
   );
 }
@@ -816,14 +815,17 @@ function failuresHtml(failures: string[]): string {
   ${device() === "android" ? "" : `<button class="pill import-log-open" type="button" data-import="log">Open the download log</button>`}`;
 }
 
-/** What the Local import section says about the log a download writes. */
+/** What the history section says about the log a download writes. */
 function logHint(): string {
   const where = logPath ? ` It is kept at ${logPath}.` : "";
   return `Every download writes a log, which holds the last import's yt-dlp output. A song that would not download says why there.${where}`;
 }
 
 function historySection(): string {
-  return section("Recent imports", `<ul class="import-history" id="import-history"></ul>`);
+  return section("Recent imports", `<ul class="import-history" id="import-history"></ul>
+    ${device() === "android" ? "" : `
+      <p class="import-hint import-log-hint" id="import-log-hint">${escapeHtml(logHint())}</p>
+      <button class="pill" type="button" data-import="log">Open the download log</button>`}`);
 }
 
 function historyHtml(state: AppState): string {
@@ -854,6 +856,10 @@ function sourceLabel(source: string): string {
       return "YouTube";
     case "wavelist":
       return "Wave";
+    case "files":
+      return "Files";
+    case "phone":
+      return "Phone";
     default:
       return "Folder";
   }
@@ -922,6 +928,7 @@ function dropRowsHtml(state: AppState): string {
         ]
       : [
           dropRow("folder", "folder", "Import folder"),
+          dropRow("files", "import", "Import files"),
           dropRow("wavelist", "import", "Import Wave playlist"),
         ];
 

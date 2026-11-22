@@ -27,3 +27,18 @@ export function releasePopup(dismiss: Dismiss): void {
 export function dismissPopup(): void {
   showing?.();
 }
+
+export function listenForPress(
+  target: EventTarget,
+  listener: (event: Event) => void,
+  capture = false,
+): () => void {
+  target.addEventListener("pointerdown", listener, capture);
+  target.addEventListener("touchstart", listener, { capture, passive: true });
+  target.addEventListener("click", listener, capture);
+  return () => {
+    target.removeEventListener("pointerdown", listener, capture);
+    target.removeEventListener("touchstart", listener, capture);
+    target.removeEventListener("click", listener, capture);
+  };
+}

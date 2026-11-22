@@ -9,6 +9,7 @@
     "dev:phone": "vite --port 5199 --strictPort --open /dev/phone/index.html",
     "build": "tsc && vite build",
     "test": "node --test",
+    "test:webkit-popup": "node scripts/webkit-popup-check.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "tools": "node scripts/tools.mjs",

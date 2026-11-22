@@ -16,6 +16,7 @@ import type { Collection, SearchAlgorithm, Track } from "../types";
 import { collectionCoverHtml, resultCoverHtml } from "./artwork";
 import { hydrateCovers } from "./covers";
 import { highlightHtml } from "./highlight";
+import { listenForPress } from "./popups";
 
 const RESULT_LIMIT = 40;
 
@@ -250,8 +251,7 @@ export function mountTopbar(): void {
     search.focus();
   });
 
-  // Clicking the backdrop, but not the bar itself, dismisses the modal.
-  searchModal.addEventListener("pointerdown", (event) => {
+  listenForPress(searchModal, (event) => {
     if (event.target === searchModal) {
       closeSearch();
     }

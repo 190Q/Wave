@@ -1,6 +1,6 @@
 import { insets, isTouch, ZERO_INSETS } from "../lib/device";
 import { escapeHtml } from "../lib/format";
-import { claimPopup, releasePopup } from "./popups";
+import { claimPopup, listenForPress, releasePopup } from "./popups";
 
 export interface MenuItem {
   label: string;
@@ -64,8 +64,8 @@ export function openMenu(
   document.body.appendChild(menu);
   position(menu, anchor, at, options?.fitViewport === true);
 
-  const onPointerDown = (event: PointerEvent) => {
-    if (!menu.contains(event.target as Node)) {
+  const onOutsidePress = (event: Event) => {
+    if (!event.defaultPrevented && !menu.contains(event.target as Node)) {
       closeMenu();
     }
   };
@@ -118,8 +118,9 @@ export function openMenu(
   };
 
   // Deferred so the click that opened the menu does not immediately close it.
+  let removeOutsidePress = (): void => {};
   const pointerTimer = window.setTimeout(() => {
-    document.addEventListener("pointerdown", onPointerDown, true);
+    removeOutsidePress = listenForPress(document, onOutsidePress, true);
   }, 0);
   document.addEventListener("keydown", onKeyDown, true);
   window.addEventListener("resize", onMove);
@@ -127,7 +128,7 @@ export function openMenu(
 
   dismiss = () => {
     window.clearTimeout(pointerTimer);
-    document.removeEventListener("pointerdown", onPointerDown, true);
+    removeOutsidePress();
     document.removeEventListener("keydown", onKeyDown, true);
     window.removeEventListener("resize", onMove);
     window.removeEventListener("scroll", onScroll, true);

@@ -12,6 +12,7 @@ import type { Playlist } from "../types";
 import { mosaicHtml } from "./artwork";
 import { hydrateCovers, releaseCovers } from "./covers";
 import { fillIcons } from "./icons";
+import { listenForPress } from "./popups";
 
 /** The panel that is up, so opening another one replaces it. */
 let dismiss: (() => void) | null = null;
@@ -204,9 +205,9 @@ export function openAddToPlaylist(anchor: HTMLElement, trackIds: string[]): void
 
   search.addEventListener("input", paintList);
 
-  const onPointerDown = (event: PointerEvent): void => {
+  const onOutsidePress = (event: Event): void => {
     const target = event.target as Node;
-    if (!panel.contains(target) && !anchor.contains(target)) {
+    if (!event.defaultPrevented && !panel.contains(target) && !anchor.contains(target)) {
       close();
     }
   };
@@ -253,13 +254,14 @@ export function openAddToPlaylist(anchor: HTMLElement, trackIds: string[]): void
 
   let unsubscribe = (): void => {};
   let pointerTimer: number | null = null;
+  let removeOutsidePress = (): void => {};
 
   const close = (): void => {
     if (pointerTimer !== null) {
       window.clearTimeout(pointerTimer);
       pointerTimer = null;
     }
-    document.removeEventListener("pointerdown", onPointerDown, true);
+    removeOutsidePress();
     document.removeEventListener("keydown", onKeyDown, true);
     window.removeEventListener("scroll", onScroll, true);
     window.removeEventListener("resize", onResize);
@@ -299,7 +301,7 @@ export function openAddToPlaylist(anchor: HTMLElement, trackIds: string[]): void
   // Deferred so the click that opened the panel does not immediately close it.
   pointerTimer = window.setTimeout(() => {
     pointerTimer = null;
-    document.addEventListener("pointerdown", onPointerDown, true);
+    removeOutsidePress = listenForPress(document, onOutsidePress, true);
   }, 0);
   document.addEventListener("keydown", onKeyDown, true);
   window.addEventListener("scroll", onScroll, true);

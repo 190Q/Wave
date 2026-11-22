@@ -43,6 +43,9 @@ const vite = await createServer({
     name: "import-compact-test-mocks",
     enforce: "pre",
     resolveId(source, importer) {
+      if (source === "./popups" && importer && /[\\/]src[\\/]ui[\\/]drop\.ts$/.test(importer)) {
+        return;
+      }
       if (importer && /[\\/]src[\\/]ui[\\/](import-dialog|drop)\.ts$/.test(importer) && source in mocks) {
         return `\0import-compact-test:${source}`;
       }

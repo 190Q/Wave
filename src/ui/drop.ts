@@ -1,5 +1,6 @@
 import { device } from "../lib/device";
 import { dialogFits } from "./fit";
+import { listenForPress } from "./popups";
 
 /** How far a drop keeps off the bottom of the window. */
 const MARGIN = 8;
@@ -160,8 +161,8 @@ function createDrop(trigger: DropTrigger, render: () => void): Drop {
     face.setAttribute("aria-expanded", "true");
 
     // Any of these dismisses it; the opening click is already over by then.
-    const onPointerDown = (event: PointerEvent): void => {
-      if (!toggle.contains(event.target as Node)) {
+    const onOutsidePress = (event: Event): void => {
+      if (!event.defaultPrevented && !toggle.contains(event.target as Node)) {
         close();
       }
     };
@@ -171,13 +172,15 @@ function createDrop(trigger: DropTrigger, render: () => void): Drop {
         close();
       }
     };
-    window.setTimeout(() => {
-      document.addEventListener("pointerdown", onPointerDown, true);
+    let removeOutsidePress = (): void => {};
+    const pointerTimer = window.setTimeout(() => {
+      removeOutsidePress = listenForPress(document, onOutsidePress, true);
     }, 0);
     document.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("scroll", close, true);
     dismiss = () => {
-      document.removeEventListener("pointerdown", onPointerDown, true);
+      window.clearTimeout(pointerTimer);
+      removeOutsidePress();
       document.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("scroll", close, true);
     };

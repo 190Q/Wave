@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Wave
+Comment=A local-first music player
+Exec=wave
+Icon=com.wave.app
+Terminal=false
+Categories=Audio;Music;Player;AudioVideo;

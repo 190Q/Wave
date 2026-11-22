@@ -136,6 +136,38 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/release.mjs upload-slim "$RELEASE_TAG"
 
+      - name: Set up the phone Flatpak runtime
+        if: matrix.platform == 'ubuntu-22.04-arm'
+        run: |
+          sudo apt-get install -y flatpak xvfb xdotool dbus-x11 pulseaudio pulseaudio-utils
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive -y flathub org.gnome.Platform//51
+
+      - name: Build the phone Flatpak
+        if: matrix.platform == 'ubuntu-22.04-arm'
+        run: |
+          npx tauri build --no-bundle --config src-tauri/tauri.phone.conf.json
+          sh scripts/flatpak-build.sh
+
+      - name: Verify the phone Flatpak
+        if: matrix.platform == 'ubuntu-22.04-arm'
+        run: |
+          version=$(tr -d '\r\n' < VERSION)
+          flatpak install --user --noninteractive -y "src-tauri/target/flatpak/Wave_${version}_aarch64_phone.flatpak"
+          dbus-run-session -- xvfb-run -a -s "-screen 0 360x720x24" sh scripts/flatpak-runtime-test.sh
+
+      - name: Attach and verify the phone Flatpak
+        if: matrix.platform == 'ubuntu-22.04-arm'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(tr -d '\r\n' < VERSION)
+          asset="Wave_${version}_aarch64_phone.flatpak"
+          node scripts/release.mjs upload "$RELEASE_TAG" "src-tauri/target/flatpak/$asset"
+          mkdir -p "$RUNNER_TEMP/flatpak-download"
+          gh release download "$RELEASE_TAG" --pattern "$asset" --dir "$RUNNER_TEMP/flatpak-download"
+          cmp "src-tauri/target/flatpak/$asset" "$RUNNER_TEMP/flatpak-download/$asset"
+
   musl:
     name: build (linux phone musl)
     needs: prepare

@@ -17,8 +17,9 @@ test("release downloads list every required asset in platform order", () => {
     "Android",
   ]);
   const names = groups.flatMap(([, entries]) => entries.map(([, name]) => name));
-  assert.equal(names.length, 18);
-  assert.equal(new Set(names).size, 18);
+  assert.equal(names.length, 19);
+  assert.equal(new Set(names).size, 19);
+  assert.ok(names.includes("Wave_1.2.3_aarch64_phone.flatpak"));
   const body = downloads("1.2.3");
   for (const name of names) assert.ok(body.includes(`/${name})`), name);
   assert.ok(body.indexOf("Windows x64") < body.indexOf("Linux x86_64"));
@@ -39,6 +40,15 @@ test("only nonempty available assets count toward a complete release", () => {
   assert.ok(!body.includes(`/${names[names.length - 1]})`));
   assert.ok(!body.includes(`/${names[1]})`));
   assert.ok(body.includes(`/${names[2]})`));
+});
+
+test("a release without the phone Flatpak is incomplete", () => {
+  const flatpak = "Wave_1.2.3_aarch64_phone.flatpak";
+  const assets = assetGroups("1.2.3").flatMap(([, entries]) =>
+    entries.filter(([, name]) => name !== flatpak).map(([, name]) => ({ name, size: 10 })),
+  );
+  assert.deepEqual(missingAssets("1.2.3", assets), [flatpak]);
+  assert.ok(!downloads("1.2.3", assets).includes(flatpak));
 });
 
 function fixture(t) {
@@ -214,6 +224,7 @@ test("preparation creates a draft but leaves an existing release untouched", (t)
   assert.match(call.input, /^## New features\n\n- A feature/);
   assert.match(call.input, /## Downloads/);
   assert.match(call.input, /yt-dlp, FFmpeg, Deno and the YouTube solver/);
+  assert.match(call.input, /phone Flatpak[\s\S]*GNOME 51 runtime/);
 
   const existing = releaseFixture(t, { isDraft: false });
   const result = existing.run(["prepare", "v1.2.3"]);
@@ -225,7 +236,7 @@ test("finalization refuses an incomplete draft without publishing it", (t) => {
   const { output, run } = releaseFixture(t, { isDraft: true, body: "Notes", assets: [] });
   const result = run(["finalize", "v1.2.3"]);
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /missing 18 asset/);
+  assert.match(result.stderr, /missing 19 asset/);
   assert.throws(() => readFileSync(output), { code: "ENOENT" });
 });
 

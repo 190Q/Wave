@@ -22,6 +22,18 @@ test("release builds run after signing checks and publish only after every platf
   assert.match(workflow, /node scripts\/release\.mjs slim --reuse-build/);
 });
 
+test("the ARM release builds, tests and publishes the phone Flatpak", () => {
+  assert.match(workflow, /name: Set up the phone Flatpak runtime\n        if: matrix\.platform == 'ubuntu-22\.04-arm'/);
+  assert.match(workflow, /flatpak install --user --noninteractive -y flathub org\.gnome\.Platform\/\/51/);
+  assert.match(workflow, /npx tauri build --no-bundle --config src-tauri\/tauri\.phone\.conf\.json/);
+  assert.match(workflow, /sh scripts\/flatpak-build\.sh/);
+  assert.match(workflow, /flatpak install --user --noninteractive -y "src-tauri\/target\/flatpak\/Wave_\$\{version\}_aarch64_phone\.flatpak"/);
+  assert.match(workflow, /dbus-run-session -- xvfb-run .*sh scripts\/flatpak-runtime-test\.sh/);
+  assert.match(workflow, /asset="Wave_\$\{version\}_aarch64_phone\.flatpak"/);
+  assert.match(workflow, /node scripts\/release\.mjs upload "\$RELEASE_TAG" "src-tauri\/target\/flatpak\/\$asset"/);
+  assert.match(workflow, /cmp "src-tauri\/target\/flatpak\/\$asset" "\$RUNNER_TEMP\/flatpak-download\/\$asset"/);
+});
+
 test("Linux RPMs use fast compression and retain the full and slim package contents", () => {
   assert.deepEqual(linuxConfig.bundle.linux.rpm.compression, { type: "zstd", level: 3 });
   for (const tool of ["yt-dlp", "ffmpeg", "ffprobe", "deno"]) {
@@ -33,11 +45,12 @@ test("Linux RPMs use fast compression and retain the full and slim package conte
 });
 
 test("phone tests run only manually on ARM Alpine", () => {
-  assert.match(phoneTests, /^  workflow_dispatch:/m);
   for (const source of [phoneTests, workflow, recovery]) {
+    assert.match(source, /^  workflow_dispatch:/m);
     assert.doesNotMatch(source, /^  (?:push|pull_request):/m);
   }
   assert.match(phoneTests, /tests\/linux-phone\.test\.mjs/);
+  assert.match(phoneTests, /tests\/flatpak\.test\.mjs/);
   assert.match(phoneTests, /tests\/phone-lab\.test\.mjs/);
   assert.match(phoneTests, /tests\/audio-stream-path\.test\.mjs/);
   assert.match(phoneTests, /tests\/startup-diagnostics\.test\.mjs/);

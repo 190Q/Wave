@@ -19,6 +19,7 @@ export function assetGroups(version) {
     ["Linux ARM64", linux("arm64", "aarch64")],
     ["Linux phones (Alpine / postmarketOS)", [
       ["ARM64 musl tarball", `Wave_${version}_aarch64_musl.tar.gz`],
+      ["ARM64 Flatpak", `Wave_${version}_aarch64_phone.flatpak`],
     ]],
     ["Android", [["ARM64 APK", `Wave_${version}_arm64.apk`]]],
   ];

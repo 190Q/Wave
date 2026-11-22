@@ -15,7 +15,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
-      - run: node --test tests/linux-phone.test.mjs tests/audio-stream-path.test.mjs tests/phone-lab.test.mjs tests/startup-diagnostics.test.mjs tests/release-assets.test.mjs tests/release-workflow.test.mjs
+      - run: node --test tests/linux-phone.test.mjs tests/flatpak.test.mjs tests/audio-stream-path.test.mjs tests/phone-lab.test.mjs tests/startup-diagnostics.test.mjs tests/release-assets.test.mjs tests/release-workflow.test.mjs
 
   musl:
     runs-on: ubuntu-22.04-arm

@@ -83,8 +83,8 @@ page](https://github.com/190Q/Wave/releases/latest).
 
 - **Windows 10/11:** Install the `-setup.exe` file. An MSI is also available.
 - **Linux:** Choose a `.deb`, `.rpm` or `.AppImage` for x86_64 or aarch64.
-  Linux phones can use the aarch64 packages; Alpine and postmarketOS have an
-  aarch64 musl tarball. RPM packages need RPM 4.14 or newer with zstd support.
+  Linux phones can also use the aarch64 phone Flatpak; Alpine and postmarketOS
+  have an aarch64 musl tarball. RPM packages need RPM 4.14 or newer with zstd support.
 - **Android:** Install `Wave_x.y.z_arm64.apk` on an arm64 device.
 
 macOS is not supported. The normal desktop builds include yt-dlp, ffmpeg and
@@ -101,7 +101,36 @@ irm https://raw.githubusercontent.com/190Q/Wave/main/install.ps1 | iex
 curl -fsSL https://raw.githubusercontent.com/190Q/Wave/main/install.sh | sh
 ```
 
-### Linux phones (Alpine and postmarketOS)
+### Linux phones
+
+The `Wave_x.y.z_aarch64_phone.flatpak` release includes Wave and its download
+tools. Install Flatpak for your distribution, download the bundle, and run:
+
+```sh
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak install --user ./Wave_x.y.z_aarch64_phone.flatpak
+flatpak run com.wave.app
+```
+
+The bundle uses the GNOME 51 Flatpak runtime, which is downloaded from Flathub
+if needed; the runtime is not included in the bundle. The first installation
+therefore needs network access, unless the runtime is already installed. The
+phone still needs a working graphical session, audio service and desktop
+portals. The app can access files in your home directory for music imports.
+
+The Flatpak keeps its own library and settings under `~/.var/app/com.wave.app/`,
+separate from other Wave installations. A downloaded bundle does not receive
+automatic Wave updates. To update, close Wave, download the new bundle, then
+uninstall the old application and install the new bundle with the command above:
+
+```sh
+flatpak uninstall --user com.wave.app
+```
+
+This leaves the app data in place; do not use `--delete-data` when updating.
+Back up important data before replacing an installation.
+
+#### Alpine and postmarketOS musl tarball
 
 On aarch64 musl systems, the Linux installer selects the phone tarball and asks
 whether to install missing WebKitGTK, graphics and audio libraries, yt-dlp,

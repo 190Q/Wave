@@ -263,7 +263,7 @@ function drift(version) {
 const BODY = [
   "Installers for Windows, Linux and Android.",
   "",
-  "Every installer comes in two builds. The plain one ships yt-dlp, ffmpeg,",
+  "Desktop installers come in two builds. The plain one ships yt-dlp, ffmpeg,",
   "ffprobe and Deno, so downloading a link works on a fresh install. The",
   "`-slim` one leaves all four out and weighs a few megabytes, for when you",
   "already have your own copies on PATH.",
@@ -282,10 +282,15 @@ const BODY = [
   "",
   "Linux builds target glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+,",
   "Fedora 36+) and come for x86_64 and aarch64. postmarketOS and Alpine are",
-  "musl, where the glibc packages cannot run, so they get an aarch64 tarball",
+  "musl, where the glibc system packages cannot run, so they get an aarch64 tarball",
   "of their own. Its installer offers to install Alpine packages for WebKitGTK,",
   "runtime dependencies, yt-dlp, FFmpeg, Deno and the YouTube solver, or lists",
   "them for manual installation.",
+  "",
+  "The aarch64 phone Flatpak, when available, includes the download tools and",
+  "uses the GNOME 51 runtime, which Flatpak downloads from Flathub if needed.",
+  "See the [Linux phone instructions](https://github.com/190Q/Wave#linux-phones)",
+  "for installation and manual updates.",
   "",
   "The Android APK is for a phone. Install it once by hand, and Wave offers each",
   "later release in **Settings → Updates**: it downloads the APK and hands it to",
@@ -464,8 +469,8 @@ function commandGuide(part) {
   say("     pushes the branch and the tag.");
   if (ci) {
     say("     It then dispatches the release workflow, which builds Windows and Linux");
-    say("     for x86_64 and aarch64, adds the aarch64 musl package and the Android");
-    say("     APK, and publishes every build with the release.");
+    say("     for x86_64 and aarch64, adds the aarch64 phone Flatpak and musl package,");
+    say("     and publishes every build with the Android APK.");
   } else {
     say("     It then builds both installers here and publishes the release from them.");
   }

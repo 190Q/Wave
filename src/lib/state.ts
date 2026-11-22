@@ -1425,7 +1425,7 @@ export async function importFolder(choose: () => Promise<boolean | null>): Promi
     setNotice("Importing...");
     const outcome = await ipc.importFolder(folder, createPlaylist, null);
     applyPersisted(outcome.state);
-    await rescan();
+    await rescan(true);
     const found = await completeImport(outcome);
     setNotice(importNotice(outcome, found));
   } catch (error) {

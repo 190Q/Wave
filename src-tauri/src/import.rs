@@ -597,9 +597,7 @@ pub fn import_into_library(
     let mut lyrics = 0usize;
     let mut duplicates = 0usize;
     let mut similar = 0usize;
-    let mut errors = Vec::new();
-
-    let Contents { audio, skipped } = contents(source)?;
+    let Contents { audio, skipped, mut errors } = contents(source)?;
 
     for (key, path) in audio {
         let Some(file_name) = path.file_name().map(|name| name.to_string_lossy().into_owned())
@@ -687,12 +685,14 @@ pub fn import_into_library(
 struct Contents {
     audio: Vec<(String, PathBuf)>,
     skipped: usize,
+    errors: Vec<String>,
 }
 
 fn contents(folder: &Path) -> Result<Contents, String> {
     let mut found = Contents {
         audio: Vec::new(),
         skipped: 0,
+        errors: Vec::new(),
     };
     let mut seen = HashSet::new();
     walk(folder, folder, &mut seen, &mut found)?;
@@ -710,20 +710,37 @@ fn walk(
         return Ok(());
     }
 
-    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
-        .map_err(|e| format!("could not read {}: {e}", dir.display()))?
-        .flatten()
-        .map(|entry| entry.path())
-        .collect();
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if dir == folder => return Err(format!("could not read {}: {error}", dir.display())),
+        Err(error) => {
+            found.errors.push(format!("could not read {}: {error}", dir.display()));
+            return Ok(());
+        }
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => paths.push(entry.path()),
+            Err(error) => found.errors.push(format!("could not read {}: {error}", dir.display())),
+        }
+    }
     // Sorted, so the same folder always imports its songs in the same order.
-    entries.sort();
+    paths.sort();
 
-    for path in entries {
-        if path.is_dir() {
+    for path in paths {
+        let metadata = match fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                found.errors.push(format!("could not read {}: {error}", path.display()));
+                continue;
+            }
+        };
+        if metadata.is_dir() {
             walk(&path, folder, seen, found)?;
             continue;
         }
-        if !path.is_file() || !has_extension(&path, AUDIO_EXTENSIONS) {
+        if !metadata.is_file() || !has_extension(&path, AUDIO_EXTENSIONS) {
             found.skipped += 1;
             continue;
         }
@@ -753,6 +770,19 @@ fn import_one(
     let staged_path = staging_path(root, &extension)?;
     let hash = copy_and_hash(source, &staged_path)?;
     let staged = StagedFile(staged_path);
+    let detected = if extension == "ogg" {
+        lofty::probe::Probe::open(&staged.0)
+            .and_then(|probe| probe.guess_file_type().map_err(Into::into))
+            .ok()
+            .and_then(|probe| probe.file_type())
+    } else {
+        None
+    };
+    let extension = if detected == Some(lofty::file::FileType::Opus) {
+        "opus"
+    } else {
+        &extension
+    };
     let _operation = catalog.library_operation();
 
     // The same audio is the same song. A row whose file is gone is adopted
@@ -766,7 +796,7 @@ fn import_one(
     let (id, dir) = reserve_track_dir(root, catalog, known.as_ref(), &hash)?;
     let mut created = PlacedFiles { dir: dir.clone(), paths: Vec::new(), committed: false };
 
-    let target = audio_path(root, &id, &extension);
+    let target = audio_path(root, &id, extension);
     copy_new(&staged.0, &target)?;
     created.paths.push(target.clone());
 
@@ -1121,6 +1151,80 @@ mod tests {
 
         assert_eq!(found.audio.len(), 1);
         assert_eq!(found.audio[0].0, "Album/Song.mp3");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reports_unreadable_entries_and_imports_other_files() {
+        use std::os::unix::fs::symlink;
+
+        let dir = scratch("unreadable-entry");
+        fs::write(dir.join("Song.mp3"), b"a song").unwrap();
+        symlink(dir.join("missing"), dir.join("Broken.mp3")).unwrap();
+
+        let found = contents(&dir).unwrap();
+
+        assert_eq!(found.audio.len(), 1);
+        assert_eq!(found.audio[0].0, "Song.mp3");
+        assert_eq!(found.errors.len(), 1);
+        assert!(found.errors[0].contains("Broken.mp3"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reports_unreadable_subfolders_and_imports_other_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch("unreadable-subfolder");
+        let blocked = dir.join("Blocked");
+        fs::create_dir(&blocked).unwrap();
+        fs::write(dir.join("Song.mp3"), b"a song").unwrap();
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(&blocked).is_ok() {
+            fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
+            return;
+        }
+
+        let result = contents(&dir);
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
+        let found = result.unwrap();
+        assert_eq!(found.audio.len(), 1);
+        assert_eq!(found.audio[0].0, "Song.mp3");
+        assert_eq!(found.errors.len(), 1);
+        assert!(found.errors[0].contains("Blocked"));
+    }
+
+    #[test]
+    fn imports_vorbis_and_opus_with_the_same_ogg_extension() {
+        let root = scratch("mixed-ogg");
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("Vorbis.ogg"), include_bytes!("../../tests/fixtures/import-vorbis.ogg")).unwrap();
+        fs::write(source.join("Opus.ogg"), include_bytes!("../../tests/fixtures/import-opus.ogg")).unwrap();
+        let catalog = Catalog::in_memory().unwrap();
+        let unfiled = library::describe(&root, "unfiled", &source.join("Opus.ogg"), "Opus.ogg", None).unwrap();
+        assert_eq!(unfiled.codec, "Opus");
+
+        let found = contents(&source).unwrap();
+        assert_eq!(found.audio.len(), 2);
+        for (name, path) in found.audio {
+            let (placed, id) = import_one(
+                &root, &catalog, &path, &name, &SidecarIndex::default(), &SidecarIndex::default(), false,
+            ).unwrap();
+            assert!(matches!(placed, Placed::Added { .. }));
+            let row = catalog.track(&id).unwrap().unwrap();
+            assert_eq!(row.codec, if name == "Opus.ogg" { "Opus" } else { "Vorbis" });
+            assert_eq!(row.original_name, name);
+            let audio = root.join(&row.rel_path);
+            assert_eq!(audio.extension().unwrap(), if name == "Opus.ogg" { "opus" } else { "ogg" });
+            assert_eq!(library::describe(&root, &id, &audio, &name, None).unwrap().codec, row.codec);
+            assert!(matches!(import_one(
+                &root, &catalog, &path, &name, &SidecarIndex::default(), &SidecarIndex::default(), false,
+            ).unwrap().0, Placed::Duplicate));
+            crate::genre_fetch::write_genre(&audio.to_string_lossy(), "Test").unwrap();
+            assert_eq!(library::describe(&root, &id, &audio, &name, None).unwrap().genre.as_deref(), Some("Test"));
+        }
+        assert_eq!(catalog.present_count().unwrap(), 2);
     }
 
     #[test]

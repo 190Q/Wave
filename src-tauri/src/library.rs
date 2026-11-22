@@ -520,8 +520,14 @@ fn read_row(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let tagged =
-        lofty::read_from_path(audio).map_err(|e| format!("could not read {file_name}: {e}"))?;
+    let tagged = if audio.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("ogg")) {
+        lofty::probe::Probe::open(audio)
+            .and_then(|probe| probe.guess_file_type().map_err(Into::into))
+            .and_then(|probe| probe.read())
+    } else {
+        lofty::read_from_path(audio)
+    }
+    .map_err(|e| format!("could not read {file_name}: {e}"))?;
 
     let properties = tagged.properties();
     let mut title: Option<String> = None;

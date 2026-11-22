@@ -455,6 +455,27 @@ test("folder, file, and phone music imports show the first detailed error", asyn
   importErrors = ["Cannot copy this file"];
 });
 
+test("folder import refreshes all imported tracks without a landed event", async () => {
+  const track = (id) => ({ id, title: id, path: id, durationMs: 1000, artist: null, album: null, genre: null });
+  scanTracks = [track("existing")];
+  scanErrors = [];
+  await app.rescan(true);
+  scanTracks = [track("existing"), track("imported")];
+  const originalScan = globalThis.__testIpc.scanLibrary;
+  globalThis.__testIpc.scanLibrary = async (full) => {
+    scans.push(full);
+    return { changed: full ? clone(scanTracks) : [], removed: [], root: "", skipped: 0, errors: [] };
+  };
+  try {
+    await app.importFolder(async () => false);
+    assert.equal(scans.at(-1), true);
+    assert.deepEqual(app.getState().tracks.map((item) => item.id), ["existing", "imported"]);
+  } finally {
+    globalThis.__testIpc.scanLibrary = originalScan;
+    scanTracks = [];
+  }
+});
+
 test("Android playlist import starts downloads only for waiting songs", async () => {
   playlistDownloads.length = 0;
   waveWaiting = 5;

@@ -103,12 +103,19 @@ curl -fsSL https://raw.githubusercontent.com/190Q/Wave/main/install.sh | sh
 
 ### Linux phones (Alpine and postmarketOS)
 
-On aarch64 musl systems, the Linux installer selects the phone tarball and
-installs WebKitGTK, graphics and audio libraries, yt-dlp, FFmpeg, Deno and its
-YouTube solver using `apk`. Community repositories must be enabled; `sudo` or
-`doas` may be required for installing packages. Run the installer as your
-normal user, without `sudo` or `doas` on the installer itself; it uses them
-when needed for `apk`. To install a downloaded tarball, extract it and run
+On aarch64 musl systems, the Linux installer selects the phone tarball and asks
+whether to install missing WebKitGTK, graphics and audio libraries, yt-dlp,
+FFmpeg, Deno and its YouTube solver using `apk`. Decline to install them
+manually; the installer lists the Alpine package names and continues installing
+Wave, which may not run until its dependencies are available. Without a
+terminal, dependencies are not installed automatically. Use `--install-deps`
+to install them without prompting or `--skip-deps` to leave them for manual
+installation. With the one-line installer, pass either option after `sh -s --`,
+for example `curl -fsSL https://raw.githubusercontent.com/190Q/Wave/main/install.sh | sh -s -- --skip-deps`.
+Community repositories must be enabled; `sudo` or `doas` may be required for
+installing packages. Run the installer as your normal user, without `sudo` or
+`doas` on the installer itself; it uses them when needed for `apk`. To install
+a downloaded tarball, extract it and run
 `sh install.sh --local` from the extracted directory. Extracting the archive
 alone does not install Wave. The archive depends on system packages rather
 than containing all libraries. The phone launcher uses the desktop's file

@@ -29,7 +29,7 @@ MOCK
 cat > "$work/bin/apk" <<'MOCK'
 #!/bin/sh
 if [ "$1" = info ]; then
-  [ "${MOCK_DEPS_INSTALLED:-0}" = 1 ]
+  [ "${MOCK_DEPS_INSTALLED:-0}" = 1 ] || [ "$3" = "${MOCK_PRESENT_PACKAGE:-}" ]
 else
   printf 'apk %s\n' "$*" >> "$MOCK_LOG"
   [ "${MOCK_APK_FAIL:-0}" != 1 ]
@@ -104,7 +104,7 @@ WAVE_PREFIX="$env_prefix" sh "$root/install.sh" --uninstall
 printf 'WAVE_PREFIX changes the install location\n'
 
 prefix="$work/custom prefix"
-sh "$root/install.sh" --version 1.2.3 --dir "$prefix"
+sh "$root/install.sh" --version 1.2.3 --dir "$prefix" --install-deps
 grep -q 'apk add .*webkit2gtk-4.1' "$MOCK_LOG"
 grep -q 'gst-plugins-good' "$MOCK_LOG"
 grep -q 'yt-dlp ffmpeg deno' "$MOCK_LOG"
@@ -126,9 +126,61 @@ sh "$root/install.sh" --dir "$prefix" --uninstall
 printf 'musl installation, launch, and uninstall passed\n'
 
 : > "$MOCK_LOG"
-MOCK_CURL_FAIL=1 sh "$work/archive/install.sh" --local --dir "$prefix"
+MOCK_CURL_FAIL=1 sh "$work/archive/install.sh" --local --dir "$prefix" --install-deps
 [ -x "$prefix/bin/wave-bin" ] && [ -f "$prefix/bin/wave-webkit.py" ]
 printf 'extracted phone archives install without downloading another archive\n'
+
+: > "$MOCK_LOG"
+sh "$work/archive/install.sh" --local --dir "$prefix" --skip-deps > "$work/manual.log" 2> "$work/manual.err"
+[ ! -s "$MOCK_LOG" ]
+[ -x "$prefix/bin/wave" ]
+grep -Fq 'Install the Alpine packages manually with: apk add --no-cache webkit2gtk-4.1' "$work/manual.log"
+grep -Fq 'yt-dlp ffmpeg deno yt-dlp-ejs-rt-deno python3' "$work/manual.log"
+grep -Fq 'Wave may not work until its dependencies are installed' "$work/manual.err"
+MOCK_PRESENT_PACKAGE=openssl sh "$work/archive/install.sh" --local --dir "$prefix" --skip-deps > "$work/partial.log" 2> "$work/manual.err"
+if grep -Fq 'openssl' "$work/partial.log"; then
+  printf 'an installed dependency was listed as missing\n' >&2
+  exit 1
+fi
+printf 'phone dependencies can be installed manually\n'
+
+if sh "$root/install.sh" --skip-deps --install-deps > "$work/conflict.log" 2> "$work/conflict.err"; then
+  printf 'conflicting dependency options unexpectedly succeeded\n' >&2
+  exit 1
+fi
+grep -Fq 'cannot be combined' "$work/conflict.err"
+
+if command -v setsid >/dev/null 2>&1; then
+  : > "$MOCK_LOG"
+  setsid sh "$work/archive/install.sh" --local --dir "$prefix" </dev/null > "$work/unattended.log" 2> "$work/unattended.err"
+  [ ! -s "$MOCK_LOG" ]
+  [ -x "$prefix/bin/wave" ]
+  grep -Fq 'No terminal available' "$work/unattended.err"
+  grep -Fq 'Install the Alpine packages manually with:' "$work/unattended.log"
+  printf 'unattended installs leave dependencies for manual installation\n'
+fi
+
+if command -v script >/dev/null 2>&1; then
+  export WAVE_TEST_INSTALLER="$root/install.sh" WAVE_TEST_PREFIX="$prefix"
+  export WAVE_LOCAL_PACKAGE_DIR="$work/archive"
+  : > "$MOCK_LOG"
+  printf 'n\n' | script -q -e -c 'sh "$WAVE_TEST_INSTALLER" --local --dir "$WAVE_TEST_PREFIX"' /dev/null > "$work/prompt-no.log"
+  [ ! -s "$MOCK_LOG" ]
+  grep -Fq 'Install these dependencies with apk? [y/N]' "$work/prompt-no.log"
+  grep -Fq 'Install the Alpine packages manually with:' "$work/prompt-no.log"
+  printf 'yes\n' | script -q -e -c 'sh "$WAVE_TEST_INSTALLER" --local --dir "$WAVE_TEST_PREFIX"' /dev/null > "$work/prompt-yes.log"
+  grep -Fq 'Install these dependencies with apk? [y/N]' "$work/prompt-yes.log"
+  grep -q 'apk add .*webkit2gtk-4.1' "$MOCK_LOG"
+  : > "$MOCK_LOG"
+  printf 'n\n' | script -q -e -c 'cat "$WAVE_TEST_INSTALLER" | sh -s -- --local --dir "$WAVE_TEST_PREFIX"' /dev/null > "$work/prompt-pipe.log"
+  [ ! -s "$MOCK_LOG" ]
+  grep -Fq 'Install these dependencies with apk? [y/N]' "$work/prompt-pipe.log"
+  grep -Fq 'Install the Alpine packages manually with:' "$work/prompt-pipe.log"
+  printf 'y\n' | script -q -e -c 'cat "$WAVE_TEST_INSTALLER" | sh -s -- --local --dir "$WAVE_TEST_PREFIX"' /dev/null > "$work/prompt-pipe-yes.log"
+  grep -q 'apk add .*webkit2gtk-4.1' "$MOCK_LOG"
+  unset WAVE_LOCAL_PACKAGE_DIR WAVE_TEST_INSTALLER WAVE_TEST_PREFIX
+  printf 'interactive and piped installs ask before installing dependencies\n'
+fi
 
 mkdir "$work/legacy-archive"
 cp "$work/archive/wave-bin" "$work/legacy-archive/wave"
@@ -145,7 +197,7 @@ MOCK_DEPS_INSTALLED=1 sh "$root/install.sh" --version 1.2.3 --dir "$prefix"
 printf 'installed dependencies are not reinstalled\n'
 
 printf 'existing install\n' > "$prefix/bin/wave"
-if MOCK_APK_FAIL=1 sh "$root/install.sh" --version 1.2.3 --dir "$prefix"; then
+if MOCK_APK_FAIL=1 sh "$root/install.sh" --version 1.2.3 --dir "$prefix" --install-deps; then
   printf 'dependency installation unexpectedly succeeded\n' >&2
   exit 1
 fi
@@ -177,13 +229,21 @@ if MOCK_ARCH=x86_64 sh "$root/install.sh" --version 1.2.3 --dir "$prefix"; then
 fi
 mv "$work/bin/apk" "$work/bin/apk-disabled"
 if ! command -v apk >/dev/null 2>&1; then
-  if sh "$root/install.sh" --version 1.2.3 --dir "$prefix"; then
-    printf 'musl installation without apk unexpectedly succeeded\n' >&2
+  if sh "$work/archive/install.sh" --local --dir "$prefix" --install-deps; then
+    printf 'automatic dependency installation without apk unexpectedly succeeded\n' >&2
     exit 1
   fi
+  grep -qx 'existing install' "$prefix/bin/wave"
+  sh "$work/archive/install.sh" --local --dir "$prefix" --skip-deps > "$work/no-apk.log" 2> "$work/no-apk.err"
+  [ -x "$prefix/bin/wave" ]
+  grep -Fq 'apk is unavailable' "$work/no-apk.err"
+  grep -Fq 'webkit2gtk-4.1' "$work/no-apk.log"
+  grep -Fq "using your distribution's package manager" "$work/no-apk.log"
+  sh "$work/archive/install.sh" --local --dir "$prefix" > "$work/no-apk.log" 2> "$work/no-apk.err"
+  [ -x "$prefix/bin/wave" ]
+  printf 'manual installation does not require apk\n'
 fi
 mv "$work/bin/apk-disabled" "$work/bin/apk"
-grep -qx 'existing install' "$prefix/bin/wave"
 printf 'missing assets and unsupported architectures are rejected\n'
 
 printf '%s\n' '{"browser_download_url": "https://example.test/Wave_1.2.3_arm64.deb"}' > "$MOCK_JSON"

@@ -21,6 +21,8 @@ Wave installer for Linux.
   --version <v>   install a specific version (default: the latest release)
   --dir <path>    prefix for an AppImage or musl install (default: $HOME/.local)
   --local         install the extracted phone tarball beside this script
+  --install-deps  install missing phone dependencies with apk without prompting
+  --skip-deps     leave phone dependencies for manual installation
   --uninstall     remove an installed copy
   -h, --help      show this message
 
@@ -39,6 +41,7 @@ VERSION="${WAVE_VERSION:-}"
 PREFIX="${WAVE_PREFIX:-$HOME/.local}"
 UNINSTALL=0
 LOCAL=0
+DEPS=ask
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -47,6 +50,8 @@ while [ $# -gt 0 ]; do
     --dir) [ $# -ge 2 ] || die "--dir needs a value"; PREFIX="$2"; shift 2 ;;
     --dir=*) PREFIX="${1#*=}"; shift ;;
     --local) LOCAL=1; shift ;;
+    --install-deps) [ "$DEPS" != skip ] || die "--install-deps and --skip-deps cannot be combined"; DEPS=install; shift ;;
+    --skip-deps) [ "$DEPS" != install ] || die "--install-deps and --skip-deps cannot be combined"; DEPS=skip; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -88,7 +93,9 @@ MUSL=0
 if (ldd --version 2>&1 || true) | grep -qi musl; then
   MUSL=1
   [ "$RPM" = aarch64 ] || die "the musl release is only available for aarch64"
-  command -v apk >/dev/null 2>&1 || die "the musl installer requires Alpine's apk package manager"
+  if [ "$DEPS" = install ]; then
+    command -v apk >/dev/null 2>&1 || die "--install-deps requires Alpine's apk package manager"
+  fi
 fi
 
 asset() { # $1: suffix to match, $2: architecture token
@@ -191,23 +198,57 @@ if [ "$MUSL" -eq 1 ]; then
     [ -f "$TMP/wave-bin" ] && [ -f "$TMP/wave-webkit.py" ] || die "the phone package is incomplete; download it again"
   fi
 
-  missing=""
-  for package in webkit2gtk-4.1 libayatana-appindicator librsvg xdotool openssl \
+  packages="webkit2gtk-4.1 libayatana-appindicator librsvg xdotool openssl \
     glib-networking ca-certificates mesa-dri-gallium mesa-gles font-dejavu xdg-desktop-portal-phosh \
     gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav \
-    yt-dlp ffmpeg deno yt-dlp-ejs-rt-deno python3; do
-    apk info -e "$package" >/dev/null 2>&1 || missing="$missing $package"
+    yt-dlp ffmpeg deno yt-dlp-ejs-rt-deno python3"
+  missing=""
+  have_apk=1
+  if ! command -v apk >/dev/null 2>&1; then
+    have_apk=0
+    warn "apk is unavailable; the Alpine dependencies could not be checked."
+    DEPS=skip
+  fi
+  for package in $packages; do
+    if [ "$have_apk" -eq 0 ] || ! apk info -e "$package" >/dev/null 2>&1; then
+      missing="$missing $package"
+    fi
   done
   if [ -n "$missing" ]; then
-    say "Installing Alpine runtime dependencies:$missing"
-    if [ "$(id -u)" -eq 0 ]; then
-      apk add --no-cache $missing || die "could not install Alpine runtime dependencies"
-    elif command -v sudo >/dev/null 2>&1; then
-      sudo apk add --no-cache $missing || die "could not install Alpine runtime dependencies"
-    elif command -v doas >/dev/null 2>&1; then
-      doas apk add --no-cache $missing || die "could not install Alpine runtime dependencies"
+    say "Alpine runtime dependencies to install:$missing"
+    if [ "$DEPS" = ask ]; then
+      answer=""
+      if [ -t 0 ]; then
+        printf 'Install these dependencies with apk? [y/N] '
+        read -r answer || answer=""
+      elif ( : </dev/tty ) 2>/dev/null; then
+        printf 'Install these dependencies with apk? [y/N] '
+        read -r answer </dev/tty || answer=""
+      else
+        warn "No terminal available; use --install-deps to install dependencies automatically."
+      fi
+      case "$answer" in
+        [yY]|[yY][eE][sS]) DEPS=install ;;
+        *) DEPS=skip ;;
+      esac
+    fi
+    if [ "$DEPS" = install ]; then
+      if [ "$(id -u)" -eq 0 ]; then
+        apk add --no-cache $missing || die "could not install Alpine runtime dependencies"
+      elif command -v sudo >/dev/null 2>&1; then
+        sudo apk add --no-cache $missing || die "could not install Alpine runtime dependencies"
+      elif command -v doas >/dev/null 2>&1; then
+        doas apk add --no-cache $missing || die "could not install Alpine runtime dependencies"
+      else
+        die "install the missing dependencies with apk add --no-cache:$missing"
+      fi
     else
-      die "install the missing dependencies with apk add:$missing"
+      warn "Wave may not work until its dependencies are installed."
+      if [ "$have_apk" -eq 1 ]; then
+        say "Install the Alpine packages manually with: apk add --no-cache$missing"
+      else
+        say "Install the equivalent packages using your distribution's package manager."
+      fi
     fi
   fi
 

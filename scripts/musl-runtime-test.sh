@@ -32,7 +32,7 @@ exit 1
 MOCK
 chmod +x "$temp/bin/curl"
 
-sh install.sh --version "$version"
+sh install.sh --version "$version" --install-deps
 if ! ldd "$HOME/.local/bin/wave-bin" > "$temp/ldd.log" 2>&1; then
   cat "$temp/ldd.log" >&2
   exit 1

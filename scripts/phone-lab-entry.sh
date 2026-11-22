@@ -13,11 +13,11 @@ if [ -f /input/wave.tar.gz ]; then
       }
     fi
   done
-  WAVE_LOCAL_PACKAGE_DIR=/tmp/wave-package sh /opt/wave/install.sh --local
+  WAVE_LOCAL_PACKAGE_DIR=/tmp/wave-package sh /opt/wave/install.sh --local --install-deps
 elif [ -n "${WAVE_LAB_VERSION:-}" ]; then
-  sh /opt/wave/install.sh --version "$WAVE_LAB_VERSION"
+  sh /opt/wave/install.sh --version "$WAVE_LAB_VERSION" --install-deps
 else
-  sh /opt/wave/install.sh
+  sh /opt/wave/install.sh --install-deps
 fi
 chown -R wave:wave "$HOME"
 mkdir -p /tmp/.X11-unix

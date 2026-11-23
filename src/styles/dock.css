@@ -289,6 +289,10 @@
   transition: transform 0.5s var(--ease);
 }
 
+.dock-title-artist {
+  display: none;
+}
+
 .volume {
   --volume-width: 4.875rem;
   position: relative;

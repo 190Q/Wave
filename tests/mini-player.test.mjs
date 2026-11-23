@@ -14,7 +14,9 @@ const context = {
   tauri: true,
   dismissed: 0,
   drags: 0,
+  track: { title: "Bat Country", artist: "Avenged Sevenfold" },
   listeners: [],
+  playerListeners: [],
   timers: new Map(),
 };
 globalThis.__miniTest = context;
@@ -26,8 +28,8 @@ const mocks = {
   "../lib/state": `
     export const getState = () => ({ settings: { miniPlayer: globalThis.__miniTest.mini } });
     export const subscribe = (listener) => globalThis.__miniTest.listeners.push(listener);
-    export const currentTrack = () => ({ title: "Bat Country" });
-    export const player = { onChange() {} };
+    export const currentTrack = () => globalThis.__miniTest.track;
+    export const player = { onChange: (listener) => globalThis.__miniTest.playerListeners.push(listener) };
   `,
   "../lib/motion": "export const reduceMotionActive = () => true; export const subscribeMotion = () => {};",
   "./popups": "export const dismissPopup = () => { globalThis.__miniTest.dismissed++; };",
@@ -90,14 +92,17 @@ function setup() {
   context.tauri = true;
   context.dismissed = 0;
   context.drags = 0;
+  context.track = { title: "Bat Country", artist: "Avenged Sevenfold" };
   context.listeners = [];
+  context.playerListeners = [];
   context.timers = new Map();
   const root = element();
   const title = element();
   const strip = element();
+  const artist = element();
   const buttons = element();
   const hero = element();
-  const elements = { "dock-title": title, "dock-title-text": strip, "dock-buttons": buttons, hero };
+  const elements = { "dock-title": title, "dock-title-text": strip, "dock-title-artist": artist, "dock-buttons": buttons, hero };
   globalThis.document = { documentElement: root, getElementById: (id) => elements[id] ?? null };
   globalThis.window = {
     setTimeout: (callback) => {
@@ -107,7 +112,7 @@ function setup() {
     },
     clearTimeout: (id) => context.timers.delete(id),
   };
-  return { root, title, strip };
+  return { root, title, strip, artist };
 }
 
 function render() {
@@ -170,10 +175,11 @@ test("dragging the title moves only the native mini player", () => {
 });
 
 test("the track title is shown in mini mode even when the hero has not folded", () => {
-  const { root, title, strip } = setup();
+  const { root, title, strip, artist } = setup();
   mountMiniPlayer();
   mountDockTitle();
   assert.equal(strip.textContent, "Bat Country");
+  assert.equal(artist.textContent, "Avenged Sevenfold");
   assert.equal(title.classList.contains("is-shown"), false);
 
   context.mini = true;
@@ -185,6 +191,31 @@ test("the track title is shown in mini mode even when the hero has not folded", 
   context.mini = false;
   render();
   assert.equal(title.classList.contains("is-shown"), false);
+});
+
+test("the mini player updates the artist with the current track and metadata", () => {
+  const { strip, artist } = setup();
+  context.mini = true;
+  mountMiniPlayer();
+  mountDockTitle();
+  assert.equal(strip.textContent, "Bat Country");
+  assert.equal(artist.textContent, "Avenged Sevenfold");
+
+  context.track = { title: "Another song", artist: "Another artist" };
+  for (const listener of context.playerListeners) listener();
+  assert.equal(strip.textContent, "Another song");
+  assert.equal(artist.textContent, "Another artist");
+  assert.equal(artist.title, "Another artist");
+
+  context.track = { title: "Another song", artist: null };
+  render();
+  assert.equal(artist.textContent, "Unknown artist");
+
+  context.track = null;
+  render();
+  assert.equal(strip.textContent, "");
+  assert.equal(artist.textContent, "");
+  assert.equal(artist.title, "");
 });
 
 test("mini-player styles leave only the dock and hide its side controls", async () => {
@@ -200,6 +231,14 @@ test("mini-player styles leave only the dock and hide its side controls", async 
   assert.ok(dock.nodes.some((node) => node.prop === "height" && node.value === "100%"));
   assert.ok(dock.nodes.some((node) => node.prop === "border" && node.value === "0"));
   assert.ok(dock.nodes.some((node) => node.prop === "border-radius" && node.value === "0"));
+  const title = rules.find((node) => node.selector === ".is-mini-player .dock-title");
+  assert.ok(title.nodes.some((node) => node.prop === "mask-image" && node.value === "none"));
+  const artist = rules.find((node) => node.selector === ".is-mini-player .dock-title-artist");
+  assert.ok(artist.nodes.some((node) => node.prop === "display" && node.value === "block"));
+  assert.ok(artist.nodes.some((node) => node.prop === "text-overflow" && node.value === "ellipsis"));
+  const dockCss = await readFile(new URL("../src/styles/dock.css", import.meta.url), "utf8");
+  const normalArtist = parse(dockCss).nodes.find((node) => node.type === "rule" && node.selector === ".dock-title-artist");
+  assert.ok(normalArtist.nodes.some((node) => node.prop === "display" && node.value === "none"));
 });
 
 test("mini-player shortcuts cannot change pinning or resize the window", async () => {

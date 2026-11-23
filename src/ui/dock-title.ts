@@ -11,6 +11,7 @@ const SETTLE_MS = 250;
 export function mountDockTitle(): void {
   const viewport = document.getElementById("dock-title");
   const strip = document.getElementById("dock-title-text");
+  const artist = document.getElementById("dock-title-artist");
   const buttons = document.getElementById("dock-buttons");
   const hero = document.getElementById("hero");
 
@@ -150,10 +151,18 @@ export function mountDockTitle(): void {
   const fit = (): void => {
     capWidth();
 
-    const text = currentTrack()?.title ?? "";
+    const track = currentTrack();
+    const text = track?.title ?? "";
     if (text !== renderedText) {
       renderedText = text;
       strip.textContent = text;
+    }
+    if (artist) {
+      const artistText = track ? track.artist ?? "Unknown artist" : "";
+      if (artist.textContent !== artistText) {
+        artist.textContent = artistText;
+        artist.title = artistText;
+      }
     }
 
     if (!wanted()) {

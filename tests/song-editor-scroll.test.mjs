@@ -155,6 +155,18 @@ test("song editor timeline navigation and lyric selection", async (t) => {
   globalThis.HTMLInputElement = class extends Element {
     blur() { globalThis.document.activeElement = null; }
   };
+  globalThis.HTMLTextAreaElement = class extends Element {};
+  globalThis.HTMLButtonElement = class extends Element {
+    hasAttribute(name) { return name === "data-lyric-shift"; }
+    dispatchEvent(event) { this.dispatch(event.type, { shiftKey: event.shiftKey }); }
+    click() { if (!this.disabled) this.dispatch("click"); }
+  };
+  globalThis.MouseEvent = class {
+    constructor(type, options) { this.type = type; Object.assign(this, options); }
+  };
+  for (const id of ["shift-from-back", "shift-from-forward"]) {
+    elements.set(id, new HTMLButtonElement());
+  }
   const confirmElements = Object.fromEntries([
     "confirm-dialog", "confirm-title", "confirm-message", "confirm-cancel", "confirm-accept",
   ].map((id) => [id, new Element()]));
@@ -382,7 +394,7 @@ test("song editor timeline navigation and lyric selection", async (t) => {
     lines.dispatch("focusin", { target: input });
     assert.equal(selected(), "0");
     const close = element("close");
-    close.closest = (selector) => selector === "#song-editor-close" ? close : null;
+    close.closest = (selector) => selector === "#song-editor-close, [data-shift-from]" ? close : null;
     modal.dispatch("pointerdown", { target: close });
     assert.equal(selected(), "0");
     assert.equal(document.activeElement, input);
@@ -412,7 +424,7 @@ test("song editor timeline navigation and lyric selection", async (t) => {
     const accept = confirmElements["confirm-accept"];
     let audio = globalThis.__songEditorTest.audio;
     element("play").dispatch("click");
-    const lines = element("lines-content").innerHTML;
+    let lines = element("lines-content").innerHTML;
     const assertUnchanged = () => {
       assert.equal(modal.hidden, false);
       assert.equal(element("lines-content").innerHTML, lines);
@@ -475,6 +487,7 @@ test("song editor timeline navigation and lyric selection", async (t) => {
     element("redo").dispatch("click");
     audio = globalThis.__songEditorTest.audio;
     element("play").dispatch("click");
+    lines = element("lines-content").innerHTML;
     assertUnchanged();
 
     let otherDismissals = 0;
@@ -512,5 +525,102 @@ test("song editor timeline navigation and lyric selection", async (t) => {
     element("close").dispatch("click");
     assert.equal(modal.hidden, true);
     assert.equal(dialog.open, false);
+  });
+
+  await t.test("shift from the selected line leaves earlier lyrics unchanged", async () => {
+    globalThis.__songEditorTest.lyrics = "[00:01.000]Before\n[00:02.000]Selected\nUntimed\n[00:03.000]After\n[00:00.050]Low";
+    openSongEditor(track.id);
+    await settle();
+
+    const lines = element("lines");
+    const back = element("shift-from-back");
+    const forward = element("shift-from-forward");
+    const times = () => [...element("lines-content").innerHTML.matchAll(/data-lyric-time="\d+"[^>]*value="([^"]*)"/g)]
+      .map((match) => match[1]);
+    const original = ["00:01.000", "00:02.000", "", "00:03.000", "00:00.050"];
+    assert.deepEqual(times(), original);
+    assert.equal(back.disabled, true);
+    assert.equal(forward.disabled, true);
+    back.dispatch("click");
+    assert.deepEqual(times(), original);
+
+    const rows = original.map((_, index) => {
+      const row = new Element();
+      row.dataset.line = String(index);
+      row.offsetTop = index * 40;
+      row.offsetHeight = 40;
+      row.getBoundingClientRect = () => ({ top: index * 40, bottom: index * 40 + 40 });
+      return row;
+    });
+    lines.querySelectorAll = (selector) => selector === "[data-line]" ? rows : [];
+    const input = new HTMLInputElement();
+    input.dataset.lyricText = "1";
+    lines.dispatch("focusin", { target: input });
+    assert.equal(back.disabled, false);
+    assert.equal(forward.disabled, false);
+    assert.equal(rows[1].classList.contains("is-selected"), true);
+    assert.equal(rows[0].classList.contains("is-selected"), false);
+
+    back.closest = (selector) => selector === "#song-editor-close, [data-shift-from]" ? back : null;
+    modal.dispatch("pointerdown", { target: back });
+    back.dispatch("click");
+    assert.deepEqual(times(), ["00:01.000", "00:01.900", "", "00:02.900", "00:00.000"]);
+    assert.match(element("lines-content").innerHTML, /song-editor-line is-selected" data-line="1"/);
+    assert.equal(back.disabled, false);
+
+    forward.dispatch("click", { shiftKey: true });
+    assert.deepEqual(times(), ["00:01.000", "00:02.400", "", "00:03.400", "00:00.500"]);
+    let prevented = false;
+    windowEvents.dispatch("keydown", {
+      target: back, key: "Enter", code: "Enter", shiftKey: true,
+      preventDefault() { prevented = true; },
+    });
+    assert.equal(prevented, true);
+    assert.deepEqual(times(), ["00:01.000", "00:01.900", "", "00:02.900", "00:00.000"]);
+    windowEvents.dispatch("keydown", { target: forward, key: " ", code: "Space", shiftKey: true });
+    assert.deepEqual(times(), ["00:01.000", "00:02.400", "", "00:03.400", "00:00.500"]);
+    windowEvents.dispatch("keydown", { target: back, key: " ", code: "Space", shiftKey: true });
+    assert.deepEqual(times(), ["00:01.000", "00:01.900", "", "00:02.900", "00:00.000"]);
+    windowEvents.dispatch("keydown", { target: back, key: " ", code: "Space", shiftKey: true, repeat: true });
+    assert.deepEqual(times(), ["00:01.000", "00:01.900", "", "00:02.900", "00:00.000"]);
+    forward.dispatch("click");
+    assert.deepEqual(times(), ["00:01.000", "00:02.000", "", "00:03.000", "00:00.100"]);
+
+    let reported = false;
+    lines.querySelector = (selector) => selector === "input:invalid"
+      ? { reportValidity() { reported = true; } } : null;
+    back.dispatch("click");
+    assert.equal(reported, true);
+    assert.deepEqual(times(), ["00:01.000", "00:02.000", "", "00:03.000", "00:00.100"]);
+    lines.querySelector = () => null;
+
+    element("undo").dispatch("click");
+    assert.deepEqual(times(), ["00:01.000", "00:01.900", "", "00:02.900", "00:00.000"]);
+    assert.equal(back.disabled, true);
+    element("redo").dispatch("click");
+    assert.deepEqual(times(), ["00:01.000", "00:02.000", "", "00:03.000", "00:00.100"]);
+
+    const chip = new Element();
+    chip.dataset.chip = "3";
+    chip.closest = (selector) => selector === "[data-chip]" ? chip : null;
+    element("lyric-track").dispatch("pointerdown", { target: chip, pointerId: 1 });
+    windowEvents.dispatch("pointerup", { pointerId: 1 });
+    assert.equal(back.disabled, false);
+    back.dispatch("click", { shiftKey: true });
+    assert.deepEqual(times(), ["00:01.000", "00:02.000", "", "00:02.500", "00:00.000"]);
+
+    input.dataset.lyricText = "2";
+    lines.dispatch("focusin", { target: input });
+    forward.dispatch("click");
+    assert.deepEqual(times(), ["00:01.000", "00:02.000", "", "00:02.600", "00:00.100"]);
+    input.dataset.lyricText = "4";
+    lines.dispatch("focusin", { target: input });
+    back.dispatch("click");
+    assert.deepEqual(times(), ["00:01.000", "00:02.000", "", "00:02.600", "00:00.000"]);
+
+    modal.dispatch("pointerdown", { target: element("play") });
+    assert.equal(back.disabled, true);
+    assert.equal(forward.disabled, true);
+    lines.querySelectorAll = () => [];
   });
 });

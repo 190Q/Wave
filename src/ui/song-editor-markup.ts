@@ -65,15 +65,18 @@ export function createSongEditor(): HTMLElement {
               <div class="song-editor-lyric-actions">
                 <button class="pill" id="song-editor-add-line" type="button">Add line</button>
                 <span class="settings-hint">Shift all</span>
-                <button class="pill" id="song-editor-shift-back" type="button" aria-label="Shift lyrics back 0.1 seconds">-0.1s</button>
-                <button class="pill" id="song-editor-shift-forward" type="button" aria-label="Shift lyrics forward 0.1 seconds">+0.1s</button>
+                <button class="pill" id="song-editor-shift-back" type="button" data-lyric-shift aria-label="Shift lyrics back 0.1 seconds">-0.1s</button>
+                <button class="pill" id="song-editor-shift-forward" type="button" data-lyric-shift aria-label="Shift lyrics forward 0.1 seconds">+0.1s</button>
+                <span class="settings-hint">Shift from selected</span>
+                <button class="pill" id="song-editor-shift-from-back" type="button" data-lyric-shift data-shift-from aria-label="Shift the selected and following lyrics back 0.1 seconds" disabled>-0.1s</button>
+                <button class="pill" id="song-editor-shift-from-forward" type="button" data-lyric-shift data-shift-from aria-label="Shift the selected and following lyrics forward 0.1 seconds" disabled>+0.1s</button>
                 <button class="pill" id="song-editor-import-lyrics" type="button">Import lyrics</button>
               </div>
             </div>
             <div class="song-editor-lines" id="song-editor-lines">
               <div class="song-editor-lines-content" id="song-editor-lines-content"></div>
             </div>
-            <p class="settings-hint song-editor-note">Leave a time blank for an untimed line. Times refer to the original audio until saved.</p>
+            <p class="settings-hint song-editor-note">Select a line to shift it and the lines after it. Hold Shift to move by 0.5s. Leave a time blank for an untimed line. Times refer to the original audio until saved.</p>
             <input id="song-editor-lyrics-file" type="file" accept=".lrc,.txt,text/plain" hidden />
           </section>
         </div>

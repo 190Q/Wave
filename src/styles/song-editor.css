@@ -327,6 +327,10 @@
   border-radius: 0.8rem;
 }
 
+.song-editor-line.is-selected {
+  border-color: var(--accent);
+}
+
 .song-editor-line input {
   width: 100%;
   font-size: 0.77rem;

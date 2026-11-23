@@ -65,6 +65,8 @@ function mountSongEditor(): void {
   const lines = byId("lines");
   const linesContent = byId("lines-content");
   const lyricFile = byId<HTMLInputElement>("lyrics-file");
+  const shiftFromBack = byId<HTMLButtonElement>("shift-from-back");
+  const shiftFromForward = byId<HTMLButtonElement>("shift-from-forward");
   let audio: HTMLAudioElement;
   let disconnectPreview: (() => void) | null = null;
   let wantsPlayback = false;
@@ -107,11 +109,15 @@ function mountSongEditor(): void {
   const lyricsChanged = (): boolean => JSON.stringify(lyrics) !== initialLyrics;
   const dirty = (): boolean => lyricsChanged() || cuts.length > 0 || stagedAudio !== null
     || lines.querySelector("input:invalid") !== null;
+  const updateShiftFrom = (): void => {
+    shiftFromBack.disabled = shiftFromForward.disabled = busy || !loaded || selectedLine === null;
+  };
   const updateSave = (): void => {
     save.disabled = busy || !loaded || !dirty();
     undo.disabled = busy || !loaded || !history?.canUndo;
     redo.disabled = busy || !loaded || !history?.canRedo;
     body.inert = busy || !loaded;
+    updateShiftFrom();
   };
   const record = (group: string | null = null): void => {
     history?.record(snapshot(), group);
@@ -248,6 +254,10 @@ function mountSongEditor(): void {
   };
 
   const paintChips = (): void => {
+    updateShiftFrom();
+    for (const row of lines.querySelectorAll<HTMLElement>("[data-line]")) {
+      row.classList.toggle("is-selected", Number(row.dataset.line) === selectedLine);
+    }
     const timed = lyrics.lines.map((line, index) => ({ line, index }))
       .filter((entry): entry is { line: { timeMs: number; text: string }; index: number } => entry.line.timeMs !== null)
       .sort((a, b) => a.line.timeMs - b.line.timeMs);
@@ -263,7 +273,7 @@ function mountSongEditor(): void {
   const paintLines = (): void => {
     activeLine = null;
     linesContent.innerHTML = lyrics.lines.length ? lyrics.lines.map((line, index) => `
-      <div class="song-editor-line" data-line="${index}">
+      <div class="song-editor-line${index === selectedLine ? " is-selected" : ""}" data-line="${index}">
         <input data-lyric-time="${index}" aria-label="Time for line ${index + 1}" placeholder="mm:ss.ms" value="${line.timeMs === null ? "" : formatEditTime(line.timeMs)}" />
         <input data-lyric-text="${index}" aria-label="Text for line ${index + 1}" value="${escapeHtml(line.text)}" />
         <button class="pill" type="button" data-lyric-seek="${index}" title="Seek to this line" aria-label="Seek to line ${index + 1}">Go</button>
@@ -539,7 +549,7 @@ function mountSongEditor(): void {
   modal.addEventListener("pointerdown", (event) => {
     if (selectedLine === null) return;
     const target = event.target as Element;
-    if (target.closest("#song-editor-close")) return;
+    if (target.closest("#song-editor-close, [data-shift-from]")) return;
     const input = target.closest<HTMLInputElement>("[data-lyric-time], [data-lyric-text]");
     if ((input?.dataset.lyricTime ?? input?.dataset.lyricText) === String(selectedLine)) return;
     const active = document.activeElement;
@@ -586,16 +596,21 @@ function mountSongEditor(): void {
       return;
     }
     if (!textInput && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      if (event.code === "Space") {
+      const shiftButton = target instanceof HTMLButtonElement && target.hasAttribute("data-lyric-shift");
+      if ((event.code === "Space" && shiftButton) || (event.code === "Enter" && target instanceof HTMLButtonElement)) {
+        event.preventDefault();
+        if (!target.disabled && !(event.code === "Space" && event.repeat)) {
+          if (shiftButton && event.shiftKey) {
+            target.dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true }));
+          } else target.click();
+        }
+      }
+      else if (event.code === "Space") {
         event.preventDefault();
         if (!busy && loaded) togglePlay();
       }
       else if (event.code === "ArrowLeft") { event.preventDefault(); seekTo(current() - 2000); }
       else if (event.code === "ArrowRight") { event.preventDefault(); seekTo(current() + 2000); }
-      else if (event.code === "Enter" && target instanceof HTMLButtonElement) {
-        event.preventDefault();
-        target.click();
-      }
     }
     if (!textInput) event.stopPropagation();
   }, true);
@@ -767,8 +782,10 @@ function mountSongEditor(): void {
     paintTimeline();
     lines.querySelector<HTMLInputElement>(`[data-lyric-text="${selectedLine}"]`)?.focus();
   });
-  const shift = (amount: number): void => {
-    for (const line of lyrics.lines) {
+  const shift = (amount: number, from = 0): void => {
+    const invalid = lines.querySelector<HTMLInputElement>("input:invalid");
+    if (invalid) { invalid.reportValidity(); return; }
+    for (const line of lyrics.lines.slice(from)) {
       if (line.timeMs !== null) line.timeMs = Math.max(0, line.timeMs + amount);
     }
     record();
@@ -777,6 +794,12 @@ function mountSongEditor(): void {
   };
   byId("shift-back").addEventListener("click", (e) => shift(e.shiftKey ? -500 : -100));
   byId("shift-forward").addEventListener("click", (e) => shift(e.shiftKey ? 500 : 100));
+  shiftFromBack.addEventListener("click", (e) => {
+    if (selectedLine !== null) shift(e.shiftKey ? -500 : -100, selectedLine);
+  });
+  shiftFromForward.addEventListener("click", (e) => {
+    if (selectedLine !== null) shift(e.shiftKey ? 500 : 100, selectedLine);
+  });
   lines.addEventListener("focusin", (event) => {
     const input = event.target as HTMLInputElement;
     const index = input.dataset.lyricTime ?? input.dataset.lyricText;

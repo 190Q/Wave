@@ -17,6 +17,16 @@ export function claimPopup(dismiss: Dismiss): void {
   }
 }
 
+export function claimPopupIfFree(dismiss: Dismiss): void {
+  if (showing === null) {
+    showing = dismiss;
+  }
+}
+
+export function isOtherPopupShowing(dismiss: Dismiss): boolean {
+  return showing !== null && showing !== dismiss;
+}
+
 /** Forgets the claim, once a popup has finished closing. */
 export function releasePopup(dismiss: Dismiss): void {
   if (showing === dismiss) {

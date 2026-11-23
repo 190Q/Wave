@@ -77,6 +77,7 @@ export function mountConfirm(): void {
 
   cancel.addEventListener("click", () => closeDialog(false));
   accept.addEventListener("click", () => closeDialog(true));
+  dialog.addEventListener("keydown", (event) => event.stopPropagation());
 
   // Escape and a click on the backdrop both mean no.
   dialog.addEventListener("cancel", (event) => {

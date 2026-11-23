@@ -6,7 +6,13 @@ import { createServer } from "vite";
 const mocks = {
   "../lib/audio": "export const assetUrl = (path) => path;",
   "../lib/device": 'export const device = () => "desktop";',
-  "../lib/ipc": "export const loadLyrics = async () => globalThis.__songEditorTest.lyrics ?? null; export const editorWaveform = async () => [];",
+  "../lib/ipc": `
+    export const loadLyrics = async () => globalThis.__songEditorTest.lyrics ?? null;
+    export const editorWaveform = async () => [];
+    export const pickEditorAudio = async () => "replacement.wav";
+    export const stageEditorAudio = async () => "staged.wav";
+    export const discardEditorAudio = async (path) => globalThis.__songEditorTest.discarded.push(path);
+  `,
   "../lib/motion": "export const reduceMotionActive = () => globalThis.__songEditorTest.reducedMotion ?? true;",
   "../lib/state": `
     export const getState = () => globalThis.__songEditorTest.state;
@@ -17,7 +23,6 @@ const mocks = {
     export const saveEditedSong = async () => {};
   `,
   "./icons": "export const fillIcons = () => {};",
-  "./popups": "export const claimPopup = () => {}; export const releasePopup = () => {};",
   "./song-editor-markup": "export const createSongEditor = () => globalThis.__songEditorTest.modal;",
 };
 
@@ -43,6 +48,8 @@ const vite = await createServer({
 });
 after(() => vite.close());
 const { openSongEditor } = await vite.ssrLoadModule("/src/ui/song-editor.ts");
+const { mountConfirm } = await vite.ssrLoadModule("/src/ui/confirm.ts");
+const { claimPopup, dismissPopup, releasePopup } = await vite.ssrLoadModule("/src/ui/popups.ts");
 
 class Element {
   constructor() {
@@ -69,6 +76,7 @@ class Element {
     this.scrollCalls = [];
     this.textContent = "";
     this.hidden = false;
+    this.open = false;
     this.dataset = {};
   }
 
@@ -97,6 +105,8 @@ class Element {
   getBoundingClientRect() { return { left: 0 }; }
   getContext() { return null; }
   focus() {}
+  showModal() { this.open = true; }
+  close() { this.open = false; }
   scrollTo(options) {
     this.scrollCalls.push(options);
     this.scrollTop = options.top;
@@ -140,18 +150,37 @@ test("song editor timeline navigation and lyric selection", async (t) => {
   modal.querySelector = (selector) => selector.startsWith("#song-editor-")
     ? element(selector.slice("#song-editor-".length)) : new Element();
   const track = { id: "track", path: "audio", title: "Song", artist: "Artist", durationMs: 120000 };
-  globalThis.__songEditorTest = { modal, state: { tracksById: new Map([[track.id, track]]) } };
+  globalThis.__songEditorTest = { modal, discarded: [], state: { tracksById: new Map([[track.id, track]]) } };
   globalThis.Audio = Audio;
   globalThis.HTMLInputElement = class extends Element {
     blur() { globalThis.document.activeElement = null; }
   };
-  globalThis.document = { activeElement: null };
+  const confirmElements = Object.fromEntries([
+    "confirm-dialog", "confirm-title", "confirm-message", "confirm-cancel", "confirm-accept",
+  ].map((id) => [id, new Element()]));
+  globalThis.document = {
+    activeElement: null,
+    getElementById: (id) => confirmElements[id] ?? null,
+  };
   const windowEvents = new Element();
+  let timerId = 0;
+  const timers = new Map();
   globalThis.window = {
     addEventListener: windowEvents.addEventListener.bind(windowEvents),
     removeEventListener: windowEvents.removeEventListener.bind(windowEvents),
+    setTimeout(callback, delay) { timers.set(++timerId, { callback, delay }); return timerId; },
+    clearTimeout(id) { timers.delete(id); },
     devicePixelRatio: 1,
   };
+  const flushTimers = (delay) => {
+    for (const [id, timer] of [...timers]) {
+      if (timer.delay !== delay) continue;
+      timers.delete(id);
+      timer.callback();
+    }
+  };
+  const settle = () => new Promise(setImmediate);
+  mountConfirm();
 
   const frames = new Map();
   let frameId = 0;
@@ -352,7 +381,136 @@ test("song editor timeline navigation and lyric selection", async (t) => {
     document.activeElement = input;
     lines.dispatch("focusin", { target: input });
     assert.equal(selected(), "0");
+    const close = element("close");
+    close.closest = (selector) => selector === "#song-editor-close" ? close : null;
+    modal.dispatch("pointerdown", { target: close });
+    assert.equal(selected(), "0");
+    assert.equal(document.activeElement, input);
     modal.dispatch("pointerdown", { target: element("play") });
     assert.equal(selected(), null);
+  });
+
+  await t.test("discard confirmation preserves edits until explicitly accepted", async () => {
+    element("undo").dispatch("click");
+    globalThis.__songEditorTest.lyrics = "[00:01.000]Original";
+    openSongEditor(track.id);
+    await settle();
+
+    const input = new HTMLInputElement();
+    input.dataset.lyricText = "0";
+    input.value = "Edited";
+    element("lines").dispatch("input", { target: input });
+    element("add-line").dispatch("click");
+    element("import-audio").dispatch("click");
+    await settle();
+    assert.equal(element("save").disabled, false);
+    assert.equal(element("source").textContent, "Replacement: replacement.wav");
+    assert.match(element("lines-content").innerHTML, /Edited/);
+
+    const dialog = confirmElements["confirm-dialog"];
+    const cancel = confirmElements["confirm-cancel"];
+    const accept = confirmElements["confirm-accept"];
+    let audio = globalThis.__songEditorTest.audio;
+    element("play").dispatch("click");
+    const lines = element("lines-content").innerHTML;
+    const assertUnchanged = () => {
+      assert.equal(modal.hidden, false);
+      assert.equal(element("lines-content").innerHTML, lines);
+      assert.equal(element("source").textContent, "Replacement: replacement.wav");
+      assert.equal(element("save").disabled, false);
+      assert.equal(globalThis.__songEditorTest.audio, audio);
+      assert.equal(audio.paused, false);
+      assert.deepEqual(globalThis.__songEditorTest.discarded, []);
+    };
+    const finishDialog = async () => {
+      flushTimers(220);
+      await settle();
+    };
+
+    element("close").dispatch("click");
+    assert.equal(dialog.open, true);
+    assert.equal(confirmElements["confirm-title"].textContent, "Discard unsaved changes?");
+    assert.equal(cancel.textContent, "Cancel");
+    assert.equal(accept.textContent, "Discard");
+    assert.equal(accept.classList.contains("pill-danger"), true);
+    assertUnchanged();
+    element("close").dispatch("click");
+    cancel.dispatch("click");
+    await finishDialog();
+    assert.equal(dialog.open, false);
+    assertUnchanged();
+
+    let prevented = false;
+    windowEvents.dispatch("keydown", {
+      key: "Escape", preventDefault() { prevented = true; }, stopImmediatePropagation() {},
+    });
+    assert.equal(prevented, true);
+    assert.equal(dialog.open, true);
+    prevented = false;
+    windowEvents.dispatch("keydown", {
+      key: "Escape", preventDefault() { prevented = true; }, stopImmediatePropagation() {},
+    });
+    assert.equal(prevented, false);
+    dialog.dispatch("cancel", { preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+    await finishDialog();
+    assertUnchanged();
+
+    element("close").dispatch("click");
+    let stopped = false;
+    dialog.dispatch("keydown", { stopPropagation() { stopped = true; } });
+    assert.equal(stopped, true);
+    dialog.dispatch("click");
+    await finishDialog();
+    assertUnchanged();
+
+    openSongEditor(track.id);
+    assert.equal(dialog.open, true);
+    cancel.dispatch("click");
+    await finishDialog();
+    assertUnchanged();
+
+    element("undo").dispatch("click");
+    assert.equal(element("source").textContent, "Library audio");
+    element("redo").dispatch("click");
+    audio = globalThis.__songEditorTest.audio;
+    element("play").dispatch("click");
+    assertUnchanged();
+
+    let otherDismissals = 0;
+    const otherPopup = () => { otherDismissals += 1; };
+    claimPopup(otherPopup);
+    assertUnchanged();
+    prevented = false;
+    windowEvents.dispatch("keydown", {
+      key: "Escape", preventDefault() { prevented = true; }, stopImmediatePropagation() {},
+    });
+    assert.equal(prevented, false);
+    assert.equal(dialog.open, false);
+    releasePopup(otherPopup);
+
+    element("close").dispatch("click");
+    claimPopup(otherPopup);
+    await finishDialog();
+    assert.equal(otherDismissals, 0);
+    assertUnchanged();
+    dismissPopup();
+    assert.equal(otherDismissals, 1);
+    releasePopup(otherPopup);
+
+    element("close").dispatch("click");
+    accept.dispatch("click");
+    assertUnchanged();
+    await finishDialog();
+    await settle();
+    assert.equal(modal.hidden, true);
+    assert.equal(audio.paused, true);
+    assert.deepEqual(globalThis.__songEditorTest.discarded, ["staged.wav"]);
+
+    openSongEditor(track.id);
+    await settle();
+    element("close").dispatch("click");
+    assert.equal(modal.hidden, true);
+    assert.equal(dialog.open, false);
   });
 });

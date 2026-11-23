@@ -29,8 +29,7 @@
 
 .song-editor-transport,
 .song-editor-lyrics-head,
-.song-editor-lyric-actions,
-.song-editor-message {
+.song-editor-lyric-actions {
   display: flex;
   align-items: center;
   gap: 0.6rem;
@@ -340,21 +339,9 @@
   text-align: center;
 }
 
-.song-editor-message,
 .song-editor-error {
   flex: none;
   margin: 0.7rem 1.5rem 0;
-}
-
-.song-editor-message {
-  flex-wrap: wrap;
-  padding: 0.6rem 0.8rem;
-  border-radius: 0.5rem;
-  background: var(--raise);
-  font-size: 0.8rem;
-}
-
-.song-editor-error {
   color: var(--danger);
   font-size: 0.8rem;
 }

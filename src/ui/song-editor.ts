@@ -13,8 +13,9 @@ import {
   connectPreviewAudio, getState, player, previewAudioPath, previewStagedAudioPath, saveEditedSong,
 } from "../lib/state";
 import type { AudioCut, Track } from "../types";
+import { confirmDialog } from "./confirm";
 import { fillIcons } from "./icons";
-import { claimPopup, releasePopup } from "./popups";
+import { claimPopup, claimPopupIfFree, isOtherPopupShowing, releasePopup } from "./popups";
 import { createSongEditor } from "./song-editor-markup";
 
 interface EditorSnapshot {
@@ -42,7 +43,6 @@ function mountSongEditor(): void {
   const title = byId("song");
   const source = byId("source");
   const error = byId("error");
-  const discard = byId("discard");
   const save = byId<HTMLButtonElement>("save");
   const undo = byId<HTMLButtonElement>("undo");
   const redo = byId<HTMLButtonElement>("redo");
@@ -81,6 +81,7 @@ function mountSongEditor(): void {
   let peaks: number[] = [];
   let busy = false;
   let loaded = false;
+  let confirming = false;
   let generation = 0;
   let waveGeneration = 0;
   let frame: number | null = null;
@@ -133,7 +134,7 @@ function mountSongEditor(): void {
   const finishClose = (): void => {
     closeTimer = null;
     modal.hidden = true;
-    releasePopup(forceClose);
+    releasePopup(dismissEditor);
   };
   const forceClose = (): void => {
     if (modal.hidden || busy) return;
@@ -153,11 +154,26 @@ function mountSongEditor(): void {
       closeTimer = window.setTimeout(finishClose, 300);
     }
   };
+  const dismissEditor = (): void => {
+    if (!dirty()) forceClose();
+  };
   const requestClose = (): void => {
-    if (busy || modal.hidden) return;
+    if (busy || modal.hidden || confirming) return;
     if (dirty()) {
-      discard.hidden = false;
-      byId<HTMLButtonElement>("keep").focus();
+      confirming = true;
+      const currentGeneration = generation;
+      releasePopup(dismissEditor);
+      void confirmDialog({
+        title: "Discard unsaved changes?",
+        message: "Your changes to the audio and lyrics will be lost.",
+        confirmLabel: "Discard",
+        danger: true,
+      }).then((confirmed) => {
+        confirming = false;
+        if (currentGeneration !== generation || modal.hidden) return;
+        if (confirmed) forceClose();
+        else claimPopupIfFree(dismissEditor);
+      });
     } else {
       forceClose();
     }
@@ -483,7 +499,6 @@ function mountSongEditor(): void {
     pixelsPerSecond = 10;
     followPlayback = true;
     loaded = false;
-    discard.hidden = true;
     showError("");
     title.textContent = [next.title, next.artist].filter(Boolean).join(" - ");
     source.textContent = "Library audio";
@@ -492,7 +507,7 @@ function mountSongEditor(): void {
     lyricFile.value = "";
     player.pause();
     player.finishTransitions();
-    claimPopup(forceClose);
+    claimPopup(dismissEditor);
     modal.hidden = false;
     modal.classList.add("is-closed");
     void panel.offsetWidth;
@@ -519,13 +534,12 @@ function mountSongEditor(): void {
   };
 
   byId("close").addEventListener("click", requestClose);
-  byId("keep").addEventListener("click", () => { discard.hidden = true; });
-  byId("discard-confirm").addEventListener("click", forceClose);
   undo.addEventListener("click", () => restore(history?.undo() ?? null));
   redo.addEventListener("click", () => restore(history?.redo() ?? null));
   modal.addEventListener("pointerdown", (event) => {
     if (selectedLine === null) return;
     const target = event.target as Element;
+    if (target.closest("#song-editor-close")) return;
     const input = target.closest<HTMLInputElement>("[data-lyric-time], [data-lyric-text]");
     if ((input?.dataset.lyricTime ?? input?.dataset.lyricText) === String(selectedLine)) return;
     const active = document.activeElement;
@@ -535,12 +549,11 @@ function mountSongEditor(): void {
     paintChips();
   }, true);
   window.addEventListener("keydown", (event) => {
-    if (modal.hidden) return;
+    if (modal.hidden || confirming || isOtherPopupShowing(dismissEditor)) return;
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopImmediatePropagation();
-      if (!discard.hidden) discard.hidden = true;
-      else requestClose();
+      requestClose();
       return;
     }
     const target = event.target as HTMLElement | null;

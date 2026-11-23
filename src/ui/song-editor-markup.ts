@@ -19,11 +19,6 @@ export function createSongEditor(): HTMLElement {
           </button>
         </div>
       </header>
-      <div class="song-editor-message" id="song-editor-discard" hidden>
-        <span>Discard your unsaved changes?</span>
-        <button class="pill" id="song-editor-keep" type="button">Keep editing</button>
-        <button class="pill pill-danger" id="song-editor-discard-confirm" type="button">Discard</button>
-      </div>
       <p class="song-editor-error" id="song-editor-error" role="alert" hidden></p>
       <div class="song-editor-body">
         <section class="song-editor-card song-editor-timeline-panel" aria-label="Audio and lyrics timeline">

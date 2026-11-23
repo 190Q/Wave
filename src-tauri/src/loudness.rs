@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 #[cfg(any(target_os = "android", test))]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(any(target_os = "android", test))]
+#[cfg(any(target_os = "android", target_os = "linux", test))]
 use std::time::{Duration, Instant};
 
 use ebur128::{EbuR128, Mode};
@@ -24,9 +24,9 @@ pub const PROGRESS_EVENT: &str = "loudness-scan";
 #[cfg(target_os = "android")]
 const FINISHED_EVENT: &str = "loudness-finished";
 
-#[cfg(any(target_os = "android", test))]
+#[cfg(any(target_os = "android", target_os = "linux", test))]
 const ANALYSIS_SLICE: Duration = Duration::from_millis(10);
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 const PLAYBACK_YIELD: Duration = Duration::from_millis(40);
 
 #[cfg(any(target_os = "android", test))]
@@ -50,12 +50,12 @@ pub fn report_playback_activity(activity: tauri::State<'_, PlaybackActivity>, pl
     activity.set_playing(playing);
 }
 
-#[cfg(any(target_os = "android", test))]
+#[cfg(any(target_os = "android", target_os = "linux", test))]
 struct AnalysisThrottle {
     started: Instant,
 }
 
-#[cfg(any(target_os = "android", test))]
+#[cfg(any(target_os = "android", target_os = "linux", test))]
 impl AnalysisThrottle {
     fn new(now: Instant) -> Self {
         Self { started: now }
@@ -124,7 +124,7 @@ pub(crate) fn schedule(app: &AppHandle, guard: crate::library_work::Guard) {
             let _guard = guard;
             loop {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    analyse(&handle, &[])
+                    analyse_with(&handle, &[], true)
                 }));
                 let mut queue = ANALYSIS_QUEUE.lock().unwrap_or_else(|error| error.into_inner());
                 if result.is_err() {
@@ -308,6 +308,12 @@ fn pending<'a>(rows: &[&'a TrackRow]) -> Vec<&'a TrackRow> {
 }
 
 pub(crate) fn analyse(app: &AppHandle, track_ids: &[String]) -> LoudnessOutcome {
+    analyse_with(app, track_ids, false)
+}
+
+fn analyse_with(app: &AppHandle, track_ids: &[String], background: bool) -> LoudnessOutcome {
+    #[cfg(not(any(target_os = "android", target_os = "linux")))]
+    let _ = background;
     let Ok(root) = library::library_root(app) else {
         return LoudnessOutcome::default();
     };
@@ -332,20 +338,23 @@ pub(crate) fn analyse(app: &AppHandle, track_ids: &[String]) -> LoudnessOutcome 
 
     #[cfg(target_os = "android")]
     let activity = app.state::<PlaybackActivity>();
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "linux"))]
     let mut throttle = AnalysisThrottle::new(Instant::now());
 
     for (position, row) in todo.iter().enumerate() {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "linux"))]
         let reading = measure_with(&root.join(&row.rel_path), || {
-            if throttle.should_yield(Instant::now(), || {
-                activity.is_playing()
+            if background && throttle.should_yield(Instant::now(), || {
+                #[cfg(target_os = "android")]
+                { activity.is_playing() }
+                #[cfg(target_os = "linux")]
+                { true }
             }) {
                 std::thread::sleep(PLAYBACK_YIELD);
                 throttle.reset(Instant::now());
             }
         });
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "linux")))]
         let reading = measure(&root.join(&row.rel_path));
 
         match reading {
@@ -390,7 +399,7 @@ pub async fn analyse_loudness(app: AppHandle, track_ids: Vec<String>) -> Loudnes
     tauri::async_runtime::spawn_blocking(move || {
         #[cfg(target_os = "android")]
         let _guard = crate::library_work::Guard::start(&handle, "Analysing song loudness");
-        analyse(&handle, &track_ids)
+        analyse_with(&handle, &track_ids, true)
     })
     .await
     .unwrap_or_else(|error| LoudnessOutcome {

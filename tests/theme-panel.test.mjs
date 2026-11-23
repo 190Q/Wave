@@ -227,6 +227,31 @@ test("desktop panels still use the compact drop when they no longer fit", () => 
   assert.equal(elements["theme-toggle"].classList.contains("is-open"), true);
 });
 
+test("closed panels do not measure whether the dialog fits", () => {
+  const { elements, dialog } = setup("desktop", 800);
+  let measurements = 0;
+  const panel = createPanel({
+    dialog,
+    toggle: elements["theme-toggle"],
+    face: elements["theme-toggle-face"],
+    show: () => { dialog.open = true; },
+    hide: () => { dialog.open = false; },
+    render() {},
+    fits: () => { measurements += 1; return true; },
+  });
+
+  panel.fit();
+  window.dispatch("resize");
+  assert.equal(measurements, 0);
+  panel.toggle();
+  assert.equal(measurements, 1);
+  panel.fit();
+  assert.equal(measurements, 2);
+  dialog.open = false;
+  panel.fit();
+  assert.equal(measurements, 2);
+});
+
 test("panels without a fit override keep the shared desktop threshold", () => {
   const { elements, dialog } = setup("desktop", 350);
   const face = elements["theme-toggle-face"];

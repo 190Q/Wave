@@ -49,7 +49,7 @@ const context = {
     next() {},
     setShuffle() {},
     cycleRepeat() {},
-    onProgress() {},
+    onProgress(callback) { context.progress = callback; },
     onChange() {},
   },
 };
@@ -125,9 +125,13 @@ function setup(kind = "android") {
   elements["lyrics-panel"].clientHeight = 500;
 
   const controls = new FakeElement({ rect: { top: 120 } });
+  const fill = new FakeElement();
+  const edge = new FakeElement();
   controls.contains = (element) => ["like", "shuffle", "prev", "play", "next", "repeat", "queue-toggle"]
     .some((id) => elements[id] === element);
-  elements.dock.querySelector = () => controls;
+  elements.dock.querySelector = (selector) => selector === ".dock-row" ? controls
+    : selector === ".dock-fill" ? fill
+    : selector === ".dock-edge" ? edge : null;
   const stage = new FakeElement();
   const topbar = new FakeElement();
   topbar.offsetHeight = 60;
@@ -146,7 +150,7 @@ function setup(kind = "android") {
     addEventListener: windowEvents.addEventListener.bind(windowEvents),
   };
 
-  return { elements, controls, stage, windowEvents };
+  return { elements, controls, stage, windowEvents, fill, edge };
 }
 
 const vite = await createServer({
@@ -179,6 +183,39 @@ function pointer(target, x, y) {
 function sheetTravel(elements) {
   return Number(elements["lyrics-panel"].style.transform.match(/-\s*([\d.]+)px/)[1]);
 }
+
+test("playback and seek previews update only the progress elements", () => {
+  const { elements, windowEvents, fill, edge } = setup("desktop");
+  mountDock();
+  context.progress(30000, 120000);
+  assert.equal(fill.style.transform, "scaleX(0.25)");
+  assert.equal(edge.style.transform, "translateX(calc(25% - 0.125rem))");
+  assert.equal(elements.dock.properties.has("--progress"), false);
+
+  elements.dock.dispatch("pointerdown", pointer(elements.dock, 300, 100));
+  assert.equal(fill.style.transform, "scaleX(0.75)");
+  assert.equal(edge.style.transform, "translateX(calc(75% - 0.125rem))");
+  context.progress(60000, 120000);
+  assert.equal(fill.style.transform, "scaleX(0.75)");
+  windowEvents.dispatch("pointercancel");
+  assert.equal(fill.style.transform, `scaleX(${10000 / 120000})`);
+  assert.equal(elements.dock.properties.has("--progress"), false);
+});
+
+test("reduced motion disables both progress transitions", async () => {
+  const css = parse(await readFile(new URL("../src/styles/motion.css", import.meta.url), "utf8"));
+  for (const selector of [".dock-fill", ".dock-edge"]) {
+    const media = css.nodes.find((node) => node.type === "atrule" &&
+      node.name === "media" && node.params === "(prefers-reduced-motion: reduce)" &&
+      node.nodes.some((rule) => rule.type === "rule" && rule.selectors.includes(selector) &&
+        rule.nodes.some((declaration) => declaration.prop === "transition" && declaration.value === "none")));
+    const root = css.nodes.find((node) => node.type === "rule" &&
+      node.selectors.includes(`:root.is-reduced-motion ${selector}`) &&
+      node.nodes.some((declaration) => declaration.prop === "transition" && declaration.value === "none"));
+    assert.ok(media, `Missing system reduced-motion rule for ${selector}`);
+    assert.ok(root, `Missing app reduced-motion rule for ${selector}`);
+  }
+});
 
 test("transport hover highlights are limited to non-touch devices", async () => {
   const css = await readFile(new URL("../src/styles/dock.css", import.meta.url), "utf8");

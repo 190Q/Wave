@@ -80,6 +80,9 @@ export function createPanel(parts: PanelParts): Panel {
 
   /** Follows the window: whichever of the two fits is the one left standing. */
   const fitPanel = (): void => {
+    if (!drop.isOpen && !modalUp()) {
+      return;
+    }
     if (fits()) {
       if (drop.isOpen) {
         drop.close();

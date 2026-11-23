@@ -30,6 +30,8 @@ export function stepVolumeFromKey(direction: number): void {
 export function mountDock(): void {
   const dock = element("dock");
   const controls = dock?.querySelector<HTMLElement>(".dock-row");
+  const fill = dock?.querySelector<HTMLElement>(".dock-fill");
+  const edge = dock?.querySelector<HTMLElement>(".dock-edge");
   const timeNow = element<HTMLButtonElement>("time-now");
   const timePhone = element("time-now-phone");
   const timeTotal = element("time-total");
@@ -46,7 +48,7 @@ export function mountDock(): void {
   const grab = element<HTMLButtonElement>("dock-grab");
 
   if (
-    !dock || !controls || !timeNow || !timePhone || !timeTotal || !like || !shuffle || !previous ||
+    !dock || !controls || !fill || !edge || !timeNow || !timePhone || !timeTotal || !like || !shuffle || !previous ||
     !play || !next || !repeat || !queueToggle || !volume || !volumeBars || !position
   ) {
     return;
@@ -61,9 +63,9 @@ export function mountDock(): void {
   let scrubbing = false;
   let scrubFraction = 0;
 
-  /** How far along the bar is, `0` to `1`; the stylesheet draws the fill and its edge. */
   const setProgress = (fraction: number): void => {
-    dock.style.setProperty("--progress", String(fraction));
+    fill.style.transform = `scaleX(${fraction})`;
+    edge.style.transform = `translateX(calc(${fraction * 100}% - 0.125rem))`;
   };
 
   const setTime = (positionMs: number): void => {

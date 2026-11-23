@@ -148,6 +148,7 @@ export function mountLibrary(): void {
   let entryOffset = 0;
   /** The songs the detail pane is showing, in the order they are drawn. */
   let shownIds: string[] = [];
+  let selectionSource: string[] | null = null;
 
   /**
    * The rows near the viewport, with a spacer standing in for the rest, so a
@@ -182,16 +183,21 @@ export function mountLibrary(): void {
   const syncSelection = (): void => {
     // What is selected is judged against the collection, not against the rows
     // that happen to be drawn, so a windowed list keeps an off-screen selection.
-    const shown = new Set(shownIds);
+    if (selectionSource !== shownIds) {
+      selectionSource = shownIds;
+      if (selection.size > 0) {
+        const shown = new Set(shownIds);
+        for (const id of selection) {
+          if (!shown.has(id)) {
+            selection.delete(id);
+          }
+        }
+      }
+    }
     for (const row of list.querySelectorAll<HTMLElement>("[data-track]")) {
       const id = row.dataset.track;
       if (id !== undefined) {
         row.classList.toggle("is-selected", selection.has(id));
-      }
-    }
-    for (const id of [...selection]) {
-      if (!shown.has(id)) {
-        selection.delete(id);
       }
     }
   };

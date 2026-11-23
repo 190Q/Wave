@@ -34,6 +34,8 @@
   .now-part,
   .dock-title,
   .dock-title-text,
+  .dock-fill,
+  .dock-edge,
   .icon-swap > svg,
   #settings-open .btn-icon,
   .theme-dialog {
@@ -78,6 +80,8 @@
 :root.is-reduced-motion .now-part,
 :root.is-reduced-motion .dock-title,
 :root.is-reduced-motion .dock-title-text,
+:root.is-reduced-motion .dock-fill,
+:root.is-reduced-motion .dock-edge,
 :root.is-reduced-motion .icon-swap > svg,
 :root.is-reduced-motion #settings-open .btn-icon,
 :root.is-reduced-motion .theme-dialog {

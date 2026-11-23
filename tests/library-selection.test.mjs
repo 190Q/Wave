@@ -297,6 +297,24 @@ test("long pressing a selected song keeps the whole touch selection", () => {
   assert.deepEqual(context.liked, [{ ids: ["one", "two"], liked: true }]);
 });
 
+test("off-screen selections persist until the collection changes", () => {
+  const { list, rows } = setup();
+  rightClick(list, rows[0]);
+  list.dispatch("click", rows[1], { ctrlKey: true });
+  list.querySelectorAll = (selector) => selector === "[data-track]" ? [rows[0]] : [];
+  context.render();
+  rightClick(list, rows[0]);
+  assert.equal(context.menu.items[0].label, "Like 2 songs");
+
+  const collection = context.state.collections[0];
+  collection.entries = ["one", "three"];
+  collection.trackIds = ["one", "three"];
+  context.state.collectionsRevision += 1;
+  context.render();
+  rightClick(list, rows[0]);
+  assert.equal(context.menu.items[0].label, "Like");
+});
+
 test("playlist detail rename focuses its visible editor and saves or cancels", () => {
   const { list, pane, renameInput } = setup({ touch: true });
   const menu = new FakeElement({ menu: "playlist" });

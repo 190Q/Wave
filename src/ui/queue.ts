@@ -1,4 +1,4 @@
-import { device } from "../lib/device";
+import { device, isWebKitGtk } from "../lib/device";
 import { escapeHtml } from "../lib/format";
 import {
   artworkUrlFor,
@@ -77,6 +77,9 @@ export function mountQueue(): void {
   let washStart = 0;
   let washCentre = Number.NaN;
   let renderedOrder = "";
+  let cachedRevision = -1;
+  let cachedSignature = "";
+  let cachedIds = new Set<string>();
   let renderedIds = new Set<string>();
   let renderedSourceId: string | null = null;
   let renderedLooping: boolean | null = null;
@@ -773,7 +776,12 @@ export function mountQueue(): void {
     const snapshot = player.snapshot();
     const looping = snapshot.repeat !== "off";
     const total = snapshot.order.length;
-    const signature = snapshot.order.join("|");
+    if (snapshot.queueRevision !== cachedRevision) {
+      cachedRevision = snapshot.queueRevision;
+      cachedSignature = snapshot.order.join("|");
+      cachedIds = new Set(snapshot.order);
+    }
+    const signature = cachedSignature;
 
     if (device() !== "desktop") {
       prioritizeNearbyArtwork(snapshot.order, snapshot.cursor, looping);
@@ -831,7 +839,7 @@ export function mountQueue(): void {
       renderedOrder = signature;
       renderedLooping = looping;
       renderedSourceId = snapshot.sourceId;
-      if (device() === "desktop") {
+      if (device() === "desktop" && !isWebKitGtk) {
         prefetchArtwork(snapshot.order);
       }
 
@@ -902,7 +910,7 @@ export function mountQueue(): void {
       for (const slot of cards.keys()) {
         window.add(snapshot.order[indexAt(slot, total, looping)]);
       }
-      pruneArtworkQueue(window, new Set(snapshot.order));
+      pruneArtworkQueue(window, cachedIds);
     }
 
     flushEntering();

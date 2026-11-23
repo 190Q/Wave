@@ -497,11 +497,15 @@ export function mountHero(): void {
     }
 
     hero.classList.remove("is-empty");
-    cover.setAttribute("style", plainCoverStyle(track, "now"));
-    source.textContent = sourceName ? `Playing from ${sourceName}` : "";
-    title.textContent = track.title;
-    artist.textContent = track.artist ?? "Unknown artist";
-    meta.textContent = joinMeta([track.album, track.year]);
+    const coverStyle = plainCoverStyle(track, "now");
+    const sourceText = sourceName ? `Playing from ${sourceName}` : "";
+    const artistText = track.artist ?? "Unknown artist";
+    const metaText = joinMeta([track.album, track.year]);
+    if (cover.getAttribute("style") !== coverStyle) cover.setAttribute("style", coverStyle);
+    if (source.textContent !== sourceText) source.textContent = sourceText;
+    if (title.textContent !== track.title) title.textContent = track.title;
+    if (artist.textContent !== artistText) artist.textContent = artistText;
+    if (meta.textContent !== metaText) meta.textContent = metaText;
 
     if (track.id !== lastTrackId) {
       lastTrackId = track.id;
@@ -509,7 +513,7 @@ export function mountHero(): void {
       void ensureLyrics(track);
     }
 
-    fitText();
+    if (!phone) fitText();
     renderLyrics();
   };
 

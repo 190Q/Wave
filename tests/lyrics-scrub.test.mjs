@@ -73,6 +73,7 @@ class Element {
     this.scrollHeight = 48;
     this.offsetHeight = 48;
     this.captures = new Set();
+    this.attributes = new Map();
     this.lines = [];
   }
   addEventListener(type, callback) {
@@ -97,8 +98,9 @@ class Element {
   }
   querySelectorAll() { return this.lines; }
   closest() { return null; }
-  setAttribute() {}
-  removeAttribute() {}
+  setAttribute(name, value) { this.attributes.set(name, value); }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
+  removeAttribute(name) { this.attributes.delete(name); }
   setPointerCapture(id) { this.captures.add(id); }
   hasPointerCapture(id) { return this.captures.has(id); }
   releasePointerCapture(id) { this.captures.delete(id); }

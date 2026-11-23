@@ -15,6 +15,11 @@ const vite = await createServer({
 after(() => vite.close());
 const { reportInitialization } = await vite.ssrLoadModule("/src/lib/startup-health.ts");
 
+test("Linux startup does not force-disable the WebKit DMA-BUF renderer", () => {
+  const source = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /WEBKIT_DISABLE_DMABUF_RENDERER/);
+});
+
 test("startup failures are never reported as ready", async () => {
   const reports = [];
   let artworkCalls = 0;

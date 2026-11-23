@@ -186,20 +186,8 @@ fn install_tls_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-#[cfg(target_os = "linux")]
-fn tune_webkit() {
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-        // SAFETY: this runs before the builder starts any thread, so nothing
-        // else can be reading the environment at the same time.
-        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") }
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(target_os = "linux")]
-    tune_webkit();
-
     #[cfg(target_os = "android")]
     install_tls_provider();
 

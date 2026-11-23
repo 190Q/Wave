@@ -363,6 +363,10 @@ and examples.
   try again. Android does not support authenticated YouTube downloads.
 - **A song will not play on Linux:** Install the GStreamer plugins for its
   format. The packaged builds include or depend on the usual plugins.
+- **A Linux window is blank or flickers:** Some graphics drivers have trouble
+  with WebKitGTK's accelerated renderer. As a fallback, launch Wave with
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1`; this can reduce performance. For the
+  phone Flatpak, use `flatpak run --env=WEBKIT_DISABLE_DMABUF_RENDERER=1 com.wave.app`.
 - **Spotify or Deezer cannot open a playlist:** Spotify's editorial playlists
   are unavailable through its API; Deezer playlists must be public.
 - **Android playback stops with the screen off:** This has been observed on an

@@ -20,7 +20,7 @@ const context = {
 globalThis.__queueAnimationTest = context;
 
 const mocks = {
-  "../lib/device": "export const device = () => globalThis.__queueAnimationTest.kind;",
+  "../lib/device": "export const device = () => globalThis.__queueAnimationTest.kind; export const isWebKitGtk = true;",
   "../lib/format": "export const escapeHtml = (value) => value;",
   "../lib/motion": `
     export const reduceMotionActive = () => globalThis.__queueAnimationTest.reducedMotion;
@@ -40,8 +40,11 @@ const mocks = {
         ? "url-" + track.id : null;
     export const colourFor = () => "#123456";
     export const mayRevealArtwork = () => context.kind === "desktop" || context.ready;
-    export const ensureColour = () => {}, prefetchArtwork = () => {};
-    export const prioritizeNearbyArtwork = () => {}, pruneArtworkQueue = () => {}, stepTrack = () => {};
+    export const ensureColour = () => {};
+    export const prefetchArtwork = (ids) => context.prefetches.push(ids);
+    export const prioritizeNearbyArtwork = () => {};
+    export const pruneArtworkQueue = (window, queue) => { context.pruned = { window, queue }; };
+    export const stepTrack = () => {};
   `,
   "./artwork": `
     export const coverStyle = (track, tier, reveal = true) =>
@@ -136,7 +139,8 @@ class FakeElement {
 
 function snapshot(sourceId, count, cursor = 0) {
   const order = Array.from({ length: count }, (_, index) => `${sourceId}-${index}`);
-  return { sourceId, order, cursor, currentId: order[cursor], repeat: "off", travel: 0 };
+  return { sourceId, order, cursor, currentId: order[cursor], repeat: "off", travel: 0,
+    get queueRevision() { return this.order.join("|"); } };
 }
 
 function setup(kind = "android", observeSize = false) {
@@ -147,6 +151,8 @@ function setup(kind = "android", observeSize = false) {
   context.missing = new Set();
   context.reducedMotion = false;
   context.swaps = [];
+  context.prefetches = [];
+  context.pruned = null;
   context.snapshot = snapshot("first", 30);
   const carousel = new FakeElement();
   const stage = new FakeElement();
@@ -203,6 +209,54 @@ function setup(kind = "android", observeSize = false) {
 }
 
 const { mountQueue } = await vite.ssrLoadModule("/src/ui/queue.ts");
+
+test("WebKitGTK desktop requests visible artwork without prefetching the entire queue", () => {
+  const { live } = setup("desktop");
+  context.snapshot = snapshot("large", 5000);
+  context.change();
+  assert.equal(context.prefetches.length, 0);
+  assert.ok(live.children.length > 0);
+  assert.ok(context.pruned.window.has("large-0"));
+  assert.equal(context.pruned.queue.size, 5000);
+});
+
+test("unchanged large queues avoid full scans on repeated renders", () => {
+  const { live } = setup("linuxPhone");
+  context.reducedMotion = true;
+  const order = Array.from({ length: 5000 }, (_, index) => `large-${index}`);
+  let joins = 0;
+  let iterations = 0;
+  order.join = function (...args) {
+    joins += 1;
+    return Array.prototype.join.apply(this, args);
+  };
+  order[Symbol.iterator] = function () {
+    iterations += 1;
+    return Array.prototype[Symbol.iterator].call(this);
+  };
+  context.snapshot = {
+    sourceId: "large", order, cursor: 0, currentId: order[0],
+    repeat: "off", travel: 0, queueRevision: 100,
+  };
+  context.change();
+  const firstJoins = joins;
+  const firstIterations = iterations;
+  assert.equal(firstJoins, 1);
+  assert.ok(firstIterations > 0);
+
+  for (let index = 0; index < 25; index += 1) context.change();
+  assert.equal(joins, firstJoins);
+  assert.equal(iterations, firstIterations);
+
+  [order[0], order[1]] = [order[1], order[0]];
+  context.snapshot.queueRevision += 1;
+  context.snapshot.currentId = order[0];
+  context.change();
+  assert.equal(joins, firstJoins + 1);
+  assert.ok(iterations > firstIterations);
+  assert.equal(live.children.find((card) => card.dataset.slot === "0")?.dataset.trackId, "large-1");
+  assert.ok(context.pruned.queue.has("large-1"));
+});
 
 test("the queue follows dock size changes when leaving mini mode", () => {
   for (const open of [true, false]) {

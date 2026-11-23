@@ -11,8 +11,8 @@ export function createSongEditor(): HTMLElement {
           <p class="settings-hint" id="song-editor-song"></p>
         </div>
         <div class="fullscreen-head-actions">
-          <button class="pill" id="song-editor-undo" type="button" title="Undo (Ctrl+Z)">Undo</button>
-          <button class="pill" id="song-editor-redo" type="button" title="Redo (Ctrl+Shift+Z)">Redo</button>
+          <button class="pill" id="song-editor-undo" type="button">Undo</button>
+          <button class="pill" id="song-editor-redo" type="button">Redo</button>
           <button class="pill pill-strong" id="song-editor-save" type="button">Save changes</button>
           <button class="pill icon-only" id="song-editor-close" type="button" aria-label="Close">
             <span class="btn-icon" data-icon="close"></span>
@@ -42,12 +42,17 @@ export function createSongEditor(): HTMLElement {
               <div class="song-editor-playhead" id="song-editor-playhead"></div>
             </div>
           </div>
-          <p class="settings-hint song-editor-timeline-hint">Drag the waveform to select a cut, or drag a lyric to retime it. Ctrl + scroll zooms; Shift + scroll moves sideways. Click the waveform to seek and resume following. Space plays or pauses.</p>
+          <p class="settings-hint song-editor-timeline-hint">Drag the waveform to select audio, or drag a lyric to retime it. Click the waveform to seek and resume following.</p>
         </section>
         <div class="song-editor-lower">
           <section class="song-editor-card song-editor-cuts-panel" aria-labelledby="song-editor-cuts-title">
             <h3 id="song-editor-cuts-title">Cut audio</h3>
             <p class="settings-hint">Select a range above or enter its start and end.</p>
+            <div class="song-editor-cut-mode" role="group" aria-label="What to cut">
+              <button class="pill is-on" id="song-editor-cut-audio-only" type="button" aria-pressed="true">Audio only</button>
+              <button class="pill" id="song-editor-cut-audio-lyrics" type="button" aria-pressed="false">Audio and lyrics</button>
+            </div>
+            <p class="settings-hint" id="song-editor-cut-mode-hint">Lyrics keep their times from the start.</p>
             <div class="song-editor-cut-inputs">
               <label>Start <input id="song-editor-cut-start" value="00:00.000" aria-label="Cut start time" /></label>
               <button class="pill" id="song-editor-mark-start" type="button">Set start</button>
@@ -56,7 +61,7 @@ export function createSongEditor(): HTMLElement {
               <button class="pill pill-strong" id="song-editor-add-cut" type="button">Add cut</button>
             </div>
             <div class="song-editor-cuts" id="song-editor-cuts"></div>
-            <p class="settings-hint song-editor-note">Audio changes keep a backup of the previous file. Cuts are saved as FLAC and do not change lyric timings.</p>
+            <p class="settings-hint song-editor-note">Audio changes keep a backup of the previous file. Cuts are saved as FLAC.</p>
           </section>
           <section class="song-editor-card song-editor-lyrics-panel" aria-labelledby="song-editor-lyrics-title">
             <div class="song-editor-lyrics-head">
@@ -75,7 +80,7 @@ export function createSongEditor(): HTMLElement {
             <div class="song-editor-lines" id="song-editor-lines">
               <div class="song-editor-lines-content" id="song-editor-lines-content"></div>
             </div>
-            <p class="settings-hint song-editor-note">Select a line to shift it and the lines after it. Hold Shift to move by 0.5s. Leave a time blank for an untimed line.</p>
+            <p class="settings-hint song-editor-note">Select a line to shift it and the lines after it. Leave a time blank for an untimed line.</p>
             <input id="song-editor-lyrics-file" type="file" accept=".lrc,.txt,text/plain" hidden />
           </section>
         </div>

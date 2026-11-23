@@ -8,7 +8,7 @@ import { reduceMotionActive } from "../lib/motion";
 import {
   editedTime, formatEditTime, parseEditTime, readEditableLyrics, sourceCutRanges, sourceTime,
   validateCuts, writeEditableLyrics,
-  type EditableLyrics,
+  type EditableLyric, type EditableLyrics,
 } from "../lib/song-edit";
 import {
   connectPreviewAudio, getState, player, previewAudioPath, previewStagedAudioPath, saveEditedSong,
@@ -16,11 +16,12 @@ import {
 import type { AudioCut, Track } from "../types";
 import { confirmDialog } from "./confirm";
 import { fillIcons } from "./icons";
+import { closeMenu, openMenu, type MenuItem } from "./menu";
 import { claimPopup, claimPopupIfFree, isOtherPopupShowing, releasePopup } from "./popups";
 import { createSongEditor } from "./song-editor-markup";
 
 interface EditorSnapshot {
-  lyrics: EditableLyrics;
+  lyrics: EditorLyrics;
   cuts: EditorCut[];
   stagedAudio: string | null;
   cutAudio: string | null;
@@ -28,8 +29,19 @@ interface EditorSnapshot {
   source: string;
 }
 
+interface EditorLyric extends EditableLyric {
+  id: number;
+}
+
+interface EditorLyrics extends EditableLyrics {
+  lines: EditorLyric[];
+}
+
 interface EditorCut extends AudioCut {
   ranges: AudioCut[];
+  lyricRanges: AudioCut[];
+  withLyrics: boolean;
+  removedLyrics: { line: EditorLyric; sourceMs: number }[];
 }
 
 let openEditor: ((id: string) => void) | null = null;
@@ -67,6 +79,9 @@ function mountSongEditor(): void {
   const playhead = byId("playhead");
   const start = byId<HTMLInputElement>("cut-start");
   const end = byId<HTMLInputElement>("cut-end");
+  const audioOnly = byId<HTMLButtonElement>("cut-audio-only");
+  const audioLyrics = byId<HTMLButtonElement>("cut-audio-lyrics");
+  const cutModeHint = byId("cut-mode-hint");
   const cutsList = byId("cuts");
   const lines = byId("lines");
   const linesContent = byId("lines-content");
@@ -81,7 +96,9 @@ function mountSongEditor(): void {
   let track: Track | null = null;
   let originalLyrics: string | null = null;
   let initialLyrics = "";
-  let lyrics: EditableLyrics = { metadata: [], lines: [] };
+  let lyrics: EditorLyrics = { metadata: [], lines: [] };
+  let lyricSerial = 0;
+  let cutWithLyrics = false;
   let cuts: EditorCut[] = [];
   let stagedAudio: string | null = null;
   let cutAudio: string | null = null;
@@ -93,6 +110,7 @@ function mountSongEditor(): void {
   let busy = false;
   let loaded = false;
   let confirming = false;
+  let editorMenuOpen = false;
   let generation = 0;
   let waveGeneration = 0;
   let frame: number | null = null;
@@ -112,6 +130,8 @@ function mountSongEditor(): void {
   };
   const describe = (reason: unknown): string => reason instanceof Error ? reason.message : String(reason);
   const cutRanges = (items: EditorCut[] = cuts): AudioCut[] => items.flatMap((cut) => cut.ranges);
+  // Audio-only cuts do not change the lyric timeline.
+  const lyricCutRanges = (items: EditorCut[] = cuts): AudioCut[] => items.flatMap((cut) => cut.lyricRanges);
   const duration = (): number => Number.isFinite(audio.duration) && audio.duration > 0
     ? Math.floor(audio.duration * 1000)
     : Math.max(0, sourceDuration - cutRanges().reduce((total, cut) => total + cut.endMs - cut.startMs, 0));
@@ -119,7 +139,13 @@ function mountSongEditor(): void {
   const snapshot = (): EditorSnapshot => ({
     lyrics, cuts, stagedAudio, cutAudio, sourceDuration, source: source.textContent ?? "",
   });
-  const lyricsChanged = (): boolean => JSON.stringify(lyrics) !== initialLyrics;
+  const lyricContent = (): EditableLyrics => ({
+    metadata: lyrics.metadata, lines: lyrics.lines.map(({ timeMs, text }) => ({ timeMs, text })),
+  });
+  const numberLyrics = (value: EditableLyrics): EditorLyrics => ({
+    ...value, lines: value.lines.map((line) => ({ ...line, id: lyricSerial++ })),
+  });
+  const lyricsChanged = (): boolean => JSON.stringify(lyricContent()) !== initialLyrics;
   const dirty = (): boolean => lyricsChanged() || cuts.length > 0 || stagedAudio !== null
     || lines.querySelector("input:invalid") !== null;
   const updateShiftFrom = (): void => {
@@ -135,6 +161,16 @@ function mountSongEditor(): void {
   const record = (group: string | null = null): void => {
     history?.record(snapshot(), group);
     updateSave();
+  };
+  const setCutMode = (withLyrics: boolean): void => {
+    cutWithLyrics = withLyrics;
+    audioOnly.classList.toggle("is-on", !withLyrics);
+    audioLyrics.classList.toggle("is-on", withLyrics);
+    audioOnly.setAttribute("aria-pressed", String(!withLyrics));
+    audioLyrics.setAttribute("aria-pressed", String(withLyrics));
+    cutModeHint.textContent = withLyrics
+      ? "Timed lines in the cut are removed; later lines move with the audio."
+      : "Lyrics keep their times from the start.";
   };
   const clearAudio = (): void => {
     if (!audio) return;
@@ -158,6 +194,7 @@ function mountSongEditor(): void {
   };
   const forceClose = (): void => {
     if (modal.hidden || busy) return;
+    if (editorMenuOpen) closeMenu();
     generation += 1;
     waveGeneration += 1;
     clearAudio();
@@ -216,6 +253,7 @@ function mountSongEditor(): void {
       pendingSeek = target;
     }
     paintClock();
+    followPlayhead();
   };
 
   const paintWave = (): void => {
@@ -265,10 +303,18 @@ function mountSongEditor(): void {
     selection.style.width = `${xAt(selectedRange.endMs - selectedRange.startMs)}px`;
   };
 
+  const syncSelection = (): void => {
+    const startMs = parseEditTime(start.value);
+    const endMs = parseEditTime(end.value);
+    selectedRange = startMs !== null && endMs !== null && startMs < endMs && endMs <= duration()
+      ? { startMs, endMs } : null;
+    paintSelection();
+  };
+
   const paintCuts = (): void => {
     cutsList.innerHTML = cuts.length ? cuts.map((cut, index) => `
       <div class="song-editor-cut">
-        <span>${formatEditTime(cut.startMs)} - ${formatEditTime(cut.endMs)} when cut</span>
+        <span>${formatEditTime(cut.startMs)} - ${formatEditTime(cut.endMs)} when cut (${cut.withLyrics ? "audio &amp; lyrics" : "audio only"})</span>
         <button class="pill" type="button" data-remove-cut="${index}" aria-label="Restore cut ${index + 1}">Restore</button>
       </div>`).join("") : `<p class="settings-hint">No cuts added.</p>`;
     updateSave();
@@ -280,7 +326,7 @@ function mountSongEditor(): void {
       row.classList.toggle("is-selected", Number(row.dataset.line) === selectedLine);
     }
     const timed = lyrics.lines.map((line, index) => ({ line, index }))
-      .filter((entry): entry is { line: { timeMs: number; text: string }; index: number } => entry.line.timeMs !== null)
+      .filter((entry): entry is { line: EditorLyric & { timeMs: number }; index: number } => entry.line.timeMs !== null)
       .sort((a, b) => a.line.timeMs - b.line.timeMs);
     lyricTrack.innerHTML = timed.map(({ line, index }, at) => {
       const ms = line.timeMs;
@@ -425,7 +471,7 @@ function mountSongEditor(): void {
       if (!cors) {
         showError("The equaliser cannot read this audio, so it is unavailable for this preview.");
       }
-      end.value = formatEditTime(duration());
+      if (!selectedRange) end.value = formatEditTime(duration());
       paintTimeline();
     });
     element.addEventListener("timeupdate", () => { if (audio === element) paintClock(); });
@@ -527,7 +573,7 @@ function mountSongEditor(): void {
     const currentGeneration = ++generation;
     track = next;
     lyrics = { metadata: [], lines: [] };
-    initialLyrics = JSON.stringify(lyrics);
+    initialLyrics = JSON.stringify(lyricContent());
     originalLyrics = null;
     cuts = [];
     stagedAudio = null;
@@ -538,6 +584,7 @@ function mountSongEditor(): void {
     waveTasks = new Map();
     selectedLine = null;
     selectedRange = null;
+    setCutMode(false);
     pixelsPerSecond = 10;
     followPlayback = true;
     loaded = false;
@@ -562,8 +609,8 @@ function mountSongEditor(): void {
     void ipc.loadLyrics(id).then((raw) => {
       if (currentGeneration !== generation) return;
       originalLyrics = raw;
-      lyrics = readEditableLyrics(raw ?? "");
-      initialLyrics = JSON.stringify(lyrics);
+      lyrics = numberLyrics(readEditableLyrics(raw ?? ""));
+      initialLyrics = JSON.stringify(lyricContent());
       history = new EditHistory(snapshot());
       loaded = true;
       paintLines();
@@ -591,17 +638,40 @@ function mountSongEditor(): void {
     paintChips();
   }, true);
   window.addEventListener("keydown", (event) => {
-    if (modal.hidden || confirming || isOtherPopupShowing(dismissEditor)) return;
+    if (modal.hidden || confirming) return;
+    const target = event.target as HTMLElement | null;
+    const textInput = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+      || target instanceof HTMLSelectElement || target?.isContentEditable === true;
+    if (editorMenuOpen) {
+      if (textInput) return;
+      if (!event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && !event.repeat
+        && (event.key.toLowerCase() === "x" || event.key === "Delete" || event.key === "Backspace") && selectedRange) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        closeMenu();
+        cutSelection();
+        return;
+      }
+      if (!["Escape", "ArrowUp", "ArrowDown", "Enter", "Tab"].includes(event.key)) {
+        event.stopImmediatePropagation();
+      }
+      return;
+    }
+    if (isOtherPopupShowing(dismissEditor)) return;
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopImmediatePropagation();
       requestClose();
       return;
     }
-    if (busy || !loaded) return;
-    const target = event.target as HTMLElement | null;
-    const textInput = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
+    if (busy || !loaded) { event.stopPropagation(); return; }
     const lyricInput = target instanceof HTMLInputElement && target.closest(".song-editor-lines");
+    if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!event.repeat) save.click();
+      return;
+    }
     if (event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "z"
       && (!textInput || lyricInput)) {
       event.preventDefault();
@@ -642,8 +712,19 @@ function mountSongEditor(): void {
         event.preventDefault();
         if (!busy && loaded) togglePlay();
       }
-      else if (event.code === "ArrowLeft") { event.preventDefault(); seekTo(current() - 2000); }
-      else if (event.code === "ArrowRight") { event.preventDefault(); seekTo(current() + 2000); }
+      else if (!event.shiftKey && !event.repeat && (event.key.toLowerCase() === "x" || event.key === "Delete" || event.key === "Backspace")) {
+        if (selectedRange) { event.preventDefault(); cutSelection(); }
+      }
+      else if (!event.shiftKey && !event.repeat && event.key.toLowerCase() === "i") {
+        event.preventDefault(); setStart(current());
+      }
+      else if (!event.shiftKey && !event.repeat && event.key.toLowerCase() === "o") {
+        event.preventDefault(); setEnd(current());
+      }
+      else if (!event.shiftKey && event.key === "Home") { event.preventDefault(); seekTo(0); }
+      else if (!event.shiftKey && event.key === "End") { event.preventDefault(); seekTo(duration()); }
+      else if (event.code === "ArrowLeft") { event.preventDefault(); seekTo(current() - (event.shiftKey ? 100 : 2000)); }
+      else if (event.code === "ArrowRight") { event.preventDefault(); seekTo(current() + (event.shiftKey ? 100 : 2000)); }
     }
     if (!textInput) event.stopPropagation();
   }, true);
@@ -689,6 +770,7 @@ function mountSongEditor(): void {
   waveTrack.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || !duration()) return;
     event.preventDefault();
+    viewport.focus({ preventScroll: true });
     const anchor = timeAt(event.clientX);
     const x = event.clientX;
     let moved = false;
@@ -748,9 +830,15 @@ function mountSongEditor(): void {
     window.addEventListener("pointercancel", up);
   });
 
-  byId("mark-start").addEventListener("click", () => { start.value = formatEditTime(current()); });
-  byId("mark-end").addEventListener("click", () => { end.value = formatEditTime(Math.min(current(), duration())); });
-  const changeCuts = (next: EditorCut[]): void => {
+  const setStart = (ms: number): void => { start.value = formatEditTime(ms); syncSelection(); };
+  const setEnd = (ms: number): void => { end.value = formatEditTime(Math.min(ms, duration())); syncSelection(); };
+  audioOnly.addEventListener("click", () => setCutMode(false));
+  audioLyrics.addEventListener("click", () => setCutMode(true));
+  byId("mark-start").addEventListener("click", () => setStart(current()));
+  byId("mark-end").addEventListener("click", () => setEnd(current()));
+  start.addEventListener("input", syncSelection);
+  end.addEventListener("input", syncSelection);
+  const changeCuts = (next: EditorCut[], nextLyrics: EditorLyrics = lyrics): void => {
     if (!track || busy || !loaded) return;
     const ranges = cutRanges(next);
     if (ranges.length > 100) { showError("A song cannot have more than 100 cut ranges."); return; }
@@ -769,6 +857,11 @@ function mountSongEditor(): void {
       cuts = next;
       cutAudio = rendered;
       selectedRange = null;
+      if (nextLyrics !== lyrics) {
+        lyrics = nextLyrics;
+        selectedLine = null;
+        paintLines();
+      }
       record();
       updateAudio(position, playing);
     })().catch((reason: unknown) => {
@@ -780,22 +873,101 @@ function mountSongEditor(): void {
       updateSave();
     });
   };
-  byId("add-cut").addEventListener("click", () => {
+  const applyCut = (range: AudioCut): void => {
     if (busy || !loaded) return;
+    const problem = validateCuts([range], duration());
+    if (problem) { showError(problem); return; }
+    const previousRanges = cutRanges();
+    const previousLyricRanges = lyricCutRanges();
+    const removedLyrics: EditorCut["removedLyrics"] = [];
+    let nextLyrics = lyrics;
+    if (cutWithLyrics) {
+      const invalid = lines.querySelector<HTMLInputElement>("input:invalid");
+      if (invalid) { invalid.reportValidity(); return; }
+      nextLyrics = {
+        ...lyrics,
+        lines: lyrics.lines.flatMap((line) => {
+          if (line.timeMs === null) return [line];
+          if (line.timeMs >= range.startMs && line.timeMs < range.endMs) {
+            removedLyrics.push({ line, sourceMs: sourceTime(line.timeMs, previousLyricRanges) });
+            return [];
+          }
+          return [{ ...line, timeMs: editedTime(line.timeMs, [range]) }];
+        }),
+      };
+    }
+    const next = [...cuts, {
+      ...range, ranges: sourceCutRanges(range, previousRanges),
+      lyricRanges: cutWithLyrics ? sourceCutRanges(range, previousLyricRanges) : [],
+      withLyrics: cutWithLyrics, removedLyrics,
+    }];
+    changeCuts(next, nextLyrics);
+  };
+  const cutSelection = (): void => {
+    if (selectedRange) applyCut(selectedRange);
+  };
+  byId("add-cut").addEventListener("click", () => {
     const startMs = parseEditTime(start.value);
     const endMs = parseEditTime(end.value);
     if (startMs === null || endMs === null) { showError("Enter cut times as mm:ss or mm:ss.mmm."); return; }
-    const range = { startMs, endMs };
-    const problem = validateCuts([range], duration());
-    if (problem) { showError(problem); return; }
-    changeCuts([...cuts, { ...range, ranges: sourceCutRanges(range, cutRanges()) }]);
+    applyCut({ startMs, endMs });
   });
   cutsList.addEventListener("click", (event) => {
     const button = (event.target as HTMLElement).closest<HTMLElement>("[data-remove-cut]");
     if (!button) return;
     const index = Number(button.dataset.removeCut);
     if (index < 0 || index >= cuts.length) return;
-    changeCuts(cuts.filter((_, at) => at !== index));
+    const cut = cuts[index];
+    const next = cuts.filter((_, at) => at !== index);
+    let nextLyrics = lyrics;
+    if (cut.withLyrics) {
+      const invalid = lines.querySelector<HTMLInputElement>("input:invalid");
+      if (invalid) { invalid.reportValidity(); return; }
+      const before = lyricCutRanges();
+      const after = lyricCutRanges(next);
+      const kept = lyrics.lines.map((line) => line.timeMs === null ? line : {
+        ...line, timeMs: editedTime(sourceTime(line.timeMs, before), after),
+      });
+      const restored = cut.removedLyrics.map(({ line, sourceMs }) => ({
+        ...line, timeMs: editedTime(sourceMs, after),
+      }));
+      nextLyrics = { ...lyrics, lines: [...kept, ...restored].sort((a, b) => a.id - b.id) };
+    }
+    changeCuts(next, nextLyrics);
+  });
+
+  modal.addEventListener("contextmenu", (event) => {
+    if (busy || !loaded || confirming || (isOtherPopupShowing(dismissEditor) && !editorMenuOpen)) return;
+    const target = event.target as HTMLElement;
+    if (target.closest("input, textarea, select, [contenteditable]")) return;
+    event.preventDefault();
+    if (editorMenuOpen) closeMenu();
+    const items: MenuItem[] = [
+      { label: cutWithLyrics ? "Cut selected audio and lyrics" : "Cut selected audio",
+        disabled: !selectedRange || !!validateCuts([selectedRange], duration()), action: cutSelection },
+      { label: "Undo", disabled: !history?.canUndo, action: () => restore(history?.undo() ?? null) },
+      { label: "Redo", disabled: !history?.canRedo, action: () => restore(history?.redo() ?? null) },
+      {
+        label: "Clear selection", disabled: !selectedRange,
+        action: () => { selectedRange = null; paintSelection(); },
+      },
+    ];
+    if (viewport.contains(target)) {
+      const at = timeAt(event.clientX);
+      items.push(
+        { label: "Seek here", action: () => seekTo(at) },
+        { label: "Set cut start here", action: () => setStart(at) },
+        { label: "Set cut end here", action: () => setEnd(at) },
+      );
+    }
+    releasePopup(dismissEditor);
+    editorMenuOpen = true;
+    openMenu(modal, items, { x: event.clientX, y: event.clientY }, {
+      onClose: () => {
+        editorMenuOpen = false;
+        if (!modal.hidden && !confirming) claimPopupIfFree(dismissEditor);
+      },
+    });
   });
 
   byId("import-audio").addEventListener("click", () => {
@@ -824,20 +996,27 @@ function mountSongEditor(): void {
   byId("import-lyrics").addEventListener("click", () => lyricFile.click());
   lyricFile.addEventListener("change", () => {
     const file = lyricFile.files?.[0];
-    if (!file) return;
+    if (!file || busy) return;
     const currentGeneration = generation;
+    busy = true;
+    updateSave();
     void file.text().then((text) => {
       if (currentGeneration !== generation) return;
-      lyrics = readEditableLyrics(text);
+      lyrics = numberLyrics(readEditableLyrics(text));
+      cuts = cuts.map((cut) => ({ ...cut, removedLyrics: [] }));
       selectedLine = null;
       showError("");
       record();
       paintLines();
       paintTimeline();
-    }).catch((reason: unknown) => showError(describe(reason))).finally(() => { lyricFile.value = ""; });
+    }).catch((reason: unknown) => showError(describe(reason))).finally(() => {
+      lyricFile.value = "";
+      busy = false;
+      updateSave();
+    });
   });
   byId("add-line").addEventListener("click", () => {
-    lyrics.lines.push({ timeMs: current(), text: "" });
+    lyrics.lines.push({ timeMs: current(), text: "", id: lyricSerial++ });
     selectedLine = lyrics.lines.length - 1;
     record();
     paintLines();

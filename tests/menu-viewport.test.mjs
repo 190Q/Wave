@@ -78,6 +78,19 @@ test("touch song menus show their full content within the safe viewport", () => 
   closeMenu();
 });
 
+test("the close callback runs once when a menu is dismissed or replaced", () => {
+  let closed = 0;
+  openMenu(anchor, items, undefined, { onClose: () => { closed += 1; } });
+  closeMenu();
+  closeMenu();
+  assert.equal(closed, 1);
+  openMenu(anchor, items, undefined, { onClose: () => { closed += 1; } });
+  openMenu(anchor, items);
+  assert.equal(closed, 2);
+  closeMenu();
+  assert.equal(closed, 2);
+});
+
 test("touch song menus remain reachable on a short screen", () => {
   context.touch = true;
   window.innerWidth = 720;

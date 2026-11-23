@@ -187,6 +187,13 @@
   min-height: 0;
 }
 
+.song-editor-cut-mode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.7rem 0 0.4rem;
+}
+
 .song-editor-cut-inputs {
   display: flex;
   align-items: end;

@@ -41,6 +41,23 @@ export const KEYBIND_GROUPS: KeybindGroup[] = [
     ],
   },
   {
+    title: "Audio & lyrics editor",
+    note: "Unmodified editing shortcuts are ignored while typing in a field.",
+    binds: [
+      { keys: "X / Delete / Backspace", action: "Cut the selected audio" },
+      { keys: "I / O", action: "Set the cut start or end at the playhead" },
+      { keys: "Ctrl+Z / Ctrl+Shift+Z", action: "Undo or redo an edit" },
+      { keys: "Ctrl+S", action: "Save changes" },
+      { keys: "Space", action: "Play or pause the preview" },
+      { keys: "Left / Right", action: "Seek back or forwards by 2 seconds" },
+      { keys: "Shift + Left / Right", action: "Seek back or forwards by 0.1 seconds" },
+      { keys: "Home / End", action: "Seek to the start or end" },
+      { keys: "Ctrl + scroll", action: "Zoom the timeline" },
+      { keys: "Shift + scroll", action: "Scroll the timeline sideways" },
+      { keys: "Shift + click a lyric shift button", action: "Shift lyrics by 0.5 seconds" },
+    ],
+  },
+  {
     title: "Pointer",
     note: "Selecting songs works in every collection. Moving them only means something in a playlist you made.",
     binds: [

@@ -159,3 +159,24 @@ test("the editor and equaliser use shared panel and button styles", async () => 
   assert.match(shared, /\.fullscreen-panel,\s*\.eq-panel\s*\{/);
   assert.match(markup, /class="pill icon-only" id="song-editor-close"[^>]*>\s*<span class="btn-icon" data-icon="close">/);
 });
+
+test("the editor offers both cut modes and describes their effects", async () => {
+  const markup = await readFile(new URL("../src/ui/song-editor-markup.ts", import.meta.url), "utf8");
+  const editor = await readFile(new URL("../src/ui/song-editor.ts", import.meta.url), "utf8");
+  assert.match(markup, /id="song-editor-cut-audio-only"[^>]*aria-pressed="true">Audio only/);
+  assert.match(markup, /id="song-editor-cut-audio-lyrics"[^>]*aria-pressed="false">Audio and lyrics/);
+  assert.match(editor, /Timed lines in the cut are removed; later lines move with the audio/);
+  assert.match(editor, /Lyrics keep their times from the start/);
+});
+
+test("audio editor shortcuts are listed in settings rather than the editor", async () => {
+  const { KEYBIND_GROUPS } = await vite.ssrLoadModule("/src/lib/keybinds.ts");
+  const group = KEYBIND_GROUPS.find((entry) => entry.title === "Audio & lyrics editor");
+  for (const keys of ["X / Delete / Backspace", "I / O", "Ctrl+Z / Ctrl+Shift+Z", "Ctrl+S"]) {
+    assert.ok(group.binds.some((bind) => bind.keys === keys));
+  }
+  const settings = await readFile(new URL("../src/ui/settings.ts", import.meta.url), "utf8");
+  const markup = await readFile(new URL("../src/ui/song-editor-markup.ts", import.meta.url), "utf8");
+  assert.match(settings, /KEYBIND_GROUPS\.map/);
+  assert.doesNotMatch(markup, /Ctrl\+Z|Ctrl \+ scroll|Shift \+ scroll|Space plays|Hold Shift/);
+});

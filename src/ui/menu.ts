@@ -20,12 +20,13 @@ export interface MenuPoint {
 
 let open: HTMLElement | null = null;
 let dismiss: (() => void) | null = null;
+let onClose: (() => void) | null = null;
 
 export function openMenu(
   anchor: HTMLElement,
   items: MenuItem[],
   at?: MenuPoint,
-  options?: { fitViewport?: boolean },
+  options?: { fitViewport?: boolean; onClose?: () => void },
 ): void {
   closeMenu();
 
@@ -134,6 +135,7 @@ export function openMenu(
     window.removeEventListener("scroll", onScroll, true);
   };
   open = menu;
+  onClose = options?.onClose ?? null;
 }
 
 export function closeMenu(): void {
@@ -142,6 +144,9 @@ export function closeMenu(): void {
   open?.remove();
   open = null;
   releasePopup(closeMenu);
+  const closed = onClose;
+  onClose = null;
+  closed?.();
 }
 
 function position(menu: HTMLElement, anchor: HTMLElement, at: MenuPoint | undefined, fitViewport: boolean): void {

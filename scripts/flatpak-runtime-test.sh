@@ -12,7 +12,6 @@ export PULSE_RUNTIME_PATH="$work/runtime/pulse"
 export PULSE_SERVER="unix:$PULSE_RUNTIME_PATH/native"
 export GDK_BACKEND=x11
 export LIBGL_ALWAYS_SOFTWARE=1
-dbus-update-activation-environment DISPLAY XDG_RUNTIME_DIR
 
 cleanup() {
   if [ -n "$capture" ]; then
@@ -27,9 +26,14 @@ cleanup() {
     kill "$pulse" 2>/dev/null || true
     wait "$pulse" 2>/dev/null || true
   fi
+  if mountpoint -q "$XDG_RUNTIME_DIR/doc"; then
+    fusermount3 -uz "$XDG_RUNTIME_DIR/doc"
+  fi
   rm -rf "$work"
 }
 trap cleanup EXIT
+
+dbus-update-activation-environment DISPLAY XDG_RUNTIME_DIR
 
 wave() { flatpak run com.wave.app "$@"; }
 

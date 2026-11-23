@@ -27,8 +27,9 @@ test("the ARM release builds, tests and publishes the phone Flatpak", () => {
   assert.match(workflow, /flatpak install --user --noninteractive -y flathub org\.gnome\.Platform\/\/51/);
   assert.match(workflow, /npx tauri build --no-bundle --config src-tauri\/tauri\.phone\.conf\.json/);
   assert.match(workflow, /sh scripts\/flatpak-build\.sh/);
+  assert.match(workflow, /name: Use current Flatpak test tooling[\s\S]*ref: \$\{\{ github\.sha \}\}[\s\S]*path: \.release-tools/);
   assert.match(workflow, /flatpak install --user --noninteractive -y "src-tauri\/target\/flatpak\/Wave_\$\{version\}_aarch64_phone\.flatpak"/);
-  assert.match(workflow, /dbus-run-session -- xvfb-run .*sh scripts\/flatpak-runtime-test\.sh/);
+  assert.match(workflow, /xvfb-run .*dbus-run-session -- sh \.release-tools\/scripts\/flatpak-runtime-test\.sh/);
   assert.match(workflow, /asset="Wave_\$\{version\}_aarch64_phone\.flatpak"/);
   assert.match(workflow, /node scripts\/release\.mjs upload "\$RELEASE_TAG" "src-tauri\/target\/flatpak\/\$asset"/);
   assert.match(workflow, /cmp "src-tauri\/target\/flatpak\/\$asset" "\$RUNNER_TEMP\/flatpak-download\/\$asset"/);
@@ -48,6 +49,7 @@ test("phone tests run only manually on ARM Alpine", () => {
   for (const source of [phoneTests, workflow, recovery]) {
     assert.match(source, /^  workflow_dispatch:/m);
     assert.doesNotMatch(source, /^  (?:push|pull_request):/m);
+    assert.match(source, /actions\/cache@v5/);
   }
   assert.match(phoneTests, /tests\/linux-phone\.test\.mjs/);
   assert.match(phoneTests, /tests\/flatpak\.test\.mjs/);

@@ -139,7 +139,7 @@ jobs:
       - name: Set up the phone Flatpak runtime
         if: matrix.platform == 'ubuntu-22.04-arm'
         run: |
-          sudo apt-get install -y flatpak xvfb xdotool dbus-x11 pulseaudio pulseaudio-utils
+          sudo apt-get install -y flatpak fuse3 xvfb xdotool dbus-x11 pulseaudio pulseaudio-utils
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
           flatpak install --user --noninteractive -y flathub org.gnome.Platform//51
 
@@ -149,12 +149,19 @@ jobs:
           npx tauri build --no-bundle --config src-tauri/tauri.phone.conf.json
           sh scripts/flatpak-build.sh
 
+      - name: Use current Flatpak test tooling
+        if: matrix.platform == 'ubuntu-22.04-arm'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+
       - name: Verify the phone Flatpak
         if: matrix.platform == 'ubuntu-22.04-arm'
         run: |
           version=$(tr -d '\r\n' < VERSION)
           flatpak install --user --noninteractive -y "src-tauri/target/flatpak/Wave_${version}_aarch64_phone.flatpak"
-          dbus-run-session -- xvfb-run -a -s "-screen 0 360x720x24" sh scripts/flatpak-runtime-test.sh
+          xvfb-run -a -s "-screen 0 360x720x24" dbus-run-session -- sh .release-tools/scripts/flatpak-runtime-test.sh
 
       - name: Attach and verify the phone Flatpak
         if: matrix.platform == 'ubuntu-22.04-arm'
@@ -181,7 +188,7 @@ jobs:
         with:
           node-version: 22
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ${{ runner.temp }}/musl-cargo/registry

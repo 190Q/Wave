@@ -83,3 +83,55 @@ if sh "$root/scripts/flatpak-build.sh" > "$work/missing.log" 2>&1; then
   printf 'Packaging succeeded without a required tool\n' >&2
   exit 1
 fi
+
+mkdir -p "$work/smoke-home" "$work/smoke-bin" "$work/smoke-log"
+cat > "$work/smoke-bin/dbus-update-activation-environment" <<'MOCK'
+#!/bin/sh
+test "$*" = "DISPLAY XDG_RUNTIME_DIR"
+MOCK
+cat > "$work/smoke-bin/flatpak" <<'MOCK'
+#!/bin/sh
+mkdir -p "$XDG_RUNTIME_DIR/doc/by-app/com.wave.app"
+printf '%s\n' "$XDG_RUNTIME_DIR" > "$SMOKE_TEST_LOG/runtime"
+exit 42
+MOCK
+cat > "$work/smoke-bin/mountpoint" <<'MOCK'
+#!/bin/sh
+set -eu
+test "$1" = -q
+test "$2" = "$XDG_RUNTIME_DIR/doc"
+test "$SMOKE_TEST_MOUNTED" = 1
+MOCK
+cat > "$work/smoke-bin/fusermount3" <<'MOCK'
+#!/bin/sh
+set -eu
+test "$1" = -uz
+test "$2" = "$XDG_RUNTIME_DIR/doc"
+printf '%s\n' "$2" > "$SMOKE_TEST_LOG/unmount"
+exit "${SMOKE_TEST_UNMOUNT_STATUS:-0}"
+MOCK
+chmod +x "$work/smoke-bin/"*
+export SMOKE_TEST_LOG="$work/smoke-log"
+export PATH="$work/smoke-bin:$PATH"
+
+for mounted in 0 1; do
+  rm -f "$SMOKE_TEST_LOG/unmount"
+  status=0
+  HOME="$work/smoke-home" SMOKE_TEST_MOUNTED="$mounted" \
+    sh "$source_root/scripts/flatpak-runtime-test.sh" || status=$?
+  test "$status" -eq 42
+  runtime="$(cat "$SMOKE_TEST_LOG/runtime")"
+  test ! -e "$(dirname "$runtime")"
+  if [ "$mounted" -eq 1 ]; then
+    test "$(cat "$SMOKE_TEST_LOG/unmount")" = "$runtime/doc"
+  else
+    test ! -e "$SMOKE_TEST_LOG/unmount"
+  fi
+done
+
+status=0
+HOME="$work/smoke-home" SMOKE_TEST_MOUNTED=1 SMOKE_TEST_UNMOUNT_STATUS=19 \
+  sh "$source_root/scripts/flatpak-runtime-test.sh" || status=$?
+test "$status" -eq 19
+runtime="$(cat "$SMOKE_TEST_LOG/runtime")"
+test -d "$runtime/doc/by-app/com.wave.app"

@@ -762,8 +762,8 @@ function mountSongEditor(): void {
     paintLines();
     paintTimeline();
   };
-  byId("shift-back").addEventListener("click", () => shift(-100));
-  byId("shift-forward").addEventListener("click", () => shift(100));
+  byId("shift-back").addEventListener("click", (e) => shift(e.shiftKey ? -500 : -100));
+  byId("shift-forward").addEventListener("click", (e) => shift(e.shiftKey ? 500 : 100));
   lines.addEventListener("focusin", (event) => {
     const input = event.target as HTMLInputElement;
     const index = input.dataset.lyricTime ?? input.dataset.lyricText;

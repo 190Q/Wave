@@ -198,6 +198,10 @@ export function editorWaveform(trackId: string, stagedAudio: string | null): Pro
   return invoke("editor_waveform", { trackId, stagedAudio });
 }
 
+export function renderEditorCuts(trackId: string, stagedAudio: string | null, cuts: AudioCut[]): Promise<string> {
+  return invoke("render_editor_cuts", { trackId, stagedAudio, cuts });
+}
+
 export function saveSongEdit(
   trackId: string,
   expectedPath: string,

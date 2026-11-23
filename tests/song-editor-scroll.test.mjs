@@ -8,10 +8,23 @@ const mocks = {
   "../lib/device": 'export const device = () => "desktop";',
   "../lib/ipc": `
     export const loadLyrics = async () => globalThis.__songEditorTest.lyrics ?? null;
-    export const editorWaveform = async () => [];
+    export const editorWaveform = async (id, path) => {
+      globalThis.__songEditorTest.waveforms.push([id, path]);
+      return globalThis.__songEditorTest.wavePeaks ?? [];
+    };
     export const pickEditorAudio = async () => "replacement.wav";
     export const stageEditorAudio = async () => "staged.wav";
     export const discardEditorAudio = async (path) => globalThis.__songEditorTest.discarded.push(path);
+    export const renderEditorCuts = async (id, path, cuts) => {
+      const state = globalThis.__songEditorTest;
+      state.renders.push(structuredClone([id, path, cuts]));
+      if (state.renderGate) await state.renderGate;
+      if (state.renderFailure) throw new Error(state.renderFailure);
+      const output = "cut-" + ++state.renderSerial + ".flac";
+      state.durations.set(output, (state.durations.get(path ?? "audio") ?? 120)
+        - cuts.reduce((total, cut) => total + (cut.endMs - cut.startMs) / 1000, 0));
+      return output;
+    };
   `,
   "../lib/motion": "export const reduceMotionActive = () => globalThis.__songEditorTest.reducedMotion ?? true;",
   "../lib/state": `
@@ -19,8 +32,8 @@ const mocks = {
     export const player = { pause() {}, finishTransitions() {} };
     export const connectPreviewAudio = () => () => {};
     export const previewAudioPath = () => "audio";
-    export const previewStagedAudioPath = () => "audio";
-    export const saveEditedSong = async () => {};
+    export const previewStagedAudioPath = (path) => path;
+    export const saveEditedSong = async (...args) => globalThis.__songEditorTest.saves.push(structuredClone(args));
   `,
   "./icons": "export const fillIcons = () => {};",
   "./song-editor-markup": "export const createSongEditor = () => globalThis.__songEditorTest.modal;",
@@ -133,8 +146,22 @@ class Audio extends Element {
     this.dispatch("pause");
   }
 
-  load() {}
-  removeAttribute() {}
+  set src(path) {
+    this.path = path;
+    this.actualDuration = globalThis.__songEditorTest.durations.get(path) ?? 120;
+    this.duration = globalThis.__songEditorTest.deferMetadata ? NaN : this.actualDuration;
+    this.readyState = globalThis.__songEditorTest.deferMetadata ? 0 : 1;
+  }
+
+  get src() { return this.path; }
+  getAttribute(name) { return name === "src" ? this.path : null; }
+  load() { if (this.path && !globalThis.__songEditorTest.deferMetadata) this.dispatch("loadedmetadata"); }
+  finishMetadata() {
+    this.duration = this.actualDuration;
+    this.readyState = 1;
+    this.dispatch("loadedmetadata");
+  }
+  removeAttribute(name) { if (name === "src") this.path = ""; }
 }
 
 test("song editor timeline navigation and lyric selection", async (t) => {
@@ -150,8 +177,13 @@ test("song editor timeline navigation and lyric selection", async (t) => {
   modal.querySelector = (selector) => selector.startsWith("#song-editor-")
     ? element(selector.slice("#song-editor-".length)) : new Element();
   const track = { id: "track", path: "audio", title: "Song", artist: "Artist", durationMs: 120000 };
-  globalThis.__songEditorTest = { modal, discarded: [], state: { tracksById: new Map([[track.id, track]]) } };
+  globalThis.__songEditorTest = {
+    modal, discarded: [], saves: [], renders: [], waveforms: [], renderSerial: 0,
+    durations: new Map([["audio", 120], ["staged.wav", 120]]),
+    state: { tracksById: new Map([[track.id, track]]) },
+  };
   globalThis.Audio = Audio;
+  globalThis.HTMLMediaElement = { HAVE_METADATA: 1 };
   globalThis.HTMLInputElement = class extends Element {
     blur() { globalThis.document.activeElement = null; }
   };
@@ -622,5 +654,193 @@ test("song editor timeline navigation and lyric selection", async (t) => {
     assert.equal(back.disabled, true);
     assert.equal(forward.disabled, true);
     lines.querySelectorAll = () => [];
+  });
+
+  await t.test("audio cuts leave existing lyrics untouched and retain explicit lyric edits", async () => {
+    element("close").dispatch("click");
+    confirmElements["confirm-accept"].dispatch("click");
+    flushTimers(220);
+    await settle();
+    assert.equal(modal.hidden, true);
+
+    const addCut = async (start, end) => {
+      element("cut-start").value = start;
+      element("cut-end").value = end;
+      element("add-cut").dispatch("click");
+      await settle();
+    };
+    const original = "[ar:Singer]\r\n[offset:250]\r\n[00:01.25]Before\r\n[00:03.25][00:08.25]Repeated\r\n";
+    globalThis.__songEditorTest.lyrics = original;
+    openSongEditor(track.id);
+    await settle();
+    const before = element("lines-content").innerHTML;
+    const chipPositions = () => [...element("lyric-track").innerHTML.matchAll(/data-chip="\d+" style="left:([\d.]+)px/g)]
+      .map((match) => Number(match[1]));
+    const chips = chipPositions();
+    await addCut("00:02.000", "00:04.000");
+    await addCut("00:06.000", "00:07.000");
+    assert.equal(element("lines-content").innerHTML, before);
+    chipPositions().forEach((position, index) => assert.ok(Math.abs(position - chips[index]) < 0.001));
+    const cutAudio = globalThis.__songEditorTest.audio.src;
+    element("save").dispatch("click");
+    await settle();
+    assert.deepEqual(globalThis.__songEditorTest.saves.pop(), [
+      track.id, track.path, original, null, cutAudio, [],
+    ]);
+    assert.equal(modal.hidden, true);
+
+    const lyrics = "[00:01.000]Before\n[00:03.000]Inside\n[00:08.000]After\nUntimed\n";
+    globalThis.__songEditorTest.lyrics = lyrics;
+    openSongEditor(track.id);
+    await settle();
+    const input = new HTMLInputElement();
+    input.dataset.lyricText = "1";
+    input.value = "Edited";
+    element("lines").dispatch("input", { target: input });
+    element("shift-forward").dispatch("click");
+    element("import-audio").dispatch("click");
+    await settle();
+    await addCut("00:02.000", "00:04.000");
+    await addCut("00:06.000", "00:07.000");
+    const replacementCutAudio = globalThis.__songEditorTest.audio.src;
+    assert.deepEqual(globalThis.__songEditorTest.renders.slice(-2).map((render) => render[1]), ["staged.wav", "staged.wav"]);
+    element("save").dispatch("click");
+    await settle();
+    assert.deepEqual(globalThis.__songEditorTest.saves.pop(), [
+      track.id, track.path, lyrics,
+      "[00:01.100]Before\n[00:03.100]Edited\n[00:08.100]After\nUntimed\n",
+      replacementCutAudio, [],
+    ]);
+    assert.equal(modal.hidden, true);
+
+    globalThis.__songEditorTest.lyrics = null;
+    openSongEditor(track.id);
+    await settle();
+    await addCut("00:02.000", "00:04.000");
+    const cutWithoutLyrics = globalThis.__songEditorTest.audio.src;
+    element("save").dispatch("click");
+    await settle();
+    assert.deepEqual(globalThis.__songEditorTest.saves.pop(), [
+      track.id, track.path, null, null, cutWithoutLyrics, [],
+    ]);
+    assert.equal(modal.hidden, true);
+  });
+
+  await t.test("cuts change playback and waveform immediately and can be restored independently", async () => {
+    const state = globalThis.__songEditorTest;
+    state.discarded = [];
+    state.renders = [];
+    state.waveforms = [];
+    state.wavePeaks = [0.5, 0.8];
+    state.lyrics = "[00:03.000]Early\n[01:59.000]Late";
+    openSongEditor(track.id);
+    await settle();
+
+    const addCut = async (start, end) => {
+      element("cut-start").value = start;
+      element("cut-end").value = end;
+      element("add-cut").dispatch("click");
+      await settle();
+    };
+    const restoreCut = async (index) => {
+      const button = new Element();
+      button.dataset.removeCut = String(index);
+      button.closest = () => button;
+      element("cuts").dispatch("click", { target: button });
+      await settle();
+    };
+    const before = element("lines-content").innerHTML;
+    let releaseRender;
+    state.renderGate = new Promise((resolve) => { releaseRender = resolve; });
+    const originalAudio = state.audio;
+    originalAudio.currentTime = 10;
+    element("play").dispatch("click");
+    element("cut-start").value = "00:02.000";
+    element("cut-end").value = "00:04.000";
+    element("add-cut").dispatch("click");
+    await Promise.resolve();
+    assert.equal(element("save").disabled, true);
+    assert.equal(element("wave-status").textContent, "Cutting audio...");
+    element("close").dispatch("click");
+    assert.equal(modal.hidden, false);
+    state.deferMetadata = true;
+    releaseRender();
+    await settle();
+    state.renderGate = null;
+    state.deferMetadata = false;
+
+    const first = state.audio.src;
+    assert.notEqual(first, "audio");
+    assert.equal(element("duration").textContent, "01:58.000");
+    assert.equal(element("position").textContent, "00:08.000");
+    state.deferMetadata = true;
+    state.audio.dispatch("error");
+    state.deferMetadata = false;
+    assert.equal(state.audio.src, first);
+    assert.equal(state.audio.crossOrigin, null);
+    assert.equal(element("position").textContent, "00:08.000");
+    element("ruler").dispatch("pointerdown", { clientX: 70 });
+    assert.equal(element("position").textContent, "00:07.000");
+    state.audio.finishMetadata();
+    assert.equal(state.audio.currentTime, 7);
+    assert.equal(state.audio.paused, false);
+    assert.equal(element("duration").textContent, "01:58.000");
+    assert.deepEqual(state.waveforms.at(-1), [track.id, first]);
+    assert.deepEqual(state.renders[0], [track.id, null, [{ startMs: 2000, endMs: 4000 }]]);
+    assert.equal(element("lines-content").innerHTML, before);
+    assert.match(element("lyric-track").innerHTML, /data-chip="1" style="left:1190px/);
+    const bars = [];
+    element("wave").getContext = () => ({
+      setTransform() {}, clearRect() { bars.length = 0; },
+      fillRect(x) { bars.push(x); },
+    });
+    viewport.scrollLeft = 1160;
+    viewport.dispatch("scroll");
+    assert.ok(bars.length > 0);
+    assert.ok(bars.every((x) => x < 20));
+    viewport.scrollLeft = 0;
+    state.audio.currentTime = 2.5;
+    advance();
+    assert.equal(state.audio.currentTime, 2.5);
+
+    state.renderFailure = "Rendering failed";
+    await addCut("00:10.000", "00:11.000");
+    assert.equal(element("error").textContent, "Rendering failed");
+    assert.equal(state.audio.src, first);
+    assert.equal(state.audio.paused, false);
+    assert.equal(element("duration").textContent, "01:58.000");
+    state.renderFailure = null;
+
+    await addCut("00:01.000", "00:03.000");
+    const second = state.audio.src;
+    assert.equal(element("duration").textContent, "01:56.000");
+    assert.deepEqual(state.renders.at(-1), [track.id, null, [
+      { startMs: 2000, endMs: 4000 },
+      { startMs: 1000, endMs: 2000 },
+      { startMs: 4000, endMs: 5000 },
+    ]]);
+    assert.equal(element("lines-content").innerHTML, before);
+
+    await restoreCut(0);
+    const restored = state.audio.src;
+    assert.equal(element("duration").textContent, "01:58.000");
+    assert.deepEqual(state.renders.at(-1), [track.id, null, [
+      { startMs: 1000, endMs: 2000 }, { startMs: 4000, endMs: 5000 },
+    ]]);
+    element("undo").dispatch("click");
+    assert.equal(state.audio.src, second);
+    assert.equal(element("duration").textContent, "01:56.000");
+    element("redo").dispatch("click");
+    assert.equal(state.audio.src, restored);
+    await restoreCut(0);
+    assert.equal(state.audio.src, "audio");
+    assert.equal(element("duration").textContent, "02:00.000");
+    assert.equal(element("save").disabled, true);
+    element("close").dispatch("click");
+    await settle();
+    assert.equal(modal.hidden, true);
+    assert.deepEqual(new Set(state.discarded), new Set([first, second, restored]));
+    element("wave").getContext = () => null;
+    state.wavePeaks = null;
   });
 });

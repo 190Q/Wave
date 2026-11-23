@@ -6,7 +6,8 @@ import { escapeHtml } from "../lib/format";
 import * as ipc from "../lib/ipc";
 import { reduceMotionActive } from "../lib/motion";
 import {
-  formatEditTime, parseEditTime, readEditableLyrics, validateCuts, writeEditableLyrics,
+  editedTime, formatEditTime, parseEditTime, readEditableLyrics, sourceCutRanges, sourceTime,
+  validateCuts, writeEditableLyrics,
   type EditableLyrics,
 } from "../lib/song-edit";
 import {
@@ -20,9 +21,15 @@ import { createSongEditor } from "./song-editor-markup";
 
 interface EditorSnapshot {
   lyrics: EditableLyrics;
-  cuts: AudioCut[];
+  cuts: EditorCut[];
   stagedAudio: string | null;
+  cutAudio: string | null;
+  sourceDuration: number;
   source: string;
+}
+
+interface EditorCut extends AudioCut {
+  ranges: AudioCut[];
 }
 
 let openEditor: ((id: string) => void) | null = null;
@@ -55,7 +62,6 @@ function mountSongEditor(): void {
   const waveTrack = byId("wave-track");
   const wave = byId<HTMLCanvasElement>("wave");
   const waveStatus = byId("wave-status");
-  const cutOverlay = byId("cut-overlay");
   const selection = byId("selection");
   const lyricTrack = byId("lyric-track");
   const playhead = byId("playhead");
@@ -70,13 +76,16 @@ function mountSongEditor(): void {
   let audio: HTMLAudioElement;
   let disconnectPreview: (() => void) | null = null;
   let wantsPlayback = false;
+  let pendingSeek: number | null = null;
 
   let track: Track | null = null;
   let originalLyrics: string | null = null;
   let initialLyrics = "";
   let lyrics: EditableLyrics = { metadata: [], lines: [] };
-  let cuts: AudioCut[] = [];
+  let cuts: EditorCut[] = [];
   let stagedAudio: string | null = null;
+  let cutAudio: string | null = null;
+  let sourceDuration = 0;
   let history: EditHistory<EditorSnapshot> | null = null;
   let stages = new Set<string>();
   let waveTasks = new Map<string, Promise<number[]>>();
@@ -90,6 +99,7 @@ function mountSongEditor(): void {
   let closeTimer: number | null = null;
   let pixelsPerSecond = 10;
   let timelineWidth = 0;
+  let timelineDuration = 0;
   let followPlayback = true;
   let selectedLine: number | null = null;
   let selectedRange: AudioCut | null = null;
@@ -101,11 +111,14 @@ function mountSongEditor(): void {
     error.hidden = !message;
   };
   const describe = (reason: unknown): string => reason instanceof Error ? reason.message : String(reason);
+  const cutRanges = (items: EditorCut[] = cuts): AudioCut[] => items.flatMap((cut) => cut.ranges);
   const duration = (): number => Number.isFinite(audio.duration) && audio.duration > 0
     ? Math.floor(audio.duration * 1000)
-    : stagedAudio === null ? track?.durationMs ?? 0 : 0;
-  const current = (): number => Math.round((Number.isFinite(audio.currentTime) ? audio.currentTime : 0) * 1000);
-  const snapshot = (): EditorSnapshot => ({ lyrics, cuts, stagedAudio, source: source.textContent ?? "" });
+    : Math.max(0, sourceDuration - cutRanges().reduce((total, cut) => total + cut.endMs - cut.startMs, 0));
+  const current = (): number => pendingSeek ?? Math.round((Number.isFinite(audio.currentTime) ? audio.currentTime : 0) * 1000);
+  const snapshot = (): EditorSnapshot => ({
+    lyrics, cuts, stagedAudio, cutAudio, sourceDuration, source: source.textContent ?? "",
+  });
   const lyricsChanged = (): boolean => JSON.stringify(lyrics) !== initialLyrics;
   const dirty = (): boolean => lyricsChanged() || cuts.length > 0 || stagedAudio !== null
     || lines.querySelector("input:invalid") !== null;
@@ -126,6 +139,7 @@ function mountSongEditor(): void {
   const clearAudio = (): void => {
     if (!audio) return;
     wantsPlayback = false;
+    pendingSeek = null;
     audio.pause();
     audio.removeAttribute("src");
     audio.load();
@@ -150,6 +164,7 @@ function mountSongEditor(): void {
     for (const path of stages) discardStage(path);
     stages = new Set();
     stagedAudio = null;
+    cutAudio = null;
     track = null;
     if (frame !== null) cancelAnimationFrame(frame);
     frame = null;
@@ -185,15 +200,21 @@ function mountSongEditor(): void {
     }
   };
 
-  const xAt = (ms: number): number => duration() > 0 ? ms / duration() * timelineWidth : 0;
+  const xAt = (ms: number): number => timelineDuration > 0 ? ms / timelineDuration * timelineWidth : 0;
   const timeAt = (clientX: number): number => {
     const x = clientX - inner.getBoundingClientRect().left;
-    return Math.round(Math.min(duration(), Math.max(0, x / Math.max(1, timelineWidth) * duration())));
+    return Math.round(Math.min(duration(), Math.max(0, x / Math.max(1, timelineWidth) * timelineDuration)));
   };
   const seekTo = (ms: number): void => {
     if (duration() <= 0) return;
     followPlayback = true;
-    audio.currentTime = Math.min(duration(), Math.max(0, ms)) / 1000;
+    const target = Math.min(duration(), Math.max(0, ms));
+    if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      pendingSeek = null;
+      audio.currentTime = target / 1000;
+    } else {
+      pendingSeek = target;
+    }
     paintClock();
   };
 
@@ -209,10 +230,13 @@ function mountSongEditor(): void {
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = "rgba(255, 255, 255, 0.55)";
-    if (!peaks.length || !timelineWidth) return;
+    const audioWidth = xAt(duration());
+    if (!peaks.length || !audioWidth) return;
     for (let x = 0; x < width; x += 3) {
-      const from = Math.floor((viewport.scrollLeft + x) / timelineWidth * peaks.length);
-      const to = Math.min(peaks.length, Math.max(from + 1, Math.ceil((viewport.scrollLeft + x + 3) / timelineWidth * peaks.length)));
+      const at = viewport.scrollLeft + x;
+      if (at >= audioWidth) break;
+      const from = Math.floor(at / audioWidth * peaks.length);
+      const to = Math.min(peaks.length, Math.max(from + 1, Math.ceil((at + 3) / audioWidth * peaks.length)));
       let peak = 0;
       for (let index = from; index < to; index += 1) peak = Math.max(peak, peaks[index] ?? 0);
       const bar = Math.max(2, Math.min(1, peak) * height * 0.9);
@@ -221,7 +245,7 @@ function mountSongEditor(): void {
   };
 
   const paintRuler = (): void => {
-    const length = duration();
+    const length = timelineDuration;
     if (!length || !timelineWidth) { ruler.innerHTML = ""; return; }
     const intervals = [1000, 2000, 5000, 10000, 15000, 30000, 60000, 120000, 300000, 600000, 1800000, 3600000];
     const step = intervals.find((value) => xAt(value) >= 70) ?? 3600000;
@@ -244,12 +268,9 @@ function mountSongEditor(): void {
   const paintCuts = (): void => {
     cutsList.innerHTML = cuts.length ? cuts.map((cut, index) => `
       <div class="song-editor-cut">
-        <span>${formatEditTime(cut.startMs)} - ${formatEditTime(cut.endMs)}</span>
-        <button class="pill" type="button" data-remove-cut="${index}" aria-label="Remove cut ${index + 1}">Remove</button>
+        <span>${formatEditTime(cut.startMs)} - ${formatEditTime(cut.endMs)} when cut</span>
+        <button class="pill" type="button" data-remove-cut="${index}" aria-label="Restore cut ${index + 1}">Restore</button>
       </div>`).join("") : `<p class="settings-hint">No cuts added.</p>`;
-    cutOverlay.innerHTML = cuts.map((cut) =>
-      `<span style="left:${xAt(cut.startMs)}px;width:${xAt(cut.endMs - cut.startMs)}px"></span>`,
-    ).join("");
     updateSave();
   };
 
@@ -262,8 +283,8 @@ function mountSongEditor(): void {
       .filter((entry): entry is { line: { timeMs: number; text: string }; index: number } => entry.line.timeMs !== null)
       .sort((a, b) => a.line.timeMs - b.line.timeMs);
     lyricTrack.innerHTML = timed.map(({ line, index }, at) => {
-      const ms = Math.min(duration(), line.timeMs);
-      const next = Math.min(duration(), timed[at + 1]?.line.timeMs ?? duration());
+      const ms = line.timeMs;
+      const next = timed[at + 1]?.line.timeMs ?? timelineDuration;
       return `<button type="button" class="song-editor-chip${index === selectedLine ? " is-selected" : ""}"
         data-chip="${index}" style="left:${xAt(ms)}px;width:${Math.max(32, xAt(next - ms) - 2)}px"
         title="${escapeHtml(line.text)}">${escapeHtml(line.text || "(empty)")}</button>`;
@@ -342,7 +363,9 @@ function mountSongEditor(): void {
   };
 
   const paintTimeline = (): void => {
-    timelineWidth = Math.max(viewport.clientWidth, Math.min(2_000_000, duration() / 1000 * pixelsPerSecond));
+    const lastLyric = lyrics.lines.reduce((last, line) => Math.max(last, line.timeMs ?? -1), -1);
+    timelineDuration = Math.max(duration(), lastLyric >= duration() ? lastLyric + 3200 : lastLyric);
+    timelineWidth = Math.max(viewport.clientWidth, Math.min(2_000_000, timelineDuration / 1000 * pixelsPerSecond));
     inner.style.width = `${timelineWidth}px`;
     paintRuler();
     paintWave();
@@ -389,9 +412,16 @@ function mountSongEditor(): void {
     audio = element;
     element.preload = "metadata";
     element.crossOrigin = cors ? "anonymous" : null;
-    disconnectPreview = connectPreviewAudio(element, track!.id, () => stagedAudio === null);
+    disconnectPreview = connectPreviewAudio(element, track!.id, () => stagedAudio === null && cutAudio === null);
     element.addEventListener("loadedmetadata", () => {
       if (audio !== element) return;
+      if (!cutAudio && Number.isFinite(element.duration) && element.duration > 0) {
+        sourceDuration = Math.floor(element.duration * 1000);
+      }
+      if (pendingSeek !== null) {
+        element.currentTime = Math.min(duration(), pendingSeek) / 1000;
+        pendingSeek = null;
+      }
       if (!cors) {
         showError("The equaliser cannot read this audio, so it is unavailable for this preview.");
       }
@@ -410,15 +440,10 @@ function mountSongEditor(): void {
       if (audio !== element || !element.getAttribute("src")) return;
       if (cors && element.readyState < HTMLMediaElement.HAVE_METADATA) {
         const path = element.src;
-        const position = element.currentTime;
+        const position = current();
         const playing = wantsPlayback || !element.paused;
         createAudio(false);
-        if (position > 0) {
-          const fallback = audio;
-          fallback.addEventListener("loadedmetadata", () => {
-            if (audio === fallback) fallback.currentTime = position;
-          }, { once: true });
-        }
+        pendingSeek = position;
         audio.src = path;
         audio.load();
         if (playing) playAudio();
@@ -428,27 +453,35 @@ function mountSongEditor(): void {
     });
   };
 
-  const updateAudio = (): void => {
+  const updateAudio = (positionMs = 0, playing = false): void => {
     if (!track) return;
     createAudio(true);
-    audio.src = assetUrl(stagedAudio ? previewStagedAudioPath(stagedAudio) : previewAudioPath(track));
+    pendingSeek = positionMs;
+    const preview = cutAudio ?? stagedAudio;
+    audio.src = assetUrl(preview ? previewStagedAudioPath(preview) : previewAudioPath(track));
     audio.load();
-    loadWave(track, stagedAudio);
+    loadWave(track, preview);
     paintTimeline();
+    if (playing) playAudio();
   };
 
   const restore = (value: EditorSnapshot | null): void => {
     if (!value) return;
-    const audioChanged = stagedAudio !== value.stagedAudio;
+    const audioChanged = stagedAudio !== value.stagedAudio || cutAudio !== value.cutAudio;
+    const sameSource = stagedAudio === value.stagedAudio;
+    const position = sameSource ? editedTime(sourceTime(current(), cutRanges()), cutRanges(value.cuts)) : 0;
+    const playing = wantsPlayback || !audio.paused;
     lyrics = value.lyrics;
     cuts = value.cuts;
     stagedAudio = value.stagedAudio;
+    cutAudio = value.cutAudio;
+    sourceDuration = value.sourceDuration;
     source.textContent = value.source;
     selectedLine = null;
     selectedRange = null;
     showError("");
     paintLines();
-    if (audioChanged) updateAudio();
+    if (audioChanged) updateAudio(position, sameSource && playing);
     else paintTimeline();
     updateSave();
   };
@@ -463,9 +496,6 @@ function mountSongEditor(): void {
   const tick = (): void => {
     frame = null;
     if (!audio.paused) {
-      const ms = current();
-      const cut = cuts.find((entry) => ms >= entry.startMs && ms < entry.endMs);
-      if (cut) audio.currentTime = cut.endMs / 1000;
       paintClock();
       followPlayhead();
       frame = requestAnimationFrame(tick);
@@ -501,6 +531,8 @@ function mountSongEditor(): void {
     originalLyrics = null;
     cuts = [];
     stagedAudio = null;
+    cutAudio = null;
+    sourceDuration = next.durationMs;
     history = null;
     stages = new Set();
     waveTasks = new Map();
@@ -566,6 +598,7 @@ function mountSongEditor(): void {
       requestClose();
       return;
     }
+    if (busy || !loaded) return;
     const target = event.target as HTMLElement | null;
     const textInput = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
     const lyricInput = target instanceof HTMLInputElement && target.closest(".song-editor-lines");
@@ -625,7 +658,7 @@ function mountSongEditor(): void {
     if (event.ctrlKey) {
       event.preventDefault();
       event.stopPropagation();
-      const length = duration();
+      const length = timelineDuration;
       if (!length) return;
       const cursor = event.clientX - viewport.getBoundingClientRect().left;
       const anchor = (viewport.scrollLeft + cursor) / Math.max(1, timelineWidth) * length;
@@ -689,7 +722,7 @@ function mountSongEditor(): void {
     event.preventDefault();
     const x = event.clientX;
     const at = line.timeMs;
-    const scale = duration() / Math.max(1, timelineWidth);
+    const scale = timelineDuration / Math.max(1, timelineWidth);
     selectedLine = index;
     paintChips();
     paintClock();
@@ -698,7 +731,7 @@ function mountSongEditor(): void {
       if (next.pointerId !== event.pointerId) return;
       if (Math.abs(next.clientX - x) >= 3) moved = true;
       if (!moved) return;
-      line.timeMs = Math.round(Math.min(duration(), Math.max(0, at + (next.clientX - x) * scale)));
+      line.timeMs = Math.round(Math.min(timelineDuration, Math.max(0, at + (next.clientX - x) * scale)));
       paintChips();
       paintClock();
     };
@@ -717,25 +750,52 @@ function mountSongEditor(): void {
 
   byId("mark-start").addEventListener("click", () => { start.value = formatEditTime(current()); });
   byId("mark-end").addEventListener("click", () => { end.value = formatEditTime(Math.min(current(), duration())); });
+  const changeCuts = (next: EditorCut[]): void => {
+    if (!track || busy || !loaded) return;
+    const ranges = cutRanges(next);
+    if (ranges.length > 100) { showError("A song cannot have more than 100 cut ranges."); return; }
+    const position = editedTime(sourceTime(current(), cutRanges()), ranges);
+    const playing = wantsPlayback || !audio.paused;
+    wantsPlayback = false;
+    audio.pause();
+    busy = true;
+    updateSave();
+    showError("");
+    waveGeneration += 1;
+    waveStatus.textContent = "Cutting audio...";
+    void (async () => {
+      const rendered = ranges.length ? await ipc.renderEditorCuts(track!.id, stagedAudio, ranges) : null;
+      if (rendered) stages.add(rendered);
+      cuts = next;
+      cutAudio = rendered;
+      selectedRange = null;
+      record();
+      updateAudio(position, playing);
+    })().catch((reason: unknown) => {
+      loadWave(track!, cutAudio ?? stagedAudio);
+      showError(describe(reason));
+      if (playing) playAudio();
+    }).finally(() => {
+      busy = false;
+      updateSave();
+    });
+  };
   byId("add-cut").addEventListener("click", () => {
+    if (busy || !loaded) return;
     const startMs = parseEditTime(start.value);
     const endMs = parseEditTime(end.value);
     if (startMs === null || endMs === null) { showError("Enter cut times as mm:ss or mm:ss.mmm."); return; }
-    const next = [...cuts, { startMs, endMs }].sort((a, b) => a.startMs - b.startMs);
-    const problem = validateCuts(next, duration());
+    const range = { startMs, endMs };
+    const problem = validateCuts([range], duration());
     if (problem) { showError(problem); return; }
-    cuts = next;
-    selectedRange = null;
-    showError("");
-    record();
-    paintTimeline();
+    changeCuts([...cuts, { ...range, ranges: sourceCutRanges(range, cutRanges()) }]);
   });
   cutsList.addEventListener("click", (event) => {
     const button = (event.target as HTMLElement).closest<HTMLElement>("[data-remove-cut]");
     if (!button) return;
-    cuts.splice(Number(button.dataset.removeCut), 1);
-    record();
-    paintTimeline();
+    const index = Number(button.dataset.removeCut);
+    if (index < 0 || index >= cuts.length) return;
+    changeCuts(cuts.filter((_, at) => at !== index));
   });
 
   byId("import-audio").addEventListener("click", () => {
@@ -749,6 +809,8 @@ function mountSongEditor(): void {
       stages.add(staged);
       stagedAudio = staged;
       cuts = [];
+      cutAudio = null;
+      sourceDuration = 0;
       selectedRange = null;
       source.textContent = `Replacement: ${path.split(/[\\/]/).pop() ?? path}`;
       showError("");
@@ -829,8 +891,7 @@ function mountSongEditor(): void {
         record(`text-${input.dataset.lyricText}`);
       }
     }
-    paintChips();
-    paintClock();
+    paintTimeline();
     updateSave();
   });
   lines.addEventListener("click", (event) => {
@@ -858,18 +919,14 @@ function mountSongEditor(): void {
     if (!track || busy || !loaded || !dirty()) return;
     const invalid = lines.querySelector<HTMLInputElement>("input:invalid");
     if (invalid) { invalid.reportValidity(); return; }
-    const problem = cuts.length ? validateCuts(cuts, duration()) : null;
-    if (problem) { showError(problem); return; }
     const song = track;
-    const raw = lyricsChanged() || (cuts.length > 0 && originalLyrics !== null)
-      ? writeEditableLyrics(lyrics, cuts)
-      : null;
+    const raw = lyricsChanged() ? writeEditableLyrics(lyrics) : null;
     clearAudio();
     busy = true;
     updateSave();
     showError("");
     save.textContent = "Saving...";
-    void saveEditedSong(song.id, song.path, originalLyrics, raw, stagedAudio, cuts)
+    void saveEditedSong(song.id, song.path, originalLyrics, raw, cutAudio ?? stagedAudio, [])
       .then(() => {
         busy = false;
         forceClose();

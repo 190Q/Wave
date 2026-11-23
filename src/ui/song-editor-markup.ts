@@ -25,7 +25,7 @@ export function createSongEditor(): HTMLElement {
           <div class="song-editor-transport">
             <button class="pill pill-strong" id="song-editor-play" type="button">Play</button>
             <span class="song-editor-clock"><span id="song-editor-position">00:00.000</span> / <span id="song-editor-duration">00:00.000</span></span>
-            <span class="settings-hint">Preview skips marked cuts.</span>
+            <span class="settings-hint">Cuts remove audio from the preview.</span>
             <span class="song-editor-spacer"></span>
             <span class="settings-hint" id="song-editor-source"></span>
             <button class="pill" id="song-editor-import-audio" type="button">Import audio</button>
@@ -36,7 +36,6 @@ export function createSongEditor(): HTMLElement {
               <div class="song-editor-wave-track" id="song-editor-wave-track">
                 <canvas id="song-editor-wave" aria-hidden="true"></canvas>
                 <span class="song-editor-wave-status" id="song-editor-wave-status"></span>
-                <div class="song-editor-cut-overlay" id="song-editor-cut-overlay"></div>
                 <div class="song-editor-selection" id="song-editor-selection" hidden></div>
               </div>
               <div class="song-editor-lyric-track" id="song-editor-lyric-track" aria-label="Timed lyrics"></div>
@@ -57,7 +56,7 @@ export function createSongEditor(): HTMLElement {
               <button class="pill pill-strong" id="song-editor-add-cut" type="button">Add cut</button>
             </div>
             <div class="song-editor-cuts" id="song-editor-cuts"></div>
-            <p class="settings-hint song-editor-note">Audio changes keep a backup of the previous file. Cuts are saved as FLAC and lyric timings move with them.</p>
+            <p class="settings-hint song-editor-note">Audio changes keep a backup of the previous file. Cuts are saved as FLAC and do not change lyric timings.</p>
           </section>
           <section class="song-editor-card song-editor-lyrics-panel" aria-labelledby="song-editor-lyrics-title">
             <div class="song-editor-lyrics-head">
@@ -76,7 +75,7 @@ export function createSongEditor(): HTMLElement {
             <div class="song-editor-lines" id="song-editor-lines">
               <div class="song-editor-lines-content" id="song-editor-lines-content"></div>
             </div>
-            <p class="settings-hint song-editor-note">Select a line to shift it and the lines after it. Hold Shift to move by 0.5s. Leave a time blank for an untimed line. Times refer to the original audio until saved.</p>
+            <p class="settings-hint song-editor-note">Select a line to shift it and the lines after it. Hold Shift to move by 0.5s. Leave a time blank for an untimed line.</p>
             <input id="song-editor-lyrics-file" type="file" accept=".lrc,.txt,text/plain" hidden />
           </section>
         </div>

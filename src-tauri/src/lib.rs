@@ -323,6 +323,8 @@ pub fn run() {
             song_editor::cleanup_edited_audio,
             #[cfg(desktop)]
             song_editor::editor_waveform,
+            #[cfg(desktop)]
+            song_editor::render_editor_cuts,
             library::library_info,
             library::open_library_folder,
             library::delete_tracks,

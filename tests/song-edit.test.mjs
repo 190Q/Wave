@@ -14,7 +14,8 @@ const vite = await createServer({
 });
 after(() => vite.close());
 const {
-  readEditableLyrics, writeEditableLyrics, parseEditTime, formatEditTime, validateCuts, timeAfterCuts,
+  readEditableLyrics, writeEditableLyrics, parseEditTime, formatEditTime, validateCuts,
+  sourceCutRanges, sourceTime, editedTime,
 } = await vite.ssrLoadModule("/src/lib/song-edit.ts");
 const { EditHistory } = await vite.ssrLoadModule("/src/lib/edit-history.ts");
 
@@ -47,14 +48,56 @@ test("cuts cannot overlap, exceed the audio, or remove it entirely", () => {
   assert.ok(validateCuts([{ startMs: 0, endMs: 1000 }], 1000));
 });
 
-test("lyric times follow all removed ranges, including lines inside a cut", () => {
-  const cuts = [{ startMs: 2000, endMs: 4000 }, { startMs: 6000, endMs: 7000 }];
-  assert.equal(timeAfterCuts(1000, cuts), 1000);
-  assert.equal(timeAfterCuts(3000, cuts), 2000);
-  assert.equal(timeAfterCuts(5000, cuts), 3000);
-  assert.equal(timeAfterCuts(8000, cuts), 5000);
-  const lyrics = { metadata: [], lines: [{ timeMs: 8000, text: "Later" }, { timeMs: null, text: "Untimed" }] };
-  assert.equal(writeEditableLyrics(lyrics, cuts), "[00:05.000]Later\nUntimed\n");
+test("selections on shortened audio map to their surviving source ranges", () => {
+  const previous = [{ startMs: 2000, endMs: 4000 }, { startMs: 6000, endMs: 7000 }];
+  assert.deepEqual(sourceCutRanges({ startMs: 0, endMs: 1000 }, previous), [{ startMs: 0, endMs: 1000 }]);
+  assert.deepEqual(sourceCutRanges({ startMs: 2000, endMs: 3000 }, previous), [{ startMs: 4000, endMs: 5000 }]);
+  assert.deepEqual(sourceCutRanges({ startMs: 1000, endMs: 5000 }, previous), [
+    { startMs: 1000, endMs: 2000 },
+    { startMs: 4000, endMs: 6000 },
+    { startMs: 7000, endMs: 8000 },
+  ]);
+  assert.deepEqual(sourceCutRanges({ startMs: 0, endMs: 2000 }, previous), [{ startMs: 0, endMs: 2000 }]);
+  assert.deepEqual(sourceCutRanges({ startMs: 2000, endMs: 3000 }, [
+    { startMs: 2000, endMs: 4000 }, { startMs: 4000, endMs: 5000 },
+  ]), [{ startMs: 5000, endMs: 6000 }]);
+  assert.equal(sourceTime(2000, previous), 4000);
+  assert.equal(sourceTime(5000, previous), 8000);
+  assert.equal(editedTime(3000, previous), 2000);
+  assert.equal(editedTime(8000, previous), 5000);
+});
+
+test("cut mapping preserves every selected source sample across existing cuts", () => {
+  const length = 10;
+  for (let mask = 0; mask < (1 << length) - 1; mask += 1) {
+    const cuts = [];
+    for (let index = 0; index < length; index += 1) {
+      if (!(mask & (1 << index))) continue;
+      const previous = cuts.at(-1);
+      if (previous?.endMs === index) previous.endMs = index + 1;
+      else cuts.push({ startMs: index, endMs: index + 1 });
+    }
+    const remaining = Array.from({ length }, (_, index) => index)
+      .filter((index) => !(mask & (1 << index)));
+    for (let start = 0; start < remaining.length; start += 1) {
+      for (let end = start + 1; end <= remaining.length; end += 1) {
+        const ranges = sourceCutRanges({ startMs: start, endMs: end }, cuts);
+        const actual = ranges.flatMap((range) =>
+          Array.from({ length: range.endMs - range.startMs }, (_, index) => index + range.startMs));
+        assert.deepEqual(actual, remaining.slice(start, end), `mask ${mask}, range ${start}-${end}`);
+      }
+    }
+  }
+});
+
+test("writing edited lyrics preserves their timestamps and untimed lines", () => {
+  const lyrics = { metadata: [], lines: [
+    { timeMs: 1000, text: "Before" },
+    { timeMs: 3000, text: "Inside" },
+    { timeMs: 8000, text: "After" },
+    { timeMs: null, text: "Untimed" },
+  ] };
+  assert.equal(writeEditableLyrics(lyrics), "[00:01.000]Before\n[00:03.000]Inside\n[00:08.000]After\nUntimed\n");
 });
 
 test("undo and redo cover grouped typing, cuts and imported audio without sharing mutations", () => {

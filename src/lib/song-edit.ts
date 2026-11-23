@@ -64,18 +64,48 @@ export function validateCuts(cuts: AudioCut[], durationMs: number): string | nul
   return null;
 }
 
-export function timeAfterCuts(timeMs: number, cuts: AudioCut[]): number {
-  let removed = 0;
+export function sourceTime(timeMs: number, cuts: AudioCut[]): number {
+  let time = timeMs;
   for (const cut of [...cuts].sort((a, b) => a.startMs - b.startMs)) {
-    if (timeMs <= cut.startMs) break;
-    removed += Math.min(timeMs, cut.endMs) - cut.startMs;
+    if (cut.startMs > time) break;
+    time += cut.endMs - cut.startMs;
   }
-  return Math.max(0, timeMs - removed);
+  return time;
 }
 
-export function writeEditableLyrics(lyrics: EditableLyrics, cuts: AudioCut[] = []): string {
+export function editedTime(timeMs: number, cuts: AudioCut[]): number {
+  let removed = 0;
+  for (const cut of [...cuts].sort((a, b) => a.startMs - b.startMs)) {
+    if (cut.startMs >= timeMs) break;
+    removed += Math.min(timeMs, cut.endMs) - cut.startMs;
+  }
+  return timeMs - removed;
+}
+
+export function sourceCutRanges(range: AudioCut, cuts: AudioCut[]): AudioCut[] {
+  const ranges: AudioCut[] = [];
+  let start = range.startMs;
+  let end = range.endMs;
+  for (const cut of [...cuts].sort((a, b) => a.startMs - b.startMs)) {
+    const length = cut.endMs - cut.startMs;
+    if (cut.startMs <= start) {
+      start += length;
+      end += length;
+    } else if (cut.startMs < end) {
+      ranges.push({ startMs: start, endMs: cut.startMs });
+      start = cut.endMs;
+      end += length;
+    } else {
+      break;
+    }
+  }
+  ranges.push({ startMs: start, endMs: end });
+  return ranges;
+}
+
+export function writeEditableLyrics(lyrics: EditableLyrics): string {
   const lines = lyrics.lines.map((line) => line.timeMs === null
     ? line.text
-    : `[${formatEditTime(timeAfterCuts(line.timeMs, cuts))}]${line.text}`);
+    : `[${formatEditTime(line.timeMs)}]${line.text}`);
   return [...lyrics.metadata, ...lines].join("\n").trimEnd() + "\n";
 }

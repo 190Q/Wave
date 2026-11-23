@@ -78,6 +78,44 @@ pub fn editor_waveform(
     waveform(&path, &ffmpeg)
 }
 
+#[tauri::command(async)]
+pub fn render_editor_cuts(
+    app: AppHandle,
+    catalog: State<'_, Catalog>,
+    track_id: String,
+    staged_audio: Option<String>,
+    cuts: Vec<Cut>,
+) -> Result<String, String> {
+    let root = library::library_root(&app)?;
+    let _operation = catalog.library_operation();
+    let row = catalog.track(&track_id)?.filter(|row| !row.missing)
+        .ok_or_else(|| "That song is no longer in the library.".to_string())?;
+    let audio = match staged_audio {
+        Some(path) => stage_path(&root, &path)?,
+        None => root.join(&row.rel_path),
+    };
+    let env = source::read_env(&app);
+    let ffmpeg = tools::tool_path(env.ffmpeg.as_ref(), "ffmpeg", tools::bundled_dir(&app).as_deref())
+        .ok_or_else(|| "FFmpeg was not found. Install it or set FFMPEG_PATH in Wave's config to cut audio.".to_string())?;
+    stage_cuts(&root, &audio, &cuts, &ffmpeg)
+}
+
+fn stage_cuts(root: &Path, source: &Path, cuts: &[Cut], ffmpeg: &Path) -> Result<String, String> {
+    if cuts.is_empty() {
+        return Err("No cuts were provided.".to_string());
+    }
+    let info = lofty::read_from_path(source).map_err(|e| format!("Could not read the audio: {e}"))?;
+    let duration = info.properties().duration().as_millis() as u64;
+    let kept = kept_ranges(cuts, duration)?;
+    let target = root.join(library::CONFIG_DIR)
+        .join(format!("{STAGE_PREFIX}{}.flac", identity::new_id()));
+    if let Err(error) = render_cuts(source, &target, ffmpeg, &kept) {
+        let _ = fs::remove_file(&target);
+        return Err(error);
+    }
+    Ok(target.to_string_lossy().into_owned())
+}
+
 fn waveform(path: &Path, ffmpeg: &Path) -> Result<Vec<f32>, String> {
     let mut command = Command::new(ffmpeg);
     command.args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"])
@@ -219,6 +257,84 @@ mod tests {
         assert!(!library::lyrics_path(&root, &row.id).exists());
         assert!(kept_ranges(&[Cut { start_ms: 1, end_ms: 4 }, Cut { start_ms: 3, end_ms: 5 }], 10).is_err());
         assert!(kept_ranges(&[Cut { start_ms: 0, end_ms: 10 }], 10).is_err());
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cutting_audio_keeps_the_existing_lyrics_file_unchanged() {
+        let Some(ffmpeg) = tools::find_tool("ffmpeg") else { return };
+        let (root, catalog, mut row) = song();
+        let original = root.join(&row.rel_path);
+        let lyrics_path = library::lyrics_path(&root, &row.id);
+        let lyrics = "[ar:Singer]\r\n[offset:250]\r\n[00:01.25]Before\r\n[00:03.25][00:08.25]Repeated\r\n";
+        fs::write(&lyrics_path, lyrics).unwrap();
+        row.lyrics_path = library::relative(&root, &lyrics_path);
+        catalog.upsert_track(&row).unwrap();
+        let cuts = [Cut { start_ms: 2000, end_ms: 4000 }, Cut { start_ms: 6000, end_ms: 7000 }];
+        let saved = save_edit(
+            &root, &catalog, &row.id, &original.to_string_lossy(), Some(lyrics),
+            None, None, &cuts, Some(&ffmpeg),
+        ).unwrap();
+        assert!((saved.duration_ms as i64 - 7000).abs() < 50, "{}", saved.duration_ms);
+        assert_eq!(saved.lyrics_path, row.lyrics_path);
+        assert_eq!(fs::read(&lyrics_path).unwrap(), lyrics.as_bytes());
+        assert_eq!(current_lyrics(&root, &saved).as_deref(), Some(lyrics));
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn staged_cuts_remove_audio_before_saving_and_preserve_lyrics() {
+        let Some(ffmpeg) = tools::find_tool("ffmpeg") else { return };
+        let (root, catalog, mut row) = song();
+        let original = root.join(&row.rel_path);
+        let mut bytes = fs::read(&original).unwrap();
+        for (index, sample) in bytes[44..].chunks_exact_mut(2).enumerate() {
+            let value = ((index / 8000 + 1) * 2000) as i16;
+            sample.copy_from_slice(&value.to_le_bytes());
+        }
+        fs::write(&original, &bytes).unwrap();
+        row = library::describe(&root, &row.id, &original, "Singer - Title.wav", None).unwrap();
+        let lyrics = "[offset:250]\r\n[00:03.25]Inside\r\n[00:08.25]After\r\n";
+        let lyrics_path = library::lyrics_path(&root, &row.id);
+        fs::write(&lyrics_path, lyrics).unwrap();
+        row.lyrics_path = library::relative(&root, &lyrics_path);
+        catalog.upsert_track(&row).unwrap();
+
+        let cuts = [Cut { start_ms: 2000, end_ms: 4000 }, Cut { start_ms: 6000, end_ms: 7000 }];
+        let staged = stage_cuts(&root, &original, &cuts, &ffmpeg).unwrap();
+        assert!(stage_path(&root, &staged).unwrap().is_file());
+        assert_eq!(fs::read(&original).unwrap(), bytes);
+        let source_peaks = waveform(&original, &ffmpeg).unwrap();
+        let staged_peaks = waveform(Path::new(&staged), &ffmpeg).unwrap();
+        assert_eq!(staged_peaks.len(), 140);
+        for (output_second, source_second) in [(1, 1), (2, 4), (4, 7)] {
+            let difference = (staged_peaks[output_second * 20 + 10] - source_peaks[source_second * 20 + 10]).abs();
+            assert!(difference < 0.01, "{difference}");
+        }
+
+        let saved = save_edit(
+            &root, &catalog, &row.id, &original.to_string_lossy(), Some(lyrics),
+            None, Some(&staged), &[], Some(&ffmpeg),
+        ).unwrap();
+        assert!((saved.duration_ms as i64 - 7000).abs() < 50, "{}", saved.duration_ms);
+        assert_eq!(fs::read(&lyrics_path).unwrap(), lyrics.as_bytes());
+        assert_eq!(saved.lyrics_path, row.lyrics_path);
+        assert_eq!(waveform(&root.join(&saved.rel_path), &ffmpeg).unwrap().len(), 140);
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_staged_cut_does_not_leave_a_temporary_file() {
+        let (root, catalog, row) = song();
+        let original = root.join(&row.rel_path);
+        let cuts = [Cut { start_ms: 2000, end_ms: 4000 }];
+        assert!(stage_cuts(&root, &original, &cuts, &original).is_err());
+        assert!(fs::read_dir(root.join(library::CONFIG_DIR)).unwrap()
+            .all(|entry| !entry.unwrap().file_name().to_string_lossy().starts_with(STAGE_PREFIX)));
+        assert_eq!(lofty::read_from_path(&original).unwrap().properties().duration().as_secs(), 10);
         drop(catalog);
         fs::remove_dir_all(root).unwrap();
     }

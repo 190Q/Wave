@@ -4,19 +4,22 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 
 const mocks = {
-  "../lib/device": 'export const device = () => "android";',
+  "../lib/device": 'export const device = () => globalThis.__lyricsScrubTest.device;',
   "../lib/format": "export const escapeHtml = (value) => value; export const joinMeta = () => '';",
-  "../lib/motion": "export const reduceMotionActive = () => globalThis.__lyricsScrubTest.reduced;",
+  "../lib/motion": `
+    export const reduceMotionActive = () => globalThis.__lyricsScrubTest.reduced;
+    export const subscribeMotion = (callback) => { globalThis.__lyricsScrubTest.motionChanged = callback; };
+  `,
   "../lib/state": `
     const context = () => globalThis.__lyricsScrubTest;
     export const currentTrack = () => context().track;
     export const getState = () => context().state;
     export const ensureColour = () => {};
-    export const ensureLyrics = () => {};
+    export const ensureLyrics = (track) => context().loadLyrics?.(track);
     export const toggleLibrary = () => {};
     export const subscribe = (callback) => { context().render = callback; };
     export const player = {
-      snapshot: () => ({ positionMs: context().position, sourceName: "All" }),
+      snapshot: () => ({ ...context().navigation, positionMs: context().position, sourceName: "All" }),
       seek: (position) => {
         context().position = position;
         context().seeks.push(position);
@@ -96,7 +99,11 @@ class Element {
       return line;
     });
   }
-  querySelectorAll() { return this.lines; }
+  querySelectorAll(selector) {
+    if (selector === "[id]") return this.clonedTrack ? [this.clonedTrack] : [];
+    return this.lines;
+  }
+  querySelector(selector) { return selector === ".lyrics-track" ? this.clonedTrack : null; }
   closest() { return null; }
   setAttribute(name, value) { this.attributes.set(name, value); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
@@ -104,24 +111,39 @@ class Element {
   setPointerCapture(id) { this.captures.add(id); }
   hasPointerCapture(id) { return this.captures.has(id); }
   releasePointerCapture(id) { this.captures.delete(id); }
+  cloneNode() {
+    const clone = new Element();
+    clone.clonedTrack = new Element();
+    return clone;
+  }
+  append(child) { child.parent = this; }
+  remove() { this.removed = true; }
+  animate(keyframes, options) {
+    const animation = { keyframes, options, element: this, cancelled: false, cancel() { this.cancelled = true; } };
+    globalThis.__lyricsScrubTest.animations.push(animation);
+    return animation;
+  }
 }
 
-function setup(t, heights = []) {
+function setup(t, heights = [], device = "android") {
   const lyrics = Array.from({ length: 12 }, (_, index) => ({ timeMs: 2000 + index * 6000, text: `line ${index}` }));
   const context = {
     now: 0,
     heights,
     reduced: false,
+    device,
     renderedOffset: null,
     position: 2000,
     seeks: [],
+    animations: [],
+    navigation: { sourceId: "all", order: ["track", "second", "third"], cursor: 0, travel: 0, repeat: "off" },
     track: { id: "track", title: "Song", artist: "Artist", album: null, year: null },
-    state: { lyrics, tracks: [{}], libraryOpen: false },
+    state: { lyrics, lyricsLoading: false, tracks: [{}], libraryOpen: false },
   };
   globalThis.__lyricsScrubTest = context;
   t.mock.method(performance, "now", () => context.now);
 
-  const ids = ["hero", "now-cover", "now-source", "now-title", "now-artist", "now-meta", "lyrics-panel", "lyrics"];
+  const ids = ["hero", "now-cover", "now-source", "now-title", "now-artist", "now-meta", "lyrics-panel", "lyrics-page", "lyrics"];
   const elements = Object.fromEntries(ids.map((id) => [id, new Element()]));
   const root = new Element();
   const frames = new Map();
@@ -366,4 +388,140 @@ test("wheel scrolling still chases and seeks to the next line", (t) => {
   advance(1000);
   assert.equal(offset(), 72);
   assert.equal(context.seeks.at(-1), context.state.lyrics[1].timeMs);
+});
+
+function loadOnTrackChange(context) {
+  context.loadLyrics = () => {
+    context.state.lyrics = [];
+    context.state.lyricsLoading = true;
+    context.render();
+  };
+}
+
+function changeTrack(context, id, cursor, travel) {
+  context.track = { ...context.track, id };
+  context.navigation.cursor = cursor;
+  context.navigation.travel = travel;
+  context.render();
+}
+
+function finishLoading(context, lyrics = [{ timeMs: 0, text: "new lyric" }]) {
+  context.state.lyrics = lyrics;
+  context.state.lyricsLoading = false;
+  context.render();
+}
+
+test("new lyrics enter from the next track's side and old lyrics leave in the opposite direction", (t) => {
+  const { context, elements, panel } = setup(t);
+  panel.inert = false;
+  loadOnTrackChange(context);
+  panel.dispatch("pointerdown");
+  assert.equal(panel.hasPointerCapture(1), true);
+
+  changeTrack(context, "second", 1, 1);
+  assert.equal(panel.hidden, false);
+  assert.equal(panel.hasPointerCapture(1), false);
+  assert.equal(context.animations.length, 1);
+  assert.deepEqual(context.animations[0].keyframes, [
+    { transform: "translateX(0)" }, { transform: "translateX(-100%)" },
+  ]);
+  assert.equal(context.animations[0].element.attributes.get("aria-hidden"), "true");
+
+  finishLoading(context);
+  assert.deepEqual(context.animations[1].keyframes, [
+    { transform: "translateX(100%)" }, { transform: "translateX(0)" },
+  ]);
+  assert.equal(context.animations[1].element, elements["lyrics-page"]);
+  context.animations[0].onfinish();
+  assert.equal(context.animations[0].element.removed, true);
+
+  changeTrack(context, "track", 0, 0);
+  assert.deepEqual(context.animations[2].keyframes, [
+    { transform: "translateX(0)" }, { transform: "translateX(100%)" },
+  ]);
+  finishLoading(context);
+  assert.deepEqual(context.animations[3].keyframes, [
+    { transform: "translateX(-100%)" }, { transform: "translateX(0)" },
+  ]);
+});
+
+test("repeat wrapping follows actual next and previous travel", (t) => {
+  const { context, panel } = setup(t);
+  panel.inert = false;
+  context.navigation.repeat = "all";
+  context.render();
+  loadOnTrackChange(context);
+
+  changeTrack(context, "third", 2, -1);
+  assert.equal(context.animations[0].keyframes[1].transform, "translateX(100%)");
+  finishLoading(context);
+  assert.equal(context.animations[1].keyframes[0].transform, "translateX(-100%)");
+
+  changeTrack(context, "track", 0, 0);
+  assert.equal(context.animations[2].keyframes[1].transform, "translateX(-100%)");
+  finishLoading(context);
+  assert.equal(context.animations[3].keyframes[0].transform, "translateX(100%)");
+});
+
+test("direct queue jumps use the nearest side when repeat is enabled", (t) => {
+  const { context, panel } = setup(t);
+  panel.inert = false;
+  context.navigation.repeat = "all";
+  context.render();
+  loadOnTrackChange(context);
+  changeTrack(context, "third", 2, 0);
+  finishLoading(context);
+  assert.equal(context.animations[0].keyframes[1].transform, "translateX(100%)");
+  assert.equal(context.animations[1].keyframes[0].transform, "translateX(-100%)");
+});
+
+test("rapid track changes discard old slides and animate the latest lyrics", (t) => {
+  const { context, panel } = setup(t);
+  panel.inert = false;
+  loadOnTrackChange(context);
+  changeTrack(context, "second", 1, 1);
+  changeTrack(context, "third", 2, 2);
+  assert.equal(context.animations[0].cancelled, true);
+  assert.equal(context.animations[0].element.removed, true);
+  assert.equal(context.animations.length, 2);
+  finishLoading(context);
+  assert.equal(context.animations[2].keyframes[0].transform, "translateX(100%)");
+});
+
+test("a missing lyric result does not slide in stale content", (t) => {
+  const { context, panel } = setup(t);
+  panel.inert = false;
+  loadOnTrackChange(context);
+  changeTrack(context, "second", 1, 1);
+  finishLoading(context, []);
+  assert.equal(panel.hidden, false);
+  assert.equal(context.animations.length, 1);
+  context.state.lyrics = [{ timeMs: 0, text: "edited lyric" }];
+  context.render();
+  assert.equal(context.animations.length, 1);
+});
+
+test("closed sheets, desktop layouts and reduced motion do not slide", (t) => {
+  for (const mode of ["closed", "desktop", "reduced"]) {
+    const { context, panel } = setup(t, [], mode === "desktop" ? "desktop" : "android");
+    panel.inert = mode === "closed";
+    context.reduced = mode === "reduced";
+    loadOnTrackChange(context);
+    changeTrack(context, "second", 1, 1);
+    finishLoading(context);
+    assert.equal(context.animations.length, 0, mode);
+  }
+});
+
+test("enabling reduced motion cancels a slide in progress", (t) => {
+  const { context, panel } = setup(t);
+  panel.inert = false;
+  loadOnTrackChange(context);
+  changeTrack(context, "second", 1, 1);
+  context.reduced = true;
+  context.motionChanged();
+  assert.equal(context.animations[0].cancelled, true);
+  assert.equal(context.animations[0].element.removed, true);
+  finishLoading(context);
+  assert.equal(context.animations.length, 1);
 });

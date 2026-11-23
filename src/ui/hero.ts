@@ -2,7 +2,8 @@ import { device } from "../lib/device";
 import { createVelocitySampler, springStep } from "../lib/drag-motion";
 import { activeLyricIndex } from "../lib/lrc";
 import { escapeHtml, joinMeta } from "../lib/format";
-import { reduceMotionActive } from "../lib/motion";
+import { reduceMotionActive, subscribeMotion } from "../lib/motion";
+import type { PlayerSnapshot } from "../lib/player";
 import {
   currentTrack,
   ensureColour,
@@ -27,6 +28,7 @@ const RELEASE_PROJECTION_SEC = 0.12;
 const RELEASE_RATE = 16;
 const RELEASE_SETTLE_PX = 0.1;
 const RELEASE_SETTLE_SPEED = 2;
+const LYRICS_SLIDE_MS = 450;
 
 export function mountHero(): void {
   const hero = document.getElementById("hero");
@@ -36,9 +38,10 @@ export function mountHero(): void {
   const artist = document.getElementById("now-artist");
   const meta = document.getElementById("now-meta");
   const panel = document.getElementById("lyrics-panel");
+  const lyricPage = document.getElementById("lyrics-page");
   const lyricTrack = document.getElementById("lyrics");
 
-  if (!hero || !cover || !source || !title || !artist || !meta || !panel || !lyricTrack) {
+  if (!hero || !cover || !source || !title || !artist || !meta || !panel || !lyricPage || !lyricTrack) {
     return;
   }
 
@@ -117,6 +120,7 @@ export function mountHero(): void {
   void document.fonts?.ready.then(layout);
 
   let lastTrackId: string | null = null;
+  let lastNavigation: { sourceId: string | null; cursor: number; travel: number } | null = null;
   let renderedLyrics: LyricLine[] | null = null;
   let lyricLines: HTMLElement[] = [];
   let activeLine: HTMLElement | null = null;
@@ -310,6 +314,97 @@ export function mountHero(): void {
     renderedLyrics = null;
   };
 
+  let outgoingPage: HTMLElement | null = null;
+  let incomingAnimation: Animation | null = null;
+  let outgoingAnimation: Animation | null = null;
+  let pendingDirection = 0;
+
+  const stopSlides = (): void => {
+    incomingAnimation?.cancel();
+    outgoingAnimation?.cancel();
+    incomingAnimation = null;
+    outgoingAnimation = null;
+    outgoingPage?.remove();
+    outgoingPage = null;
+  };
+
+  const directionTo = (snapshot: PlayerSnapshot): number => {
+    if (!lastNavigation) {
+      return 1;
+    }
+    const travel = snapshot.travel - lastNavigation.travel;
+    if (travel !== 0) {
+      return Math.sign(travel);
+    }
+    if (snapshot.sourceId !== lastNavigation.sourceId) {
+      return 1;
+    }
+    const previous = snapshot.order.indexOf(lastTrackId ?? "");
+    let delta = snapshot.cursor - (previous < 0 ? lastNavigation.cursor : previous);
+    if (snapshot.repeat !== "off" && Math.abs(delta) > snapshot.order.length / 2) {
+      delta += delta > 0 ? -snapshot.order.length : snapshot.order.length;
+    }
+    return Math.sign(delta) || 1;
+  };
+
+  const slideOut = (direction: number): void => {
+    stopSlides();
+    pendingDirection = direction;
+    if (reduceMotionActive()) {
+      return;
+    }
+
+    const page = lyricPage.cloneNode(true) as HTMLElement;
+    outgoingPage = page;
+    page.removeAttribute("id");
+    page.setAttribute("aria-hidden", "true");
+    page.style.pointerEvents = "none";
+    for (const child of page.querySelectorAll<HTMLElement>("[id]")) {
+      child.removeAttribute("id");
+    }
+    const outgoingTrack = page.querySelector<HTMLElement>(".lyrics-track");
+    if (outgoingTrack) {
+      outgoingTrack.style.transform = getComputedStyle(lyricTrack).transform;
+    }
+    panel.append(page);
+    outgoingAnimation = page.animate(
+      [{ transform: "translateX(0)" }, { transform: `translateX(${-direction * 100}%)` }],
+      { duration: LYRICS_SLIDE_MS, easing: "ease" },
+    );
+    outgoingAnimation.onfinish = () => {
+      page.remove();
+      if (outgoingPage === page) {
+        outgoingPage = null;
+        outgoingAnimation = null;
+      }
+    };
+  };
+
+  const slideIn = (): void => {
+    const direction = pendingDirection;
+    pendingDirection = 0;
+    if (!direction || panel.inert || reduceMotionActive()) {
+      return;
+    }
+    incomingAnimation?.cancel();
+    const animation = lyricPage.animate(
+      [{ transform: `translateX(${direction * 100}%)` }, { transform: "translateX(0)" }],
+      { duration: LYRICS_SLIDE_MS, easing: "ease" },
+    );
+    incomingAnimation = animation;
+    animation.onfinish = () => {
+      if (incomingAnimation === animation) {
+        incomingAnimation = null;
+      }
+    };
+  };
+
+  subscribeMotion(() => {
+    if (reduceMotionActive()) {
+      stopSlides();
+    }
+  });
+
   const highlight = (positionMs: number): void => {
     if (lyricLines.length === 0 || document.documentElement.classList.contains("is-theming")) {
       return;
@@ -449,14 +544,16 @@ export function mountHero(): void {
   panel.addEventListener("pointercancel", endDrag);
 
   const renderLyrics = (): void => {
-    const { lyrics } = getState();
+    const { lyrics, lyricsLoading } = getState();
 
-    // No sidecar, no panel: the hero gets the space back instead of showing placeholder text.
     if (lyrics.length === 0) {
-      panel.hidden = true;
+      panel.hidden = !phone;
       hero.classList.remove("has-lyrics");
       if (renderedLyrics !== null) {
         clearLines();
+      }
+      if (!lyricsLoading) {
+        pendingDirection = 0;
       }
       return;
     }
@@ -472,6 +569,7 @@ export function mountHero(): void {
         .join("");
       lyricLines = Array.from(lyricTrack.querySelectorAll<HTMLElement>(".lyric"));
       refitLines();
+      slideIn();
     }
 
     highlight(player.snapshot().positionMs);
@@ -479,7 +577,8 @@ export function mountHero(): void {
 
   const render = (): void => {
     const track = currentTrack();
-    const { sourceName } = player.snapshot();
+    const snapshot = player.snapshot();
+    const { sourceName } = snapshot;
     const { tracks } = getState();
 
     if (!track) {
@@ -492,7 +591,10 @@ export function mountHero(): void {
       panel.hidden = true;
       hero.classList.remove("has-lyrics");
       clearLines();
+      stopSlides();
+      pendingDirection = 0;
       lastTrackId = null;
+      lastNavigation = null;
       return;
     }
 
@@ -508,9 +610,19 @@ export function mountHero(): void {
     if (meta.textContent !== metaText) meta.textContent = metaText;
 
     if (track.id !== lastTrackId) {
+      if (phone && lastTrackId && !panel.inert) {
+        slideOut(directionTo(snapshot));
+      } else {
+        stopSlides();
+        pendingDirection = 0;
+      }
+      resetScrub();
       lastTrackId = track.id;
+      lastNavigation = { sourceId: snapshot.sourceId, cursor: snapshot.cursor, travel: snapshot.travel };
       void ensureColour(track);
       void ensureLyrics(track);
+    } else {
+      lastNavigation = { sourceId: snapshot.sourceId, cursor: snapshot.cursor, travel: snapshot.travel };
     }
 
     if (!phone) fitText();

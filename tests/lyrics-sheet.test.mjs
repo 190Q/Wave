@@ -10,7 +10,9 @@ const mocks = {
   `,
   "../lib/state": `
     export const getState = () => globalThis.__lyricsSheetTest.state;
+    export const currentTrack = () => globalThis.__lyricsSheetTest.track;
     export const subscribe = (listener) => { globalThis.__lyricsSheetTest.stateChanged = listener; };
+    export const player = { onChange: (listener) => { globalThis.__lyricsSheetTest.trackChanged = listener; } };
   `,
 };
 
@@ -64,7 +66,7 @@ class Element {
 }
 
 function setup(t, { resizeObserver = true, initialHeight = 600 } = {}) {
-  const context = { now: 0, reduced: false, state: { lyrics: [{ text: "line" }] } };
+  const context = { now: 0, reduced: false, track: { id: "one" }, state: { lyrics: [{ text: "line" }], lyricsLoading: false } };
   globalThis.__lyricsSheetTest = context;
   t.mock.method(performance, "now", () => context.now);
 
@@ -377,8 +379,80 @@ test("cancelled drags and disappearing lyrics do not leave the sheet stuck", (t)
   assert.equal(travel(), 600);
 
   context.state.lyrics = [];
+  context.state.lyricsLoading = true;
+  context.stateChanged();
+  advance(1000);
+  assert.equal(travel(), 600);
+
+  context.state.lyricsLoading = false;
   context.stateChanged();
   advance(1000);
   assert.equal(travel(), 0);
   assert.equal(frames.size, 0);
+
+  context.state.lyricsLoading = true;
+  context.stateChanged();
+  context.state.lyrics = [{ text: "new line" }];
+  context.state.lyricsLoading = false;
+  context.stateChanged();
+  advance(1000);
+  assert.equal(travel(), 600);
+});
+
+test("manual closing while lyrics load prevents automatic reopening", (t) => {
+  const { context, dockGrab, grab, travel, advance } = setup(t);
+  dockGrab.dispatch("click");
+  advance(1000);
+  context.state.lyrics = [];
+  context.state.lyricsLoading = true;
+  context.stateChanged();
+  grab.dispatch("click");
+  advance(1000);
+  assert.equal(travel(), 0);
+  context.state.lyricsLoading = false;
+  context.stateChanged();
+  context.state.lyrics = [{ text: "new line" }];
+  context.stateChanged();
+  advance(1000);
+  assert.equal(travel(), 0);
+});
+
+test("a sheet that was never opened stays closed when lyrics return", (t) => {
+  const { context, travel, advance } = setup(t);
+  context.state.lyrics = [];
+  context.stateChanged();
+  context.state.lyrics = [{ text: "new line" }];
+  context.stateChanged();
+  advance(1000);
+  assert.equal(travel(), 0);
+});
+
+test("lyrics returning during automatic closing reverse the sheet smoothly", (t) => {
+  const { context, dockGrab, travel, advance } = setup(t);
+  dockGrab.dispatch("click");
+  advance(1000);
+  context.state.lyrics = [];
+  context.stateChanged();
+  advance(100);
+  const closing = travel();
+  assert.ok(closing > 0 && closing < 600);
+  context.state.lyrics = [{ text: "new line" }];
+  context.stateChanged();
+  assert.equal(travel(), closing);
+  advance(1000);
+  assert.equal(travel(), 600);
+});
+
+test("removing the current track forgets the open preference", (t) => {
+  const { context, dockGrab, travel, advance } = setup(t);
+  dockGrab.dispatch("click");
+  advance(1000);
+  context.track = null;
+  context.trackChanged();
+  advance(1000);
+  assert.equal(travel(), 0);
+  context.track = { id: "new" };
+  context.trackChanged();
+  advance(1000);
+  assert.equal(travel(), 0);
 });

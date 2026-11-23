@@ -91,6 +91,11 @@
   display: none;
 }
 
+.lyrics-page {
+  position: absolute;
+  inset: 0;
+}
+
 .lyrics-track {
   --lyric-active-size: 1.75rem;
   position: absolute;

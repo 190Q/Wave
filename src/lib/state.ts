@@ -145,6 +145,7 @@ export interface AppState {
   search: string;
   lyrics: LyricLine[];
   lyricsTrackId: string | null;
+  lyricsLoading: boolean;
   /** Transient message shown in the status strip. */
   notice: string | null;
   folderImport: string | null;
@@ -322,6 +323,7 @@ const state: AppState = {
   search: "",
   lyrics: [],
   lyricsTrackId: null,
+  lyricsLoading: false,
   notice: null,
   folderImport: null,
   spotify: null,
@@ -2918,6 +2920,7 @@ export async function ensureLyrics(track: Track | undefined): Promise<void> {
   const sequence = ++lyricsSequence;
   state.lyricsTrackId = trackId;
   state.lyrics = [];
+  state.lyricsLoading = Boolean(track);
   emit();
 
   if (!track) {
@@ -2936,6 +2939,7 @@ export async function ensureLyrics(track: Track | undefined): Promise<void> {
     }
     state.lyrics = [];
   }
+  state.lyricsLoading = false;
   emit();
 }
 

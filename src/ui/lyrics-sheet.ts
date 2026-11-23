@@ -1,6 +1,6 @@
 import { createVelocitySampler, springStep } from "../lib/drag-motion";
 import { reduceMotionActive, subscribeMotion } from "../lib/motion";
-import { getState, subscribe } from "../lib/state";
+import { currentTrack, getState, player, subscribe } from "../lib/state";
 
 /** How far the finger moves before a press counts as a drag. */
 const DRAG_SLOP_PX = 12;
@@ -57,6 +57,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
   let travel = 0;
   let height = 0;
   let open = false;
+  let wantedOpen = false;
   /** True while the dock's drag is the sheet's rather than the seek bar's. */
   let owns = false;
   let dragging = false;
@@ -165,10 +166,13 @@ export function mountLyricsSheet(): LyricsSheet | null {
     settleFrame = requestAnimationFrame(animateSettle);
   };
 
-  const settleTo = (next: boolean, velocity = 0): void => {
+  const settleTo = (next: boolean, velocity = 0, remember = true): void => {
     stopSettle();
     measureRoom();
     open = next;
+    if (remember) {
+      wantedOpen = next;
+    }
     paintOpen();
     if (reduceMotionActive() || travel === (next ? room() : 0)) {
       finishSettle();
@@ -282,7 +286,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
   // The handle is the sheet's own, and the only thing left to drag once it is
   // up: the lyrics below it are the scrub, so they cannot move the sheet too.
   grab.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || !open || !wanted()) {
+    if (event.button !== 0 || !open) {
       return;
     }
     measureRoom();
@@ -336,7 +340,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
     }
     if (open) {
       settleTo(false);
-      if (event.detail === 0) {
+      if (event.detail === 0 && wanted()) {
         dockGrab.focus({ preventScroll: true });
       }
     }
@@ -368,15 +372,30 @@ export function mountLyricsSheet(): LyricsSheet | null {
     }
   });
 
-  subscribe(() => {
-    if (!wanted() && (open || dragging || owns || travel > 0)) {
+  const followLyrics = (): void => {
+    if (!currentTrack()) {
+      wantedOpen = false;
+      if (!open && !dragging && !owns && travel === 0) {
+        return;
+      }
       dragging = false;
       owns = false;
       interrupted = false;
-      settleTo(false);
+      settleTo(false, 0, false);
+    } else if (!getState().lyricsLoading) {
+      if (!wanted() && (open || dragging || owns)) {
+        dragging = false;
+        owns = false;
+        interrupted = false;
+        settleTo(false, 0, false);
+      } else if (wanted() && wantedOpen && !open) {
+        settleTo(true, 0, false);
+      }
     }
-  });
+  };
 
+  subscribe(followLyrics);
+  player.onChange(followLyrics);
   paintOpen();
   refit();
 

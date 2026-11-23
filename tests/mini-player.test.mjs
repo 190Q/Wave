@@ -133,6 +133,15 @@ test("mini mode follows desktop settings and dismisses an open popup once", () =
   assert.equal(title.attributes.get("aria-hidden"), "true");
 });
 
+test("mini mode is rendered when it is already enabled at startup", () => {
+  const { root, title } = setup();
+  context.mini = true;
+  mountMiniPlayer();
+
+  assert.equal(root.classList.contains("is-mini-player"), true);
+  assert.equal(title.attributes.get("aria-hidden"), "false");
+});
+
 test("dragging the title moves only the native mini player", () => {
   const { title } = setup();
   mountMiniPlayer();

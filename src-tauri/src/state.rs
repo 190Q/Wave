@@ -1731,6 +1731,38 @@ mod tests {
     }
 
     #[cfg(desktop)]
+    #[test]
+    fn mini_player_setting_and_normal_frame_survive_a_restart() {
+        let dir = scratch();
+        let path = dir.join(STATE_FILE);
+        let normal = frame(900, 655, true);
+        let store = test_store(PersistedState {
+            window: Some(normal.clone()),
+            ..PersistedState::default()
+        });
+
+        patch_settings_at_path(&store, &path, patch(serde_json::json!({
+            "miniPlayer": true, "miniCorner": 2
+        }))).unwrap();
+        store.update_at_path(&path, |state| state.session.saved_at = 123).unwrap();
+
+        let restored = read_state_at_path(&path).unwrap();
+        assert!(restored.settings.mini_player);
+        assert_eq!(restored.settings.mini_corner, 2);
+        assert_eq!(restored.window, Some(normal.clone()));
+        assert_eq!(restored.session.saved_at, 123);
+
+        let restarted = test_store(restored);
+        patch_settings_at_path(&restarted, &path, patch(serde_json::json!({
+            "miniPlayer": false
+        }))).unwrap();
+        let restored = read_state_at_path(&path).unwrap();
+        assert!(!restored.settings.mini_player);
+        assert_eq!(restored.window, Some(normal));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(desktop)]
     fn frame(width: u32, height: u32, maximized: bool) -> WindowGeometry {
         WindowGeometry {
             width,

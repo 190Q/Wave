@@ -445,6 +445,70 @@ test("new lyrics enter from the next track's side and old lyrics leave in the op
   ]);
 });
 
+test("incoming phone lyrics start at the playback position without a vertical transition", (t) => {
+  for (const { device, delayed, position } of [
+    { device: "android", delayed: true, position: 0 },
+    { device: "linuxPhone", delayed: false, position: 2000 },
+  ]) {
+    const { context, elements, panel, track, offset } = setup(t, [], device);
+    panel.inert = false;
+    context.progress(context.state.lyrics[7].timeMs);
+    assert.equal(offset(), 360);
+
+    const writes = [];
+    const layouts = [];
+    let transform = track.style.transform;
+    Object.defineProperty(track.style, "transform", {
+      get: () => transform,
+      set: (value) => {
+        transform = value;
+        writes.push({ transform, transition: track.style.transition });
+      },
+    });
+    Object.defineProperty(track, "offsetHeight", {
+      get: () => {
+        layouts.push({ transform, transition: track.style.transition });
+        return 48;
+      },
+    });
+
+    const lyrics = [
+      { timeMs: 0, text: "first" },
+      { timeMs: 2000, text: "second" },
+      { timeMs: 4000, text: "third" },
+    ];
+    if (delayed) {
+      loadOnTrackChange(context);
+    } else {
+      context.loadLyrics = () => {
+        context.state.lyrics = lyrics;
+        context.render();
+      };
+    }
+
+    context.position = position;
+    changeTrack(context, "second", 1, 1);
+    assert.equal(context.animations[0].element.clonedTrack.style.transform, "matrix(1, 0, 0, 1, 0, -360)");
+    if (delayed) {
+      writes.length = 0;
+      layouts.length = 0;
+      finishLoading(context, lyrics);
+    }
+
+    const expected = position === 0 ? "translateY(-24px)" : "translateY(-72px)";
+    assert.equal(track.style.transform, expected);
+    assert.ok(writes.length > 0);
+    assert.ok(writes.every((write) => write.transition === "none"));
+    assert.deepEqual(layouts.at(-1), { transform: expected, transition: "none" });
+    assert.equal(track.style.transition, "");
+    assert.equal(context.animations[1].element, elements["lyrics-page"]);
+
+    context.progress(4000);
+    assert.equal(offset(), 120);
+    assert.equal(writes.at(-1).transition, "");
+  }
+});
+
 test("repeat wrapping follows actual next and previous travel", (t) => {
   const { context, panel } = setup(t);
   panel.inert = false;

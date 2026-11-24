@@ -563,16 +563,22 @@ export function mountHero(): void {
 
     if (lyrics !== renderedLyrics) {
       resetScrub();
+      if (phone) lyricTrack.style.transition = "none";
       renderedLyrics = lyrics;
       lyricTrack.innerHTML = lyrics
         .map((line) => `<p class="lyric">${escapeHtml(line.text)}</p>`)
         .join("");
       lyricLines = Array.from(lyricTrack.querySelectorAll<HTMLElement>(".lyric"));
       refitLines();
+      highlight(player.snapshot().positionMs);
+      if (phone) {
+        void lyricTrack.offsetHeight;
+        lyricTrack.style.transition = "";
+      }
       slideIn();
+    } else {
+      highlight(player.snapshot().positionMs);
     }
-
-    highlight(player.snapshot().positionMs);
   };
 
   const render = (): void => {

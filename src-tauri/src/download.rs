@@ -605,7 +605,7 @@ pub struct LinkEntry {
 
 /// Reads a link the user pasted: one video, or a playlist of them. The name is
 /// the playlist's when there is one, so an album keeps the name it was given.
-pub fn read_link(tools: &Tools, url: &str, limit: usize) -> Result<(String, Vec<LinkEntry>), String> {
+pub fn read_link(tools: &Tools, url: &str) -> Result<(String, Vec<LinkEntry>), String> {
     let mut command = yt_dlp_command(&tools.yt_dlp);
     command.args(cookie_args(tools));
     command.args(js_args(tools));
@@ -616,8 +616,6 @@ pub fn read_link(tools: &Tools, url: &str, limit: usize) -> Result<(String, Vec<
         .arg("--skip-download")
         .arg("--no-warnings")
         .arg("--ignore-errors")
-        .arg("--playlist-end")
-        .arg(limit.to_string())
         .arg(url);
     hide_console(&mut command);
 

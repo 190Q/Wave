@@ -35,10 +35,9 @@ an equaliser and a theme that follows the artwork.
 - **Link imports:** Import YouTube videos, playlists or mixes on Android and desktop.
   On desktop, Spotify and Deezer links are also supported. Spotify
   and Deezer provide the track information; Wave searches YouTube for matching
-  audio. YouTube links are downloaded directly. YouTube playlists are limited
-  to 500 videos. Mixes are generated continuously, so Wave imports up to 50
-  videos from the mix. Mixes are read without signing in, so personalized mixes
-  may differ from YouTube.
+  audio. YouTube links are downloaded directly. Mixes are generated
+  continuously, so Wave imports up to 50 videos from the mix. Mixes are read
+  without signing in, so personalised mixes may differ from YouTube.
 - **Generated playlists:** Make a mix from your listening or a genre using
   Deezer's catalogue. Songs not already in your library can be downloaded on
   desktop. A mix based on your taste needs enough listening history first.

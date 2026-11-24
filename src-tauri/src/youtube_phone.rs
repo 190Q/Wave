@@ -29,7 +29,6 @@ use crate::youtube::folder_name;
 #[cfg(target_os = "android")]
 use crate::youtube::youtube_url;
 
-const LIMIT: usize = 500;
 const LOOKUPS: usize = 4;
 const SEARCH_HITS: usize = 12;
 const SEARCH_MATCHES: usize = 4;
@@ -40,22 +39,80 @@ static CHECKED_LINK: Mutex<Option<CheckedLink>> = Mutex::new(None);
 
 const VISION_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
 
-struct YoutubeTransport(ReqwestClient);
+struct YoutubeTransport(Arc<dyn HttpClient>);
 
 #[async_trait::async_trait]
 impl HttpClient for YoutubeTransport {
     async fn execute(&self, mut request: HttpRequest) -> ytdown::Result<HttpResponse> {
-        adapt_request(&mut request);
-        self.0.execute(request).await
+        let player = request.url.contains("/youtubei/v1/player?");
+        let original = request.clone();
+        if !adapt_request(&mut request) {
+            return self.0.execute(request).await.map(|response| {
+                if player { require_audio(response) } else { response }
+            });
+        }
+        let vision = self.0.execute(request).await;
+        if vision.as_ref().is_ok_and(has_audio) {
+            return vision;
+        }
+        let vr = self.0.execute(original).await;
+        if vr.as_ref().is_ok_and(has_audio) {
+            return vr;
+        }
+        if vision.as_ref().is_ok_and(player_ok) {
+            return vision.map(require_audio);
+        }
+        if vr.as_ref().is_ok_and(player_ok) {
+            return vr.map(require_audio);
+        }
+        vision.or(vr)
     }
 }
 
-fn adapt_request(request: &mut HttpRequest) {
-    if !request.url.contains("/youtubei/v1/player?") && !request.url.contains("/youtubei/v1/search?") {
-        return;
+fn require_audio(mut response: HttpResponse) -> HttpResponse {
+    if player_ok(&response) && !has_audio(&response) {
+        if let Ok(mut body) = serde_json::from_slice::<serde_json::Value>(&response.body) {
+            body["playabilityStatus"] = serde_json::json!({
+                "status": "UNPLAYABLE",
+                "reason": "YouTube did not provide a compatible audio stream."
+            });
+            if let Ok(encoded) = serde_json::to_vec(&body) {
+                response.body = encoded;
+            }
+        }
     }
-    let Some(body) = request.body.as_ref() else { return; };
-    let Ok(mut body) = serde_json::from_slice::<serde_json::Value>(body) else { return; };
+    response
+}
+
+fn player_ok(response: &HttpResponse) -> bool {
+    response.is_success() && serde_json::from_slice::<serde_json::Value>(&response.body)
+        .ok().and_then(|body| body.pointer("/playabilityStatus/status").and_then(|value| value.as_str()).map(str::to_owned))
+        .as_deref() == Some("OK")
+}
+
+fn has_audio(response: &HttpResponse) -> bool {
+    if !response.is_success() {
+        return false;
+    }
+    let Ok(body) = serde_json::from_slice::<serde_json::Value>(&response.body) else { return false; };
+    body.pointer("/playabilityStatus/status").and_then(|value| value.as_str()) == Some("OK")
+        && (body.pointer("/videoDetails/isLive").and_then(|value| value.as_bool()) == Some(true)
+            || body.pointer("/streamingData/adaptiveFormats").and_then(|value| value.as_array())
+                .is_some_and(|formats| formats.iter().any(|format| {
+                    format.get("mimeType").and_then(|value| value.as_str())
+                        .is_some_and(|mime| mime.starts_with("audio/mp4"))
+                        && (format.get("url").and_then(|value| value.as_str()).is_some()
+                            || format.get("signatureCipher").and_then(|value| value.as_str()).is_some())
+                })))
+}
+
+fn adapt_request(request: &mut HttpRequest) -> bool {
+    if !request.url.contains("/youtubei/v1/player?") && !request.url.contains("/youtubei/v1/search?") {
+        return false;
+    }
+    let Some(body) = request.body.as_ref() else { return false; };
+    let Ok(mut body) = serde_json::from_slice::<serde_json::Value>(body) else { return false; };
+    let mut vision = false;
     if request.url.contains("/youtubei/v1/search?") {
         if let Some(query) = body.get_mut("query") {
             if let Some(text) = query.as_str() {
@@ -63,8 +120,8 @@ fn adapt_request(request: &mut HttpRequest) {
             }
         }
     } else if body.pointer("/context/client/clientName").and_then(|name| name.as_str()) == Some("ANDROID_VR") {
-        // The Android VR client can return capped streams, so prefer visionOS.
-        let Some(client) = body.pointer_mut("/context/client").and_then(|client| client.as_object_mut()) else { return; };
+        let Some(client) = body.pointer_mut("/context/client").and_then(|client| client.as_object_mut()) else { return false; };
+        vision = true;
         client.remove("androidSdkVersion");
         for (key, value) in [
             ("clientName", "VISIONOS"), ("clientVersion", "1.02"),
@@ -87,6 +144,7 @@ fn adapt_request(request: &mut HttpRequest) {
     if let Ok(encoded) = serde_json::to_vec(&body) {
         request.body = Some(encoded);
     }
+    vision
 }
 
 pub(crate) struct PhoneYoutube {
@@ -119,7 +177,7 @@ pub(crate) fn extractor() -> Result<PhoneYoutube, String> {
     Ok(PhoneYoutube {
         downloader,
         extractor: YoutubeExtractor::new(),
-        context: ExtractorContext::new(Arc::new(YoutubeTransport(ReqwestClient::new(client)))),
+        context: ExtractorContext::new(Arc::new(YoutubeTransport(Arc::new(ReqwestClient::new(client))))),
     })
 }
 
@@ -205,7 +263,9 @@ where
                 source_url: Some(source_url.clone()),
                 ..TrackMeta::default()
             };
-            Ok(lookup(source_url).await.unwrap_or(fallback))
+            let mut meta = lookup(source_url.clone()).await.unwrap_or(fallback);
+            meta.source_url = Some(source_url);
+            Ok(meta)
         }
     }).buffered(LOOKUPS);
     let mut tracks = Vec::new();
@@ -218,7 +278,7 @@ where
 }
 
 fn resolve(yt: &PhoneYoutube, url: &str, report: &mut Reporter) -> Result<Link, String> {
-    resolve_with_limit(yt, url, report, LIMIT)
+    resolve_with_limit(yt, url, report, usize::MAX)
 }
 
 fn resolve_with_limit(yt: &PhoneYoutube, url: &str, report: &mut Reporter, limit: usize) -> Result<Link, String> {
@@ -359,12 +419,23 @@ fn download_error(error: ytdown::Error) -> String {
     format!("Could not download the audio: {message}")
 }
 
+fn video_error(error: ytdown::Error) -> String {
+    match error {
+        ytdown::Error::Unavailable { reason: ytdown::error::UnavailableReason::Other, message }
+            if message.eq_ignore_ascii_case("This video is not available") =>
+        {
+            "YouTube could not make this video available to Wave. It may require signing in or be restricted.".to_string()
+        }
+        error => format!("Could not read the video: {error}"),
+    }
+}
+
 fn fetch(yt: &PhoneYoutube, job: &Job<'_>) -> Result<PathBuf, String> {
     let url = job.meta.source_url.as_deref().ok_or("The YouTube video has no link.")?;
     let path = job.dir.join("audio.m4a");
     fs::create_dir_all(&job.dir).map_err(|error| format!("Could not create the download folder: {error}"))?;
     tauri::async_runtime::block_on(async {
-        let video = match yt.resolve(url).await.map_err(|error| format!("Could not read the video: {error}"))? {
+        let video = match yt.resolve(url).await.map_err(video_error)? {
             MediaInfo::Single(video) => video,
             _ => return Err("The YouTube link did not point to a video.".to_string()),
         };
@@ -385,6 +456,180 @@ fn fetch(yt: &PhoneYoutube, job: &Job<'_>) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    struct MockTransport {
+        responses: Mutex<VecDeque<ytdown::Result<HttpResponse>>>,
+        requests: Mutex<Vec<HttpRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpClient for MockTransport {
+        async fn execute(&self, request: HttpRequest) -> ytdown::Result<HttpResponse> {
+            self.requests.lock().unwrap().push(request);
+            self.responses.lock().unwrap().pop_front().unwrap()
+        }
+    }
+
+    fn response(body: serde_json::Value) -> ytdown::Result<HttpResponse> {
+        Ok(HttpResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: serde_json::to_vec(&body).unwrap(),
+            final_url: None,
+        })
+    }
+
+    fn vr_request() -> HttpRequest {
+        HttpRequest::post("innertube", "https://www.youtube.com/youtubei/v1/player?key=public")
+            .header("User-Agent", "vr")
+            .header("X-YouTube-Client-Name", "28")
+            .body(serde_json::to_vec(&serde_json::json!({
+                "videoId": "abcdefghijk",
+                "context": { "client": { "clientName": "ANDROID_VR", "visitorData": "visitor" } }
+            })).unwrap())
+    }
+
+    fn playable_audio() -> serde_json::Value {
+        serde_json::json!({
+            "playabilityStatus": { "status": "OK" },
+            "streamingData": { "adaptiveFormats": [{ "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"", "url": "https://example.test/audio" }] }
+        })
+    }
+
+    #[test]
+    fn player_retries_the_original_video_with_android_vr() {
+        for first in [
+            serde_json::json!({ "playabilityStatus": { "status": "UNPLAYABLE", "reason": "This video is not available" } }),
+            serde_json::json!({ "playabilityStatus": { "status": "OK" }, "streamingData": {} }),
+        ] {
+            let mock = Arc::new(MockTransport {
+                responses: Mutex::new(VecDeque::from([response(first), response(playable_audio())])),
+                requests: Mutex::new(Vec::new()),
+            });
+            let transport = YoutubeTransport(mock.clone());
+            let result = tauri::async_runtime::block_on(transport.execute(vr_request())).unwrap();
+            assert!(has_audio(&result));
+            let requests = mock.requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            let clients: Vec<_> = requests.iter().map(|request| {
+                let body: serde_json::Value = serde_json::from_slice(request.body.as_ref().unwrap()).unwrap();
+                assert_eq!(body["videoId"], "abcdefghijk");
+                assert_eq!(body["context"]["client"]["visitorData"], "visitor");
+                body["context"]["client"]["clientName"].as_str().unwrap().to_string()
+            }).collect();
+            assert_eq!(clients, ["VISIONOS", "ANDROID_VR"]);
+            assert!(requests[1].headers.iter().any(|(name, value)| name == "X-YouTube-Client-Name" && value == "28"));
+        }
+    }
+
+    #[test]
+    fn player_keeps_a_playable_vision_response_without_retrying() {
+        let mock = Arc::new(MockTransport {
+            responses: Mutex::new(VecDeque::from([response(playable_audio())])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let transport = YoutubeTransport(mock.clone());
+        let result = tauri::async_runtime::block_on(transport.execute(vr_request())).unwrap();
+        assert!(has_audio(&result));
+        assert_eq!(mock.requests.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn player_continues_without_audio_and_after_network_errors() {
+        let no_audio = serde_json::json!({ "playabilityStatus": { "status": "OK" }, "streamingData": {} });
+        let unavailable = serde_json::json!({ "playabilityStatus": { "status": "UNPLAYABLE" } });
+        let mock = Arc::new(MockTransport {
+            responses: Mutex::new(VecDeque::from([response(no_audio), response(unavailable)])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let result = tauri::async_runtime::block_on(YoutubeTransport(mock).execute(vr_request())).unwrap();
+        assert!(!player_ok(&result));
+        assert!(!has_audio(&result));
+        assert!(String::from_utf8(result.body).unwrap().contains("compatible audio stream"));
+
+        let mock = Arc::new(MockTransport {
+            responses: Mutex::new(VecDeque::from([
+                Err(ytdown::Error::Network { stage: "player", message: "offline".into() }),
+                response(playable_audio()),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let result = tauri::async_runtime::block_on(YoutubeTransport(mock).execute(vr_request())).unwrap();
+        assert!(has_audio(&result));
+    }
+
+    #[test]
+    fn other_player_clients_continue_when_they_have_no_audio() {
+        let mock = Arc::new(MockTransport {
+            responses: Mutex::new(VecDeque::from([response(serde_json::json!({
+                "playabilityStatus": { "status": "OK" }, "streamingData": {}
+            }))])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let request = HttpRequest::post("innertube", "https://www.youtube.com/youtubei/v1/player?key=public")
+            .body(serde_json::to_vec(&serde_json::json!({
+                "context": { "client": { "clientName": "IOS" } }
+            })).unwrap());
+        let result = tauri::async_runtime::block_on(YoutubeTransport(mock).execute(request)).unwrap();
+        assert!(!player_ok(&result));
+    }
+
+    #[test]
+    fn live_video_responses_are_not_treated_as_missing_audio() {
+        let result = response(serde_json::json!({
+            "playabilityStatus": { "status": "OK" }, "videoDetails": { "isLive": true }
+        })).unwrap();
+        assert!(has_audio(&result));
+        assert!(player_ok(&require_audio(result)));
+    }
+
+    #[test]
+    fn extractor_reaches_ios_when_vision_and_vr_have_no_audio() {
+        let no_audio = serde_json::json!({ "playabilityStatus": { "status": "OK" }, "streamingData": {} });
+        let mut ios = playable_audio();
+        ios["videoDetails"] = serde_json::json!({ "videoId": "abcdefghijk", "title": "Song" });
+        ios["streamingData"]["adaptiveFormats"][0]["itag"] = 140.into();
+        let mock = Arc::new(MockTransport {
+            responses: Mutex::new(VecDeque::from([
+                Err(ytdown::Error::Network { stage: "player", message: "offline".into() }),
+                response(serde_json::json!({ "responseContext": { "visitorData": "visitor" } })),
+                response(no_audio.clone()),
+                response(no_audio),
+                response(ios),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let context = ExtractorContext::new(Arc::new(YoutubeTransport(mock.clone())));
+        let url = reqwest::Url::parse("https://www.youtube.com/watch?v=abcdefghijk").unwrap();
+        let media = tauri::async_runtime::block_on(YoutubeExtractor::new().extract(&context, &url)).unwrap();
+        let MediaInfo::Single(video) = media else { panic!("expected a video"); };
+        assert_eq!(video.id, "abcdefghijk");
+        assert!(video.formats().audio_only().container(&Container::M4a).best_audio().is_ok());
+        let requests = mock.requests.lock().unwrap();
+        let clients: Vec<_> = requests.iter().filter(|request| request.url.contains("/youtubei/v1/player?")).map(|request| {
+            let body: serde_json::Value = serde_json::from_slice(request.body.as_ref().unwrap()).unwrap();
+            body["context"]["client"]["clientName"].as_str().unwrap().to_string()
+        }).collect();
+        assert_eq!(clients, ["VISIONOS", "ANDROID_VR", "IOS"]);
+    }
+
+    #[test]
+    fn generic_video_unavailability_does_not_claim_the_video_is_gone() {
+        let error = ytdown::Error::Unavailable {
+            reason: ytdown::error::UnavailableReason::Other,
+            message: "This video is not available".into(),
+        };
+        let message = video_error(error);
+        assert!(message.contains("signing in"));
+        assert!(message.contains("restricted"));
+        let error = ytdown::Error::Unavailable {
+            reason: ytdown::error::UnavailableReason::GeoBlocked,
+            message: "This video is not available in your country".into(),
+        };
+        assert!(video_error(error).contains("country"));
+    }
 
     #[test]
     fn player_request_uses_visionos_without_changing_the_visitor() {
@@ -459,17 +704,23 @@ mod tests {
             Box::pin(futures::stream::iter(entries)),
             |url| async move {
                 if url.ends_with("bbbbbbbbbbb") { return None; }
-                Some(TrackMeta { title: url.clone(), source_url: Some(url), ..TrackMeta::default() })
+                Some(TrackMeta {
+                    title: url,
+                    source_url: Some("https://www.youtube.com/watch?v=ddddddddddd".into()),
+                    ..TrackMeta::default()
+                })
             },
             &mut report,
             3,
         )).unwrap();
         assert_eq!(tracks.len(), 3);
         assert!(tracks[0].title.ends_with("aaaaaaaaaaa"));
+        assert!(tracks[0].source_url.as_deref().unwrap().ends_with("aaaaaaaaaaa"));
         assert_eq!(tracks[1].title, "Unavailable");
         assert_eq!(tracks[1].duration_ms, Some(60_000));
         assert!(tracks[1].source_url.as_deref().unwrap().ends_with("bbbbbbbbbbb"));
         assert!(tracks[2].title.ends_with("ccccccccccc"));
+        assert!(tracks[2].source_url.as_deref().unwrap().ends_with("ccccccccccc"));
     }
 
     #[test]
@@ -497,6 +748,21 @@ mod tests {
     }
 
     #[test]
+    fn reads_more_than_500_playlist_entries_in_order() {
+        let entries = (0..520).map(|index| Ok(entry(&format!("{index:011}"), "Song")));
+        let mut report = Reporter::quiet();
+        let tracks = tauri::async_runtime::block_on(playlist_tracks(
+            Box::pin(futures::stream::iter(entries)),
+            |_| async { None },
+            &mut report,
+            usize::MAX,
+        )).unwrap();
+        assert_eq!(tracks.len(), 520);
+        assert!(tracks[0].source_url.as_deref().unwrap().ends_with("00000000000"));
+        assert!(tracks[519].source_url.as_deref().unwrap().ends_with("00000000519"));
+    }
+
+    #[test]
     fn checked_links_are_used_once_only_for_the_same_recent_url() {
         let now = Instant::now();
         let link = Link { kind: Kind::Collection, id: "id".into(), name: "list".into(), tracks: vec![] };
@@ -507,6 +773,30 @@ mod tests {
         assert!(take_checked(&mut slot, "other", now).is_none());
         slot = Some((now, "url".into(), link));
         assert!(take_checked(&mut slot, "url", now + CHECKED_FOR + Duration::from_secs(1)).is_none());
+    }
+
+    #[test]
+    #[ignore = "requires YouTube network access"]
+    fn downloads_example_uploads_of_reported_songs() {
+        #[cfg(target_os = "android")]
+        crate::install_tls_provider();
+        let yt = extractor().unwrap();
+        for (id, title) in [
+            ("QEQwqeRTGFg", "Day 3"),
+            ("fDebF1YC2ZY", "Fall Of The House Of Death"),
+            ("pxh8VHsMloA", "Fated, Faithful, Fatal"),
+        ] {
+            let meta = TrackMeta {
+                title: title.into(),
+                source_url: Some(format!("https://www.youtube.com/watch?v={id}")),
+                ..TrackMeta::default()
+            };
+            let dir = std::env::temp_dir().join(format!("wave-youtube-song-{}", crate::identity::new_id()));
+            let job = Job { key: 0, meta: &meta, dir: dir.clone(), cover: None };
+            let path = fetch(&yt, &job).unwrap();
+            assert!(fs::metadata(&path).unwrap().len() > 10_000);
+            fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]

@@ -188,7 +188,7 @@ test("the full desktop import panel still offers all fetch sections", () => {
   for (const action of ["lyrics", "covers", "genres"]) {
     assert.ok(actions(elements["import-body"].innerHTML).includes(action));
   }
-  assert.match(elements["import-body"].innerHTML, /YouTube playlists import up to 500 videos/);
+  assert.doesNotMatch(elements["import-body"].innerHTML, /playlists import up to 500 videos/i);
   assert.match(elements["import-body"].innerHTML, /YouTube mixes import up to 50 videos/);
 });
 
@@ -201,7 +201,7 @@ test("Android full import offers YouTube without Spotify or desktop tools", () =
   const html = elements["import-body"].innerHTML;
   assert.match(html, /aria-label="YouTube link"/);
   assert.match(html, /playlist or mix link/);
-  assert.match(html, /Playlists import up to 500 videos/);
+  assert.doesNotMatch(html, /playlists import up to 500 videos/i);
   assert.match(html, /Mixes import up to 50 videos/);
   assert.doesNotMatch(html, /Spotify|Deezer|yt-dlp|data-import="config"/);
   assert.doesNotMatch(html, /data-import="log"/);

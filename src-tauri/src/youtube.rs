@@ -17,8 +17,6 @@ use crate::progress::Reporter;
 use crate::source::{env_path, ensure_env_file, read_env, TrackMeta};
 use crate::tools;
 
-/// How many songs one pasted link may bring in.
-const LIMIT: usize = 500;
 const CHECKED_FOR: Duration = Duration::from_secs(600);
 type CheckedLink = (Instant, String, Link);
 static CHECKED_MIX: Mutex<Option<CheckedLink>> = Mutex::new(None);
@@ -64,7 +62,7 @@ pub(crate) fn resolve(app: &AppHandle, url: &str, importing: bool, report: &mut 
     let tools = download::resolve_tools(&read_env(app), bundled.as_deref())?;
 
     report.phase("resolving", "Reading the link.");
-    let (name, entries) = download::read_link(&tools, &url, LIMIT)?;
+    let (name, entries) = download::read_link(&tools, &url)?;
 
     let tracks: Vec<TrackMeta> = entries
         .into_iter()

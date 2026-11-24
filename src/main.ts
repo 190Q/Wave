@@ -6,6 +6,7 @@ import { mountMotion } from "./lib/motion";
 import { mountPresence } from "./lib/presence";
 import { reportInitialization } from "./lib/startup-health";
 import {
+  currentTrack,
   getState,
   init,
   player,
@@ -13,6 +14,7 @@ import {
   stepTrack,
   subscribe,
   toggleAlwaysOnTop,
+  toggleLikeTrack,
   toggleMiniPlayer,
   toggleQueue,
   whenArtworkReady,
@@ -254,6 +256,13 @@ function mountShortcuts(): void {
         event.preventDefault();
         if (!event.repeat) openSeekTime();
         break;
+      case "l":
+      case "L": {
+        event.preventDefault();
+        const track = currentTrack();
+        if (!event.repeat && track) void toggleLikeTrack(track.id);
+        break;
+      }
       case "s":
       case "S":
         event.preventDefault();

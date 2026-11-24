@@ -21,6 +21,7 @@ export const KEYBIND_GROUPS: KeybindGroup[] = [
       { keys: "ArrowDown", action: "Volume down" },
       { keys: "o", action: "Open search" },
       { keys: "g", action: "Jump to a time in the current song" },
+      { keys: "l", action: "Like or unlike the current song" },
       { keys: "s", action: "Toggle shuffle" },
       { keys: "r", action: "Toggle repeat" },
       { keys: "q", action: "Toggle queue" },

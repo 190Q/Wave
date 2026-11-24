@@ -83,6 +83,7 @@ const GENRES_PROGRESS_EVENT = "genres-fetch";
 
 /** Sent as each song is filed into the library, so a download shows up live. */
 const LANDED_EVENT = "library-landed";
+const FOLDER_PROGRESS_EVENT = "folder-import-progress";
 
 /** Follows one loudness pass, song by song. */
 const LOUDNESS_EVENT = "loudness-scan";
@@ -1201,10 +1202,12 @@ async function readLibraryInfo(): Promise<void> {
 
 let scanSequence = 0;
 let loudnessDuringScan: Map<string, { lufs: number; peak: number }> | null = null;
+let landedDuringScan: Map<string, Track> | null = null;
 
 export async function rescan(forceFull = false, deferQueueRepair = false): Promise<void> {
   const sequence = ++scanSequence;
   loudnessDuringScan = new Map();
+  landedDuringScan = new Map();
   state.scanning = true;
   emit();
 
@@ -1223,7 +1226,16 @@ export async function rescan(forceFull = false, deferQueueRepair = false): Promi
         track.peak = reading.peak;
       }
     }
+    if (landedDuringScan?.size) {
+      const landed = landedDuringScan;
+      summary.changed = [
+        ...summary.changed.filter((track) => !landed.has(track.id)),
+        ...landed.values(),
+      ];
+      summary.removed = summary.removed.filter((id) => !landed.has(id));
+    }
     loudnessDuringScan = null;
+    landedDuringScan = null;
     await applyScan(summary, full, sequence, deferQueueRepair);
   } catch (error) {
     if (sequence === scanSequence) {
@@ -1235,6 +1247,7 @@ export async function rescan(forceFull = false, deferQueueRepair = false): Promi
     return;
   }
   loudnessDuringScan = null;
+  landedDuringScan = null;
   state.scanning = false;
   emit();
 
@@ -1414,6 +1427,11 @@ function importNotice(outcome: ImportOutcome, found = ""): string {
 }
 
 export async function importFolder(choose: () => Promise<boolean | null>): Promise<void> {
+  if (state.folderImport !== null) {
+    return;
+  }
+  state.folderImport = "Choose a music folder to import...";
+  setNotice(null);
   try {
     const folder = await ipc.pickFolder();
     if (!folder) {
@@ -1424,14 +1442,22 @@ export async function importFolder(choose: () => Promise<boolean | null>): Promi
       return;
     }
 
-    setNotice("Importing...");
+    state.folderImport = "Reading the selected folder...";
+    emit();
     const outcome = await ipc.importFolder(folder, createPlaylist, null);
     applyPersisted(outcome.state);
+    state.folderImport = "Refreshing your library...";
+    emit();
     await rescan(true);
+    state.folderImport = "Looking up song information...";
+    emit();
     const found = await completeImport(outcome);
     setNotice(importNotice(outcome, found));
   } catch (error) {
     setNotice(describe(error));
+  } finally {
+    state.folderImport = null;
+    emit();
   }
 }
 
@@ -2575,6 +2601,12 @@ let configTimer: number | null = null;
 
 /** Follows the link import and the config file, for the dialog. */
 function watchSources(): void {
+  void listen<string>(FOLDER_PROGRESS_EVENT, (event) => {
+    if (state.folderImport !== null) {
+      state.folderImport = event.payload;
+      scheduleEmit();
+    }
+  }).catch(() => {});
   void listen<string>("phone-folder-import", (event) => {
     if (state.folderImport !== null) {
       state.folderImport = event.payload;
@@ -2659,6 +2691,7 @@ function mergeLanded(landed: Track[]): void {
   const arrived = new Set(landed.map((track) => track.id));
   for (const track of landed) {
     state.tracksById.set(track.id, track);
+    landedDuringScan?.set(track.id, track);
   }
 
   // Kept in the order a scan leaves the library in.

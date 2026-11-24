@@ -23,7 +23,7 @@ const mocks = {
     export const refreshDeezerStatus = () => {};
     export const refreshSpotifyStatus = () => {}, refreshYoutubeStatus = () => {};
     export const jobRunning = () => false, serviceOf = () => "youtube";
-    export const setNotice = () => {}, subscribe = () => {};
+    export const setNotice = () => {}, subscribe = (handler) => { context().subscribers.push(handler); };
   `,
   "./confirm": "export const choiceDialog = async (options) => { globalThis.__importTest.choice = options; return false; }; export const confirmDialog = () => {};",
   "./highlight": "export const highlightHtml = (value) => value;",
@@ -96,6 +96,7 @@ function setup(device, height, collections = [{ id: "library", name: "Library" }
   const context = {
     device,
     actions: [],
+    subscribers: [],
     state: { collections, recentImports: [], settings: { searchAlgorithm: "substring" } },
   };
   globalThis.__importTest = context;
@@ -190,6 +191,22 @@ test("the full desktop import panel still offers all fetch sections", () => {
   }
   assert.doesNotMatch(elements["import-body"].innerHTML, /playlists import up to 500 videos/i);
   assert.match(elements["import-body"].innerHTML, /YouTube mixes import up to 50 videos/);
+});
+
+test("Linux phone import dialog follows folder progress", () => {
+  const { context, elements, dialog } = setup("linuxPhone", 800);
+  const status = { textContent: "" };
+  elements["import-body"].querySelector = (selector) => selector === "#import-folder-state" ? status : null;
+  context.state.folderImport = "Importing 1 of 50: Book.m4b";
+  mountImportDialog();
+  elements["import-open"].dispatch("click");
+
+  assert.equal(dialog.open, true);
+  assert.match(elements["import-body"].innerHTML, /id="import-folder-state"/);
+  assert.equal(status.textContent, "Importing 1 of 50: Book.m4b");
+  context.state.folderImport = "Importing 2 of 50: Book 2.m4b (50%)";
+  context.subscribers.forEach((handler) => handler());
+  assert.equal(status.textContent, "Importing 2 of 50: Book 2.m4b (50%)");
 });
 
 test("Android full import offers YouTube without Spotify or desktop tools", () => {

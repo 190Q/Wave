@@ -129,6 +129,10 @@ export function mountImportDialog(): void {
 
     const lyrics = body.querySelector<HTMLElement>("#import-lyrics-state");
     const transfer = body.querySelector<HTMLElement>("#import-transfer-state");
+    const folder = body.querySelector<HTMLElement>("#import-folder-state");
+    if (folder) {
+      folder.textContent = state.folderImport ?? "";
+    }
     if (transfer) {
       transfer.innerHTML = state.transferProgress ? progressHtml(state.transferProgress) : "";
     }
@@ -588,6 +592,7 @@ function localSection(): string {
         <button class="pill" type="button" data-import="phone">Scan my phone's music</button>
         <button class="pill" type="button" data-import="fix">Fix tags and covers</button>
       </div>
+      <div id="import-folder-state" class="import-hint" aria-live="polite"></div>
       <div id="import-transfer-state" aria-live="polite"></div>`,
     );
   }
@@ -603,6 +608,7 @@ function localSection(): string {
       <button class="pill" type="button" data-import="files">Import files</button>
       <button class="pill" type="button" data-import="wavelist">Import Wave playlist</button>
     </div>
+    <div id="import-folder-state" class="import-hint" aria-live="polite"></div>
     <div id="import-transfer-state" aria-live="polite"></div>`,
   );
 }

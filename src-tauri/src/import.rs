@@ -3,6 +3,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -78,6 +79,7 @@ impl Drop for PlacedFiles {
 }
 
 pub const LANDED_EVENT: &str = "library-landed";
+const FOLDER_PROGRESS_EVENT: &str = "folder-import-progress";
 
 #[derive(Debug, Clone, Copy)]
 pub enum Placed {
@@ -227,8 +229,21 @@ pub(crate) fn refresh_after_tags(
     Ok(row)
 }
 
-#[tauri::command(async)]
-pub fn import_folder(
+#[tauri::command]
+pub async fn import_folder(
+    app: AppHandle,
+    folder: String,
+    create_playlist: bool,
+    playlist_name: Option<String>,
+) -> Result<ImportOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_folder_inner(app, folder, create_playlist, playlist_name)
+    })
+    .await
+    .map_err(|error| format!("The folder import stopped unexpectedly: {error}"))?
+}
+
+fn import_folder_inner(
     app: AppHandle,
     folder: String,
     create_playlist: bool,
@@ -597,22 +612,37 @@ pub fn import_into_library(
     let mut lyrics = 0usize;
     let mut duplicates = 0usize;
     let mut similar = 0usize;
+    let _ = app.emit(FOLDER_PROGRESS_EVENT, "Reading the selected folder...");
     let Contents { audio, skipped, mut errors } = contents(source)?;
+    let total = audio.len();
 
-    for (key, path) in audio {
+    for (index, (key, path)) in audio.into_iter().enumerate() {
         let Some(file_name) = path.file_name().map(|name| name.to_string_lossy().into_owned())
         else {
             continue;
         };
+        let status = format!("Importing {} of {total}: {file_name}", index + 1);
+        let _ = app.emit(FOLDER_PROGRESS_EVENT, &status);
+        let mut last_update = Instant::now();
 
-        let outcome = import_one(
+        let outcome = import_one_with_progress(
             &root,
             &catalog,
             &path,
             &file_name,
-            &artwork_index,
-            &lyrics_index,
+            (&artwork_index, &lyrics_index),
             false,
+            &mut |copied, bytes| {
+                if copied == bytes || last_update.elapsed() >= Duration::from_millis(500) {
+                    let message = if bytes > 0 && copied < bytes {
+                        format!("{status} ({}%)", (copied as u128 * 100) / bytes as u128)
+                    } else {
+                        format!("Finishing {} of {total}: {file_name}", index + 1)
+                    };
+                    let _ = app.emit(FOLDER_PROGRESS_EVENT, message);
+                    last_update = Instant::now();
+                }
+            },
         );
 
         match outcome {
@@ -633,21 +663,12 @@ pub fn import_into_library(
                 lyrics += usize::from(words);
                 similar += usize::from(near);
                 landed.push(id.clone());
+                if let Ok(Some(row)) = catalog.track(&id) {
+                    let _ = app.emit(LANDED_EVENT, vec![library::to_track(&row, &root)]);
+                }
                 playlist_tracks.push(id);
             }
             Err(error) => errors.push(format!("{key}: {error}")),
-        }
-    }
-
-    if !landed.is_empty() {
-        let rows = catalog.tracks_by_ids(&landed).unwrap_or_default();
-        let arrived: Vec<library::Track> = landed
-            .iter()
-            .filter_map(|id| rows.get(id))
-            .map(|row| library::to_track(row, &root))
-            .collect();
-        if !arrived.is_empty() {
-            let _ = app.emit(LANDED_EVENT, arrived);
         }
     }
 
@@ -761,6 +782,21 @@ fn import_one(
     lyrics_index: &SidecarIndex,
     generic_sidecars: bool,
 ) -> Result<(Placed, String), String> {
+    import_one_with_progress(
+        root, catalog, source, file_name, (artwork_index, lyrics_index), generic_sidecars, &mut |_, _| {},
+    )
+}
+
+fn import_one_with_progress(
+    root: &Path,
+    catalog: &Catalog,
+    source: &Path,
+    file_name: &str,
+    sidecars: (&SidecarIndex, &SidecarIndex),
+    generic_sidecars: bool,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<(Placed, String), String> {
+    let (artwork_index, lyrics_index) = sidecars;
     let extension = source
         .extension()
         .and_then(|value| value.to_str())
@@ -768,7 +804,7 @@ fn import_one(
         .ok_or_else(|| "that file has no extension".to_string())?;
 
     let staged_path = staging_path(root, &extension)?;
-    let hash = copy_and_hash(source, &staged_path)?;
+    let hash = copy_and_hash_with_progress(source, &staged_path, progress)?;
     let staged = StagedFile(staged_path);
     let detected = if extension == "ogg" {
         lofty::probe::Probe::open(&staged.0)
@@ -797,7 +833,7 @@ fn import_one(
     let mut created = PlacedFiles { dir: dir.clone(), paths: Vec::new(), committed: false };
 
     let target = audio_path(root, &id, extension);
-    copy_new(&staged.0, &target)?;
+    place_staged(&staged.0, &target)?;
     created.paths.push(target.clone());
 
     // Covers and lyrics are matched by name here and only here: this is a folder
@@ -861,13 +897,19 @@ fn import_one(
 }
 
 /// Copies a file while hashing it, so the same bytes are never read twice.
-fn copy_and_hash(from: &Path, to: &Path) -> Result<String, String> {
+fn copy_and_hash_with_progress(
+    from: &Path,
+    to: &Path,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<String, String> {
     let mut source =
         fs::File::open(from).map_err(|e| format!("could not read {}: {e}", from.display()))?;
+    let bytes = source.metadata().map(|metadata| metadata.len()).unwrap_or(0);
     let mut target = fs::OpenOptions::new().write(true).create_new(true).open(to)
         .map_err(|e| format!("could not write {}: {e}", to.display()))?;
     let mut hasher = identity::Hasher::new();
     let mut buffer = vec![0u8; COPY_BUFFER];
+    let mut copied_bytes = 0u64;
 
     let copied = (|| {
         loop {
@@ -881,6 +923,8 @@ fn copy_and_hash(from: &Path, to: &Path) -> Result<String, String> {
             target
                 .write_all(&buffer[..read])
                 .map_err(|e| format!("could not write {}: {e}", to.display()))?;
+            copied_bytes += read as u64;
+            progress(copied_bytes, bytes);
         }
         target
             .flush()
@@ -892,6 +936,14 @@ fn copy_and_hash(from: &Path, to: &Path) -> Result<String, String> {
         return Err(error);
     }
     Ok(hasher.finish())
+}
+
+fn place_staged(from: &Path, to: &Path) -> Result<(), String> {
+    if fs::hard_link(from, to).is_ok() {
+        Ok(())
+    } else {
+        copy_new(from, to)
+    }
 }
 
 fn copy_new(from: &Path, to: &Path) -> Result<(), String> {
@@ -1103,10 +1155,48 @@ mod tests {
         let to = dir.join("to.bin");
         fs::write(&from, b"0123456789").unwrap();
 
-        let hash = copy_and_hash(&from, &to).unwrap();
+        let hash = copy_and_hash_with_progress(&from, &to, &mut |_, _| {}).unwrap();
 
         assert_eq!(fs::read(&to).unwrap(), b"0123456789");
         assert_eq!(hash, identity::content_hash(&from).unwrap());
+    }
+
+    #[test]
+    fn reports_bytes_copied_while_hashing() {
+        let dir = scratch("copy-progress");
+        let from = dir.join("from.bin");
+        let to = dir.join("to.bin");
+        let data = vec![42; COPY_BUFFER * 2 + 17];
+        fs::write(&from, &data).unwrap();
+        let mut updates = Vec::new();
+
+        let hash = copy_and_hash_with_progress(&from, &to, &mut |copied, total| {
+            updates.push((copied, total));
+        }).unwrap();
+
+        assert!(updates.len() >= 3);
+        assert!(updates.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert!(updates.iter().all(|(_, total)| *total == data.len() as u64));
+        assert_eq!(updates.last(), Some(&(data.len() as u64, data.len() as u64)));
+        assert_eq!(fs::read(to).unwrap(), data);
+        assert_eq!(hash, identity::content_hash(&from).unwrap());
+    }
+
+    #[test]
+    fn staged_placement_keeps_existing_files_and_survives_cleanup() {
+        let dir = scratch("place-staged");
+        let source = dir.join("staged");
+        let target = dir.join("audio");
+        fs::write(&source, b"new audio").unwrap();
+        fs::write(&target, b"existing audio").unwrap();
+
+        assert!(place_staged(&source, &target).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"existing audio");
+        fs::remove_file(&target).unwrap();
+        place_staged(&source, &target).unwrap();
+        drop(StagedFile(source.clone()));
+        assert!(!source.exists());
+        assert_eq!(fs::read(target).unwrap(), b"new audio");
     }
 
     #[test]
@@ -1151,6 +1241,48 @@ mod tests {
 
         assert_eq!(found.audio.len(), 1);
         assert_eq!(found.audio[0].0, "Album/Song.mp3");
+    }
+
+    #[test]
+    fn interrupted_large_folder_import_can_resume_without_losing_songs() {
+        let root = scratch("resume-folder");
+        let source = root.join("source");
+        let catalog = Catalog::in_memory().unwrap();
+        for index in 0..50u16 {
+            let dir = source.join(format!("album-{}", index / 10));
+            fs::create_dir_all(&dir).unwrap();
+            let path = dir.join(format!("book-{index:02}.wav"));
+            write_test_wave(&path);
+            let mut bytes = fs::read(&path).unwrap();
+            let end = bytes.len();
+            bytes[end - 2..].copy_from_slice(&index.to_le_bytes());
+            fs::write(&path, bytes).unwrap();
+        }
+        fs::write(source.join("invalid.wav"), b"not audio").unwrap();
+        let found = contents(&source).unwrap();
+        assert_eq!(found.audio.len(), 51);
+        let images = SidecarIndex::default();
+        let lyrics = SidecarIndex::default();
+        let import = |path: &Path| {
+            import_one(&root, &catalog, path, &path.file_name().unwrap().to_string_lossy(), &images, &lyrics, false)
+        };
+        for (_, path) in found.audio.iter().take(5) {
+            assert!(matches!(import(path).unwrap().0, Placed::Added { .. }));
+        }
+
+        let mut added = 0;
+        let mut duplicates = 0;
+        let mut errors = 0;
+        for (_, path) in &found.audio {
+            match import(path) {
+                Ok((Placed::Added { .. }, _)) => added += 1,
+                Ok((Placed::Duplicate, _)) => duplicates += 1,
+                Err(_) => errors += 1,
+            }
+        }
+        assert_eq!((added, duplicates, errors), (45, 5, 1));
+        assert_eq!(catalog.present_count().unwrap(), 50);
+        assert_eq!(fs::read_dir(root.join(CONFIG_DIR).join(STAGING_DIR)).unwrap().count(), 0);
     }
 
     #[cfg(unix)]

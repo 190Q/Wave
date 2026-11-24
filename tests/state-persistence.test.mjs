@@ -476,6 +476,70 @@ test("folder import refreshes all imported tracks without a landed event", async
   }
 });
 
+test("folder import keeps progress and landed songs visible until it finishes", async () => {
+  const pending = deferred();
+  const originalImport = globalThis.__testIpc.importFolder;
+  let calls = 0;
+  globalThis.__testIpc.importFolder = () => { calls += 1; return pending.promise; };
+  const track = { id: "book", title: "Book", path: "book", durationMs: 1000, artist: null, album: null, genre: null };
+  try {
+    const importing = app.importFolder(async () => false);
+    await tick();
+    assert.equal(calls, 1);
+    assert.equal(app.getState().folderImport, "Reading the selected folder...");
+    await app.importFolder(async () => { throw new Error("another picker opened"); });
+    assert.equal(calls, 1);
+
+    listeners.get("folder-import-progress")({ payload: "Importing 1 of 50: Book.m4b (50%)" });
+    listeners.get("library-landed")({ payload: [track] });
+    assert.equal(app.getState().folderImport, "Importing 1 of 50: Book.m4b (50%)");
+    assert.ok(app.getState().tracksById.has("book"));
+
+    scanTracks = [track];
+    pending.resolve(outcome());
+    await importing;
+    assert.equal(app.getState().folderImport, null);
+    assert.ok(app.getState().tracksById.has("book"));
+    listeners.get("folder-import-progress")({ payload: "stale update" });
+    assert.equal(app.getState().folderImport, null);
+  } finally {
+    globalThis.__testIpc.importFolder = originalImport;
+    scanTracks = [];
+  }
+});
+
+test("a full scan preserves tracks that land while its snapshot is in flight", async () => {
+  const pending = deferred();
+  const originalScan = globalThis.__testIpc.scanLibrary;
+  const old = { id: "book", title: "Old", path: "book", durationMs: 1000, artist: null, album: null, genre: null };
+  const arrived = { ...old, title: "Updated" };
+  globalThis.__testIpc.scanLibrary = () => pending.promise;
+  try {
+    const scan = app.rescan(true);
+    listeners.get("library-landed")({ payload: [arrived] });
+    pending.resolve({ changed: [old], removed: ["book"], root: "", skipped: 0, errors: [] });
+    await scan;
+    assert.equal(app.getState().tracksById.get("book")?.title, "Updated");
+  } finally {
+    globalThis.__testIpc.scanLibrary = originalScan;
+    scanTracks = [];
+  }
+});
+
+test("folder import clears its status when cancelled or rejected", async () => {
+  await app.importFolder(async () => null);
+  assert.equal(app.getState().folderImport, null);
+  const originalImport = globalThis.__testIpc.importFolder;
+  globalThis.__testIpc.importFolder = async () => { throw new Error("Disk full"); };
+  try {
+    await app.importFolder(async () => false);
+    assert.equal(app.getState().folderImport, null);
+    assert.match(app.getState().notice, /Disk full/);
+  } finally {
+    globalThis.__testIpc.importFolder = originalImport;
+  }
+});
+
 test("Android playlist import starts downloads only for waiting songs", async () => {
   playlistDownloads.length = 0;
   waveWaiting = 5;

@@ -20,6 +20,7 @@ import { mountTouch } from "./touch";
 
 
 const VOLUME_FILL_MS = 200;
+const FOCUS_CLICK_MS = 200;
 
 let markVolumeStep: (() => void) | null = null;
     
@@ -107,6 +108,35 @@ export function mountDock(visibility?: SheetVisibility): void {
   let pressing = false;
   let pressedId: number | null = null;
   let suppressControlClick = false;
+  let focusedAt = -Infinity;
+  let activationPress = false;
+  let unfocusedPress = false;
+
+  window.addEventListener("focus", (event) => {
+    focusedAt = unfocusedPress ? -Infinity : event.timeStamp;
+  });
+  window.addEventListener("keydown", () => {
+    focusedAt = -Infinity;
+  }, true);
+  window.addEventListener("pointerdown", (event) => {
+    unfocusedPress = !document.hasFocus();
+    // The click that focuses the window can arrive after the focus event.
+    activationPress = unfocusedPress || event.timeStamp - focusedAt < FOCUS_CLICK_MS;
+    focusedAt = -Infinity;
+  }, true);
+  window.addEventListener("blur", () => {
+    focusedAt = -Infinity;
+    unfocusedPress = false;
+    if (!document.documentElement.classList.contains("is-mini-player") || !scrubbing) {
+      return;
+    }
+    pressing = false;
+    if (pressedId !== null && dock.hasPointerCapture(pressedId)) {
+      dock.releasePointerCapture(pressedId);
+    }
+    pressedId = null;
+    dropScrub();
+  });
 
   dock.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) {
@@ -118,6 +148,9 @@ export function mountDock(visibility?: SheetVisibility): void {
     }
     // The volume slider is the one control that drags itself.
     if (event.target instanceof HTMLInputElement) {
+      return;
+    }
+    if (document.documentElement.classList.contains("is-mini-player") && activationPress) {
       return;
     }
 
@@ -208,8 +241,12 @@ export function mountDock(visibility?: SheetVisibility): void {
     paintProgress(player.snapshot().positionMs, player.snapshot().durationMs);
   };
 
-  window.addEventListener("pointerup", (event) => stopPress(event, true));
+  window.addEventListener("pointerup", (event) => {
+    unfocusedPress = false;
+    stopPress(event, true);
+  });
   window.addEventListener("pointercancel", (event) => {
+    unfocusedPress = false;
     suppressControlClick = false;
     stopPress(event, false);
   });

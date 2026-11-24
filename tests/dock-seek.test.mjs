@@ -116,6 +116,7 @@ function setup(kind = "android") {
   context.position = 10000;
   context.playing = false;
   context.state.lyrics = [{}];
+  context.focused = true;
 
   const ids = [
     "dock", "time-now", "time-now-phone", "time-total", "like", "shuffle", "prev", "play", "next",
@@ -145,6 +146,7 @@ function setup(kind = "android") {
 
   globalThis.document = {
     documentElement: root,
+    hasFocus: () => context.focused,
     getElementById: (id) => elements[id] ?? null,
     querySelector: (selector) => selector === ".stage" ? stage : selector === ".topbar" ? topbar : null,
     createElement: () => new FakeElement(),
@@ -435,6 +437,122 @@ test("desktop mouse seeking still works across the dock", () => {
   elements.dock.dispatch("pointerdown", pointer(elements.dock, 300, 150));
   windowEvents.dispatch("pointerup");
   assert.deepEqual(context.seeks, [0.75]);
+});
+
+test("activating the mini player with the progress bar does not preview or seek", () => {
+  const { elements, windowEvents, fill } = setup("desktop");
+  document.documentElement.classList.add("is-mini-player");
+  mountDock();
+  const progress = fill.style.transform;
+  context.focused = false;
+  windowEvents.dispatch("blur");
+  context.focused = true;
+  windowEvents.dispatch("focus", { timeStamp: 1000 });
+
+  const first = { ...pointer(elements.dock, 300, 100), timeStamp: 1010 };
+  windowEvents.dispatch("pointerdown", first);
+  elements.dock.dispatch("pointerdown", first);
+  windowEvents.dispatch("pointermove", pointer(elements.dock, 350, 100));
+  windowEvents.dispatch("pointerup");
+  assert.equal(fill.style.transform, progress);
+  assert.equal(elements.dock.classList.contains("is-scrubbing"), false);
+  assert.deepEqual(context.seeks, []);
+
+  const second = { ...pointer(elements.dock, 300, 100), timeStamp: 1030 };
+  windowEvents.dispatch("pointerdown", second);
+  elements.dock.dispatch("pointerdown", second);
+  assert.equal(fill.style.transform, "scaleX(0.75)");
+  windowEvents.dispatch("pointerup");
+  assert.deepEqual(context.seeks, [0.75]);
+});
+
+test("an unfocused press is ignored even if focus arrives after pointer-down", () => {
+  const { elements, windowEvents, fill } = setup("desktop");
+  document.documentElement.classList.add("is-mini-player");
+  mountDock();
+  const progress = fill.style.transform;
+  context.focused = false;
+  windowEvents.dispatch("blur");
+
+  const first = { ...pointer(elements.dock, 300, 100), timeStamp: 1000 };
+  windowEvents.dispatch("pointerdown", first);
+  elements.dock.dispatch("pointerdown", first);
+  context.focused = true;
+  windowEvents.dispatch("focus", { timeStamp: 1010 });
+  windowEvents.dispatch("pointerup");
+  assert.equal(fill.style.transform, progress);
+  assert.deepEqual(context.seeks, []);
+
+  const second = { ...pointer(elements.dock, 300, 100), timeStamp: 1020 };
+  windowEvents.dispatch("pointerdown", second);
+  elements.dock.dispatch("pointerdown", second);
+  windowEvents.dispatch("pointerup");
+  assert.deepEqual(context.seeks, [0.75]);
+});
+
+test("mini-player focus protection leaves controls and established focus unaffected", () => {
+  const { elements, windowEvents } = setup("desktop");
+  document.documentElement.classList.add("is-mini-player");
+  mountDock();
+  windowEvents.dispatch("focus", { timeStamp: 1000 });
+
+  const play = { ...pointer(elements.play, 200, 150), timeStamp: 1010 };
+  windowEvents.dispatch("pointerdown", play);
+  elements.dock.dispatch("pointerdown", play);
+  elements.play.dispatch("click");
+  assert.equal(context.toggles, 1);
+
+  const seek = { ...pointer(elements.dock, 200, 100), timeStamp: 1020 };
+  windowEvents.dispatch("pointerdown", seek);
+  elements.dock.dispatch("pointerdown", seek);
+  windowEvents.dispatch("pointerup");
+  assert.deepEqual(context.seeks, [0.5]);
+
+  windowEvents.dispatch("focus", { timeStamp: 2000 });
+  windowEvents.dispatch("keydown");
+  const keyboardFocus = { ...pointer(elements.dock, 100, 100), timeStamp: 2010 };
+  windowEvents.dispatch("pointerdown", keyboardFocus);
+  elements.dock.dispatch("pointerdown", keyboardFocus);
+  windowEvents.dispatch("pointerup");
+  assert.deepEqual(context.seeks, [0.5, 0.25]);
+
+  windowEvents.dispatch("focus", { timeStamp: 3000 });
+  const settledFocus = { ...pointer(elements.dock, 300, 100), timeStamp: 3200 };
+  windowEvents.dispatch("pointerdown", settledFocus);
+  elements.dock.dispatch("pointerdown", settledFocus);
+  windowEvents.dispatch("pointerup");
+  assert.deepEqual(context.seeks, [0.5, 0.25, 0.75]);
+});
+
+test("focus protection does not change normal desktop seeking", () => {
+  const { elements, windowEvents } = setup("desktop");
+  mountDock();
+  windowEvents.dispatch("focus", { timeStamp: 1000 });
+  const press = { ...pointer(elements.dock, 300, 100), timeStamp: 1010 };
+  windowEvents.dispatch("pointerdown", press);
+  elements.dock.dispatch("pointerdown", press);
+  windowEvents.dispatch("pointerup");
+  assert.deepEqual(context.seeks, [0.75]);
+});
+
+test("losing focus cancels an active mini-player scrub", () => {
+  const { elements, windowEvents, fill } = setup("desktop");
+  document.documentElement.classList.add("is-mini-player");
+  mountDock();
+  const progress = fill.style.transform;
+  const press = { ...pointer(elements.dock, 300, 100), timeStamp: 1000 };
+  windowEvents.dispatch("pointerdown", press);
+  elements.dock.dispatch("pointerdown", press);
+  assert.equal(fill.style.transform, "scaleX(0.75)");
+  assert.equal(elements.dock.hasPointerCapture(1), true);
+
+  context.focused = false;
+  windowEvents.dispatch("blur");
+  windowEvents.dispatch("pointerup");
+  assert.equal(fill.style.transform, progress);
+  assert.equal(elements.dock.classList.contains("is-scrubbing"), false);
+  assert.equal(elements.dock.hasPointerCapture(1), false);
+  assert.deepEqual(context.seeks, []);
 });
 
 test("non-primary mouse buttons do not preview or seek", () => {

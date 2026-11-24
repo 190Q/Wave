@@ -46,6 +46,11 @@
   transition: none;
 }
 
+.dock.is-catching-up *,
+.dock.is-catching-up {
+  transition: none !important;
+}
+
 .dock-inner {
   position: relative;
 }

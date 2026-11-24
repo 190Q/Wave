@@ -19,7 +19,8 @@ import { reduceMotionActive, subscribeMotion } from "../lib/motion";
 import { stepLater } from "../lib/steps";
 import { coverStyle } from "./artwork";
 import { openTrackMenu } from "./library";
-import { coverWipe, setCoverStyle, type CoverSwap } from "./wipe";
+import type { SheetVisibility } from "./sheet-visibility";
+import { coverWipe, finishCoverWipe, setCoverStyle, type CoverSwap } from "./wipe";
 
 const VISIBLE_RANGE = 5;
 const SPACING_REM = 6.5;
@@ -51,7 +52,7 @@ const COVER_WAIT_MS = 200;
  */
 const HERO_MIN_REM = 8.5;
 
-export function mountQueue(): void {
+export function mountQueue(visibility?: SheetVisibility): void {
   const carousel = element("carousel");
   const stage = document.querySelector<HTMLElement>(".stage");
   if (!carousel || !stage) {
@@ -107,6 +108,9 @@ export function mountQueue(): void {
   let lastCursorAt = 0;
   let rapid = false;
   let bouncing = false;
+  let catchingUp = false;
+  let dirty = false;
+  const noAnimation = (): boolean => catchingUp || reduceMotionActive();
 
   const indexAt = (slot: number, total: number, looping: boolean): number =>
     looping ? ((slot % total) + total) % total : slot;
@@ -232,7 +236,7 @@ export function mountQueue(): void {
 
   /** Fades a card out, then takes it away once the fade has run. */
   const dismiss = (slot: number, card: HTMLElement): void => {
-    if (reduceMotionActive()) {
+    if (noAnimation()) {
       card.remove();
       return;
     }
@@ -406,7 +410,7 @@ export function mountQueue(): void {
       }
     }
 
-    if (reduceMotionActive() || document.documentElement.classList.contains("is-starting")) {
+    if (noAnimation() || document.documentElement.classList.contains("is-starting")) {
       return;
     }
     if (enter === "all") {
@@ -452,7 +456,7 @@ export function mountQueue(): void {
         `rotate(${offset * ARC_ANGLE_DEG}deg) ` +
         `scale(${1 - Math.min(distance, VISIBLE_RANGE) * 0.04})`;
 
-      const normal = reduceMotionActive()
+      const normal = noAnimation()
         ? "none"
         : bouncing
           ? SPRING_TRANSITION
@@ -532,7 +536,7 @@ export function mountQueue(): void {
         artist.textContent = artistName;
       }
 
-      if (reduceMotionActive() && (changed || !card.dataset.artwork)) {
+      if (noAnimation() && (changed || !card.dataset.artwork)) {
         unattendedArtwork.add(card);
       }
       if (device() !== "android" && !mayRevealArtwork(track.id)) {
@@ -547,7 +551,7 @@ export function mountQueue(): void {
         continue;
       }
 
-      const revealing = visible && signature !== "" && !unattendedArtwork.has(card) &&
+      const revealing = !noAnimation() && visible && signature !== "" && !unattendedArtwork.has(card) &&
         (!card.dataset.artwork || (device() === "android" && changed && card.dataset.artwork !== signature));
       if (signature) {
         unattendedArtwork.delete(card);
@@ -563,7 +567,7 @@ export function mountQueue(): void {
 
       const style = coverStyle(track, tier);
       if (changed && device() === "android" && hadCover && !signature && track.artworkPath &&
-          visible && !reduceMotionActive()) {
+          visible && !noAnimation()) {
         setCoverStyle(body, body.getAttribute("style") ?? "");
         const next = {
           style,
@@ -776,18 +780,24 @@ export function mountQueue(): void {
     const snapshot = player.snapshot();
     const looping = snapshot.repeat !== "off";
     const total = snapshot.order.length;
-    if (snapshot.queueRevision !== cachedRevision) {
-      cachedRevision = snapshot.queueRevision;
-      cachedSignature = snapshot.order.join("|");
-      cachedIds = new Set(snapshot.order);
-    }
-    const signature = cachedSignature;
 
     if (device() !== "desktop") {
       prioritizeNearbyArtwork(snapshot.order, snapshot.cursor, looping);
     } else {
       prioritizeNearbyArtwork([], 0, false);
     }
+    if (visibility && !visibility.visible("stack")) {
+      dirty = true;
+      return;
+    }
+    dirty = false;
+
+    if (snapshot.queueRevision !== cachedRevision) {
+      cachedRevision = snapshot.queueRevision;
+      cachedSignature = snapshot.order.join("|");
+      cachedIds = new Set(snapshot.order);
+    }
+    const signature = cachedSignature;
 
     stage.classList.toggle("queue-open", queueShown(isCramped()));
 
@@ -853,7 +863,7 @@ export function mountQueue(): void {
         } else if (reshuffle) {
           washAway();
           washed = true;
-        } else if (collectionChanged && shown && !reduceMotionActive() && oldCount > 0) {
+        } else if (collectionChanged && shown && !noAnimation() && oldCount > 0) {
           const newCount = requiredSlots(snapshot.cursor, total, looping).length;
           grown = swapCollection(oldCentre, oldCount, newCount);
           washed = true;
@@ -958,24 +968,46 @@ export function mountQueue(): void {
 
   player.onChange(render);
   subscribe(render);
-  subscribeMotion(() => {
-    if (!reduceMotionActive()) {
-      return;
-    }
+  const settleAnimations = (): void => {
     for (const [card, pending] of pendingCovers) {
       cancelPendingCover(card);
       const body = card.querySelector<HTMLElement>(".card-body");
-      if (body) {
-        setCoverStyle(body, pending.style);
-      }
+      if (body) setCoverStyle(body, pending.style);
     }
     endWash();
     flushPopping();
     flushEntering();
-    for (const card of leaving.values()) {
-      card.remove();
+    for (const card of cards.values()) {
+      card.classList.remove("is-entering", "is-settling");
+      if (!card.dataset.artwork) unattendedArtwork.add(card);
+      const body = card.querySelector<HTMLElement>(".card-body");
+      if (body) finishCoverWipe(body);
     }
+    for (const card of leaving.values()) card.remove();
     leaving.clear();
+  };
+  visibility?.subscribe((view, visible) => {
+    if (view !== "stack") return;
+    catchingUp = true;
+    if (visible) {
+      const changed = dirty;
+      if (changed) render();
+      void carousel.offsetWidth;
+      if (changed) {
+        for (const card of cards.values()) card.style.transition = reduceMotionActive() ? "none" : "";
+      }
+      carousel.classList.remove("is-catching-up");
+    } else {
+      carousel.classList.add("is-catching-up");
+      settleAnimations();
+    }
+    catchingUp = false;
+  });
+  subscribeMotion(() => {
+    if (!reduceMotionActive()) {
+      return;
+    }
+    settleAnimations();
     render();
   });
   render();

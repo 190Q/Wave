@@ -54,6 +54,7 @@ const vite = await createServer({
 });
 after(() => vite.close());
 const { mountHero } = await vite.ssrLoadModule("/src/ui/hero.ts");
+const { createSheetVisibility } = await vite.ssrLoadModule("/src/ui/sheet-visibility.ts");
 
 class Element {
   constructor() {
@@ -125,7 +126,7 @@ class Element {
   }
 }
 
-function setup(t, heights = [], device = "android") {
+function setup(t, heights = [], device = "android", visibility) {
   const lyrics = Array.from({ length: 12 }, (_, index) => ({ timeMs: 2000 + index * 6000, text: `line ${index}` }));
   const context = {
     now: 0,
@@ -136,6 +137,7 @@ function setup(t, heights = [], device = "android") {
     position: 2000,
     seeks: [],
     animations: [],
+    measurements: 0,
     navigation: { sourceId: "all", order: ["track", "second", "third"], cursor: 0, travel: 0, repeat: "off" },
     track: { id: "track", title: "Song", artist: "Artist", album: null, year: null },
     state: { lyrics, lyricsLoading: false, tracks: [{}], libraryOpen: false },
@@ -152,13 +154,22 @@ function setup(t, heights = [], device = "android") {
     documentElement: root,
     getElementById: (id) => elements[id] ?? null,
     querySelector: () => null,
-    createRange: () => ({ selectNodeContents() {}, getClientRects: () => [{}] }),
+    createRange: () => ({
+      selectNodeContents() {},
+      getClientRects: () => {
+        context.measurements += 1;
+        return [{}];
+      },
+    }),
   };
   globalThis.window = {
     matchMedia: () => ({ matches: false, addEventListener() {} }),
     cancelAnimationFrame: (id) => frames.delete(id),
   };
-  globalThis.ResizeObserver = undefined;
+  globalThis.ResizeObserver = class {
+    constructor(callback) { context.resize = callback; }
+    observe() {}
+  };
   globalThis.requestAnimationFrame = (callback) => {
     frames.set(++frameId, callback);
     return frameId;
@@ -177,7 +188,7 @@ function setup(t, heights = [], device = "android") {
     constructor(value) { this.m42 = Number(value.match(/,\s*([-\d.]+)\)$/)[1]); }
   };
 
-  mountHero();
+  mountHero(visibility);
   const track = elements.lyrics;
   const panel = elements["lyrics-panel"];
   const offset = () => -parseFloat(track.style.transform.slice(11));
@@ -410,6 +421,112 @@ function finishLoading(context, lyrics = [{ timeMs: 0, text: "new lyric" }]) {
   context.state.lyricsLoading = false;
   context.render();
 }
+
+test("hidden lyrics prepare track changes and catch up without animation on reveal", (t) => {
+  const visibility = createSheetVisibility();
+  visibility.update(1, 720);
+  const { context, panel, track, offset, advance } = setup(t, [], "android", visibility);
+  assert.equal(offset(), 24);
+  const originalLines = track.lines;
+  visibility.update(0, 720);
+  context.position = 20000;
+  context.progress(context.position);
+  assert.equal(offset(), 24);
+
+  loadOnTrackChange(context);
+  changeTrack(context, "second", 1, 1);
+  const lyrics = [
+    { timeMs: 0, text: "first" },
+    { timeMs: 10000, text: "second" },
+    { timeMs: 20000, text: "third" },
+  ];
+  finishLoading(context, lyrics);
+  assert.notEqual(track.lines, originalLines);
+  assert.equal(track.lines.length, 3);
+  const preparedLines = track.lines;
+  assert.equal(offset(), 24);
+  assert.equal(context.animations.length, 0);
+
+  const writes = [];
+  let transform = track.style.transform;
+  Object.defineProperty(track.style, "transform", {
+    get: () => transform,
+    set: (value) => {
+      transform = value;
+      writes.push({ value, catchingUp: panel.classList.contains("is-catching-up") });
+    },
+  });
+  visibility.update(1, 720);
+  assert.equal(offset(), 120);
+  assert.equal(track.lines, preparedLines);
+  assert.ok(writes.length > 0 && writes.every((write) => write.catchingUp));
+  assert.equal(track.lines[2].classList.contains("is-active"), true);
+  assert.equal(context.animations.length, 0);
+  assert.equal(panel.classList.contains("is-catching-up"), true);
+  advance(16);
+  assert.equal(panel.classList.contains("is-catching-up"), true);
+  advance(16);
+  assert.equal(panel.classList.contains("is-catching-up"), false);
+
+  context.progress(10000);
+  assert.equal(offset(), 72);
+  assert.equal(writes.at(-1).catchingUp, false);
+});
+
+test("hidden lyric resizes are measured before the sheet is revealed", (t) => {
+  const visibility = createSheetVisibility();
+  const { context, panel, track, offset } = setup(t, [], "android", visibility);
+  assert.equal(panel.classList.contains("is-catching-up"), true);
+  const beforeResize = context.measurements;
+  track.lines[2].offsetTop = 150;
+  context.resize();
+  assert.equal(context.measurements, beforeResize + track.lines.length);
+
+  let layouts = 0;
+  Object.defineProperty(track, "offsetHeight", {
+    get: () => {
+      layouts += 1;
+      return 48;
+    },
+  });
+  context.position = 14000;
+  const beforeReveal = context.measurements;
+  visibility.update(1, 720);
+  assert.equal(offset(), 174);
+  assert.equal(context.measurements, beforeReveal);
+  assert.equal(layouts, 0);
+});
+
+test("rapid sheet reversals cancel catch-up cleanup until the next reveal", (t) => {
+  const visibility = createSheetVisibility();
+  const { panel, frames, advance } = setup(t, [], "android", visibility);
+  visibility.update(1, 720);
+  advance(16);
+  assert.equal(frames.size, 1);
+  visibility.update(0, 720);
+  assert.equal(frames.size, 0);
+  assert.equal(panel.classList.contains("is-catching-up"), true);
+
+  visibility.update(1, 720);
+  advance(16);
+  assert.equal(panel.classList.contains("is-catching-up"), true);
+  advance(16);
+  assert.equal(panel.classList.contains("is-catching-up"), false);
+  assert.equal(frames.size, 0);
+});
+
+test("closed lyrics stay measurable and a partly revealed sheet keeps updating", (t) => {
+  const visibility = createSheetVisibility();
+  const { context, panel, track, offset } = setup(t, [], "android", visibility);
+  assert.equal(panel.hidden, false);
+  assert.equal(track.lines.length, 12);
+  context.position = 14000;
+  visibility.update(1, 720);
+  assert.equal(offset(), 120);
+  panel.inert = true;
+  context.progress(20000);
+  assert.equal(offset(), 168);
+});
 
 test("new lyrics enter from the next track's side and old lyrics leave in the opposite direction", (t) => {
   const { context, elements, panel } = setup(t);

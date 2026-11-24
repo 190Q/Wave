@@ -94,6 +94,11 @@ export function setCoverStyle(body: HTMLElement, style: string): void {
   body.setAttribute("style", style);
 }
 
+export function finishCoverWipe(body: HTMLElement): void {
+  const active = coverWipes.get(body);
+  if (active) setCoverStyle(body, active.style);
+}
+
 function cancelCoverWipe(body: HTMLElement): void {
   const active = coverWipes.get(body);
   if (!active) {

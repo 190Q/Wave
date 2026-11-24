@@ -15,6 +15,7 @@ import {
 } from "../lib/state";
 import type { LyricLine } from "../types";
 import { plainCoverStyle } from "./artwork";
+import type { SheetVisibility } from "./sheet-visibility";
 
 /** Wheel deltas are normalised to pixels before accumulating. */
 const WHEEL_STEP_PX = 100;
@@ -30,7 +31,7 @@ const RELEASE_SETTLE_PX = 0.1;
 const RELEASE_SETTLE_SPEED = 2;
 const LYRICS_SLIDE_MS = 450;
 
-export function mountHero(): void {
+export function mountHero(visibility?: SheetVisibility): void {
   const hero = document.getElementById("hero");
   const cover = document.getElementById("now-cover");
   const source = document.getElementById("now-source");
@@ -46,6 +47,8 @@ export function mountHero(): void {
   }
 
   const phone = device() !== "desktop";
+  let catchingUp = false;
+  let catchUpFrame: number | null = null;
 
   const COVER_MAX_REM = 24;
   const COVER_MIN_REM = 6;
@@ -383,7 +386,7 @@ export function mountHero(): void {
   const slideIn = (): void => {
     const direction = pendingDirection;
     pendingDirection = 0;
-    if (!direction || panel.inert || reduceMotionActive()) {
+    if (!direction || (visibility ? !visibility.visible("lyrics") : panel.inert) || reduceMotionActive()) {
       return;
     }
     incomingAnimation?.cancel();
@@ -406,7 +409,8 @@ export function mountHero(): void {
   });
 
   const highlight = (positionMs: number): void => {
-    if (lyricLines.length === 0 || document.documentElement.classList.contains("is-theming")) {
+    if (lyricLines.length === 0 || (visibility && !visibility.visible("lyrics")) ||
+        (!catchingUp && document.documentElement.classList.contains("is-theming"))) {
       return;
     }
 
@@ -616,7 +620,7 @@ export function mountHero(): void {
     if (meta.textContent !== metaText) meta.textContent = metaText;
 
     if (track.id !== lastTrackId) {
-      if (phone && lastTrackId && !panel.inert) {
+      if (phone && lastTrackId && (visibility ? visibility.visible("lyrics") : !panel.inert)) {
         slideOut(directionTo(snapshot));
       } else {
         stopSlides();
@@ -632,12 +636,41 @@ export function mountHero(): void {
     }
 
     if (!phone) fitText();
-    renderLyrics();
+    if (!visibility || visibility.visible("lyrics") || getState().lyrics !== renderedLyrics) {
+      renderLyrics();
+    }
   };
 
   subscribe(render);
   player.onChange(render);
   player.onProgress((positionMs) => highlight(positionMs));
+  if (visibility && !visibility.visible("lyrics")) {
+    panel.classList.add("is-catching-up");
+  }
+  visibility?.subscribe((view, visible) => {
+    if (view !== "lyrics") return;
+    if (catchUpFrame !== null) {
+      window.cancelAnimationFrame(catchUpFrame);
+      catchUpFrame = null;
+    }
+    if (!visible) {
+      panel.classList.add("is-catching-up");
+      stopChase();
+      stopSlides();
+      pendingDirection = 0;
+      return;
+    }
+    catchingUp = true;
+    panel.classList.add("is-catching-up");
+    highlight(player.snapshot().positionMs);
+    catchingUp = false;
+    catchUpFrame = requestAnimationFrame(() => {
+      catchUpFrame = requestAnimationFrame(() => {
+        catchUpFrame = null;
+        panel.classList.remove("is-catching-up");
+      });
+    });
+  });
   layout();
   render();
 }

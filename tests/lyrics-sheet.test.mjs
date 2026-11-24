@@ -39,6 +39,7 @@ const vite = await createServer({
 after(() => vite.close());
 
 const { mountLyricsSheet } = await vite.ssrLoadModule("/src/ui/lyrics-sheet.ts");
+const { createSheetVisibility } = await vite.ssrLoadModule("/src/ui/sheet-visibility.ts");
 
 class Element {
   listeners = new Map();
@@ -65,7 +66,7 @@ class Element {
   focus() { this.focused = true; }
 }
 
-function setup(t, { resizeObserver = true, initialHeight = 600 } = {}) {
+function setup(t, { resizeObserver = true, initialHeight = 600, visibility } = {}) {
   const context = { now: 0, reduced: false, track: { id: "one" }, state: { lyrics: [{ text: "line" }], lyricsLoading: false } };
   globalThis.__lyricsSheetTest = context;
   t.mock.method(performance, "now", () => context.now);
@@ -112,7 +113,7 @@ function setup(t, { resizeObserver = true, initialHeight = 600 } = {}) {
     observe() {}
   } : undefined;
 
-  const sheet = mountLyricsSheet();
+  const sheet = mountLyricsSheet(visibility);
   const travel = () => Number(panel.style.transform.match(/-\s*([\d.]+)px/)[1]);
   const advance = (ms) => {
     context.now += ms;
@@ -124,7 +125,59 @@ function setup(t, { resizeObserver = true, initialHeight = 600 } = {}) {
   return { context, sheet, stage, panel, grab, dockGrab, dock, carousel, frames, travel, advance, pointer };
 }
 
-test("the moving elements stay synchronized without per-frame layout or accessibility writes", (t) => {
+test("visibility catches up before the first painted frame, including drag reversals", (t) => {
+  const visibility = createSheetVisibility();
+  const { sheet, pointer, panel, grab, dockGrab, travel, advance } = setup(t, { visibility });
+  const changes = [];
+  visibility.subscribe((view, visible) => changes.push({ view, visible, paintedTravel: travel() }));
+
+  sheet.press(pointer("pointerdown", 600));
+  sheet.move(pointer("pointermove", 580));
+  assert.equal(visibility.visible("lyrics"), false);
+  advance(16);
+  assert.deepEqual(changes.shift(), { view: "lyrics", visible: true, paintedTravel: 0 });
+  assert.equal(panel.inert, true);
+  assert.equal(visibility.visible("stack"), true);
+  sheet.release(pointer("pointercancel", 580));
+  advance(1000);
+  assert.deepEqual(changes.shift(), { view: "lyrics", visible: false, paintedTravel: 20 });
+
+  dockGrab.dispatch("click", { detail: 0 });
+  advance(1000);
+  assert.equal(visibility.visible("lyrics"), true);
+  assert.equal(visibility.visible("stack"), false);
+  changes.length = 0;
+
+  grab.dispatch("pointerdown", { clientY: 0 });
+  grab.dispatch("pointermove", { clientY: 20 });
+  advance(16);
+  assert.deepEqual(changes.shift(), { view: "stack", visible: true, paintedTravel: 600 });
+  grab.dispatch("pointermove", { clientY: 0 });
+  advance(16);
+  assert.deepEqual(changes.shift(), { view: "stack", visible: false, paintedTravel: 580 });
+  grab.dispatch("pointermove", { clientY: 30 });
+  advance(16);
+  assert.deepEqual(changes.shift(), { view: "stack", visible: true, paintedTravel: 600 });
+});
+
+test("resizing during a held gesture synchronises a newly exposed stack", (t) => {
+  const visibility = createSheetVisibility();
+  const { context, panel, grab, dockGrab, travel, advance } = setup(t, { visibility });
+  dockGrab.dispatch("click");
+  advance(1000);
+  assert.equal(visibility.visible("stack"), false);
+  grab.dispatch("pointerdown", { clientY: 0 });
+  panel.clientHeight = 750;
+  context.refit();
+  assert.equal(travel(), 600);
+  assert.equal(visibility.visible("stack"), true);
+  grab.dispatch("pointerup", { clientY: 0 });
+  advance(1000);
+  assert.equal(travel(), 750);
+  assert.equal(visibility.visible("stack"), false);
+});
+
+test("the sheet, dock and queue stay joined without per-frame layout or accessibility writes", (t) => {
   const { context, stage, panel, dockGrab, dock, carousel, travel, advance } = setup(t);
   dockGrab.dispatch("click");
   const reads = context.heightReads;
@@ -140,6 +193,76 @@ test("the moving elements stay synchronized without per-frame layout or accessib
   assert.equal(context.inertWrites, inertWrites);
   assert.equal(dockGrab.attributeWrites, attributeWrites);
   assert.equal(stage.properties.has("--sheet-travel"), false);
+});
+
+test("drag events are painted once per frame and release uses the latest position", (t) => {
+  const { sheet, pointer, grab, dockGrab, dock, carousel, frames, travel, advance } = setup(t);
+  assert.equal(dockGrab.style.opacity, "1");
+  sheet.press(pointer("pointerdown", 600));
+  sheet.move(pointer("pointermove", 580));
+  sheet.move(pointer("pointermove", 560));
+  sheet.move(pointer("pointermove", 540));
+  assert.equal(frames.size, 1);
+  assert.equal(travel(), 0);
+  advance(16);
+  assert.equal(travel(), 60);
+  assert.equal(dockGrab.style.opacity, "0.5");
+
+  sheet.move(pointer("pointermove", 300));
+  advance(16);
+  assert.equal(travel(), 300);
+  assert.equal(dockGrab.style.opacity, "0");
+  assert.equal(carousel.style.transform, dock.style.transform);
+  assert.equal(carousel.style.opacity, undefined);
+  assert.equal(carousel.style.visibility, undefined);
+  sheet.move(pointer("pointermove", 400));
+  sheet.release(pointer("pointercancel", 400));
+  assert.equal(travel(), 200);
+  assert.equal(frames.size, 1);
+  advance(1000);
+  assert.equal(dockGrab.style.opacity, "0");
+  grab.dispatch("click");
+  advance(1000);
+  assert.equal(dockGrab.style.opacity, "1");
+  assert.equal(carousel.style.transform, dock.style.transform);
+});
+
+test("a quick flick after a long hold opens or closes the sheet", (t) => {
+  const { sheet, pointer, grab, dockGrab, travel, advance } = setup(t);
+  sheet.press(pointer("pointerdown", 600));
+  advance(1000);
+  sheet.move(pointer("pointermove", 580));
+  advance(20);
+  sheet.move(pointer("pointermove", 540));
+  sheet.release(pointer("pointerup", 540));
+  assert.equal(dockGrab.attributes.get("aria-expanded"), "true");
+  advance(1000);
+  assert.equal(travel(), 600);
+
+  grab.dispatch("pointerdown", { clientY: 0 });
+  advance(1000);
+  grab.dispatch("pointermove", { clientY: 20 });
+  advance(20);
+  grab.dispatch("pointermove", { clientY: 60 });
+  grab.dispatch("pointerup", { clientY: 60 });
+  assert.equal(dockGrab.attributes.get("aria-expanded"), "false");
+  advance(1000);
+  assert.equal(travel(), 0);
+});
+
+test("the final flick direction wins over the earlier drag", (t) => {
+  const { sheet, pointer, dockGrab, travel, advance } = setup(t);
+  sheet.press(pointer("pointerdown", 600));
+  advance(100);
+  sheet.move(pointer("pointermove", 300));
+  advance(120);
+  sheet.move(pointer("pointermove", 300));
+  advance(20);
+  sheet.move(pointer("pointermove", 400));
+  sheet.release(pointer("pointerup", 400));
+  assert.equal(dockGrab.attributes.get("aria-expanded"), "false");
+  advance(1000);
+  assert.equal(travel(), 0);
 });
 
 test("fast and slow upward swipes carry their own release velocity into the settle", (t) => {
@@ -237,23 +360,36 @@ test("a slow release accelerates gradually instead of surging immediately", (t) 
   advance(150);
   sheet.release(pointer("pointerup", 400));
   advance(16);
-  assert.ok(travel() > 200 && travel() < 206, `first frame: ${travel()}`);
+  assert.ok(travel() > 200 && travel() < 210, `first frame: ${travel()}`);
   advance(1000);
   assert.equal(travel(), 600);
+});
+
+test("disappearing lyrics cancel a queued drag paint", (t) => {
+  const { context, sheet, pointer, frames, travel, advance } = setup(t);
+  sheet.press(pointer("pointerdown", 600));
+  sheet.move(pointer("pointermove", 400));
+  assert.equal(frames.size, 1);
+  context.state.lyrics = [];
+  context.stateChanged();
+  assert.equal(frames.size, 1);
+  advance(1000);
+  assert.equal(travel(), 0);
+  assert.equal(frames.size, 0);
 });
 
 test("a release moving away from its target slows before reversing at the edge", (t) => {
   const { sheet, pointer, travel, advance } = setup(t);
   sheet.press(pointer("pointerdown", 600));
-  advance(20);
-  sheet.move(pointer("pointermove", 60));
+  advance(50);
+  sheet.move(pointer("pointermove", 300));
   advance(100);
-  sheet.move(pointer("pointermove", 560));
-  sheet.release(pointer("pointerup", 560));
+  sheet.move(pointer("pointermove", 340));
+  sheet.release(pointer("pointerup", 340));
   advance(8);
-  assert.ok(travel() > 0 && travel() < 40, `first frame: ${travel()}`);
+  assert.ok(travel() > 0 && travel() < 260, `first frame: ${travel()}`);
   advance(8);
-  assert.ok(travel() > 0 && travel() < 40, `second frame: ${travel()}`);
+  assert.ok(travel() > 0 && travel() < 260, `second frame: ${travel()}`);
   advance(1000);
   assert.equal(travel(), 600);
 });
@@ -292,7 +428,9 @@ test("a new drag can interrupt a settling sheet without jumping", (t) => {
   grab.dispatch("pointerdown", { clientY: 100 });
   assert.equal(frames.size, 0);
   assert.equal(travel(), opening);
+  advance(20);
   grab.dispatch("pointermove", { clientY: 150 });
+  advance(0);
   assert.equal(travel(), opening - 50);
   grab.dispatch("pointerup", { clientY: 150 });
   advance(100);
@@ -344,6 +482,7 @@ test("resizing while dragging updates the travel limit", (t) => {
   panel.clientHeight = 250;
   context.refit();
   sheet.move(pointer("pointermove", 200));
+  advance(0);
   assert.equal(travel(), 250);
   sheet.release(pointer("pointerup", 200));
   advance(1000);
@@ -365,6 +504,18 @@ test("window resize updates the sheet when ResizeObserver is unavailable", (t) =
   panel.clientHeight = 700;
   context.refit();
   assert.equal(travel(), 700);
+});
+
+test("reduced motion keeps direct dragging but settles immediately", (t) => {
+  const { context, sheet, pointer, frames, travel, advance } = setup(t);
+  context.reduced = true;
+  sheet.press(pointer("pointerdown", 600));
+  sheet.move(pointer("pointermove", 400));
+  advance(16);
+  assert.equal(travel(), 200);
+  sheet.release(pointer("pointerup", 400));
+  assert.equal(travel(), 600);
+  assert.equal(frames.size, 0);
 });
 
 test("cancelled drags and disappearing lyrics do not leave the sheet stuck", (t) => {

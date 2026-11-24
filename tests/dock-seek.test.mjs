@@ -37,10 +37,12 @@ const context = {
   seeks: [],
   toggles: 0,
   opens: 0,
+  position: 10000,
+  playing: false,
   state: { lyrics: [{}], likes: new Set(), queueOpen: false },
   player: {
     snapshot: () => ({
-      positionMs: 10000, durationMs: 120000, playing: false, shuffle: false,
+      positionMs: context.position, durationMs: 120000, playing: context.playing, shuffle: false,
       repeat: "off", volume: 70, cursor: 0, order: ["track"],
     }),
     seekFraction: (fraction) => context.seeks.push(fraction),
@@ -50,7 +52,7 @@ const context = {
     setShuffle() {},
     cycleRepeat() {},
     onProgress(callback) { context.progress = callback; },
-    onChange() {},
+    onChange(callback) { context.change = callback; },
   },
 };
 globalThis.__dockTest = context;
@@ -111,6 +113,8 @@ function setup(kind = "android") {
   context.seeks.length = 0;
   context.toggles = 0;
   context.opens = 0;
+  context.position = 10000;
+  context.playing = false;
   context.state.lyrics = [{}];
 
   const ids = [
@@ -145,9 +149,16 @@ function setup(kind = "android") {
     querySelector: (selector) => selector === ".stage" ? stage : selector === ".topbar" ? topbar : null,
     createElement: () => new FakeElement(),
   };
+  const frames = new Map();
+  let frameId = 0;
+  globalThis.requestAnimationFrame = (callback) => {
+    frames.set(++frameId, callback);
+    return frameId;
+  };
   globalThis.window = {
     innerHeight: 800,
     addEventListener: windowEvents.addEventListener.bind(windowEvents),
+    cancelAnimationFrame: (id) => frames.delete(id),
   };
 
   return { elements, controls, stage, windowEvents, fill, edge };
@@ -175,6 +186,7 @@ const vite = await createServer({
 });
 after(() => vite.close());
 const { mountDock } = await vite.ssrLoadModule("/src/ui/dock.ts");
+const { createSheetVisibility } = await vite.ssrLoadModule("/src/ui/sheet-visibility.ts");
 
 function pointer(target, x, y) {
   return { target, clientX: x, clientY: y, pointerId: 1, button: 0 };
@@ -183,6 +195,39 @@ function pointer(target, x, y) {
 function sheetTravel(elements) {
   return Number(elements["lyrics-panel"].style.transform.match(/-\s*([\d.]+)px/)[1]);
 }
+
+test("hidden dock catches up to playback and controls before the stack returns", () => {
+  const visibility = createSheetVisibility();
+  const { elements, fill } = setup();
+  mountDock(visibility);
+  const previous = fill.style.transform;
+  visibility.update(500, 500);
+  context.position = 60000;
+  context.playing = true;
+  context.progress(context.position, 120000);
+  context.change();
+  assert.equal(fill.style.transform, previous);
+  assert.equal(elements.play.classList.contains("is-playing"), false);
+
+  const writes = [];
+  let transform = fill.style.transform;
+  Object.defineProperty(fill.style, "transform", {
+    get: () => transform,
+    set: (value) => {
+      transform = value;
+      writes.push({ value, catchingUp: elements.dock.classList.contains("is-catching-up") });
+    },
+  });
+  visibility.update(499, 500);
+  assert.equal(fill.style.transform, "scaleX(0.5)");
+  assert.equal(elements["time-now-phone"].textContent, "60000");
+  assert.equal(elements.play.classList.contains("is-playing"), true);
+  assert.ok(writes.length > 0 && writes.every((write) => write.catchingUp));
+  assert.equal(elements.dock.classList.contains("is-catching-up"), false);
+  context.progress(90000, 120000);
+  assert.equal(fill.style.transform, "scaleX(0.75)");
+  assert.equal(writes.at(-1).catchingUp, false);
+});
 
 test("playback and seek previews update only the progress elements", () => {
   const { elements, windowEvents, fill, edge } = setup("desktop");

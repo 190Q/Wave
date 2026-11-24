@@ -1,6 +1,7 @@
 import { createVelocitySampler, springStep } from "../lib/drag-motion";
 import { reduceMotionActive, subscribeMotion } from "../lib/motion";
 import { currentTrack, getState, player, subscribe } from "../lib/state";
+import type { SheetVisibility } from "./sheet-visibility";
 
 /** How far the finger moves before a press counts as a drag. */
 const DRAG_SLOP_PX = 12;
@@ -11,14 +12,10 @@ const VERTICAL_RATIO = 1.5;
 /** How much of the way up the sheet has to be before it stays there. */
 const OPEN_SHARE = 0.25;
 
-/** How long a drag may last and still count as a flick rather than a drag. */
-const FLICK_MS = 300;
-
-/** How far a flick has to travel before it settles the way it was going. */
-const FLICK_DISTANCE_PX = 40;
-
 const VELOCITY_WINDOW_MS = 100;
-const SETTLE_RATE = 10;
+const RELEASE_PROJECTION_SEC = 0.24;
+const FLICK_DISTANCE_PX = 40;
+const SETTLE_RATE = 14;
 const SETTLE_DISTANCE_PX = 0.5;
 const SETTLE_SPEED_PX = 5;
 const REVERSE_BRAKE_SEC = 0.08;
@@ -39,7 +36,7 @@ export interface LyricsSheet {
  * dock and the queue are pushed up in front of it, and the sheet fills the frame
  * from under the top bar down.
  */
-export function mountLyricsSheet(): LyricsSheet | null {
+export function mountLyricsSheet(visibility?: SheetVisibility): LyricsSheet | null {
   const stage = document.querySelector<HTMLElement>(".stage");
   const topbar = document.querySelector<HTMLElement>(".topbar");
   const panel = document.getElementById("lyrics-panel");
@@ -55,6 +52,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
 
   /** How far the stack has been pushed up, in pixels. */
   let travel = 0;
+  let paintedTravel = 0;
   let height = 0;
   let open = false;
   let wantedOpen = false;
@@ -64,6 +62,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
   let grabMoved = false;
   let suppressOpenClick = false;
   let suppressCloseClick = false;
+  let dragFrame: number | null = null;
   let settleFrame: number | null = null;
   let settleAt = 0;
   let settleVelocity = 0;
@@ -74,9 +73,6 @@ export function mountLyricsSheet(): LyricsSheet | null {
   let originY = 0;
   let originTravel = 0;
   const dragVelocity = createVelocitySampler(VELOCITY_WINDOW_MS);
-  /** When the drag in hand began, which is what makes a flick a flick. */
-  let startedAt = 0;
-
   /** The room the sheet has, which is what it takes to push the stack clear. */
   const room = (): number => height;
   const measureRoom = (): void => { height = panel.clientHeight; };
@@ -85,10 +81,14 @@ export function mountLyricsSheet(): LyricsSheet | null {
   const wanted = (): boolean => getState().lyrics.length > 0;
 
   const paint = (): void => {
+    visibility?.update(travel, height);
     panel.style.transform = `translateY(calc(100% - ${travel}px))`;
     const shift = `translateY(${-travel}px)`;
     dock.style.transform = shift;
     carousel.style.transform = shift;
+    const progress = height > 0 ? Math.min(Math.max(travel / height, 0), 1) : 0;
+    dockGrab.style.opacity = String(1 - Math.min(progress / 0.2, 1));
+    paintedTravel = travel;
   };
 
   const paintOpen = (): void => {
@@ -98,8 +98,24 @@ export function mountLyricsSheet(): LyricsSheet | null {
 
   const dragTo = (next: number): void => {
     const limit = room();
-    travel = Math.min(Math.max(next, 0), limit);
-    paint();
+    const clamped = Math.min(Math.max(next, 0), limit);
+    if (clamped === travel) {
+      return;
+    }
+    travel = clamped;
+    if (dragFrame === null) {
+      dragFrame = requestAnimationFrame(() => {
+        dragFrame = null;
+        paint();
+      });
+    }
+  };
+
+  const stopDragPaint = (): void => {
+    if (dragFrame !== null) {
+      window.cancelAnimationFrame(dragFrame);
+      dragFrame = null;
+    }
   };
 
   const stopSettle = (): boolean => {
@@ -167,6 +183,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
   };
 
   const settleTo = (next: boolean, velocity = 0, remember = true): void => {
+    stopDragPaint();
     stopSettle();
     measureRoom();
     open = next;
@@ -203,17 +220,12 @@ export function mountLyricsSheet(): LyricsSheet | null {
   /** A drag that lifts the stack also lifts the sheet, so the two stay joined. */
   const travelTo = (clientY: number): void => dragTo(originTravel + (originY - clientY));
 
-  /**
-   * Where the sheet settles when the finger comes off: a flick goes the way it
-   * was flicked, and anything slower has to have carried the sheet most of the
-   * way before it stays there.
-   */
   const settle = (velocity: number): void => {
-    const travelled = travel - originTravel;
-    const far = Math.abs(travelled) >= room() * OPEN_SHARE;
-    const quick = performance.now() - startedAt < FLICK_MS;
-    const flicked = quick && Math.abs(travelled) >= FLICK_DISTANCE_PX;
-    settleTo(far || flicked ? travelled > 0 : open, velocity);
+    const distance = travel - originTravel;
+    const projected = distance + (Math.abs(distance) >= FLICK_DISTANCE_PX ? velocity * RELEASE_PROJECTION_SEC : 0);
+    const threshold = room() * OPEN_SHARE;
+    const next = projected > threshold ? true : projected < -threshold ? false : open;
+    settleTo(next, velocity);
   };
 
   const press = (event: PointerEvent): void => {
@@ -227,7 +239,6 @@ export function mountLyricsSheet(): LyricsSheet | null {
     originX = event.clientX;
     originY = event.clientY;
     originTravel = travel;
-    startedAt = performance.now();
     dragVelocity.reset(travel);
   };
 
@@ -296,7 +307,6 @@ export function mountLyricsSheet(): LyricsSheet | null {
     suppressCloseClick = false;
     originY = event.clientY;
     originTravel = travel;
-    startedAt = performance.now();
     dragVelocity.reset(travel);
     grab.setPointerCapture(event.pointerId);
   });
@@ -351,6 +361,7 @@ export function mountLyricsSheet(): LyricsSheet | null {
     root.style.setProperty("--phone-topbar", `${topbar.offsetHeight}px`);
     measureRoom();
     if (dragging || owns || settleFrame !== null) {
+      visibility?.update(paintedTravel, height);
       return;
     }
     travel = open ? room() : 0;

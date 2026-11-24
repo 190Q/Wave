@@ -33,6 +33,17 @@ test("phone queue and lyrics remain available on narrow screens", async () => {
   assert.equal(declarations(`${prefix} .lyrics`)["mask-image"], "none");
   assert.equal(declarations(`${prefix} .lyrics[hidden]`).display, "none");
   assert.equal(declarations(`${prefix} .dock-grab[hidden]`).display, "none");
+  assert.equal(declarations(`${prefix} .dock`)["backdrop-filter"], "none");
+  assert.equal(declarations(`${prefix} .dock`)["-webkit-backdrop-filter"], "none");
+});
+
+test("only the Android carousel receives a compositor hint for sheet travel", async () => {
+  const css = parse(await readFile(new URL("../src/styles/android.css", import.meta.url), "utf8"));
+  const hints = [];
+  css.walkDecls("will-change", (declaration) => {
+    hints.push({ selector: declaration.parent.selector, value: declaration.value });
+  });
+  assert.deepEqual(hints, [{ selector: '[data-device="android"] .carousel', value: "transform" }]);
 });
 
 test("application and simulator expose the lyrics button as an expandable control", async () => {

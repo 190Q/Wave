@@ -66,6 +66,11 @@
   will-change: transform;
 }
 
+.carousel.is-catching-up .card,
+.carousel.is-catching-up .card-body {
+  transition: none !important;
+}
+
 .card-body {
   position: relative;
   width: 100%;

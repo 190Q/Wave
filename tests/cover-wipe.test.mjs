@@ -51,7 +51,7 @@ globalThis.document = {
     return overlay;
   },
 };
-const { coverWipe, setCoverStyle, themeWipe } = await vite.ssrLoadModule("/src/ui/wipe.ts");
+const { coverWipe, finishCoverWipe, setCoverStyle, themeWipe } = await vite.ssrLoadModule("/src/ui/wipe.ts");
 
 function body() {
   return {
@@ -81,6 +81,20 @@ test("superseded wipes cannot overwrite a newer cover", async () => {
   await Promise.resolve();
   assert.equal(element.style, "latest");
   assert.ok(element.overlays.every((overlay) => overlay.removed));
+});
+
+test("settling a hidden cover cancels its wipe and retains the intended cover", async () => {
+  context.reduced = false;
+  const element = body();
+  coverWipe([{ body: element, style: "ready" }]);
+  const animation = animations.at(-1);
+  finishCoverWipe(element);
+  assert.equal(animation.cancelled, true);
+  assert.equal(element.style, "ready");
+  assert.equal(element.overlays[0].removed, true);
+  animation.resolve();
+  await Promise.resolve();
+  assert.equal(element.style, "ready");
 });
 
 test("backgrounding settles active wipes and applies later changes without animation", async () => {

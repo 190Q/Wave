@@ -75,6 +75,10 @@ html:is([data-device="android"], [data-device="linuxPhone"]) {
   transition: none;
 }
 
+[data-device="android"] .carousel {
+  will-change: transform;
+}
+
 /* The cards were laid out around a zero width carousel; now they are laid out
    around the middle of a full width block. */
 :is([data-device="android"], [data-device="linuxPhone"]) .carousel-live,
@@ -100,6 +104,8 @@ html:is([data-device="android"], [data-device="linuxPhone"]) {
   padding: 1rem calc(1.25rem + var(--inset-right)) calc(0.7rem + var(--inset-bottom))
     calc(1.25rem + var(--inset-left));
   transform: translateY(0);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   touch-action: none;
   overflow: visible;
 }

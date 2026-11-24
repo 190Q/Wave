@@ -42,7 +42,9 @@ const mocks = {
     export const mayRevealArtwork = () => context.kind === "desktop" || context.ready;
     export const ensureColour = () => {};
     export const prefetchArtwork = (ids) => context.prefetches.push(ids);
-    export const prioritizeNearbyArtwork = () => {};
+    export const prioritizeNearbyArtwork = (order, cursor, looping) => {
+      context.priority = { order, cursor, looping };
+    };
     export const pruneArtworkQueue = (window, queue) => { context.pruned = { window, queue }; };
     export const stepTrack = () => {};
   `,
@@ -56,6 +58,7 @@ const mocks = {
   "./library": "export const openTrackMenu = () => {};",
   "./wipe": `
     export const coverWipe = (swaps) => globalThis.__queueAnimationTest.swaps.push(swaps);
+    export const finishCoverWipe = () => {};
     export const setCoverStyle = (body, style) => body.setAttribute("style", style);
   `,
 };
@@ -143,7 +146,7 @@ function snapshot(sourceId, count, cursor = 0) {
     get queueRevision() { return this.order.join("|"); } };
 }
 
-function setup(kind = "android", observeSize = false) {
+function setup(kind = "android", observeSize = false, visibility) {
   context.kind = kind;
   context.state = { queueOpen: true, collections: [] };
   context.ready = true;
@@ -153,6 +156,7 @@ function setup(kind = "android", observeSize = false) {
   context.swaps = [];
   context.prefetches = [];
   context.pruned = null;
+  context.priority = null;
   context.snapshot = snapshot("first", 30);
   const carousel = new FakeElement();
   const stage = new FakeElement();
@@ -204,11 +208,68 @@ function setup(kind = "android", observeSize = false) {
       if (this.observed.has(element)) this.callback();
     }
   } : undefined;
-  mountQueue();
-  return { live: carousel.children[0], wash: carousel.children[1], frames, timers, root, stage, dock, titlebar, resizeObserver };
+  mountQueue(visibility);
+  return { carousel, live: carousel.children[0], wash: carousel.children[1], frames, timers, root, stage, dock, titlebar, resizeObserver };
 }
 
 const { mountQueue } = await vite.ssrLoadModule("/src/ui/queue.ts");
+const { createSheetVisibility } = await vite.ssrLoadModule("/src/ui/sheet-visibility.ts");
+
+test("an unchanged hidden queue stops transitions without rendering again on reveal", () => {
+  const visibility = createSheetVisibility();
+  const { carousel, live } = setup("android", false, visibility);
+  const original = [...live.children];
+  const renders = context.swaps.length;
+  visibility.update(600, 600);
+  assert.equal(carousel.classList.contains("is-catching-up"), true);
+  visibility.update(599, 600);
+  assert.equal(carousel.classList.contains("is-catching-up"), false);
+  assert.deepEqual(live.children, original);
+  assert.equal(context.swaps.length, renders);
+});
+
+test("hidden queue keeps artwork prioritised and catches up without a sweep or card animation", () => {
+  for (const kind of ["android", "linuxPhone"]) {
+    const visibility = createSheetVisibility();
+    const { live, wash, frames } = setup(kind, false, visibility);
+    const original = [...live.children];
+    visibility.update(600, 600);
+    context.snapshot = snapshot("second", 30, 20);
+    context.ready = false;
+    context.change();
+    assert.deepEqual(live.children, original);
+    assert.equal(context.priority.cursor, 20);
+    assert.equal(context.priority.order, context.snapshot.order);
+
+    context.ready = true;
+    context.change();
+    assert.deepEqual(live.children, original);
+    visibility.update(599, 600);
+    const current = live.children.find((card) => card.dataset.trackId === "second-20");
+    assert.ok(current);
+    assert.equal(current.querySelector(".card-body").style, "url-second-20");
+    assert.equal(current.style.transition, "");
+    assert.ok(live.children.every((card) => !card.classList.contains("is-entering")));
+    assert.equal(wash.children.length, 0);
+    assert.equal(frames.size, 0);
+    assert.deepEqual(context.swaps.at(-1), []);
+  }
+});
+
+test("artwork still loading at reveal appears later without an old wipe", () => {
+  const visibility = createSheetVisibility();
+  const { live } = setup("linuxPhone", false, visibility);
+  visibility.update(600, 600);
+  context.snapshot = snapshot("second", 30, 20);
+  context.ready = false;
+  context.change();
+  visibility.update(599, 600);
+  context.ready = true;
+  context.change();
+  const current = live.children.find((card) => card.dataset.trackId === "second-20");
+  assert.equal(current?.querySelector(".card-body").style, "url-second-20");
+  assert.deepEqual(context.swaps.at(-1), []);
+});
 
 test("WebKitGTK desktop requests visible artwork without prefetching the entire queue", () => {
   const { live } = setup("desktop");

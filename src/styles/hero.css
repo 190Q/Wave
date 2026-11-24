@@ -109,6 +109,11 @@
   transition: none;
 }
 
+.lyrics.is-catching-up .lyrics-track,
+.lyrics.is-catching-up .lyric {
+  transition: none;
+}
+
 .lyric {
   display: flex;
   align-items: center;

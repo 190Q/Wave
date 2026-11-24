@@ -15,6 +15,7 @@ import {
 } from "../lib/state";
 import { mountLyricsSheet, type LyricsSheet } from "./lyrics-sheet";
 import { openSeekTime } from "./seek-time";
+import type { SheetVisibility } from "./sheet-visibility";
 import { mountTouch } from "./touch";
 
 
@@ -27,7 +28,7 @@ export function stepVolumeFromKey(direction: number): void {
   stepVolume(direction);
 }
 
-export function mountDock(): void {
+export function mountDock(visibility?: SheetVisibility): void {
   const dock = element("dock");
   const controls = dock?.querySelector<HTMLElement>(".dock-row");
   const fill = dock?.querySelector<HTMLElement>(".dock-fill");
@@ -58,10 +59,11 @@ export function mountDock(): void {
   timeNow.addEventListener("click", () => {
     if (device() === "desktop") openSeekTime();
   });
-  const sheet: LyricsSheet | null = device() !== "desktop" ? mountLyricsSheet() : null;
+  const sheet: LyricsSheet | null = device() !== "desktop" ? mountLyricsSheet(visibility) : null;
 
   let scrubbing = false;
   let scrubFraction = 0;
+  let catchingUp = false;
 
   const setProgress = (fraction: number): void => {
     fill.style.transform = `scaleX(${fraction})`;
@@ -299,7 +301,8 @@ export function mountDock(): void {
   });
 
   const paintProgress = (positionMs: number, durationMs: number): void => {
-    if (document.documentElement.classList.contains("is-theming") || scrubbing) {
+    if ((visibility && !visibility.visible("stack")) ||
+        (!catchingUp && document.documentElement.classList.contains("is-theming")) || scrubbing) {
       return;
     }
     const fraction = durationMs > 0 ? Math.min(positionMs / durationMs, 1) : 0;
@@ -316,6 +319,7 @@ export function mountDock(): void {
   play.replaceChildren(swap);
 
   const renderTransport = (): void => {
+    if (visibility && !visibility.visible("stack")) return;
     const snapshot = player.snapshot();
     const track = currentTrack();
     const idle = !track;
@@ -368,6 +372,15 @@ export function mountDock(): void {
   player.onProgress(paintProgress);
   player.onChange(renderTransport);
   subscribe(renderTransport);
+  visibility?.subscribe((view, visible) => {
+    if (view !== "stack" || !visible) return;
+    catchingUp = true;
+    dock.classList.add("is-catching-up");
+    renderTransport();
+    void dock.offsetWidth;
+    dock.classList.remove("is-catching-up");
+    catchingUp = false;
+  });
   renderTransport();
 }
 

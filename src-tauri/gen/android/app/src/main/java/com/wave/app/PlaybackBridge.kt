@@ -19,7 +19,7 @@ internal fun registerPlaybackBridge(view: WebView, receive: (PlaybackUpdate) -> 
     origins.add("http://10.0.2.2:1420")
   }
   try {
-    WebViewCompat.addWebMessageListener(view, "wavePlayback", origins) { _, message, _, mainFrame, _ ->
+    WebViewCompat.addWebMessageListener(view, "wavePlayback", origins) { _, message, _, mainFrame, reply ->
       if (!mainFrame) return@addWebMessageListener
       try {
         val json = JSONObject(message.data ?: return@addWebMessageListener)
@@ -40,6 +40,8 @@ internal fun registerPlaybackBridge(view: WebView, receive: (PlaybackUpdate) -> 
               }
             }
             receive(PlaybackUpdate.NowPlaying(song))
+            val revision = json.optLong("revision", 0)
+            if (revision > 0) reply.postMessage(revision.toString())
           }
           "queue" -> {
             val tracks = json.getJSONArray("tracks")

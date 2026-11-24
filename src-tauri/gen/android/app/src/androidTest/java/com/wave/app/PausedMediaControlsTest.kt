@@ -363,6 +363,7 @@ class PausedMediaControlsTest {
       view.loadDataWithBaseURL("https://tauri.localhost/", """
         <script>
           const audio = new Audio("data:audio/wav;base64,$sound");
+          wavePlayback.onmessage = (event) => test.acknowledged(event.data);
           audio.addEventListener("timeupdate", () => {
             if (audio.currentTime > 0) test.started();
           });
@@ -371,7 +372,7 @@ class PausedMediaControlsTest {
             if (event.detail.action === "play") {
               audio.play();
               wavePlayback.postMessage(JSON.stringify({
-                type: "song", song: { title: "Track", playing: true, positionMs: 1250 }
+                type: "song", revision: 7, song: { title: "Track", playing: true, positionMs: 1250 }
               }));
             }
           });
@@ -394,6 +395,8 @@ class PausedMediaControlsTest {
       assertEquals("play", probe.action)
       assertTrue(probe.started.await(15, TimeUnit.SECONDS))
       assertTrue(probe.updated.await(10, TimeUnit.SECONDS))
+      assertTrue(probe.acknowledged.await(10, TimeUnit.SECONDS))
+      assertEquals("7", probe.revision)
       assertTrue(MediaPlayback.playing)
       assertEquals("Pause", MediaPlayback.current!!.actions[1].title.toString())
     } finally {
@@ -488,9 +491,11 @@ class PausedMediaControlsTest {
     val control = CountDownLatch(1)
     val started = CountDownLatch(1)
     val updated = CountDownLatch(1)
+    val acknowledged = CountDownLatch(1)
     val queue = CountDownLatch(1)
     @Volatile var action: String? = null
     @Volatile var queueSize = 0
+    @Volatile var revision: String? = null
 
     @JavascriptInterface fun ready() { ready.countDown() }
     @JavascriptInterface fun control(value: String) {
@@ -498,6 +503,10 @@ class PausedMediaControlsTest {
       control.countDown()
     }
     @JavascriptInterface fun started() { started.countDown() }
+    @JavascriptInterface fun acknowledged(value: String) {
+      revision = value
+      acknowledged.countDown()
+    }
   }
 
   class BackgroundPlaybackProbe(expectedControls: Int = 1) {

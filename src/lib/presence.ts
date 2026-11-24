@@ -25,6 +25,8 @@ const POSITION_INTERVAL_MS = 1000;
 /** How far the position has to move before it is worth sending again. */
 const POSITION_STEP_MS = 900;
 
+const ANDROID_RETRY_MS = 5_000;
+
 /** How far one fast forward or rewind step moves. */
 const SEEK_STEP_MS = 10_000;
 
@@ -33,7 +35,10 @@ const QUEUE_LIMIT = 50;
 
 declare global {
   interface Window {
-    wavePlayback?: { postMessage(message: string): void };
+    wavePlayback?: {
+      postMessage(message: string): void;
+      onmessage: ((event: MessageEvent<string>) => void) | null;
+    };
   }
 }
 
@@ -58,8 +63,67 @@ export function mountPresence(): void {
   let lastPlaying: boolean | undefined;
   let playbackRetry = false;
   let playbackWrites = Promise.resolve();
+  let androidBridge: Window["wavePlayback"];
+  let androidSong: NowPlaying | null | undefined;
+  let androidRevision = 0;
+  let awaitingAndroidRevision = 0;
+  let androidRetry: number | null = null;
   const webkitSession = isWebKitGtk && !isAndroidPlatform && isTauri() ? navigator.mediaSession : null;
   let webkitMetadata = "";
+
+  const forgetAndroidBridge = (): void => {
+    androidBridge = undefined;
+    androidSong = undefined;
+    awaitingAndroidRevision = 0;
+    if (androidRetry !== null) {
+      window.clearTimeout(androidRetry);
+      androidRetry = null;
+    }
+  };
+
+  const sendAndroidSong = (song: NowPlaying | null): boolean => {
+    const bridge = isAndroidPlatform ? window.wavePlayback : undefined;
+    if (!bridge) {
+      forgetAndroidBridge();
+      return false;
+    }
+    if (bridge !== androidBridge) {
+      forgetAndroidBridge();
+      androidBridge = bridge;
+      bridge.onmessage = (event) => {
+        const revision = Number(event.data);
+        if (bridge === androidBridge && awaitingAndroidRevision > 0 &&
+            Number.isSafeInteger(revision) && revision >= awaitingAndroidRevision && revision <= androidRevision) {
+          awaitingAndroidRevision = 0;
+          if (androidRetry !== null) {
+            window.clearTimeout(androidRetry);
+            androidRetry = null;
+          }
+        }
+      };
+    }
+
+    const revision = ++androidRevision;
+    if (androidSong === undefined || !sameMediaState(song, androidSong)) {
+      awaitingAndroidRevision = revision;
+    }
+    androidSong = song;
+    const update = awaitingAndroidRevision > 0 ? { type: "song", song, revision } : { type: "song", song };
+    if (!sendAndroidUpdate(update)) {
+      forgetAndroidBridge();
+      return false;
+    }
+    if (awaitingAndroidRevision > 0 && androidRetry === null) {
+      androidRetry = window.setTimeout(() => {
+        androidRetry = null;
+        if (awaitingAndroidRevision > 0) {
+          sent = undefined;
+          sync();
+        }
+      }, ANDROID_RETRY_MS);
+    }
+    return true;
+  };
 
   const syncTimer = (): void => {
     const needed = showing() && (player.snapshot().playing || retryNeeded || playbackRetry);
@@ -83,7 +147,7 @@ export function mountPresence(): void {
       const { song } = pending;
       pending = null;
       try {
-        if (!sendAndroidUpdate({ type: "song", song })) {
+        if (!sendAndroidSong(song)) {
           await setNowPlaying(song);
         }
       } catch {
@@ -259,23 +323,24 @@ function nowPlaying(): NowPlaying | null {
 
 /** True when the surfaces would be showing something other than what they hold. */
 function worthSending(next: NowPlaying | null, last: NowPlaying | null): boolean {
-  if (!next || !last) {
-    return next !== last;
-  }
-
-  if (
-    next.title !== last.title ||
-    next.artist !== last.artist ||
-    next.album !== last.album ||
-    next.artwork !== last.artwork ||
-    next.colour !== last.colour ||
-    next.durationMs !== last.durationMs ||
-    next.playing !== last.playing
-  ) {
+  if (!sameMediaState(next, last)) {
     return true;
   }
+  return next !== null && last !== null && Math.abs(next.positionMs - last.positionMs) >= POSITION_STEP_MS;
+}
 
-  return Math.abs(next.positionMs - last.positionMs) >= POSITION_STEP_MS;
+function sameMediaState(next: NowPlaying | null, last: NowPlaying | null): boolean {
+  if (!next || !last) {
+    return next === last;
+  }
+
+  return next.title === last.title &&
+    next.artist === last.artist &&
+    next.album === last.album &&
+    next.artwork === last.artwork &&
+    next.colour === last.colour &&
+    next.durationMs === last.durationMs &&
+    next.playing === last.playing;
 }
 
 /** Runs whatever the system's own controls asked for. */

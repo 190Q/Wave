@@ -131,6 +131,8 @@ function setup(PlayerClass = Player, mount = mountPresence, controls = true, sen
   context.nextFrame = 1;
   context.intervals = new Map();
   context.nextInterval = 1;
+  context.timeouts = new Map();
+  context.nextTimeout = 1;
   context.control = null;
   context.apiControl = null;
   context.androidControl = null;
@@ -144,6 +146,7 @@ function setup(PlayerClass = Player, mount = mountPresence, controls = true, sen
   context.sendPlayback = null;
   context.subscribers = [];
   context.bridgeMessages = [];
+  context.ackBridge = true;
   context.tauri = tauri;
   context.mediaActions = new Map();
   context.settings = { systemMediaControls: controls, discordPresence: false, localApiEnabled: true };
@@ -175,12 +178,27 @@ function setup(PlayerClass = Player, mount = mountPresence, controls = true, sen
       return id;
     },
     clearInterval: (id) => context.intervals.delete(id),
+    setTimeout: (callback) => {
+      const id = context.nextTimeout++;
+      context.timeouts.set(id, callback);
+      return id;
+    },
+    clearTimeout: (id) => context.timeouts.delete(id),
     addEventListener: (name, callback) => {
       if (name === "wave:media-control") context.androidControl = callback;
     },
   };
   if (bridge) {
-    window.wavePlayback = { postMessage: (message) => context.bridgeMessages.push(JSON.parse(message)) };
+    window.wavePlayback = {
+      onmessage: null,
+      postMessage(message) {
+        const update = JSON.parse(message);
+        context.bridgeMessages.push(update);
+        if (context.ackBridge && update.type === "song" && update.revision !== undefined) {
+          this.onmessage?.({ data: String(update.revision) });
+        }
+      },
+    };
   }
   globalThis.requestAnimationFrame = (callback) => {
     const id = context.nextFrame++;
@@ -192,6 +210,7 @@ function setup(PlayerClass = Player, mount = mountPresence, controls = true, sen
 
   let player;
   const engine = new AudioEngine({
+    onEnded: () => player.handleEnded(),
     onPause: () => player.handlePaused(),
     onPlaying: () => player.handlePlaying(),
   });
@@ -214,6 +233,12 @@ function press(action, value) {
 
 function tickIntervals() {
   for (const callback of [...context.intervals.values()]) callback();
+}
+
+function tickTimeouts() {
+  for (const [id, callback] of [...context.timeouts]) {
+    if (context.timeouts.delete(id)) callback();
+  }
 }
 
 function finishFrames() {
@@ -306,6 +331,62 @@ test("Android media controls stop at the interrupted position and resume without
   assert.equal(engine.element, audio);
   assert.equal(audio.volume, 1);
   assert.equal(player.snapshot().playing, true);
+});
+
+test("Android retries the latest unacknowledged song after a background track change", () => {
+  const { engine, player } = setup(AndroidPlayer, mountAndroidPresence, false, null, true);
+  document.hidden = true;
+  document.dispatch("visibilitychange");
+  context.ackBridge = false;
+
+  engine.element.ended = true;
+  engine.element.emit("ended");
+  assert.equal(player.currentId, "two");
+  const second = context.bridgeMessages.filter((message) => message.type === "song").at(-1);
+  assert.equal(second.song.title, "two");
+  assert.equal(context.timeouts.size, 1);
+
+  player.next();
+  player.pause();
+  const paused = context.bridgeMessages.filter((message) => message.type === "song").at(-1);
+  assert.equal(paused.song.title, "three");
+  assert.equal(paused.song.playing, false);
+
+  window.wavePlayback.onmessage({ data: String(second.revision) });
+  assert.equal(context.timeouts.size, 1);
+  context.ackBridge = true;
+  tickTimeouts();
+  const retried = context.bridgeMessages.filter((message) => message.type === "song").at(-1);
+  assert.equal(retried.song.title, "three");
+  assert.equal(retried.song.playing, false);
+  assert.equal(context.timeouts.size, 0);
+});
+
+test("Android retries a missed clear until it is acknowledged", () => {
+  const { player } = setup(AndroidPlayer, mountAndroidPresence, false, null, true);
+  context.ackBridge = false;
+  player.setQueue("empty", "Empty", []);
+  const clear = context.bridgeMessages.filter((message) => message.type === "song").at(-1);
+  assert.equal(clear.song, null);
+  assert.equal(context.timeouts.size, 1);
+  tickTimeouts();
+  const retried = context.bridgeMessages.filter((message) => message.type === "song").at(-1);
+  assert.equal(retried.song, null);
+  assert.equal(context.timeouts.size, 1);
+  window.wavePlayback.onmessage({ data: String(retried.revision) });
+  assert.equal(context.timeouts.size, 0);
+});
+
+test("Android falls back to Tauri when the direct bridge fails", async () => {
+  const { player } = setup(AndroidPlayer, mountAndroidPresence, false, null, true);
+  context.ackBridge = false;
+  player.next();
+  assert.equal(context.timeouts.size, 1);
+  window.wavePlayback.postMessage = () => { throw new Error("bridge unavailable"); };
+  player.next();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.songs.at(-1).title, "three");
+  assert.equal(context.timeouts.size, 0);
 });
 
 test("Android updates the media session without waiting for Tauri acknowledgements", () => {
@@ -528,6 +609,7 @@ test("visual progress frames do not repeatedly send media presence", () => {
   assert.equal(context.bridgeMessages.length, count);
   tickIntervals();
   assert.equal(context.bridgeMessages.length, count + 1);
+  assert.equal(context.bridgeMessages.at(-1).revision, undefined);
 });
 
 test("the visual clock parks while hidden without losing listening time", (t) => {

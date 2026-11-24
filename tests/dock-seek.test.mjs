@@ -437,6 +437,22 @@ test("desktop mouse seeking still works across the dock", () => {
   assert.deepEqual(context.seeks, [0.75]);
 });
 
+test("non-primary mouse buttons do not preview or seek", () => {
+  const { elements, windowEvents, fill } = setup("desktop");
+  mountDock();
+  const progress = fill.style.transform;
+
+  for (const button of [1, 2]) {
+    elements.dock.dispatch("pointerdown", { ...pointer(elements.dock, 300, 150), button });
+    windowEvents.dispatch("pointermove", pointer(elements.dock, 350, 150));
+    windowEvents.dispatch("pointerup", { ...pointer(elements.dock, 350, 150), button });
+    assert.equal(elements.dock.classList.contains("is-scrubbing"), false);
+    assert.equal(elements.dock.hasPointerCapture(1), false);
+    assert.equal(fill.style.transform, progress);
+    assert.deepEqual(context.seeks, []);
+  }
+});
+
 test("the elapsed time opens the dialog on desktop without scrubbing", () => {
   const { elements, windowEvents } = setup("desktop");
   mountDock();

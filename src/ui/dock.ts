@@ -109,6 +109,9 @@ export function mountDock(visibility?: SheetVisibility): void {
   let suppressControlClick = false;
 
   dock.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) {
+      return;
+    }
     suppressControlClick = false;
     if (event.clientY >= window.innerHeight - insets().bottom) {
       return;

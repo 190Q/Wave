@@ -130,7 +130,13 @@ function mountStatus(): void {
 }
 
 function mountShortcuts(): void {
-  window.addEventListener("contextmenu", (event) => event.preventDefault());
+  window.addEventListener("contextmenu", (event) => {
+    const target = event.target;
+    if (isTouch() && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
+      return;
+    }
+    event.preventDefault();
+  });
 
   window.addEventListener("dragover", (event) => event.preventDefault());
   window.addEventListener("drop", (event) => event.preventDefault());

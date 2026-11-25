@@ -123,7 +123,7 @@ test("Android and desktop show the same release details, actions and progress", 
     mountUpdate();
     openUpdate();
     assert.equal(context.checks, 0);
-    assert.match(elements["update-body"].innerHTML, /New in this release/);
+    assert.match(elements["update-body"].innerHTML, /What's new/);
     assert.match(elements["update-body"].innerHTML, /A new feature &lt;safe&gt;/);
     assert.equal(elements["update-release"].hidden, false);
     assert.equal(elements["update-install"].hidden, false);

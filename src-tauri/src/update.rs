@@ -37,7 +37,7 @@ pub struct UpdateInfo {
     pub version: String,
     /// The release page, for a manual download.
     pub url: String,
-    /// The lines under the release's `New features` heading.
+    /// The lines under the release's `Release notes` or legacy `New features` heading.
     pub features: Vec<String>,
     /// When the release was published, as RFC 3339.
     pub published_at: String,
@@ -344,7 +344,7 @@ fn version_parts(version: &str) -> Vec<u64> {
         .collect()
 }
 
-/// The lines of the release body's `New features` list.
+/// The lines of the release body's release notes list.
 fn feature_lines(body: &str) -> Vec<String> {
     let mut features = Vec::new();
     let mut after_heading = false;
@@ -352,7 +352,11 @@ fn feature_lines(body: &str) -> Vec<String> {
     for line in body.lines() {
         let line = line.trim();
         if !after_heading {
-            after_heading = line.starts_with("## New features");
+            after_heading =
+                line.starts_with("## Release notes") || line.starts_with("## New features");
+            continue;
+        }
+        if line == "<!--" || line == "## New features -->" {
             continue;
         }
         if let Some(feature) = line.strip_prefix("- ") {
@@ -602,7 +606,7 @@ mod tests {
     #[test]
     fn the_feature_list_is_read_from_the_release_notes() {
         let body = "\
-## New features
+## Release notes
 
 - Added a queue
 - Fixed a bug
@@ -618,9 +622,25 @@ Installers for Windows and Linux.
 
     #[test]
     fn a_heading_with_a_note_after_it_still_counts() {
-        let body = "## New features (0.1.5)\n\n- Added a queue\n";
+        let body = "## Release notes (0.1.5)\n\n- Added a queue\n";
 
         assert_eq!(feature_lines(body), vec!["Added a queue".to_string()]);
+    }
+
+    #[test]
+    fn the_legacy_feature_heading_is_still_read() {
+        let body = "## New features\n\n- Added a queue\n";
+
+        assert_eq!(feature_lines(body), vec!["Added a queue".to_string()]);
+    }
+
+    #[test]
+    fn release_notes_with_a_hidden_legacy_heading_are_read() {
+        let body = "## Release notes\n\n<!--\n## New features -->\n\n- Added a queue\n";
+        let legacy = &body[body.find("## New features").unwrap()..];
+
+        assert_eq!(feature_lines(body), vec!["Added a queue".to_string()]);
+        assert_eq!(feature_lines(legacy), vec!["Added a queue".to_string()]);
     }
 
     #[test]

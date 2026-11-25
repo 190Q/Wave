@@ -249,7 +249,7 @@ function featuresHtml(info: UpdateInfo): string {
     return "";
   }
   const rows = info.features.map((feature) => `<li>${escapeHtml(feature)}</li>`).join("");
-  return `<p class="update-label">New in this release</p><ul class="update-features">${rows}</ul>`;
+  return `<p class="update-label">What's new</p><ul class="update-features">${rows}</ul>`;
 }
 
 /** Why this copy cannot replace itself. */

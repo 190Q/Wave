@@ -228,7 +228,7 @@ test("preparation creates a draft but leaves an existing release untouched", (t)
   const call = JSON.parse(readFileSync(missing.output, "utf8"));
   assert.ok(call.args.includes("--draft"));
   assert.ok(call.args.includes("--verify-tag"));
-  assert.match(call.input, /^## New features\n\n- A feature/);
+  assert.match(call.input, /^## Release notes\n\n<!--\n## New features -->\n\n- A feature/);
   assert.match(call.input, /## Downloads/);
   assert.match(call.input, /yt-dlp, FFmpeg, Deno and the YouTube solver/);
   assert.match(call.input, /phone Flatpak[\s\S]*GNOME 51 runtime/);
@@ -237,6 +237,24 @@ test("preparation creates a draft but leaves an existing release untouched", (t)
   const result = existing.run(["prepare", "v1.2.3"]);
   assert.equal(result.status, 0, result.stderr);
   assert.throws(() => readFileSync(existing.output), { code: "ENOENT" });
+});
+
+test("editing replaces either release notes heading without duplicating the list", (t) => {
+  for (const body of [
+    "## Release notes\n\n- Old note\n\nExisting details",
+    "## Release notes\n\n<!--\n## New features -->\n\n- Old note\n\nExisting details",
+    "## New features\n\n- Old note\n\nExisting details",
+  ]) {
+    const { output, run } = releaseFixture(t, { body });
+    const result = run(["edit", "v1.2.3", "--feature", "A new note", "--feature", "A fix"]);
+    assert.equal(result.status, 0, result.stderr);
+    const call = JSON.parse(readFileSync(output, "utf8"));
+    assert.match(call.input, /^## Release notes\n\n<!--\n## New features -->\n\n- A new note\n- A fix\n/);
+    assert.match(call.input, /Existing details/);
+    assert.doesNotMatch(call.input, /Old note/);
+    assert.equal((call.input.match(/## Release notes/g) ?? []).length, 1);
+    assert.equal((call.input.match(/## New features/g) ?? []).length, 1);
+  }
 });
 
 test("finalization refuses an incomplete draft without publishing it", (t) => {
@@ -255,19 +273,29 @@ test("phone status selects the recovery workflow and summarizes its active step"
   assert.match(result.stdout, /in_progress\s+phone: Build/);
 });
 
-test("finalization preserves features, replaces old links, and publishes a complete draft", (t) => {
+test("finalization preserves release notes, replaces old links, and publishes a complete draft", (t) => {
   const assets = assetGroups("1.2.3").flatMap(([, entries]) =>
     entries.map(([, name]) => ({ name, size: 10 })),
   );
-  const body = "## New features\n\n- A feature\n\n<!-- wave-downloads:start -->\nOld links\n<!-- wave-downloads:end -->\n\nExisting notes";
+  const body = "## Release notes\n\n<!--\n## New features -->\n\n- A feature\n\n<!-- wave-downloads:start -->\nOld links\n<!-- wave-downloads:end -->\n\nExisting notes";
   const { output, run } = releaseFixture(t, { isDraft: true, body, assets });
   const result = run(["finalize", "v1.2.3"]);
   assert.equal(result.status, 0, result.stderr);
   const call = JSON.parse(readFileSync(output, "utf8"));
   assert.ok(call.args.includes("--draft=false"));
-  assert.match(call.input, /^## New features\n\n- A feature/);
+  assert.match(call.input, /^## Release notes\n\n<!--\n## New features -->\n\n- A feature\n\n<!-- wave-downloads:start -->/);
   assert.match(call.input, /## Downloads/);
   assert.match(call.input, /Existing notes/);
   assert.doesNotMatch(call.input, /Old links/);
   assert.equal((call.input.match(/<!-- wave-downloads:start -->/g) ?? []).length, 1);
+});
+
+test("organising an older release keeps its legacy notes above the downloads", (t) => {
+  const body = "## New features\n\n- An older note\n\nExisting details";
+  const { output, run } = releaseFixture(t, { isDraft: false, body, assets: [] });
+  const result = run(["organize", "v1.2.3"]);
+  assert.equal(result.status, 0, result.stderr);
+  const call = JSON.parse(readFileSync(output, "utf8"));
+  assert.match(call.input, /^## New features\n\n- An older note\n\n<!-- wave-downloads:start -->/);
+  assert.match(call.input, /Existing details/);
 });

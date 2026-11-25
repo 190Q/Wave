@@ -546,7 +546,7 @@ export interface UpdateInfo {
   version: string;
   /** The release page. */
   url: string;
-  /** The lines under `## New features`, empty when the release lists none. */
+  /** The release notes, empty when the release lists none. */
   features: string[];
   /** When it was published, RFC 3339. */
   publishedAt: string;

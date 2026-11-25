@@ -302,7 +302,7 @@ const BODY = [
  * edit replaces the whole section, so listing again corrects the list rather
  * than stacking a second copy on top of the first.
  */
-const FEATURES_SECTION = /^## New features[^\n]*\n\n?(?:- [^\n]*\n?)*/m;
+const FEATURES_SECTION = /^## (?:Release notes|New features)[^\n]*\n\n?(?:<!--\n## New features -->\n\n?)?(?:- [^\n]*\n?)*/m;
 
 /** One line per feature; a value holding newlines gives one line each. */
 function featureLines(features) {
@@ -312,11 +312,12 @@ function featureLines(features) {
     .filter(Boolean);
 }
 
-/** The `## New features` section, or nothing when there is nothing to list. */
+/** The `## Release notes` section, or nothing when there is nothing to list. */
 function featuresBlock(features) {
   const lines = featureLines(features);
   if (lines.length === 0) return "";
-  return `## New features\n\n${lines.map((line) => `- ${line}`).join("\n")}\n`;
+  // Older versions look for the hidden heading when reading release notes.
+  return `## Release notes\n\n<!--\n## New features -->\n\n${lines.map((line) => `- ${line}`).join("\n")}\n`;
 }
 
 /** A body with the feature list above it, replacing any list already there. */
@@ -474,8 +475,8 @@ function commandGuide(part) {
   } else {
     say("     It then builds both installers here and publishes the release from them.");
   }
-  say("     Every --feature becomes one line of a New features list at the top of the");
-  say("     release body, and the flag repeats. Leave it off when nothing is new.");
+  say("     Every --feature becomes one line of Release notes at the top of the");
+  say("     release body, and the flag repeats. Leave it off when there are no notes.");
   say("     It commits the whole working tree, so put that in the state you want");
   say(`     first, and it stops if ${cuttingTag} is already tagged.`);
   say("     To see the plan and change nothing:");
@@ -833,7 +834,7 @@ function commandPublish(options) {
   const lines = featureLines(features);
   if (lines.length > 0) {
     say("");
-    say(`Features (${lines.length}):`);
+    say(`Release notes (${lines.length}):`);
     for (const line of lines) say(`  - ${line}`);
   }
   say("");
@@ -988,7 +989,7 @@ Releases
   open <tag>                      Open a release in the browser
 
 publish options
-  --feature <text>  One line of the release's feature list (repeatable)
+  --feature <text>  One line of the release notes (repeatable)
   --draft           Create it as a draft
   --notes <text>    Release notes (default: the installers blurb, then the commits)
   --local           Build the installers here instead of waiting for CI

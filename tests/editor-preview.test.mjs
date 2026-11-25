@@ -76,6 +76,7 @@ class FakeContext {
     this.sources.set(element, source);
     return source;
   }
+  close() { this.state = "closed"; return Promise.resolve(); }
 }
 
 globalThis.Audio = FakeAudio;
@@ -111,11 +112,11 @@ test("preview follows playback volume, mute, selected track gain and the shared 
   const main = FakeAudio.instances.at(-1);
   const before = app.player.snapshot();
   app.setEqEnabled(true);
+  const context = FakeContext.instances.at(-1);
 
   const preview = new Audio();
   preview.crossOrigin = "anonymous";
   const disconnect = app.connectPreviewAudio(preview, edited.id, () => true);
-  const context = FakeContext.instances.at(-1);
   assert.equal(context.sources.get(preview).connections[0], context.sources.get(main).connections[0]);
   assert.equal(preview.volume, Math.min(1, 0.374 * 0.7 * gainFor(edited)));
   assert.equal(app.player.snapshot().currentId, before.currentId);
@@ -157,21 +158,22 @@ test("preview follows playback volume, mute, selected track gain and the shared 
   assert.equal(preview.listeners.get("play").size, 0);
 });
 
-test("replacement and plain fallback audio retain playback volume without stale track loudness", () => {
+test("replacement and plain fallback audio retain playback volume without stale track loudness", async () => {
   const state = app.getState();
   const edited = state.tracksById.get("edited");
   edited.lufs = -25;
   state.settings.normalizeVolume = true;
   app.player.setVolume(50);
   app.setEqEnabled(false);
+  await new Promise((resolve) => setImmediate(resolve));
 
   const replacement = new Audio();
   replacement.crossOrigin = "anonymous";
   const disconnect = app.connectPreviewAudio(replacement, edited.id, () => false);
-  const context = FakeContext.instances.at(-1);
   assert.equal(replacement.volume, 0.5 * 0.7);
-  assert.ok(context.sources.has(replacement));
+  assert.equal(app.eqChain.hasSource(replacement), false);
   app.setEqEnabled(true);
+  const context = FakeContext.instances.at(-1);
   assert.equal(context.sources.get(replacement).disconnected, false);
   disconnect();
   assert.equal(context.sources.get(replacement).disconnected, true);
@@ -184,4 +186,19 @@ test("replacement and plain fallback audio retain playback volume without stale 
   app.player.setVolume(0);
   assert.equal(fallback.volume, 0);
   disconnectFallback();
+});
+
+test("preview owners are notified when bypass starts and is cancelled", () => {
+  const preview = new Audio();
+  preview.crossOrigin = "anonymous";
+  const changes = [];
+  const disconnect = app.connectPreviewAudio(preview, "edited", () => true, (wanted) => changes.push(wanted));
+  app.setEqEnabled(false);
+  assert.equal(changes.at(-1), true);
+  app.setEqEnabled(true);
+  assert.equal(changes.at(-1), false);
+  disconnect();
+  const count = changes.length;
+  app.setEqEnabled(false);
+  assert.equal(changes.length, count);
 });

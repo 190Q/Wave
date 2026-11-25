@@ -4,7 +4,10 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 
 const mocks = {
-  "../lib/audio": "export const assetUrl = (path) => path;",
+  "../lib/audio": `
+    export const assetUrl = (path) => path;
+    export { prepareDirectAudio } from "/src/lib/audio.ts";
+  `,
   "../lib/device": `
     export const device = () => "desktop";
     export const isTouch = () => false;
@@ -35,7 +38,11 @@ const mocks = {
   "../lib/state": `
     export const getState = () => globalThis.__songEditorTest.state;
     export const player = { pause() {}, finishTransitions() {} };
-    export const connectPreviewAudio = () => () => {};
+    export const connectPreviewAudio = (element, id, original, bypass) => {
+      const state = globalThis.__songEditorTest;
+      state.bypass = bypass;
+      return () => { if (state.bypass === bypass) state.bypass = null; };
+    };
     export const previewAudioPath = () => "audio";
     export const previewStagedAudioPath = (path) => path;
     export const saveEditedSong = async (...args) => globalThis.__songEditorTest.saves.push(structuredClone(args));
@@ -266,8 +273,42 @@ test("song editor timeline navigation and lyric selection", async (t) => {
   advance();
   assert.equal(viewport.scrollLeft, 70);
 
+  await t.test("a pending preview replacement is cancelled when routing changes", async () => {
+    const state = globalThis.__songEditorTest;
+    const original = state.audio;
+    state.deferMetadata = true;
+    state.bypass(true);
+    await settle();
+    const candidate = state.audio;
+    assert.notEqual(candidate, original);
+    state.bypass(false);
+    candidate.finishMetadata();
+    await settle();
+    assert.equal(original.paused, false);
+    assert.equal(candidate.src, "");
+    original.dispatch("timeupdate");
+    assert.equal(element("position").textContent, "00:09.000");
+    state.audio = original;
+    state.deferMetadata = false;
+  });
+
+  await t.test("a playing preview switches to direct audio at the same position", async () => {
+    const state = globalThis.__songEditorTest;
+    const original = state.audio;
+    assert.equal(original.paused, false);
+    state.bypass(true);
+    await settle();
+    const replacement = state.audio;
+    assert.notEqual(replacement, original);
+    assert.equal(original.paused, true);
+    assert.equal(replacement.paused, false);
+    assert.equal(replacement.currentTime, 9);
+    assert.equal(element("position").textContent, "00:09.000");
+  });
+
+  const currentAudio = globalThis.__songEditorTest.audio;
   viewport.dispatch("wheel", { shiftKey: true, deltaY: 200 });
-  audio.currentTime = 10;
+  currentAudio.currentTime = 10;
   advance();
   assert.equal(viewport.scrollLeft, 270);
   viewport.dispatch("wheel", { shiftKey: true, deltaY: -100 });
@@ -275,7 +316,7 @@ test("song editor timeline navigation and lyric selection", async (t) => {
   assert.equal(viewport.scrollLeft, 170);
 
   element("ruler").dispatch("pointerdown", { clientX: 50 });
-  audio.currentTime = 30;
+  currentAudio.currentTime = 30;
   advance();
   assert.equal(viewport.scrollLeft, 280);
 

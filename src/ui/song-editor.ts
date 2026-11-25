@@ -1,5 +1,5 @@
 import "../styles/song-editor.css";
-import { assetUrl } from "../lib/audio";
+import { assetUrl, prepareDirectAudio } from "../lib/audio";
 import { device } from "../lib/device";
 import { EditHistory } from "../lib/edit-history";
 import { escapeHtml } from "../lib/format";
@@ -90,6 +90,7 @@ function mountSongEditor(): void {
   const shiftFromForward = byId<HTMLButtonElement>("shift-from-forward");
   let audio: HTMLAudioElement;
   let disconnectPreview: (() => void) | null = null;
+  let cancelPreviewReplacement: (() => void) | null = null;
   let wantsPlayback = false;
   let pendingSeek: number | null = null;
 
@@ -174,6 +175,8 @@ function mountSongEditor(): void {
   };
   const clearAudio = (): void => {
     if (!audio) return;
+    cancelPreviewReplacement?.();
+    cancelPreviewReplacement = null;
     wantsPlayback = false;
     pendingSeek = null;
     audio.pause();
@@ -452,14 +455,34 @@ function mountSongEditor(): void {
     });
   };
 
-  const createAudio = (cors: boolean): void => {
+  const createAudio = (cors: boolean, replacement?: HTMLAudioElement): void => {
     clearAudio();
-    const element = new Audio();
+    const element = replacement ?? new Audio();
     audio = element;
     element.preload = "metadata";
-    element.crossOrigin = cors ? "anonymous" : null;
-    disconnectPreview = connectPreviewAudio(element, track!.id, () => stagedAudio === null && cutAudio === null);
-    element.addEventListener("loadedmetadata", () => {
+    if (!replacement) element.crossOrigin = cors ? "anonymous" : null;
+    disconnectPreview = connectPreviewAudio(
+      element, track!.id, () => stagedAudio === null && cutAudio === null,
+      (wanted) => {
+        if (!wanted) {
+          cancelPreviewReplacement?.();
+          cancelPreviewReplacement = null;
+          return;
+        }
+        if (cancelPreviewReplacement || audio !== element) return;
+        cancelPreviewReplacement = prepareDirectAudio(element, () => current() / 1000, () => audio === element,
+          (next) => {
+            cancelPreviewReplacement = null;
+            const playing = wantsPlayback;
+            createAudio(cors, next);
+            wantsPlayback = playing;
+            if (!next.paused && frame === null) frame = requestAnimationFrame(tick);
+          },
+          () => { cancelPreviewReplacement = null; },
+        );
+      },
+    );
+    const metadata = (): void => {
       if (audio !== element) return;
       if (!cutAudio && Number.isFinite(element.duration) && element.duration > 0) {
         sourceDuration = Math.floor(element.duration * 1000);
@@ -473,7 +496,8 @@ function mountSongEditor(): void {
       }
       if (!selectedRange) end.value = formatEditTime(duration());
       paintTimeline();
-    });
+    };
+    element.addEventListener("loadedmetadata", metadata);
     element.addEventListener("timeupdate", () => { if (audio === element) paintClock(); });
     element.addEventListener("pause", () => { if (audio === element) paintClock(); });
     element.addEventListener("ended", () => { if (audio === element) wantsPlayback = false; });
@@ -497,6 +521,7 @@ function mountSongEditor(): void {
       }
       showError("This audio could not be previewed on this device.");
     });
+    if (replacement && element.readyState >= HTMLMediaElement.HAVE_METADATA) metadata();
   };
 
   const updateAudio = (positionMs = 0, playing = false): void => {

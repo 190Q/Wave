@@ -543,6 +543,7 @@ const engine = new AudioEngine({
     console.warn(`Audio buffering lasted ${Math.round(durationMs)}ms. ` +
       `Ready ${element.readyState}, network ${element.networkState}, hidden ${document.hidden}.`);
   },
+  shouldReplace: (element) => eq.canBypass && eq.hasSource(element),
   onElement: (element, phase) => {
     if (phase === "created") {
       eq.attach(element);
@@ -584,6 +585,14 @@ export const player = new Player(engine, (trackId) => {
     : undefined;
 });
 
+eq.onRoutingChange(() => {
+  if (eq.canBypass && eq.hasSource(engine.element)) {
+    engine.bypass();
+  } else {
+    engine.cancelBypass();
+  }
+});
+
 mountAudioWatchdog(engine, player, (message) => {
   console.warn(message);
 });
@@ -615,6 +624,7 @@ export function subscribe(listener: () => void): () => void {
 
 export function connectPreviewAudio(
   element: HTMLAudioElement, trackId: string, originalAudio: () => boolean,
+  bypass?: (wanted: boolean) => void,
 ): () => void {
   const routed = element.crossOrigin === "anonymous";
   if (routed) eq.attach(element);
@@ -626,12 +636,14 @@ export function connectPreviewAudio(
   const resume = (): void => eq.resume();
   const unsubscribePlayer = player.onChange(sync);
   const unsubscribeState = subscribe(sync);
+  const unsubscribeRouting = eq.onRoutingChange(() => bypass?.(eq.canBypass && eq.hasSource(element)));
   element.addEventListener("play", resume);
   sync();
   return () => {
     element.removeEventListener("play", resume);
     unsubscribePlayer();
     unsubscribeState();
+    unsubscribeRouting();
     if (routed) eq.detach(element);
   };
 }

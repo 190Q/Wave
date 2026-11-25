@@ -74,6 +74,11 @@ an equaliser and a theme that follows the artwork.
   requests portrait orientation on phone-sized screens.
 - **Development builds:** The interface uses TypeScript and the DOM; the backend
   uses Rust and Tauri 2. Desktop and Android development commands are below.
+- **Equaliser benchmark:** With Node.js 22 or newer, run `npm run benchmark:eq`
+  to compare native playback with the disabled equaliser graph in a muted,
+  headless Chromium browser. Set `WAVE_BENCHMARK_BROWSER` to the executable if
+  the default is not installed. Results measure CPU on that browser and device,
+  not battery use.
 
 ## Install
 

@@ -17,7 +17,8 @@ const { EqChain } = await vite.ssrLoadModule("/src/lib/eq.ts");
 
 class FakeNode {
   responseCalls = 0;
-  gain = { value: 0 };
+  connections = new Set();
+  gain = { value: 1 };
   frequency = { value: 0 };
   Q = { value: 0 };
   threshold = { value: 0 };
@@ -25,8 +26,8 @@ class FakeNode {
   ratio = { value: 0 };
   attack = { value: 0 };
   release = { value: 0 };
-  connect() {}
-  disconnect() {}
+  connect(node) { this.connections.add(node); return node; }
+  disconnect() { this.connections.clear(); }
   getFrequencyResponse(_freqs, magnitudes) { this.responseCalls += 1; magnitudes.fill(2); }
 }
 
@@ -36,19 +37,24 @@ class FakeContext {
   sampleRate = 48000;
   destination = new FakeNode();
   sources = [];
+  sourceNodes = [];
   gains = [];
   filters = [];
+  limiters = [];
+  analysers = [];
   onstatechange = null;
 
   constructor(options) { this.options = options; FakeContext.instances.push(this); }
   createGain() { const gain = new FakeNode(); this.gains.push(gain); return gain; }
-  createDynamicsCompressor() { return new FakeNode(); }
-  createAnalyser() { return new FakeNode(); }
+  createDynamicsCompressor() { const node = new FakeNode(); this.limiters.push(node); return node; }
+  createAnalyser() { const node = new FakeNode(); this.analysers.push(node); return node; }
   createBiquadFilter() { const filter = new FakeNode(); this.filters.push(filter); return filter; }
   createMediaElementSource(element) {
     if (element.fail) throw new Error("cannot route");
     this.sources.push(element);
-    return new FakeNode();
+    const node = new FakeNode();
+    this.sourceNodes.push(node);
+    return node;
   }
   resume() {
     return new Promise((resolve, reject) => {
@@ -59,6 +65,7 @@ class FakeContext {
   suspend() {
     return Promise.resolve().then(() => { this.state = "suspended"; this.onstatechange?.(); });
   }
+  close() { this.state = "closed"; return Promise.resolve(); }
 }
 
 globalThis.AudioContext = FakeContext;
@@ -82,14 +89,59 @@ test("the equalizer uses the requested playback latency without starting for dis
   const context = FakeContext.instances.at(-1);
   assert.deepEqual(context.options, { latencyHint: "playback" });
   eq.apply(settings(false));
+  assert.equal(context.state, "closed");
   eq.apply(settings());
-  assert.equal(FakeContext.instances.at(-1), context);
+  assert.notEqual(FakeContext.instances.at(-1), context);
 });
 
 test("the equalizer leaves the audio context defaults unchanged without options", () => {
   const eq = new EqChain();
   eq.apply(settings());
   assert.equal(FakeContext.instances.at(-1).options, undefined);
+});
+
+test("disabling or blocking EQ keeps a unity path without filters or limiter", async () => {
+  for (const action of ["disable", "block"]) {
+    const eq = new EqChain();
+    const element = { crossOrigin: "anonymous", paused: false };
+    const config = {
+      ...settings(), eqLimiter: true, eqPreampDb: -6,
+      eqBands: [{ id: "boost", kind: "peaking", freq: 1000, q: 1, gain: 6, enabled: true }],
+    };
+    eq.attach(element);
+    eq.apply(config);
+    const context = FakeContext.instances.at(-1);
+    context.finishResume();
+    await Promise.resolve();
+    const [input, output, preamp] = context.gains;
+    const [filter] = context.filters;
+    const [limiter] = context.limiters;
+    const [source] = context.sourceNodes;
+    assert.deepEqual([...source.connections], [input]);
+    assert.deepEqual([...input.connections], [filter]);
+    assert.deepEqual([...filter.connections], [preamp]);
+    assert.deepEqual([...preamp.connections], [limiter]);
+    assert.ok(preamp.gain.value < 1);
+
+    if (action === "disable") eq.apply({ ...config, eqEnabled: false });
+    else eq.block("cors");
+    assert.deepEqual([...source.connections], [input]);
+    assert.deepEqual([...input.connections], [preamp]);
+    assert.deepEqual([...preamp.connections], [output]);
+    assert.deepEqual([...filter.connections], []);
+    assert.deepEqual([...output.connections], [context.destination, context.analysers[0]]);
+    assert.equal(preamp.gain.value, 1);
+    assert.equal(eq.preampDb, 0);
+    assert.equal(eq.live, false);
+
+    if (action === "disable") {
+      eq.apply(config);
+      assert.deepEqual([...input.connections], [filter]);
+      assert.deepEqual([...preamp.connections], [limiter]);
+      assert.equal(context.sourceNodes.length, 1);
+      assert.equal(eq.live, true);
+    }
+  }
 });
 
 test("the response is cached until the equalizer settings or availability change", () => {
@@ -109,14 +161,15 @@ test("the response is cached until the equalizer settings or availability change
   eq.curve();
   assert.equal(filter.responseCalls, 2);
   eq.apply(settings(false));
-  assert.equal(eq.curve()[0], 0);
+  assert.equal(eq.curve().length, 0);
   assert.equal(filter.responseCalls, 2);
   eq.apply({ ...settings(), eqBands: [band] });
+  const replacementFilter = FakeContext.instances.at(-1).filters[0];
   assert.ok(eq.curve()[0] > 0);
-  assert.equal(filter.responseCalls, 3);
+  assert.equal(replacementFilter.responseCalls, 1);
   eq.block("cors");
-  assert.equal(eq.curve()[0], 0);
-  assert.equal(filter.responseCalls, 3);
+  assert.equal(eq.curve().length, 0);
+  assert.equal(replacementFilter.responseCalls, 1);
 });
 
 test("a boosted suspended graph applies its automatic preamp before audio is routed", async () => {
@@ -196,6 +249,10 @@ test("unreadable or failed sources do not claim the equalizer is live", async ()
   const readable = { crossOrigin: "anonymous" };
   eq.attach(readable);
   assert.equal(eq.live, false);
+  if (context.state !== "running") {
+    context.finishResume();
+    await Promise.resolve();
+  }
   eq.detach(failed);
   assert.equal(eq.live, true);
 });
@@ -215,11 +272,15 @@ test("reenabling routes elements that arrived while the equalizer was off", asyn
   eq.attach(next);
   assert.equal(eq.live, false);
   eq.apply(settings());
+  const replacement = FakeContext.instances.at(-1);
+  replacement.finishResume();
+  await Promise.resolve();
   assert.equal(eq.live, true);
-  assert.deepEqual(context.sources, [first, next]);
+  assert.equal(context.state, "closed");
+  assert.deepEqual(replacement.sources, [next]);
 });
 
-test("new elements follow the existing output while the equalizer is off", async () => {
+test("new elements bypass the graph while the equalizer is off on the default output", async () => {
   const eq = new EqChain();
   const main = { crossOrigin: "anonymous" };
   const preview = { crossOrigin: "anonymous" };
@@ -230,7 +291,7 @@ test("new elements follow the existing output while the equalizer is off", async
   await Promise.resolve();
   eq.apply(settings(false));
   eq.attach(preview);
-  assert.deepEqual(context.sources, [main, preview]);
+  assert.deepEqual(context.sources, [main]);
   assert.equal(eq.live, false);
 });
 

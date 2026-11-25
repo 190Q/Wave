@@ -44,6 +44,7 @@ class FakeAudio {
 }
 
 class FakeNode {
+  disconnected = false;
   gain = { value: 0 };
   frequency = { value: 0 };
   Q = { value: 0 };
@@ -53,29 +54,39 @@ class FakeNode {
   attack = { value: 0 };
   release = { value: 0 };
   connect() {}
-  disconnect() {}
+  disconnect() { this.disconnected = true; }
   getFrequencyResponse(_freqs, magnitudes) { magnitudes.fill(1); }
 }
 
 class FakeContext {
   static instances = [];
+  static routed = new WeakSet();
   state = "running";
   sampleRate = 48000;
   destination = new FakeNode();
   sources = [];
+  sourceNodes = new Map();
 
   constructor() { FakeContext.instances.push(this); }
   createGain() { return new FakeNode(); }
   createDynamicsCompressor() { return new FakeNode(); }
   createAnalyser() { return new FakeNode(); }
   createBiquadFilter() { return new FakeNode(); }
-  createMediaElementSource(element) { this.sources.push(element); return new FakeNode(); }
+  createMediaElementSource(element) {
+    if (FakeContext.routed.has(element)) throw new Error("element already routed");
+    FakeContext.routed.add(element);
+    this.sources.push(element);
+    const node = new FakeNode();
+    this.sourceNodes.set(element, node);
+    return node;
+  }
   suspend() {
     return Promise.resolve().then(() => { this.state = "suspended"; this.onstatechange?.(); });
   }
   resume() {
     return Promise.resolve().then(() => { this.state = "running"; this.onstatechange?.(); });
   }
+  close() { this.state = "closed"; return Promise.resolve(); }
 }
 
 globalThis.Audio = FakeAudio;
@@ -92,7 +103,7 @@ const vite = await createServer({
 after(() => vite.close());
 const app = await vite.ssrLoadModule("/src/lib/state.ts");
 
-test("enabling EQ keeps the playing element and its position", () => {
+test("enabling EQ keeps the playing element, then disabling replaces it with direct playback", async () => {
   const state = app.getState();
   const tracks = ["one", "two"].map((id) => ({
     id, title: id, path: `http://127.0.0.1:1234/${id}`, durationMs: 120000,
@@ -117,9 +128,58 @@ test("enabling EQ keeps the playing element and its position", () => {
   assert.deepEqual(FakeContext.instances.at(-1).sources, [audio]);
 
   app.setEqEnabled(false);
-  assert.equal(FakeAudio.instances.length, count);
-  assert.equal(audio.paused, false);
-  assert.equal(audio.currentTime, 42);
+  await new Promise((resolve) => setImmediate(resolve));
+  const direct = FakeAudio.instances.at(-1);
+  assert.notEqual(direct, audio);
+  assert.equal(direct.paused, false);
+  assert.equal(direct.currentTime, 42);
+  assert.equal(audio.paused, true);
+  assert.equal(app.eqChain.hasSource(direct), false);
+  assert.equal(FakeContext.instances.at(-1).state, "closed");
+});
+
+test("disabling EQ keeps the selected output through an overlapping track transition", async () => {
+  FakeContext.prototype.setSinkId = function(id) { this.sinkId = id; return Promise.resolve(); };
+  try {
+    app.setEqEnabled(true);
+    app.setEqOutput("headphones");
+    await new Promise((resolve) => setImmediate(resolve));
+    const context = FakeContext.instances.at(-1);
+    const previous = FakeAudio.instances.at(-1);
+    const previousSource = context.sourceNodes.get(previous);
+    assert.equal(app.eqChain.outputId, "headphones");
+    app.setEqEnabled(false);
+    assert.equal(previous.paused, false);
+    assert.equal(previous.currentTime, 42);
+    assert.equal(previousSource.disconnected, false);
+
+    document.hidden = false;
+    previous.volume = 0.5;
+    app.player.next();
+    const next = FakeAudio.instances.at(-1);
+    const nextSource = context.sourceNodes.get(next);
+    assert.notEqual(previous, next);
+    assert.equal(previous.paused, false);
+    assert.equal(next.paused, false);
+    assert.equal(previousSource.disconnected, false);
+    assert.equal(nextSource.disconnected, false);
+    assert.equal(context.sinkId, "headphones");
+    assert.equal(app.eqChain.outputId, "headphones");
+
+    app.player.finishTransitions();
+    assert.equal(previous.paused, true);
+    assert.equal(previousSource.disconnected, true);
+    assert.equal(next.paused, false);
+    assert.equal(nextSource.disconnected, false);
+    assert.equal(app.eqChain.outputId, "headphones");
+  } finally {
+    document.hidden = true;
+    app.setEqOutput("");
+    await new Promise((resolve) => setImmediate(resolve));
+    delete FakeContext.prototype.setSinkId;
+    app.player.previous();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
 });
 
 test("tracks loaded with EQ off can be routed without reloading", () => {
@@ -138,7 +198,7 @@ test("tracks loaded with EQ off can be routed without reloading", () => {
   assert.equal(FakeContext.instances.at(-1).sources.at(-1), audio);
 });
 
-test("toggling EQ while paused preserves the element and position", () => {
+test("rapidly toggling EQ while paused preserves the playing element and position", () => {
   app.player.pause();
   app.player.finishTransitions();
   const audio = FakeAudio.instances.at(-1);
@@ -147,7 +207,8 @@ test("toggling EQ while paused preserves the element and position", () => {
   app.setEqEnabled(false);
   app.setEqEnabled(true);
 
-  assert.equal(FakeAudio.instances.length, count);
+  assert.equal(FakeAudio.instances.length, count + 1);
+  assert.equal(FakeAudio.instances.at(-1).src, "");
   assert.equal(audio.paused, true);
   assert.equal(audio.pauses, pauses);
   assert.equal(audio.currentTime, 17);
@@ -155,23 +216,27 @@ test("toggling EQ while paused preserves the element and position", () => {
   app.player.play();
 });
 
-test("changing tracks during a CORS retry keeps the next track EQ-readable", () => {
+test("changing tracks during a CORS retry keeps the next track EQ-readable", async () => {
   app.setEqEnabled(false);
+  await new Promise((resolve) => setImmediate(resolve));
+  app.player.previous();
   FakeAudio.instances.at(-1).emit("error");
   const fallback = FakeAudio.instances.at(-1);
   assert.equal(fallback.crossOrigin, null);
 
-  app.player.previous();
+  app.player.next();
   const next = FakeAudio.instances.at(-1);
   assert.notEqual(next, fallback);
   assert.equal(next.crossOrigin, "anonymous");
   next.emit("loadedmetadata");
   assert.equal(app.eqStatus().blocked, null);
-  app.player.next();
+  app.player.previous();
 });
 
-test("a failed plain retry does not disable EQ for later playback", () => {
+test("a failed plain retry does not disable EQ for later playback", async () => {
   app.setEqEnabled(false);
+  await new Promise((resolve) => setImmediate(resolve));
+  app.player.next();
   const audio = FakeAudio.instances.at(-1);
   audio.currentTime = 23;
   audio.emit("error");

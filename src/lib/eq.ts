@@ -55,14 +55,7 @@ const EMPTY: Curve = new Float32Array(0);
 /** A context that can be told where to send its output, where the engine allows. */
 type SinkableContext = AudioContext & { setSinkId?: (deviceId: string) => Promise<void> };
 
-/**
- * The filter chain that sits behind the audio element.
- *
- * An element that has been routed through here no longer plays on its own, so
- * the graph is never torn down: switching the equaliser off leaves the same
- * chain in place with no bands and a unity preamp, which passes audio through
- * untouched.
- */
+/** The filter chain that sits behind the audio element. */
 export class EqChain {
   private context: AudioContext | null = null;
   private input: GainNode | null = null;
@@ -79,6 +72,7 @@ export class EqChain {
   private readonly sources = new Map<HTMLAudioElement, MediaElementAudioSourceNode>();
   private readonly statusListeners = new Set<() => void>();
   private readonly outputListeners = new Set<() => void>();
+  private readonly routingListeners = new Set<() => void>();
   private lastLive = false;
 
   private settings: Settings | null = null;
@@ -120,6 +114,27 @@ export class EqChain {
 
   private get enabled(): boolean {
     return this.blocked === null && this.settings?.eqEnabled === true;
+  }
+
+  get canBypass(): boolean {
+    const defaultOutput = (id: string): boolean => !id || id === "default";
+    return !this.enabled && this.pendingOutput === null &&
+      defaultOutput(this.appliedOutput) && defaultOutput(this.desiredOutput);
+  }
+
+  hasSource(element: HTMLAudioElement): boolean {
+    return this.sources.has(element);
+  }
+
+  onRoutingChange(listener: () => void): () => void {
+    this.routingListeners.add(listener);
+    return () => this.routingListeners.delete(listener);
+  }
+
+  private notifyRouting(): void {
+    for (const listener of this.routingListeners) {
+      listener();
+    }
   }
 
   onStatusChange(listener: () => void): () => void {
@@ -180,6 +195,8 @@ export class EqChain {
     this.rebuild();
     this.applyPreamp();
     this.notifyStatus();
+    this.notifyRouting();
+    this.pauseIfIdle();
   }
 
   /** Points the graph at an output, where the engine supports choosing one. */
@@ -190,9 +207,11 @@ export class EqChain {
     }
     this.desiredOutput = deviceId;
     if (this.pendingOutput !== null || deviceId === this.appliedOutput) {
+      this.notifyRouting();
       return;
     }
     this.pendingOutput = deviceId;
+    this.notifyRouting();
     void context.setSinkId(deviceId).then(() => {
       this.appliedOutput = deviceId;
     }).catch(() => {}).finally(() => {
@@ -203,31 +222,67 @@ export class EqChain {
       for (const listener of this.outputListeners) {
         listener();
       }
+      this.notifyRouting();
+      if (this.canBypass) {
+        this.pauseIfIdle();
+      } else if (!this.enabled && this.appliedOutput && this.appliedOutput !== "default") {
+        this.resume();
+      }
     });
   }
 
   /** Wakes the context, which a browser may have started suspended. */
   resume(): void {
     const context = this.context;
-    if (!context) {
+    if (!context || (!this.enabled && this.canBypass && this.sources.size === 0)) {
       return;
     }
     if (context.state === "running") {
       this.routePending();
       return;
     }
-    void context.resume().then(() => this.routePending()).catch(() => {});
+    void context.resume().then(() => {
+      if (this.context === context) this.routePending();
+    }).catch(() => {});
   }
 
   private readonly pauseIfIdle = (): void => {
     const context = this.context;
-    if (!context || context.state !== "running" || [...this.elements].some((element) => !element.paused)) {
+    if (!context) {
+      return;
+    }
+    if (this.canBypass && this.sources.size === 0) {
+      this.close();
+      return;
+    }
+    if (context.state !== "running" || [...this.sources.keys()].some((element) => !element.paused)) {
       return;
     }
     void context.suspend().then(() => {
-      if ([...this.elements].some((element) => !element.paused)) this.resume();
+      if (this.context === context && [...this.sources.keys()].some((element) => !element.paused)) this.resume();
     }).catch(() => {});
   };
+
+  private close(): void {
+    const context = this.context;
+    if (!context) return;
+    context.onstatechange = null;
+    this.context = null;
+    this.input = null;
+    this.output = null;
+    this.preamp = null;
+    this.limiter = null;
+    this.analyser = null;
+    this.nodes.clear();
+    this.kinds.clear();
+    this.wiring = "";
+    this.freqs = EMPTY;
+    this.magnitudes = EMPTY;
+    this.phases = EMPTY;
+    this.response = EMPTY;
+    this.curveDirty = true;
+    void context.close().catch(() => {});
+  }
 
   private readonly resumeForPlayback = (): void => {
     this.resume();
@@ -241,6 +296,9 @@ export class EqChain {
     element.addEventListener?.("ended", this.pauseIfIdle);
     this.route(element);
     this.notifyStatus();
+    if (this.enabled && this.context?.state !== "running") {
+      this.resume();
+    }
   }
 
   /** Lets go of an element the engine has finished with. */
@@ -264,13 +322,17 @@ export class EqChain {
     this.curveDirty = true;
 
     if (!this.enabled) {
-      // Still worth rebuilding, so a curve switched off goes flat.
+      if (!this.context && settings.eqOutputId && settings.eqOutputId !== "default" && this.canChooseOutput) {
+        this.start();
+      }
       if (this.context) {
         this.rebuild();
         this.applyPreamp();
         this.setOutput(settings.eqOutputId);
       }
       this.notifyStatus();
+      this.notifyRouting();
+      this.pauseIfIdle();
       return;
     }
 
@@ -287,6 +349,7 @@ export class EqChain {
     if (this.context?.state !== "running") {
       this.resume();
     }
+    this.notifyRouting();
   }
 
   /** The combined band response in decibels, one entry per frequency. */
@@ -418,7 +481,9 @@ export class EqChain {
 
   /** Builds a source node for an element, once, and feeds it into the chain. */
   private route(element: HTMLAudioElement): void {
-    if ((!this.enabled && this.sources.size === 0) || !this.start()) {
+    const retainedOutput = this.sources.size > 0 ||
+      (this.appliedOutput !== "" && this.appliedOutput !== "default");
+    if ((!this.enabled && (this.canBypass || !retainedOutput)) || !this.start()) {
       return;
     }
     if (this.sources.has(element)) {

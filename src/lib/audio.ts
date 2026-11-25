@@ -14,6 +14,7 @@ export interface AudioEngineHandlers {
   onCorsRefused?: () => void;
   /** A fresh element, or one on its way out, for the equaliser to follow. */
   onElement?: (element: HTMLAudioElement, phase: "created" | "retired") => void;
+  shouldReplace?: (element: HTMLAudioElement) => boolean;
   onBuffering?: (durationMs: number, element: HTMLAudioElement) => void;
   onPlaying?: () => void;
   onPause?: () => void;
@@ -46,6 +47,9 @@ export class AudioEngine {
 
   private readonly retiring = new Map<HTMLAudioElement, number>();
   private readonly timeListeners = new Set<() => void>();
+  private cancelReplacement: (() => void) | null = null;
+  private incoming: { element: HTMLAudioElement; frame: number; factor: number } | null = null;
+  private volume = 0;
 
   constructor(handlers: AudioEngineHandlers = {}) {
     this.handlers = handlers;
@@ -108,6 +112,8 @@ export class AudioEngine {
   load(path: string, options: LoadOptions = {}): void {
     const { autoplay = false, positionMs = 0 } = options;
 
+    this.cancelBypass();
+    this.finishIncoming();
     this.handlers.onBeforeLoad?.();
     this.requestedMs = null;
     this.loadedPath = path;
@@ -139,6 +145,8 @@ export class AudioEngine {
       return;
     }
 
+    this.cancelBypass();
+    this.finishIncoming();
     this.requestedMs = null;
     this.forget(this.el);
     this.release(this.el);
@@ -154,6 +162,8 @@ export class AudioEngine {
 
   /** Releases the file, so the window does not hold a handle to it. */
   unload(): void {
+    this.cancelBypass();
+    this.finishIncoming();
     this.requestedMs = null;
     this.loadedPath = null;
     this.retire(this.el);
@@ -172,6 +182,7 @@ export class AudioEngine {
   }
 
   finishTransitions(): void {
+    this.finishIncoming();
     for (const [el, frame] of this.retiring) {
       window.cancelAnimationFrame(frame);
       this.release(el);
@@ -192,7 +203,61 @@ export class AudioEngine {
 
   /** `0` to `1`, straight onto the element. */
   setVolume(level: number): void {
-    this.el.volume = Math.min(Math.max(level, 0), 1);
+    this.volume = Math.min(Math.max(level, 0), 1);
+    this.el.volume = this.volume * (this.incoming?.factor ?? 1);
+  }
+
+  bypass(): void {
+    if (this.cancelReplacement) return;
+    const old = this.el;
+    this.cancelReplacement = prepareDirectAudio(old, () => this.positionMs / 1000, () => {
+      return this.el === old;
+    }, (next) => {
+      this.cancelReplacement = null;
+      this.finishIncoming();
+      const playing = !old.paused;
+      const wasLoaded = this.elementLoaded;
+      this.retire(old);
+      this.el = next;
+      this.listen(next);
+      this.requestedMs = null;
+      this.elementLoaded = next.readyState >= HTMLMediaElement.HAVE_METADATA;
+      this.elementPlayed = playing;
+      this.waitingAt = null;
+      this.handlers.onElement?.(next, "created");
+      if (playing && uiActive() && this.volume > 0) {
+        const startedAt = performance.now();
+        const incoming = { element: next, frame: 0, factor: 0 };
+        this.incoming = incoming;
+        const step = (now: number): void => {
+          if (this.incoming !== incoming) return;
+          incoming.factor = smoothstep(Math.min((now - startedAt) / FADE_MS, 1));
+          next.volume = this.volume * incoming.factor;
+          if (incoming.factor < 1) {
+            incoming.frame = requestAnimationFrame(step);
+          } else {
+            this.incoming = null;
+          }
+        };
+        incoming.frame = requestAnimationFrame(step);
+      } else {
+        next.volume = this.volume;
+      }
+      if (!wasLoaded && this.elementLoaded) this.handlers.onLoaded?.();
+    }, () => { this.cancelReplacement = null; });
+  }
+
+  cancelBypass(): void {
+    this.cancelReplacement?.();
+    this.cancelReplacement = null;
+  }
+
+  private finishIncoming(): void {
+    const incoming = this.incoming;
+    if (!incoming) return;
+    window.cancelAnimationFrame(incoming.frame);
+    incoming.element.volume = this.volume;
+    this.incoming = null;
   }
 
   /** A fresh, silent element, already listening. */
@@ -202,6 +267,16 @@ export class AudioEngine {
     el.volume = 0;
     el.crossOrigin = this.cors ? "anonymous" : null;
 
+    this.listen(el);
+
+    this.elementLoaded = false;
+    this.elementPlayed = false;
+    this.waitingAt = null;
+    this.handlers.onElement?.(el, "created");
+    return el;
+  }
+
+  private listen(el: HTMLAudioElement): void {
     el.addEventListener("ended", this.handleEnded);
     el.addEventListener("loadedmetadata", this.handleMetadata);
     el.addEventListener("durationchange", this.handleDuration);
@@ -211,17 +286,11 @@ export class AudioEngine {
     el.addEventListener("pause", this.handlePause);
     el.addEventListener("seeking", this.handleInterrupted);
     el.addEventListener("timeupdate", this.handleTimeUpdate);
-
-    this.elementLoaded = false;
-    this.elementPlayed = false;
-    this.waitingAt = null;
-    this.handlers.onElement?.(el, "created");
-    return el;
   }
 
   /** Takes a silent element, handing an audible one over to the cross-fade. */
   private swap(): void {
-    if (!this.el.paused) {
+    if (!this.el.paused || this.handlers.shouldReplace?.(this.el)) {
       this.retire(this.el);
       this.el = this.create();
       return;
@@ -333,6 +402,83 @@ export class AudioEngine {
     }
     this.handlers.onError?.();
   };
+}
+
+/** Prepares a separate element while the original continues to play. */
+export function prepareDirectAudio(
+  original: HTMLAudioElement,
+  position: () => number,
+  valid: () => boolean,
+  ready: (element: HTMLAudioElement) => void,
+  failed: () => void,
+): () => void {
+  const element = new Audio();
+  const controller = new AbortController();
+  let finished = false;
+  element.preload = "auto";
+  element.crossOrigin = original.crossOrigin;
+  element.volume = 0;
+
+  const release = (): void => {
+    element.pause();
+    element.removeAttribute("src");
+    element.load();
+  };
+  const cancel = (): void => {
+    if (finished) return;
+    finished = true;
+    controller.abort();
+    release();
+  };
+  const wait = (event: string): Promise<void> => new Promise((resolve, reject) => {
+    const cleanup = (): void => {
+      element.removeEventListener(event, success);
+      element.removeEventListener("error", failure);
+      controller.signal.removeEventListener("abort", failure);
+    };
+    const success = (): void => { cleanup(); resolve(); };
+    const failure = (): void => { cleanup(); reject(new Error("Audio replacement cancelled")); };
+    element.addEventListener(event, success);
+    element.addEventListener("error", failure);
+    controller.signal.addEventListener("abort", failure);
+    if (controller.signal.aborted) failure();
+  });
+  const seek = async (): Promise<void> => {
+    const seconds = Math.max(0, position());
+    if (Number.isFinite(seconds) && Math.abs(element.currentTime - seconds) > 0.01) {
+      element.currentTime = seconds;
+      if (element.seeking) await wait("seeked");
+    }
+  };
+  const run = async (): Promise<void> => {
+    await Promise.resolve();
+    if (finished || !valid()) throw new Error("Audio replacement cancelled");
+    const source = original.currentSrc || original.src;
+    if (source) {
+      element.src = source;
+      if (element.readyState < HTMLMediaElement.HAVE_METADATA) await wait("loadedmetadata");
+      await seek();
+      if (!original.paused && !original.ended) {
+        await element.play();
+        await seek();
+      }
+    }
+    if (finished || !valid()) throw new Error("Audio replacement cancelled");
+    if (original.paused && !element.paused) element.pause();
+    if (!original.paused && element.paused && source) {
+      await element.play();
+      await seek();
+    }
+    if (finished || !valid()) throw new Error("Audio replacement cancelled");
+    finished = true;
+    ready(element);
+  };
+  void run().catch(() => {
+    if (finished) return;
+    cancel();
+    failed();
+  });
+  return cancel;
 }
 
 /** The asset URL for a library file, for anything outside the engine. */

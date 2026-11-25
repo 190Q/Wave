@@ -1,4 +1,5 @@
 import { getState, subscribe } from "./state";
+import { subscribeActivity, uiActive } from "./activity";
 import { isAndroidPlatform } from "./device";
 
 const query = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -94,13 +95,13 @@ export function mountMotion(): void {
   };
 
   const resume = (): void => {
-    if (!suspended || resumeFrame !== null || document.hidden || !document.hasFocus()) {
+    if (!suspended || resumeFrame !== null || !uiActive() || (isAndroidPlatform && !document.hasFocus())) {
       return;
     }
     resumeFrame = requestAnimationFrame(() => {
       resumeFrame = requestAnimationFrame(() => {
         resumeFrame = null;
-        if (document.hidden || !document.hasFocus()) {
+        if (!uiActive() || (isAndroidPlatform && !document.hasFocus())) {
           return;
         }
         finishResume();
@@ -109,7 +110,7 @@ export function mountMotion(): void {
   };
 
   const resumeOnInput = (): void => {
-    if (!suspended || document.hidden) {
+    if (!suspended || !uiActive()) {
       return;
     }
     if (resumeFrame !== null) {
@@ -120,22 +121,23 @@ export function mountMotion(): void {
   };
 
   subscribe(() => paint());
+  subscribeActivity(() => {
+    if (uiActive()) resume();
+    else suspend();
+  });
   query.addEventListener("change", () => paint());
+  document.addEventListener("visibilitychange", () => {
+    if (uiActive()) resume();
+    else suspend();
+  });
   if (isAndroidPlatform) {
     window.addEventListener("blur", suspend);
     window.addEventListener("focus", resume);
     window.addEventListener("pointerdown", resumeOnInput, true);
     window.addEventListener("keydown", resumeOnInput, true);
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) {
-        suspend();
-      } else {
-        resume();
-      }
-    });
-    if (document.hidden || !document.hasFocus()) {
-      suspend();
-    }
+  }
+  if (!uiActive() || (isAndroidPlatform && !document.hasFocus())) {
+    suspend();
   }
   paint();
 }

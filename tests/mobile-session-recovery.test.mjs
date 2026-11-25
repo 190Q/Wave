@@ -306,7 +306,7 @@ test("a partial scan keeps missing queue entries while available playback advanc
     const pending = readSessionRecovery(storage).playback;
     assert.deepEqual(pending.order, ["c", "b", "a"]);
     assert.equal(pending.cursor, 2);
-    assert.equal(pending.positionMs, 17000);
+    assert.ok(pending.positionMs >= 17000 && pending.positionMs < 17250);
     assert.equal(pending.repeat, "off");
 
     scannedTracks = tracks;

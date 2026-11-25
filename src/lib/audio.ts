@@ -1,5 +1,6 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 
+import { subscribeActivity, uiActive } from "./activity";
 import { FADE_MS, smoothstep } from "./fade";
 
 export interface AudioEngineHandlers {
@@ -44,15 +45,17 @@ export class AudioEngine {
   private waitingAt: number | null = null;
 
   private readonly retiring = new Map<HTMLAudioElement, number>();
+  private readonly timeListeners = new Set<() => void>();
 
   constructor(handlers: AudioEngineHandlers = {}) {
     this.handlers = handlers;
     this.el = this.create();
     document.addEventListener("visibilitychange", this.releaseIfHidden);
+    subscribeActivity(this.releaseIfHidden);
   }
 
   private readonly releaseIfHidden = (): void => {
-    if (document.hidden) {
+    if (!uiActive()) {
       this.finishTransitions();
     }
   };
@@ -94,6 +97,11 @@ export class AudioEngine {
   /** The element in hand, for a report when the sound goes missing. */
   get element(): HTMLAudioElement {
     return this.el;
+  }
+
+  onTimeUpdate(listener: () => void): () => void {
+    this.timeListeners.add(listener);
+    return () => this.timeListeners.delete(listener);
   }
 
   /** Points the element at a file, crossing over from whatever was playing. */
@@ -202,6 +210,7 @@ export class AudioEngine {
     el.addEventListener("playing", this.handlePlaying);
     el.addEventListener("pause", this.handlePause);
     el.addEventListener("seeking", this.handleInterrupted);
+    el.addEventListener("timeupdate", this.handleTimeUpdate);
 
     this.elementLoaded = false;
     this.elementPlayed = false;
@@ -225,7 +234,7 @@ export class AudioEngine {
     this.forget(el);
 
     const from = el.volume;
-    if (el.paused || from <= 0 || document.hidden) {
+    if (el.paused || from <= 0 || !uiActive()) {
       this.release(el);
       return;
     }
@@ -255,6 +264,7 @@ export class AudioEngine {
     el.removeEventListener("playing", this.handlePlaying);
     el.removeEventListener("pause", this.handlePause);
     el.removeEventListener("seeking", this.handleInterrupted);
+    el.removeEventListener("timeupdate", this.handleTimeUpdate);
   }
 
   private release(el: HTMLAudioElement): void {
@@ -308,6 +318,12 @@ export class AudioEngine {
   private readonly handlePause = (): void => {
     this.handleInterrupted();
     this.handlers.onPause?.();
+  };
+
+  private readonly handleTimeUpdate = (): void => {
+    for (const listener of this.timeListeners) {
+      listener();
+    }
   };
 
   private readonly handleError = (): void => {

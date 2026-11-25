@@ -1,4 +1,5 @@
 import type { AudioEngine } from "./audio";
+import { uiActive } from "./activity";
 import type { Player } from "./player";
 
 const CHECK_MS = 1000;
@@ -50,7 +51,7 @@ export function mountAudioWatchdog(
     const snapshot = player.snapshot();
     const element = engine.element;
     const now = performance.now();
-    const hidden = document.hidden;
+    const hidden = !uiActive();
     if (hidden && snapshot.playing) {
       player.sampleListening();
     }

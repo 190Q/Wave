@@ -55,6 +55,12 @@ globalThis.AudioContext = class {
   createGain() { return new FakeNode(); }
   createDynamicsCompressor() { return new FakeNode(); }
   createAnalyser() { return new FakeNode(); }
+  suspend() {
+    return Promise.resolve().then(() => { this.state = "suspended"; this.onstatechange?.(); });
+  }
+  resume() {
+    return Promise.resolve().then(() => { this.state = "running"; this.onstatechange?.(); });
+  }
   setSinkId(id) {
     return new Promise((resolve, reject) => sinkRequests.push({ id, resolve, reject }));
   }

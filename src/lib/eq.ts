@@ -109,6 +109,7 @@ export class EqChain {
       this.route(element);
     }
     this.notifyStatus();
+    this.pauseIfIdle();
   }
 
   /** True while the curve is being applied rather than passed through. */
@@ -218,9 +219,26 @@ export class EqChain {
     void context.resume().then(() => this.routePending()).catch(() => {});
   }
 
+  private readonly pauseIfIdle = (): void => {
+    const context = this.context;
+    if (!context || context.state !== "running" || [...this.elements].some((element) => !element.paused)) {
+      return;
+    }
+    void context.suspend().then(() => {
+      if ([...this.elements].some((element) => !element.paused)) this.resume();
+    }).catch(() => {});
+  };
+
+  private readonly resumeForPlayback = (): void => {
+    this.resume();
+  };
+
   /** Takes a new element into the graph, where the equaliser is wanted. */
   attach(element: HTMLAudioElement): void {
     this.elements.add(element);
+    element.addEventListener?.("play", this.resumeForPlayback);
+    element.addEventListener?.("pause", this.pauseIfIdle);
+    element.addEventListener?.("ended", this.pauseIfIdle);
     this.route(element);
     this.notifyStatus();
   }
@@ -228,12 +246,16 @@ export class EqChain {
   /** Lets go of an element the engine has finished with. */
   detach(element: HTMLAudioElement): void {
     this.elements.delete(element);
+    element.removeEventListener?.("play", this.resumeForPlayback);
+    element.removeEventListener?.("pause", this.pauseIfIdle);
+    element.removeEventListener?.("ended", this.pauseIfIdle);
     const source = this.sources.get(element);
     if (source) {
       source.disconnect();
       this.sources.delete(element);
     }
     this.notifyStatus();
+    this.pauseIfIdle();
   }
 
   /** Applies the settings, rebuilding only what has changed shape. */

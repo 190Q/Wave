@@ -25,7 +25,6 @@
   background: var(--accent-soft);
   transform-origin: 0 0;
   transform: scaleX(var(--progress, 0));
-  transition: transform 0.08s linear;
   pointer-events: none;
 }
 
@@ -37,7 +36,6 @@
   width: 100%;
   border-left: 0.125rem solid var(--accent);
   transform: translateX(calc(var(--progress, 0) * 100% - 0.125rem));
-  transition: transform 0.08s linear;
   pointer-events: none;
 }
 

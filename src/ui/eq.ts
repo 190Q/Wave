@@ -2,7 +2,7 @@ import { parseEqProfile } from "../lib/autoeq";
 import { hexToHsv, hsvToHex } from "../lib/colour";
 import { MAX_EQ_FREQ, MAX_EQ_GAIN, MIN_EQ_FREQ, MIN_EQ_GAIN } from "../lib/eq";
 import { escapeHtml } from "../lib/format";
-import { reduceMotionActive } from "../lib/motion";
+import { reduceMotionActive, subscribeMotion } from "../lib/motion";
 import { scoreItems } from "../lib/search";
 import {
   EQ_PRESET_LIMIT,
@@ -42,6 +42,7 @@ import { claimPopup, releasePopup } from "./popups";
 
 /** Matches the panel's open and close transition in the stylesheet. */
 const EQ_MODAL_MS = 300;
+const SPECTRUM_INTERVAL_MS = 100;
 
 /** The decibels the canvas shows above and below the flat line. */
 const MIN_DB = -18;
@@ -629,30 +630,33 @@ export function mountEq(): void {
     return rect.width >= 1 && rect.height >= 1;
   };
 
-  /** The curve is redrawn every frame, so the spectrum moves with the sound. */
+  const spectrumMoving = (): boolean => eqChain.live && player.snapshot().playing && !reduceMotionActive();
+
   const tick = (): void => {
     frame = null;
     if (modal.hidden || !canvasSized()) {
       return;
     }
     draw();
-    frame = requestAnimationFrame(tick);
+    if (spectrumMoving()) {
+      frame = window.setTimeout(tick, SPECTRUM_INTERVAL_MS);
+    }
   };
 
   const startDrawing = (): void => {
-    if (reduceMotionActive()) {
-      // Nothing moves on its own, so one pass over the curve is enough.
+    if (modal.hidden) return;
+    if (!spectrumMoving()) {
       draw();
       return;
     }
     if (frame === null) {
-      frame = requestAnimationFrame(tick);
+      frame = window.setTimeout(tick, SPECTRUM_INTERVAL_MS);
     }
   };
 
   const stopDrawing = (): void => {
     if (frame !== null) {
-      window.cancelAnimationFrame(frame);
+      window.clearTimeout(frame);
       frame = null;
     }
   };
@@ -887,7 +891,7 @@ export function mountEq(): void {
       return;
     }
     hovered = id;
-    if (reduceMotionActive()) {
+    if (frame === null) {
       draw();
     }
   });
@@ -897,7 +901,7 @@ export function mountEq(): void {
       return;
     }
     hovered = null;
-    if (reduceMotionActive()) {
+    if (frame === null) {
       draw();
     }
   });
@@ -1212,12 +1216,16 @@ export function mountEq(): void {
     paintBands(state.settings.eqBands);
     paintSide(state, status);
     paintReadout(status);
-    if (reduceMotionActive()) {
+    if (frame === null) {
       draw();
     }
   };
 
-  eqChain.onStatusChange(paint);
+  eqChain.onStatusChange(() => {
+    if (!spectrumMoving()) stopDrawing();
+    paint();
+    startDrawing();
+  });
 
   // Opening and closing.
 
@@ -1330,14 +1338,21 @@ export function mountEq(): void {
   );
 
   window.addEventListener("resize", () => {
-    if (reduceMotionActive() && !modal.hidden) {
+    if (frame === null && !modal.hidden) {
       draw();
     }
   });
 
   subscribe(paint);
-  // The curve a rule picks follows the song, so the panel has to follow it too.
-  player.onChange(paint);
+  player.onChange(() => {
+    paint();
+    if (!spectrumMoving()) stopDrawing();
+    startDrawing();
+  });
+  subscribeMotion(() => {
+    if (!spectrumMoving()) stopDrawing();
+    startDrawing();
+  });
 }
 
 function shellHtml(): string {

@@ -597,22 +597,21 @@ test("Android retries a failed playback activity update while paused", async () 
   assert.equal(context.intervals.size, 0);
 });
 
-test("visual progress frames do not repeatedly send media presence", () => {
+test("media progress events do not repeatedly send media presence", () => {
   const { engine } = setup(AndroidPlayer, mountAndroidPresence, false, null, true);
   const count = context.bridgeMessages.length;
   for (let frame = 1; frame <= 10; frame += 1) {
-    const [id, callback] = context.frames.entries().next().value;
-    context.frames.delete(id);
     engine.element.currentTime = frame / 10;
-    callback(performance.now());
+    engine.element.emit("timeupdate");
   }
+  assert.equal(context.frames.size, 0);
   assert.equal(context.bridgeMessages.length, count);
   tickIntervals();
   assert.equal(context.bridgeMessages.length, count + 1);
   assert.equal(context.bridgeMessages.at(-1).revision, undefined);
 });
 
-test("the visual clock parks while hidden without losing listening time", (t) => {
+test("visual progress parks while hidden without losing listening time", (t) => {
   const original = globalThis.performance;
   let now = 0;
   globalThis.performance = { now: () => now };
@@ -623,7 +622,7 @@ test("the visual clock parks while hidden without losing listening time", (t) =>
   let progress = 0;
   player.onListening((elapsed) => { listened += elapsed; });
   player.onProgress((position) => { progress = position; });
-  assert.equal(context.frames.size, 1);
+  assert.equal(context.frames.size, 0);
 
   now = 5000;
   engine.element.currentTime = 5;
@@ -644,7 +643,7 @@ test("the visual clock parks while hidden without losing listening time", (t) =>
   document.dispatch("visibilitychange");
   assert.equal(listened, 15000);
   assert.equal(progress, 15000);
-  assert.equal(context.frames.size, 1);
+  assert.equal(context.frames.size, 0);
 
   document.hidden = true;
   document.dispatch("visibilitychange");
@@ -656,7 +655,7 @@ test("the visual clock parks while hidden without losing listening time", (t) =>
   assert.equal(context.frames.size, 0);
   document.hidden = false;
   document.dispatch("visibilitychange");
-  assert.equal(context.frames.size, 1);
+  assert.equal(context.frames.size, 0);
 });
 
 for (const [platform, PlayerClass] of [["Linux", Player], ["Android", AndroidPlayer]]) {

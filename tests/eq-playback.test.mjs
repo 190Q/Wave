@@ -31,10 +31,13 @@ class FakeAudio {
   pauses = 0;
 
   constructor() { FakeAudio.instances.push(this); }
-  addEventListener(name, callback) { this.listeners.set(name, callback); }
-  removeEventListener(name) { this.listeners.delete(name); }
-  emit(name) { this.listeners.get(name)?.(); }
-  play() { this.paused = false; return Promise.resolve(); }
+  addEventListener(name, callback) {
+    if (!this.listeners.has(name)) this.listeners.set(name, new Set());
+    this.listeners.get(name).add(callback);
+  }
+  removeEventListener(name, callback) { this.listeners.get(name)?.delete(callback); }
+  emit(name) { for (const callback of this.listeners.get(name) ?? []) callback(); }
+  play() { this.paused = false; this.emit("play"); return Promise.resolve(); }
   pause() { this.pauses += 1; this.paused = true; this.emit("pause"); }
   removeAttribute() { this.src = ""; }
   load() {}
@@ -67,6 +70,12 @@ class FakeContext {
   createAnalyser() { return new FakeNode(); }
   createBiquadFilter() { return new FakeNode(); }
   createMediaElementSource(element) { this.sources.push(element); return new FakeNode(); }
+  suspend() {
+    return Promise.resolve().then(() => { this.state = "suspended"; this.onstatechange?.(); });
+  }
+  resume() {
+    return Promise.resolve().then(() => { this.state = "running"; this.onstatechange?.(); });
+  }
 }
 
 globalThis.Audio = FakeAudio;

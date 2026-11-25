@@ -1,4 +1,5 @@
 import type { Playback, RepeatMode } from "../types";
+import { subscribeActivity, uiActive } from "./activity";
 import type { AudioEngine } from "./audio";
 import { isAndroidPlatform } from "./device";
 import { FADE_MS, smoothstep } from "./fade";
@@ -84,7 +85,6 @@ export class Player {
 
   private fade: { from: number; to: number; startedAt: number; durationMs: number } | null = null;
   private fadeFrame: number | null = null;
-  private clockFrame: number | null = null;
 
   private readonly changeListeners = new Set<ChangeListener>();
   private readonly progressListeners = new Set<ProgressListener>();
@@ -96,6 +96,12 @@ export class Player {
     this.sourceOf = sourceOf;
     this.applyLevel();
     document.addEventListener("visibilitychange", this.settleLevelIfHidden);
+    subscribeActivity(this.settleLevelIfHidden);
+    this.engine.onTimeUpdate(() => {
+      if (this.playing && uiActive()) {
+        this.emitProgress();
+      }
+    });
   }
 
   refreshCurrentSource(): void {
@@ -234,7 +240,6 @@ export class Player {
     this.level = 0;
     this.applyLevel();
     this.stopFade();
-    this.stopClock();
     this.loadCurrent(false, Math.max(playback.positionMs, 0));
     this.orderRevision += 1;
     this.emitChange();
@@ -335,7 +340,6 @@ export class Player {
     this.stopFade();
     this.level = this.targetLevel();
     this.applyLevel();
-    this.stopClock();
     this.emitChange();
     this.emitProgress();
   }
@@ -351,7 +355,6 @@ export class Player {
     this.stopFade();
     this.level = 0;
     this.engine.reload(false, position);
-    this.stopClock();
     this.resetListeningClock();
   }
 
@@ -522,7 +525,6 @@ export class Player {
     if (this.order.length === 0) {
       this.cursor = 0;
       this.playing = false;
-      this.stopClock();
       this.loadCurrent(false);
     } else if (index < this.cursor) {
       this.cursor -= 1;
@@ -565,8 +567,6 @@ export class Player {
     if (this.playing) {
       this.startClock();
       this.startFade(this.targetLevel());
-    } else {
-      this.stopClock();
     }
   }
 
@@ -584,7 +584,6 @@ export class Player {
     this.resumeAfterInterruption = false;
     this.level = 0;
     this.applyLevel();
-    this.stopClock();
     this.loadedId = null;
     this.emitChange();
   }
@@ -615,7 +614,6 @@ export class Player {
     if (!id || !source) {
       this.loadedId = null;
       this.playing = false;
-      this.stopClock();
       this.engine.unload();
       this.resetListeningClock();
       return;
@@ -628,8 +626,6 @@ export class Player {
     if (autoplay) {
       this.startClock();
       this.startFade(this.targetLevel());
-    } else {
-      this.stopClock();
     }
   }
 
@@ -648,7 +644,6 @@ export class Player {
     this.level = 0;
     this.applyLevel();
     this.engine.pause();
-    this.stopClock();
     this.emitChange();
     this.emitProgress();
   }
@@ -695,7 +690,7 @@ export class Player {
   /** Moves the level to its target over a moment, rather than in one step. */
   private startFade(to: number): void {
     const from = this.level;
-    if (from === to || document.hidden) {
+    if (from === to || !uiActive()) {
       this.stopFade();
       this.level = to;
       this.applyLevel();
@@ -736,7 +731,7 @@ export class Player {
 
   /** The page went away, so a fade that is still running is finished here. */
   private readonly settleLevelIfHidden = (): void => {
-    if (!document.hidden) {
+    if (uiActive()) {
       if (this.playing) {
         this.emitProgress();
         this.startClock();
@@ -744,7 +739,6 @@ export class Player {
       return;
     }
     this.sampleListening();
-    this.stopClock();
     const to = this.fade?.to ?? this.targetLevel();
     this.stopFade();
     this.level = to;
@@ -765,7 +759,6 @@ export class Player {
   private settleFade(): void {
     if (!this.playing && !this.resumeAfterInterruption && this.engine.isPlaying) {
       this.engine.pause();
-      this.stopClock();
       this.emitProgress();
     }
   }
@@ -789,27 +782,7 @@ export class Player {
     this.reportedMs = this.engine.positionMs;
     this.reportedAt = performance.now();
     this.resetListeningClock();
-    if (!document.hidden && this.clockFrame === null) {
-      this.clockFrame = requestAnimationFrame(this.tick);
-    }
   }
-
-  private stopClock(): void {
-    if (this.clockFrame !== null) {
-      window.cancelAnimationFrame(this.clockFrame);
-      this.clockFrame = null;
-    }
-  }
-
-  /** Reads the media clock every frame, so the UI follows the sound. */
-  private readonly tick = (): void => {
-    this.clockFrame = null;
-    if (!this.playing || document.hidden) {
-      return;
-    }
-    this.emitProgress();
-    this.clockFrame = requestAnimationFrame(this.tick);
-  };
 
   private emitChange(): void {
     const snapshot = this.snapshot();

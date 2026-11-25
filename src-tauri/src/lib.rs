@@ -40,6 +40,8 @@ mod presence;
 mod progress;
 mod recommend;
 mod search;
+#[cfg(target_os = "linux")]
+mod screen;
 mod source;
 #[cfg(desktop)]
 mod song_editor;
@@ -223,6 +225,9 @@ pub fn run() {
         .setup(|app| {
             prepare(app.handle()).map_err(std::io::Error::other)?;
 
+            #[cfg(target_os = "linux")]
+            screen::start(app.handle());
+
             let frontend_ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             app.manage(FrontendHealth(frontend_ready.clone()));
             #[cfg(target_os = "linux")]
@@ -286,6 +291,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             show_main_window,
             report_frontend_startup,
+            #[cfg(target_os = "linux")]
+            screen::screen_blanked,
             #[cfg(any(windows, target_os = "android"))]
             audio_outputs::get_audio_outputs,
             state::get_state,

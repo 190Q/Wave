@@ -56,6 +56,9 @@ class FakeContext {
       this.rejectResume = reject;
     });
   }
+  suspend() {
+    return Promise.resolve().then(() => { this.state = "suspended"; this.onstatechange?.(); });
+  }
 }
 
 globalThis.AudioContext = FakeContext;
@@ -229,6 +232,47 @@ test("new elements follow the existing output while the equalizer is off", async
   eq.attach(preview);
   assert.deepEqual(context.sources, [main, preview]);
   assert.equal(eq.live, false);
+});
+
+test("the audio graph sleeps only after every source pauses and resumes after a pause/play race", async () => {
+  class Element extends EventTarget {
+    paused = true;
+    crossOrigin = "anonymous";
+    play() { this.paused = false; this.dispatchEvent(new Event("play")); }
+    pause() { this.paused = true; this.dispatchEvent(new Event("pause")); }
+  }
+  const eq = new EqChain();
+  const main = new Element();
+  const preview = new Element();
+  eq.attach(main);
+  eq.attach(preview);
+  eq.apply(settings());
+  const context = FakeContext.instances.at(-1);
+  context.finishResume();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.state, "suspended");
+
+  main.play();
+  context.finishResume();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.state, "running");
+  assert.deepEqual(context.sources, [main, preview]);
+
+  preview.play();
+  main.pause();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.state, "running");
+  preview.pause();
+  main.play();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.state, "suspended");
+  context.finishResume();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.state, "running");
+
+  main.pause();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.state, "suspended");
 });
 
 test("output changes are confirmed, serialized, and still work with a disabled graph", async () => {

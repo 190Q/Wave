@@ -1,4 +1,5 @@
 import "./assets/icons/icons.css";
+import { mountActivity } from "./lib/activity-platform";
 import { mountApi } from "./lib/api";
 import { device, initDevice, isAndroidPlatform, isTouch } from "./lib/device";
 import { reportFrontendStartup, showMainWindow } from "./lib/ipc";
@@ -45,6 +46,7 @@ const NOTICE_TIMEOUT_MS = 6000;
 
 function mount(): void {
   initDevice();
+  mountActivity();
   if (device() === "desktop") {
     document.documentElement.classList.remove("is-starting");
   } else {

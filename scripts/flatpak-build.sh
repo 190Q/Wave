@@ -28,6 +28,7 @@ flatpak build-finish "$stage/app" \
   --device=dri --filesystem=home \
   --own-name=org.mpris.MediaPlayer2.wave \
   --talk-name=org.freedesktop.Notifications \
+  --talk-name=org.gnome.ScreenSaver \
   --env=GTK_USE_PORTAL=1
 flatpak build-export "$stage/repo" "$stage/app" stable
 mkdir -p "$(dirname "$output")"

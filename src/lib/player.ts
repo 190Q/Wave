@@ -90,6 +90,7 @@ export class Player {
   private readonly progressListeners = new Set<ProgressListener>();
   private readonly listeningListeners = new Set<ListeningListener>();
   private readonly seekListeners = new Set<SeekListener>();
+  private readonly queueListeners = new Set<() => void>();
 
   constructor(engine: AudioEngine, sourceOf: (trackId: string) => PlayerSource | undefined) {
     this.engine = engine;
@@ -131,6 +132,11 @@ export class Player {
   onSeek(listener: SeekListener): () => void {
     this.seekListeners.add(listener);
     return () => this.seekListeners.delete(listener);
+  }
+
+  onBeforeQueueChange(listener: () => void): () => void {
+    this.queueListeners.add(listener);
+    return () => this.queueListeners.delete(listener);
   }
 
   get currentId(): string | null {
@@ -179,6 +185,7 @@ export class Player {
 
   /** Replaces the queue. Keeps playing if something was already playing. */
   setQueue(sourceId: string, sourceName: string, trackIds: string[], startTrackId?: string): void {
+    for (const listener of this.queueListeners) listener();
     this.sourceId = sourceId;
     this.sourceName = sourceName;
     this.sourceOrder = [...trackIds];
@@ -226,6 +233,7 @@ export class Player {
       return;
     }
 
+    for (const listener of this.queueListeners) listener();
     this.sourceId = playback.sourceId;
     this.sourceName = playback.sourceName;
     this.sourceOrder = [...playback.sourceOrder];

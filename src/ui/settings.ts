@@ -52,6 +52,7 @@ const DIALOG_MS = 220;
 /** The settings that are plain on/off switches. */
 type ToggleKey =
   | "resumeOnLaunch"
+  | "resumeCollections"
   | "rememberWindow"
   | "showTitlebar"
   | "normalizeVolume"
@@ -597,6 +598,12 @@ function playbackHtml(settings: Settings): string {
       "Resume on launch",
       "Restore the queue, cursor and position.",
       settings.resumeOnLaunch,
+    )}
+    ${toggleRow(
+      "resumeCollections",
+      "Resume playlists",
+      "Remember the queue and song position for each playlist. Shuffle and replaying the current playlist start fresh.",
+      settings.resumeCollections,
     )}
     ${toggleRow(
       "normalizeVolume",

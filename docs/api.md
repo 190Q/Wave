@@ -623,6 +623,7 @@ curl -s http://127.0.0.1:45679/api/settings
   "normalizeVolume": true,
   "recentColours": [],
   "resumeOnLaunch": true,
+  "resumeCollections": true,
   "reduceMotion": "system",
   "rememberWindow": true,
   "showTitlebar": null,
@@ -639,7 +640,7 @@ curl -s http://127.0.0.1:45679/api/settings
 }
 ```
 
-`reduceMotion` is `system`, `on` or `off`. `showTitlebar` is `true` or `false` to override visibility, or `null` to follow the device default. Android always hides the title bar. `searchAlgorithm` names one of the matching algorithms the window offers. `miniCorner` is `1` to `4`. `shortcutSlots` is the nine `Ctrl+Shift+1..9` action slots, empty strings where a slot is unset.
+`resumeCollections` remembers each collection's queue and position independently of `resumeOnLaunch`. `reduceMotion` is `system`, `on` or `off`. `showTitlebar` is `true` or `false` to override visibility, or `null` to follow the device default. Android always hides the title bar. `searchAlgorithm` names one of the matching algorithms the window offers. `miniCorner` is `1` to `4`. `shortcutSlots` is the nine `Ctrl+Shift+1..9` action slots, empty strings where a slot is unset.
 
 `discordPresence` is available on desktop only and is not present in Android settings.
 `localApiEnabled` controls the server; setting it to `false` stops the API after the request is processed.
@@ -672,6 +673,7 @@ curl -s http://127.0.0.1:45679/api/state
   "artworkColours": { "6f0a3c1e-...": "#8e6fd0" },
   "session": {
     "playback": { "sourceId": "liked", "sourceName": "Liked Songs", "sourceOrder": [], "order": [], "cursor": 0, "positionMs": 0, "shuffle": false, "repeat": "off", "muted": false },
+    "collectionPlayback": {},
     "recents": [],
     "filter": "all",
     "sort": "name",

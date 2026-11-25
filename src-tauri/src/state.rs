@@ -132,6 +132,7 @@ pub struct Settings {
     pub normalize_volume: bool,
     pub recent_colours: Vec<String>,
     pub resume_on_launch: bool,
+    pub resume_collections: bool,
     pub reduce_motion: String,
     pub remember_window: bool,
     pub show_titlebar: Option<bool>,
@@ -181,6 +182,7 @@ impl Default for Settings {
             normalize_volume: true,
             recent_colours: Vec::new(),
             resume_on_launch: true,
+            resume_collections: true,
             reduce_motion: "system".to_string(),
             remember_window: true,
             show_titlebar: None,
@@ -334,6 +336,7 @@ impl Default for Playback {
 #[serde(rename_all = "camelCase", default)]
 pub struct Session {
     pub playback: Playback,
+    pub collection_playback: HashMap<String, Playback>,
     pub recents: Vec<String>,
     pub filter: String,
     pub sort: String,
@@ -345,6 +348,7 @@ impl Default for Session {
     fn default() -> Self {
         Self {
             playback: Playback::default(),
+            collection_playback: HashMap::new(),
             recents: Vec::new(),
             filter: "all".to_string(),
             sort: "name".to_string(),
@@ -576,21 +580,40 @@ pub fn remap_ids<R: Runtime>(
             .map(|(id, colour)| (tracks.get(&id).cloned().unwrap_or(id), colour))
             .collect();
 
-        let order = remap(&state.session.playback.order, tracks);
-        let source_order = remap(&state.session.playback.source_order, tracks);
-        state.session.playback.order = order;
-        state.session.playback.source_order = source_order;
+        remap_session_playback(&mut state.session, tracks, playlists);
 
         let recents = std::mem::take(&mut state.session.recents);
         state.session.recents = remap(&recents, tracks);
-
-        // A queue that was playing a playlist still knows what it was playing.
-        if let Some(source) = state.session.playback.source_id.as_ref() {
-            if let Some(id) = playlists.get(source) {
-                state.session.playback.source_id = Some(id.clone());
-            }
-        }
     }).map(|_| ())
+}
+
+fn remap_session_playback(
+    session: &mut Session,
+    tracks: &HashMap<String, String>,
+    playlists: &HashMap<String, String>,
+) {
+    remap_playback(&mut session.playback, tracks, playlists);
+    session.collection_playback = std::mem::take(&mut session.collection_playback)
+        .into_iter()
+        .map(|(id, mut playback)| {
+            remap_playback(&mut playback, tracks, playlists);
+            (playlists.get(&id).cloned().unwrap_or(id), playback)
+        })
+        .collect();
+}
+
+fn remap_playback(
+    playback: &mut Playback,
+    tracks: &HashMap<String, String>,
+    playlists: &HashMap<String, String>,
+) {
+    playback.order = remap(&playback.order, tracks);
+    playback.source_order = remap(&playback.source_order, tracks);
+    if let Some(source) = playback.source_id.as_ref() {
+        if let Some(id) = playlists.get(source) {
+            playback.source_id = Some(id.clone());
+        }
+    }
 }
 
 fn remap(ids: &[String], map: &HashMap<String, String>) -> Vec<String> {
@@ -1382,6 +1405,63 @@ mod tests {
         let restored: Session = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.saved_at, 123_456);
         assert_eq!(restored.playback.position_ms, 42_000);
+    }
+
+    #[test]
+    fn collection_playback_defaults_and_round_trips() {
+        let legacy: PersistedState = serde_json::from_str("{}").unwrap();
+        assert!(legacy.settings.resume_collections);
+        assert!(legacy.session.collection_playback.is_empty());
+
+        let mut session = legacy.session;
+        session.collection_playback.insert("playlist".into(), Playback {
+            source_id: Some("playlist".into()),
+            source_order: vec!["a".into(), "b".into()],
+            order: vec!["b".into(), "a".into()],
+            cursor: 1,
+            position_ms: 42_000,
+            shuffle: true,
+            ..Playback::default()
+        });
+        let json = serde_json::to_string(&session).unwrap();
+        let restored: Session = serde_json::from_str(&json).unwrap();
+        let playback = &restored.collection_playback["playlist"];
+        assert_eq!(playback.order, ["b", "a"]);
+        assert_eq!(playback.cursor, 1);
+        assert_eq!(playback.position_ms, 42_000);
+        assert!(playback.shuffle);
+
+        let disabled = merge_settings(&legacy.settings, patch(serde_json::json!({
+            "resumeCollections": false
+        }))).unwrap();
+        assert!(!disabled.resume_collections);
+    }
+
+    #[test]
+    fn collection_playback_ids_are_remapped_with_the_session() {
+        let playback = Playback {
+            source_id: Some("old-playlist".into()),
+            source_order: vec!["old-track".into()],
+            order: vec!["old-track".into()],
+            position_ms: 42_000,
+            ..Playback::default()
+        };
+        let mut session = Session {
+            playback: playback.clone(),
+            collection_playback: HashMap::from([("old-playlist".into(), playback)]),
+            ..Session::default()
+        };
+        remap_session_playback(
+            &mut session,
+            &HashMap::from([("old-track".into(), "new-track".into())]),
+            &HashMap::from([("old-playlist".into(), "new-playlist".into())]),
+        );
+        for playback in [&session.playback, &session.collection_playback["new-playlist"]] {
+            assert_eq!(playback.source_id.as_deref(), Some("new-playlist"));
+            assert_eq!(playback.order, ["new-track"]);
+            assert_eq!(playback.source_order, ["new-track"]);
+            assert_eq!(playback.position_ms, 42_000);
+        }
     }
 
     #[test]

@@ -290,6 +290,7 @@ const state: AppState = {
     normalizeVolume: true,
     recentColours: [],
     resumeOnLaunch: true,
+    resumeCollections: true,
     reduceMotion: "system",
     rememberWindow: true,
     showTitlebar: null,
@@ -2176,8 +2177,34 @@ export function playTrackInContext(trackId: string): void {
   playFromCollection("all", trackId);
 }
 
-/** Loads a collection into the queue and starts it from the top. */
+/** Starts a collection, resuming it when a saved queue is available. */
 export function playCollection(id: string): void {
+  const collection = findCollection(state.collections, id);
+  const snapshot = player.snapshot();
+  const saved = state.settings.resumeCollections && snapshot.sourceId !== id
+    ? collectionPlayback[id]
+    : undefined;
+  const playback = collection && saved ? {
+    ...saved, sourceId: id, sourceName: collection.name, repeat: snapshot.repeat, muted: snapshot.muted,
+  } : undefined;
+  const incomplete = playback && state.scanErrors.length > 0 &&
+    [...playback.order, ...playback.sourceOrder].some((trackId) => !state.tracksById.has(trackId));
+  const currentId = playback?.order[playback.cursor];
+  if (incomplete && currentId && !state.tracksById.has(currentId)) {
+    setNotice("Could not resume this playlist while its song is unavailable. Rescan the library and try again.");
+    return;
+  }
+  if (collection?.trackIds.length && playback && restorePlayback(playback)) {
+    if (incomplete) {
+      pendingPlayback = playback;
+      pendingQueueRevision = player.snapshot().queueRevision;
+    }
+    state.recents = [id, ...state.recents.filter((entry) => entry !== id)].slice(0, 3);
+    schedulePersist();
+    emit();
+    player.play();
+    return;
+  }
   openCollection(id);
   player.play();
 }
@@ -3126,6 +3153,7 @@ function applySession(session: Session | undefined): void {
   if (!session) {
     return;
   }
+  collectionPlayback = { ...session.collectionPlayback };
   state.recents = session.recents ?? [];
   state.filter = knownFilter(session.filter);
   state.sort = knownSort(session.sort);
@@ -3150,20 +3178,23 @@ function knownSort(value: string | undefined): CollectionSort {
 
 let pendingPlayback: Playback | undefined;
 let pendingQueueRevision: number | null = null;
+let collectionPlayback: Record<string, Playback> = {};
 
-function restorePlayback(playback: Playback | undefined): void {
+function restorePlayback(playback: Playback | undefined): boolean {
   if (!playback || playback.order.length === 0) {
-    return;
+    return false;
   }
 
   const currentId = playback.order[playback.cursor] ?? null;
   const order = playback.order.filter((id) => state.tracksById.has(id));
   if (order.length === 0) {
-    return;
+    return false;
   }
 
   const sourceOrder = playback.sourceOrder.filter((id) => state.tracksById.has(id));
-  const index = currentId ? order.indexOf(currentId) : -1;
+  const index = currentId && state.tracksById.has(currentId)
+    ? playback.order.slice(0, playback.cursor).filter((id) => state.tracksById.has(id)).length
+    : -1;
   player.restore({
     ...playback,
     order,
@@ -3171,6 +3202,7 @@ function restorePlayback(playback: Playback | undefined): void {
     cursor: Math.max(index, 0),
     positionMs: index < 0 ? 0 : playback.positionMs,
   });
+  return true;
 }
 
 /** How long changes are coalesced before the session is written. */
@@ -3197,6 +3229,7 @@ function wirePersistence(): void {
     return;
   }
   persistenceWired = true;
+  player.onBeforeQueueChange(rememberCurrentCollection);
   player.onChange(schedulePersist);
   player.onSeek(schedulePersist);
   autosaveTimer = window.setInterval(() => void autosave(), AUTOSAVE_MS);
@@ -3250,32 +3283,49 @@ async function autosave(): Promise<void> {
   }
 }
 
-function currentSession(): Session {
+function currentPlayback(): Playback {
   const snapshot = player.snapshot();
   const pendingCursor = snapshot.currentId && pendingPlayback
     ? pendingPlayback.order.indexOf(snapshot.currentId)
     : -1;
-  return {
-    playback: pendingPlayback && (!snapshot.currentId || pendingCursor >= 0) ? {
-      ...pendingPlayback,
-      ...(pendingCursor >= 0 ? {
-        cursor: pendingCursor,
-        positionMs: Math.round(snapshot.positionMs),
-        shuffle: snapshot.shuffle,
-        repeat: snapshot.repeat,
-        muted: snapshot.muted,
-      } : {}),
-    } : {
-      sourceId: snapshot.sourceId,
-      sourceName: snapshot.sourceName,
-      sourceOrder: [...snapshot.sourceOrder],
-      order: [...snapshot.order],
-      cursor: snapshot.cursor,
+  return pendingPlayback && (!snapshot.currentId || pendingCursor >= 0) ? {
+    ...pendingPlayback,
+    ...(pendingCursor >= 0 ? {
+      cursor: pendingCursor,
       positionMs: Math.round(snapshot.positionMs),
       shuffle: snapshot.shuffle,
       repeat: snapshot.repeat,
       muted: snapshot.muted,
-    },
+    } : {}),
+  } : {
+    sourceId: snapshot.sourceId,
+    sourceName: snapshot.sourceName,
+    sourceOrder: [...snapshot.sourceOrder],
+    order: [...snapshot.order],
+    cursor: snapshot.cursor,
+    positionMs: Math.round(snapshot.positionMs),
+    shuffle: snapshot.shuffle,
+    repeat: snapshot.repeat,
+    muted: snapshot.muted,
+  };
+}
+
+function rememberCurrentCollection(): void {
+  if (!state.ready || !state.settings.resumeCollections) {
+    return;
+  }
+  const playback = currentPlayback();
+  if (playback.sourceId && playback.order.length > 0 &&
+      findCollection(state.collections, playback.sourceId)) {
+    collectionPlayback[playback.sourceId] = playback;
+  }
+}
+
+function currentSession(): Session {
+  rememberCurrentCollection();
+  return {
+    playback: currentPlayback(),
+    collectionPlayback: { ...collectionPlayback },
     recents: [...state.recents],
     filter: state.filter,
     sort: state.sort,

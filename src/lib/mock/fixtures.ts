@@ -102,6 +102,7 @@ function defaultSettings(): Settings {
     normalizeVolume: true,
     recentColours: [],
     resumeOnLaunch: true,
+    resumeCollections: true,
     reduceMotion: "system",
     rememberWindow: true,
     showTitlebar: null,

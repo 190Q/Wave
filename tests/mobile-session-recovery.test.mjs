@@ -149,7 +149,7 @@ function session(savedAt, cursor, positionMs) {
   };
 }
 
-async function boot(saved, resumeOnLaunch = true, settings = {}) {
+async function boot(saved, resumeOnLaunch = true, settings = {}, playlists = []) {
   intervals.clear();
   timeouts.clear();
   doc.listeners.clear();
@@ -159,7 +159,7 @@ async function boot(saved, resumeOnLaunch = true, settings = {}) {
   const app = await vite.ssrLoadModule(`/src/lib/state.ts?boot=${++bootNumber}`);
   backend = {
     settings: { ...clone(app.getState().settings), autoUpdate: false, resumeOnLaunch, ...settings },
-    likes: [], playlists: [], windowSlots: [], recentImports: [], artworkColours: {},
+    likes: [], playlists: clone(playlists), windowSlots: [], recentImports: [], artworkColours: {},
     session: clone(saved),
   };
   await app.init();
@@ -365,6 +365,260 @@ test("invalid recovery data and older snapshots cannot override a valid save", (
   assert.equal(newestSession(saved, session(99, 1, 0)), saved);
   assert.equal(newestSession(saved, session(100, 1, 0)), saved);
   assert.equal(newestSession(saved, session(101, 1, 0)).playback.cursor, 1);
+});
+
+const playlists = [
+  { id: "first", name: "First", kind: "custom", entries: ["a", "b"], trackIds: ["a", "b"], pending: [], createdAt: 0 },
+  { id: "second", name: "Second", kind: "custom", entries: ["b", "c"], trackIds: ["b", "c"], pending: [], createdAt: 0 },
+];
+
+function assertPosition(actual, expected) {
+  assert.ok(actual >= expected && actual < expected + 100, `Expected ${expected}ms, got ${actual}ms`);
+}
+
+test("switching playlists restores the exact queue and position while retaining global controls", async () => {
+  values.clear();
+  const app = await boot(null, false, {}, playlists);
+  assert.equal(app.getState().settings.resumeCollections, true);
+  app.playCollection("first");
+  app.player.insertAfterCurrent("c");
+  app.player.moveTo("c");
+  app.player.seek(42000);
+  app.player.pause();
+  const original = app.player.snapshot();
+
+  app.playCollection("second");
+  app.player.setRepeat("all");
+  app.player.toggleMute();
+  app.playCollection("first");
+  const resumed = app.player.snapshot();
+  assert.equal(resumed.currentId, "c");
+  assert.equal(resumed.cursor, 1);
+  assertPosition(resumed.positionMs, 42000);
+  assert.deepEqual(resumed.order, original.order);
+  assert.deepEqual(resumed.sourceOrder, original.sourceOrder);
+  assert.equal(resumed.repeat, "all");
+  assert.equal(resumed.muted, true);
+  assert.equal(resumed.playing, true);
+
+  const recovery = readSessionRecovery(storage);
+  assertPosition(recovery.collectionPlayback.first.positionMs, 42000);
+  assert.deepEqual(recovery.collectionPlayback.first.order, ["a", "c", "b"]);
+});
+
+test("playlist positions survive a restart independently of resume on launch", async () => {
+  values.clear();
+  const app = await boot(null, false, {}, playlists);
+  app.playCollection("first");
+  app.player.moveTo("b");
+  app.player.seek(63000);
+  app.player.pause();
+  app.playCollection("second");
+  await app.flushSession();
+  const saved = clone(backend.session);
+  assert.equal(saved.collectionPlayback.first.positionMs, 63000);
+
+  values.clear();
+  const restarted = await boot(saved, false, {}, playlists);
+  assert.equal(restarted.player.snapshot().sourceId, "all");
+  restarted.playCollection("first");
+  assert.equal(restarted.player.currentId, "b");
+  assertPosition(restarted.player.positionMs, 63000);
+  assert.equal(restarted.player.snapshot().playing, true);
+});
+
+test("a shuffled playlist is captured before a direct queue replacement", async () => {
+  values.clear();
+  const app = await boot(null, false, {}, playlists);
+  app.playCollection("first");
+  app.player.setShuffle(true);
+  app.player.moveTo("b");
+  app.player.seek(27000);
+  app.player.pause();
+  const original = app.player.snapshot();
+
+  app.player.setQueue("external", "External queue", ["c"]);
+  app.playCollection("first");
+  const resumed = app.player.snapshot();
+  assert.equal(resumed.currentId, "b");
+  assertPosition(resumed.positionMs, 27000);
+  assert.equal(resumed.shuffle, true);
+  assert.deepEqual(resumed.order, original.order);
+  assert.deepEqual(resumed.sourceOrder, original.sourceOrder);
+});
+
+test("playlist snapshots survive an abrupt restart through mobile recovery", async () => {
+  values.clear();
+  const app = await boot(null, false, {}, playlists);
+  app.playCollection("first");
+  app.player.moveTo("b");
+  app.player.seek(38000);
+  app.player.pause();
+  app.playCollection("second");
+  assert.equal(backend.session, null);
+
+  const restarted = await boot(null, false, {}, playlists);
+  restarted.playCollection("first");
+  assert.equal(restarted.player.currentId, "b");
+  assertPosition(restarted.player.positionMs, 38000);
+});
+
+test("restoration keeps the exact cursor when a queue repeats a song", async () => {
+  values.clear();
+  const saved = session(100, 0, 0);
+  saved.collectionPlayback = {
+    first: {
+      sourceId: "first", sourceName: "First", sourceOrder: ["a", "b", "a"],
+      order: ["a", "b", "a"], cursor: 2, positionMs: 12000,
+      shuffle: false, repeat: "off", muted: false,
+    },
+  };
+  const app = await boot(saved, false, {}, playlists);
+  app.playCollection("first");
+  assert.equal(app.player.currentId, "a");
+  assert.equal(app.player.snapshot().cursor, 2);
+  assertPosition(app.player.positionMs, 12000);
+});
+
+test("shuffle, replaying the active playlist, and selecting a song start fresh", async () => {
+  values.clear();
+  const app = await boot(null, false, {}, playlists);
+  app.playCollection("first");
+  app.player.moveTo("b");
+  app.player.seek(45000);
+  app.player.pause();
+  app.playCollection("second");
+
+  app.shuffleCollection("first");
+  assert.equal(app.player.snapshot().sourceId, "first");
+  assertPosition(app.player.positionMs, 0);
+  assert.equal(app.player.snapshot().shuffle, true);
+
+  app.player.moveTo("b");
+  app.player.seek(33000);
+  app.playCollection("first");
+  assert.equal(app.player.currentId, "a");
+  assertPosition(app.player.positionMs, 0);
+
+  app.player.moveTo("b");
+  app.player.seek(24000);
+  app.player.pause();
+  app.playCollection("second");
+  app.playFromCollection("first", "a");
+  assert.equal(app.player.currentId, "a");
+  assertPosition(app.player.positionMs, 0);
+});
+
+test("disabling playlist resume ignores saved positions", async () => {
+  values.clear();
+  const app = await boot(null, false, {}, playlists);
+  app.playCollection("first");
+  app.player.moveTo("b");
+  app.player.seek(51000);
+  app.player.pause();
+  app.playCollection("second");
+  app.getState().settings.resumeCollections = false;
+  app.playCollection("first");
+  assert.equal(app.player.currentId, "a");
+  assertPosition(app.player.positionMs, 0);
+});
+
+test("restored playlists skip missing tracks without transferring their position", async () => {
+  values.clear();
+  const saved = session(100, 0, 0);
+  saved.collectionPlayback = {
+    first: {
+      sourceId: "first", sourceName: "First", sourceOrder: ["a", "b", "c"],
+      order: ["c", "b", "a"], cursor: 1, positionMs: 42000,
+      shuffle: true, repeat: "off", muted: false,
+    },
+  };
+  scannedTracks = tracks.filter((track) => track.id !== "b");
+  try {
+    const app = await boot(saved, false, {}, playlists);
+    app.playCollection("first");
+    assert.deepEqual(app.player.snapshot().order, ["c", "a"]);
+    assert.equal(app.player.currentId, "c");
+    assertPosition(app.player.positionMs, 0);
+  } finally {
+    scannedTracks = tracks;
+  }
+});
+
+test("playlist resume retains temporarily missing queue entries until a scan succeeds", async () => {
+  values.clear();
+  const saved = session(100, 0, 0);
+  saved.collectionPlayback = {
+    first: {
+      sourceId: "first", sourceName: "First", sourceOrder: ["a", "b", "c"],
+      order: ["c", "b", "a"], cursor: 1, positionMs: 42000,
+      shuffle: true, repeat: "off", muted: false,
+    },
+  };
+  scannedTracks = tracks.filter((track) => track.id !== "c");
+  scanErrors = ["Library unavailable"];
+  try {
+    const app = await boot(saved, false, {}, playlists);
+    app.playCollection("first");
+    assert.equal(app.player.currentId, "b");
+    assertPosition(app.player.positionMs, 42000);
+    assert.deepEqual(app.player.snapshot().order, ["b", "a"]);
+    assert.deepEqual(readSessionRecovery(storage).collectionPlayback.first.order, ["c", "b", "a"]);
+
+    app.player.seek(53000);
+    scannedTracks = tracks;
+    scanErrors = [];
+    await app.rescan(true);
+    assert.equal(app.player.currentId, "b");
+    assertPosition(app.player.positionMs, 53000);
+    assert.deepEqual(app.player.snapshot().order, ["c", "b", "a"]);
+    assert.equal(app.player.snapshot().playing, true);
+  } finally {
+    scannedTracks = tracks;
+    scanErrors = [];
+  }
+});
+
+test("an unavailable current song does not erase a saved playlist during a failed scan", async () => {
+  values.clear();
+  const saved = session(100, 0, 0);
+  saved.collectionPlayback = {
+    first: {
+      sourceId: "first", sourceName: "First", sourceOrder: ["a", "b"],
+      order: ["a", "b"], cursor: 1, positionMs: 42000,
+      shuffle: false, repeat: "off", muted: false,
+    },
+  };
+  scannedTracks = tracks.filter((track) => track.id !== "b");
+  scanErrors = ["Library unavailable"];
+  try {
+    const app = await boot(saved, false, {}, playlists);
+    app.playCollection("first");
+    assert.equal(app.player.snapshot().sourceId, "all");
+    assert.match(app.getState().notice, /unavailable/);
+    await app.flushSession();
+    assert.equal(backend.session.collectionPlayback.first.positionMs, 42000);
+
+    scannedTracks = tracks;
+    scanErrors = [];
+    await app.rescan(true);
+    app.playCollection("first");
+    assert.equal(app.player.currentId, "b");
+    assertPosition(app.player.positionMs, 42000);
+  } finally {
+    scannedTracks = tracks;
+    scanErrors = [];
+  }
+});
+
+test("recovery validates saved playlist queues without rejecting older sessions", () => {
+  values.clear();
+  const saved = session(200, 0, 0);
+  storage.setItem(SESSION_RECOVERY_KEY, JSON.stringify(saved));
+  assert.ok(readSessionRecovery(storage));
+  saved.collectionPlayback = { first: { ...saved.playback, cursor: 99 } };
+  storage.setItem(SESSION_RECOVERY_KEY, JSON.stringify(saved));
+  assert.equal(readSessionRecovery(storage), null);
 });
 
 test("a delayed initial output preserves edits to the matching saved curve", async () => {

@@ -160,6 +160,8 @@ export interface Settings {
   recentColours: string[];
   /** Restores the queue, cursor and position on the next launch. */
   resumeOnLaunch: boolean;
+  /** Remembers the queue, cursor and position for each collection. */
+  resumeCollections: boolean;
   /** Overrides the system animation preference. */
   reduceMotion: ReduceMotionMode;
   /** Remembers the window size and position between launches. */
@@ -517,6 +519,7 @@ export interface Playback {
 /** The parts of the browsing session worth remembering between launches. */
 export interface Session {
   playback: Playback;
+  collectionPlayback?: Record<string, Playback>;
   recents: string[];
   filter: CollectionFilter;
   sort: CollectionSort;

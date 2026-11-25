@@ -30,6 +30,13 @@ const RELEASE_RATE = 16;
 const RELEASE_SETTLE_PX = 0.1;
 const RELEASE_SETTLE_SPEED = 2;
 const LYRICS_SLIDE_MS = 450;
+const SWIPE_SLOP_PX = 20;
+const VERTICAL_SLOP_PX = 8;
+const SWIPE_AXIS_RATIO = 2;
+const SWIPE_MIN_PX = 25;
+const SWIPE_SHARE = 0.25;
+const SWIPE_PROJECTION_SEC = 0.2;
+const SWIPE_EDGE_RESISTANCE = 0.3;
 
 export function mountHero(visibility?: SheetVisibility): void {
   const hero = document.getElementById("hero");
@@ -133,9 +140,19 @@ export function mountHero(visibility?: SheetVisibility): void {
   let scrubbing = false;
   let dragging = false;
   let dragPointerId: number | null = null;
+  let dragAxis: "pending" | "vertical" | "horizontal" = "pending";
+  let dragBeforeFirst = false;
+  let dragOriginX = 0;
   let dragOriginY = 0;
   let dragOriginCentre = 0;
   const dragVelocity = createVelocitySampler(DRAG_VELOCITY_WINDOW_MS);
+  const swipeVelocity = createVelocitySampler(DRAG_VELOCITY_WINDOW_MS);
+  let swipeWidth = 0;
+  let swipeBase = 0;
+  let swipeOffset = 0;
+  let swipePainted = 0;
+  let swipeFrame: number | null = null;
+  let swipeDeparture: { offset: number; width: number } | null = null;
   let settlingDrag = false;
   let settleVelocity = 0;
   let chaseFrame: number | null = null;
@@ -219,7 +236,7 @@ export function mountHero(visibility?: SheetVisibility): void {
   /** Moves playback onto a line, so the clock and the dock follow the lyrics. */
   const seekToLine = (index: number): void => {
     const lyrics = renderedLyrics ?? [];
-    if (lyrics.length === 0 || index === seekedLine) {
+    if (lyrics.length === 0 || index < 0 || index === seekedLine) {
       return;
     }
     seekedLine = index;
@@ -292,14 +309,34 @@ export function mountHero(visibility?: SheetVisibility): void {
     }
   };
 
-  /** Forgets where the scrub was, ready for a fresh set of lines. */
-  const resetScrub = (): void => {
-    stopChase();
+  const cancelSwipe = (): void => {
+    if (swipeFrame !== null) {
+      window.cancelAnimationFrame(swipeFrame);
+      swipeFrame = null;
+    }
+    if (dragAxis !== "horizontal") {
+      return;
+    }
+    lyricPage.style.transform = "";
     if (dragPointerId !== null && panel.hasPointerCapture(dragPointerId)) {
       panel.releasePointerCapture(dragPointerId);
     }
     dragPointerId = null;
     dragging = false;
+    dragAxis = "pending";
+  };
+
+  /** Forgets where the scrub was, ready for a fresh set of lines. */
+  const resetScrub = (): void => {
+    stopChase();
+    cancelSwipe();
+    if (dragPointerId !== null && panel.hasPointerCapture(dragPointerId)) {
+      panel.releasePointerCapture(dragPointerId);
+    }
+    dragPointerId = null;
+    dragging = false;
+    dragAxis = "pending";
+    dragBeforeFirst = false;
     activeLine = null;
     shownLine = 0;
     targetLine = 0;
@@ -321,6 +358,7 @@ export function mountHero(visibility?: SheetVisibility): void {
   let incomingAnimation: Animation | null = null;
   let outgoingAnimation: Animation | null = null;
   let pendingDirection = 0;
+  let pendingSwipeSlide: { offset: number; width: number; startedAt: number } | null = null;
 
   const stopSlides = (): void => {
     incomingAnimation?.cancel();
@@ -329,6 +367,7 @@ export function mountHero(visibility?: SheetVisibility): void {
     outgoingAnimation = null;
     outgoingPage?.remove();
     outgoingPage = null;
+    pendingSwipeSlide = null;
   };
 
   const directionTo = (snapshot: PlayerSnapshot): number => {
@@ -351,8 +390,13 @@ export function mountHero(visibility?: SheetVisibility): void {
   };
 
   const slideOut = (direction: number): void => {
+    const departure = swipeDeparture ?? (dragging && dragAxis === "horizontal"
+      ? { offset: swipePainted, width: swipeWidth }
+      : null);
+    swipeDeparture = null;
     stopSlides();
     pendingDirection = direction;
+    lyricPage.style.transform = "";
     if (reduceMotionActive()) {
       return;
     }
@@ -370,8 +414,14 @@ export function mountHero(visibility?: SheetVisibility): void {
       outgoingTrack.style.transform = getComputedStyle(lyricTrack).transform;
     }
     panel.append(page);
+    if (departure) {
+      pendingSwipeSlide = { ...departure, startedAt: performance.now() };
+    }
     outgoingAnimation = page.animate(
-      [{ transform: "translateX(0)" }, { transform: `translateX(${-direction * 100}%)` }],
+      [
+        { transform: departure ? `translateX(${departure.offset}px)` : "translateX(0)" },
+        { transform: `translateX(${-direction * 100}%)` },
+      ],
       { duration: LYRICS_SLIDE_MS, easing: "ease" },
     );
     outgoingAnimation.onfinish = () => {
@@ -386,14 +436,23 @@ export function mountHero(visibility?: SheetVisibility): void {
   const slideIn = (): void => {
     const direction = pendingDirection;
     pendingDirection = 0;
+    const departure = pendingSwipeSlide;
+    pendingSwipeSlide = null;
     if (!direction || (visibility ? !visibility.visible("lyrics") : panel.inert) || reduceMotionActive()) {
       return;
     }
     incomingAnimation?.cancel();
+    const elapsed = departure ? performance.now() - departure.startedAt : LYRICS_SLIDE_MS;
+    const from = departure && elapsed < LYRICS_SLIDE_MS
+      ? `translateX(${departure.offset + direction * departure.width}px)`
+      : `translateX(${direction * 100}%)`;
     const animation = lyricPage.animate(
-      [{ transform: `translateX(${direction * 100}%)` }, { transform: "translateX(0)" }],
+      [{ transform: from }, { transform: "translateX(0)" }],
       { duration: LYRICS_SLIDE_MS, easing: "ease" },
     );
+    if (departure && elapsed < LYRICS_SLIDE_MS) {
+      animation.currentTime = Math.max(elapsed, 0);
+    }
     incomingAnimation = animation;
     animation.onfinish = () => {
       if (incomingAnimation === animation) {
@@ -455,6 +514,10 @@ export function mountHero(visibility?: SheetVisibility): void {
 
       const perLine = event.deltaMode === 1 ? WHEEL_LINE_PX : event.deltaMode === 2 ? WHEEL_STEP_PX : 1;
       wheelTravel += event.deltaY * perLine;
+      if (targetLine < 0 && wheelTravel < 0) {
+        wheelTravel = 0;
+        return;
+      }
 
       const steps = Math.trunc(wheelTravel / WHEEL_STEP_PX);
       if (steps === 0) {
@@ -469,13 +532,14 @@ export function mountHero(visibility?: SheetVisibility): void {
   );
 
   panel.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || dragging || lyricLines.length === 0) {
+    if (event.button !== 0 || event.isPrimary === false || dragging || lyricLines.length === 0) {
       return;
     }
     // The sheet's own handle is what moves the sheet, not the lyrics.
     if ((event.target as HTMLElement).closest(".lyrics-grab")) {
       return;
     }
+    dragBeforeFirst = shownLine < 0 && activeLine === null;
     if (!scrubbing) {
       const transform = getComputedStyle(lyricTrack).transform;
       const offset = transform === "none" ? 0 : -new DOMMatrixReadOnly(transform).m42;
@@ -489,13 +553,23 @@ export function mountHero(visibility?: SheetVisibility): void {
     settleVelocity = 0;
     dragging = true;
     dragPointerId = event.pointerId;
+    dragAxis = phone ? "pending" : "vertical";
+    dragOriginX = event.clientX;
     dragOriginY = event.clientY;
     dragOriginCentre = centreAt(shownLine);
     targetLine = shownLine;
     dragVelocity.reset(dragOriginCentre);
+    if (phone) {
+      swipeWidth = panel.clientWidth;
+      swipeVelocity.reset(0);
+    }
     scrubbing = true;
     panel.classList.add("is-scrubbing");
-    paintLine(shownLine);
+    if (dragBeforeFirst) {
+      applyTransform(shownLine);
+    } else {
+      paintLine(shownLine);
+    }
     panel.setPointerCapture(event.pointerId);
   });
 
@@ -503,15 +577,85 @@ export function mountHero(visibility?: SheetVisibility): void {
     shownLine = clampLine(lineAt(dragOriginCentre + (dragOriginY - clientY)));
     targetLine = shownLine;
     dragVelocity.sample(centreAt(shownLine));
+    if (dragBeforeFirst && dragOriginY - clientY < VERTICAL_SLOP_PX) {
+      applyTransform(shownLine);
+      return;
+    }
+    dragBeforeFirst = false;
     paintLine(shownLine);
     seekToLine(Math.round(shownLine));
+  };
+
+  const canSwipe = (direction: number): boolean => {
+    const snapshot = player.snapshot();
+    return snapshot.order.length > 1 && (snapshot.repeat !== "off" ||
+      (direction > 0 ? snapshot.cursor < snapshot.order.length - 1 : snapshot.cursor > 0));
+  };
+
+  const moveDrag = (event: PointerEvent): void => {
+    const across = event.clientX - dragOriginX;
+    const down = event.clientY - dragOriginY;
+    if (dragAxis === "pending") {
+      if (Math.abs(across) >= SWIPE_SLOP_PX && Math.abs(across) > Math.abs(down) * SWIPE_AXIS_RATIO) {
+        dragAxis = "horizontal";
+        const transform = incomingAnimation ? getComputedStyle(lyricPage).transform : "none";
+        swipeBase = transform === "none" ? 0 : new DOMMatrixReadOnly(transform).m41;
+        stopSlides();
+        swipeOffset = swipeBase;
+        swipePainted = swipeBase;
+        lyricPage.style.transform = `translateX(${swipeBase}px)`;
+        endScrub();
+        if (dragBeforeFirst) {
+          dragBeforeFirst = false;
+          highlight(player.snapshot().positionMs);
+        }
+      } else if (Math.abs(down) >= VERTICAL_SLOP_PX) {
+        dragAxis = "vertical";
+      } else {
+        return;
+      }
+    }
+
+    if (dragAxis === "vertical") {
+      dragTo(event.clientY);
+      return;
+    }
+
+    swipeVelocity.sample(across);
+    const direction = across < 0 ? 1 : -1;
+    const movement = canSwipe(direction) ? across : across * SWIPE_EDGE_RESISTANCE;
+    swipeOffset = Math.min(Math.max(swipeBase + movement, -swipeWidth), swipeWidth);
+    if (swipeFrame === null) {
+      swipeFrame = requestAnimationFrame(() => {
+        swipeFrame = null;
+        swipePainted = swipeOffset;
+        lyricPage.style.transform = `translateX(${swipePainted}px)`;
+      });
+    }
+  };
+
+  const settleSwipe = (): void => {
+    lyricPage.style.transform = "";
+    if (reduceMotionActive() || swipePainted === 0) {
+      return;
+    }
+    const animation = lyricPage.animate(
+      [{ transform: `translateX(${swipePainted}px)` }, { transform: "translateX(0)" }],
+      { duration: LYRICS_SLIDE_MS, easing: "ease" },
+    );
+    incomingAnimation = animation;
+    animation.onfinish = () => {
+      if (incomingAnimation === animation) {
+        incomingAnimation = null;
+      }
+    };
   };
 
   panel.addEventListener("pointermove", (event) => {
     if (!dragging || event.pointerId !== dragPointerId) {
       return;
     }
-    dragTo(event.clientY);
+    moveDrag(event);
   });
 
   const endDrag = (event: PointerEvent): void => {
@@ -519,12 +663,46 @@ export function mountHero(visibility?: SheetVisibility): void {
       return;
     }
     if (event.type !== "pointercancel") {
-      dragTo(event.clientY);
+      moveDrag(event);
     }
     dragging = false;
     dragPointerId = null;
     if (panel.hasPointerCapture(event.pointerId)) {
       panel.releasePointerCapture(event.pointerId);
+    }
+    if (dragAxis === "horizontal") {
+      if (swipeFrame !== null) {
+        window.cancelAnimationFrame(swipeFrame);
+        swipeFrame = null;
+      }
+      const distance = event.clientX - dragOriginX;
+      const projected = distance + swipeVelocity.velocity() * SWIPE_PROJECTION_SEC;
+      const direction = projected < 0 ? 1 : -1;
+      if (event.type !== "pointercancel" && Math.abs(distance) >= SWIPE_MIN_PX &&
+          Math.abs(projected) >= swipeWidth * SWIPE_SHARE && canSwipe(direction)) {
+        swipeDeparture = { offset: swipePainted, width: swipeWidth };
+        if (direction > 0) player.next();
+        else player.previous();
+        if (!swipeDeparture) {
+          return;
+        }
+        swipeDeparture = null;
+      }
+      dragAxis = "pending";
+      settleSwipe();
+      return;
+    }
+    if (dragAxis === "pending") {
+      if (event.type !== "pointercancel") {
+        dragTo(event.clientY);
+      }
+      dragAxis = "vertical";
+    }
+    if (dragBeforeFirst) {
+      dragBeforeFirst = false;
+      endScrub();
+      highlight(player.snapshot().positionMs);
+      return;
     }
     settleVelocity = event.type === "pointercancel" ? 0 : dragVelocity.velocity();
     const projected = centreAt(shownLine) + settleVelocity * RELEASE_PROJECTION_SEC;
@@ -558,6 +736,7 @@ export function mountHero(visibility?: SheetVisibility): void {
       }
       if (!lyricsLoading) {
         pendingDirection = 0;
+        pendingSwipeSlide = null;
       }
       return;
     }
@@ -655,6 +834,7 @@ export function mountHero(visibility?: SheetVisibility): void {
     }
     if (!visible) {
       panel.classList.add("is-catching-up");
+      cancelSwipe();
       stopChase();
       stopSlides();
       pendingDirection = 0;

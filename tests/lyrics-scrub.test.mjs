@@ -20,6 +20,8 @@ const mocks = {
     export const subscribe = (callback) => { context().render = callback; };
     export const player = {
       snapshot: () => ({ ...context().navigation, positionMs: context().position, sourceName: "All" }),
+      next: () => context().step(1),
+      previous: () => context().step(-1),
       seek: (position) => {
         context().position = position;
         context().seeks.push(position);
@@ -86,7 +88,7 @@ class Element {
     this.listeners.set(type, callbacks);
   }
   dispatch(type, values = {}) {
-    const event = { type, button: 0, pointerId: 1, clientY: 400, target: this, ...values };
+    const event = { type, button: 0, pointerId: 1, clientX: 200, clientY: 400, target: this, ...values };
     for (const callback of this.listeners.get(type) ?? []) callback(event);
     return event;
   }
@@ -134,13 +136,25 @@ function setup(t, heights = [], device = "android", visibility) {
     reduced: false,
     device,
     renderedOffset: null,
+    renderedPageOffset: null,
     position: 2000,
     seeks: [],
     animations: [],
+    steps: [],
     measurements: 0,
     navigation: { sourceId: "all", order: ["track", "second", "third"], cursor: 0, travel: 0, repeat: "off" },
     track: { id: "track", title: "Song", artist: "Artist", album: null, year: null },
     state: { lyrics, lyricsLoading: false, tracks: [{}], libraryOpen: false },
+  };
+  context.step = (direction) => {
+    context.steps.push(direction);
+    const { order, cursor, repeat } = context.navigation;
+    const index = repeat === "off" ? cursor + direction : (cursor + direction + order.length) % order.length;
+    if (index < 0 || index >= order.length) return;
+    context.navigation.cursor = index;
+    context.navigation.travel += direction;
+    context.track = { ...context.track, id: order[index] };
+    context.render();
   };
   globalThis.__lyricsScrubTest = context;
   t.mock.method(performance, "now", () => context.now);
@@ -182,10 +196,16 @@ function setup(t, heights = [], device = "android", visibility) {
     marginBottom: "0px",
     transform: element === elements.lyrics
       ? `matrix(1, 0, 0, 1, 0, ${context.renderedOffset ?? (parseFloat(element.style.transform.slice(11)) || 0)})`
-      : "none",
+      : element === elements["lyrics-page"] && context.renderedPageOffset !== null
+        ? `matrix(1, 0, 0, 1, ${context.renderedPageOffset}, 0)`
+        : "none",
   });
   globalThis.DOMMatrixReadOnly = class {
-    constructor(value) { this.m42 = Number(value.match(/,\s*([-\d.]+)\)$/)[1]); }
+    constructor(value) {
+      const parts = value.match(/matrix\((.+)\)/)[1].split(",").map(Number);
+      this.m41 = parts[4];
+      this.m42 = parts[5];
+    }
   };
 
   mountHero(visibility);
@@ -216,6 +236,84 @@ test("lyric text follows the finger immediately and seeks as lines pass", (t) =>
   advance(1000);
   assert.ok(!panel.classList.contains("is-scrubbing"));
   assert.equal(context.position, context.seeks.at(-1));
+});
+
+test("pressing before the first lyric does not highlight it or seek", (t) => {
+  for (const device of ["android", "linuxPhone", "desktop"]) {
+    for (const action of ["tap", "jitter", "backward", "cancel", ...(device === "desktop" ? [] : ["sideways"])]) {
+      const { context, panel, track, advance } = setup(t, [], device);
+      context.position = 0;
+      context.progress(0);
+      assert.equal(track.lines[0].classList.contains("is-active"), false);
+      panel.dispatch("pointerdown");
+      assert.equal(track.lines[0].classList.contains("is-active"), false, `${device} ${action}`);
+      if (action === "jitter") panel.dispatch("pointermove", { clientY: 396 });
+      if (action === "backward") panel.dispatch("pointermove", { clientY: 440 });
+      if (action === "sideways") {
+        panel.dispatch("pointermove", { clientX: 180 });
+        advance(16);
+      }
+      panel.dispatch(action === "cancel" ? "pointercancel" : "pointerup", {
+        clientY: action === "backward" ? 440 : action === "jitter" ? 396 : 400,
+        clientX: action === "sideways" ? 180 : 200,
+      });
+      advance(1000);
+      assert.equal(track.lines[0].classList.contains("is-active"), false, `${device} ${action}`);
+      assert.deepEqual(context.seeks, [], `${device} ${action}`);
+      assert.equal(context.position, 0, `${device} ${action}`);
+      panel.dispatch("pointerdown");
+      assert.equal(track.lines[0].classList.contains("is-active"), false, `${device} ${action} again`);
+      panel.dispatch("pointercancel");
+    }
+  }
+});
+
+test("scrolling forward before the first lyric selects and seeks to it", (t) => {
+  const { context, panel, track } = setup(t);
+  context.position = 0;
+  context.progress(0);
+  panel.dispatch("pointerdown");
+  panel.dispatch("pointermove", { clientY: 380 });
+  assert.equal(track.lines[0].classList.contains("is-active"), true);
+  assert.equal(context.seeks.at(-1), context.state.lyrics[0].timeMs);
+});
+
+test("playback can reach the first lyric while a stationary press is held", (t) => {
+  const { context, panel, track } = setup(t);
+  context.position = 0;
+  context.progress(0);
+  panel.dispatch("pointerdown");
+  context.position = context.state.lyrics[0].timeMs;
+  context.progress(context.position);
+  assert.equal(track.lines[0].classList.contains("is-active"), false);
+  panel.dispatch("pointerup");
+  assert.equal(track.lines[0].classList.contains("is-active"), true);
+  assert.deepEqual(context.seeks, []);
+});
+
+test("scrolling backwards before the first lyric does not select it", (t) => {
+  const { context, panel, track, frames, advance } = setup(t);
+  context.position = 0;
+  context.progress(0);
+  panel.dispatch("wheel", { deltaY: -100, deltaMode: 0, preventDefault() {} });
+  advance(50);
+  assert.equal(track.lines[0].classList.contains("is-active"), false);
+  assert.deepEqual(context.seeks, []);
+  assert.equal(frames.size, 0);
+});
+
+test("scrolling forward with the wheel reaches the first lyric without an early seek", (t) => {
+  const { context, panel, track, advance } = setup(t);
+  context.position = 0;
+  context.progress(0);
+  panel.dispatch("wheel", { deltaY: -50, deltaMode: 0, preventDefault() {} });
+  panel.dispatch("wheel", { deltaY: 100, deltaMode: 0, preventDefault() {} });
+  advance(16);
+  assert.equal(track.lines[0].classList.contains("is-active"), false);
+  assert.deepEqual(context.seeks, []);
+  advance(1000);
+  assert.equal(track.lines[0].classList.contains("is-active"), true);
+  assert.equal(context.seeks.at(-1), context.state.lyrics[0].timeMs);
 });
 
 test("dragging follows pixel distance across uneven lyric heights", (t) => {
@@ -421,6 +519,209 @@ function finishLoading(context, lyrics = [{ timeMs: 0, text: "new lyric" }]) {
   context.state.lyricsLoading = false;
   context.render();
 }
+
+test("phone swipes follow the finger and continue into synchronised song slides", (t) => {
+  for (const device of ["android", "linuxPhone"]) {
+    const { context, elements, panel, advance, frames } = setup(t, [], device);
+    panel.inert = false;
+    loadOnTrackChange(context);
+    panel.dispatch("pointerdown");
+    advance(20);
+    panel.dispatch("pointermove", { clientX: 160, clientY: 398 });
+    panel.dispatch("pointermove", { clientX: 100, clientY: 395 });
+    assert.equal(frames.size, 1);
+    assert.equal(elements["lyrics-page"].style.transform, "translateX(0px)");
+    advance(16);
+    assert.equal(elements["lyrics-page"].style.transform, "translateX(-100px)");
+    assert.deepEqual(context.seeks, []);
+
+    panel.dispatch("pointerup", { clientX: 100, clientY: 395 });
+    assert.deepEqual(context.steps, [1]);
+    assert.equal(context.track.id, "second");
+    assert.equal(panel.hasPointerCapture(1), false);
+    assert.deepEqual(context.animations[0].keyframes, [
+      { transform: "translateX(-100px)" }, { transform: "translateX(-100%)" },
+    ]);
+    assert.equal(elements["lyrics-page"].style.transform, "");
+
+    advance(50);
+    finishLoading(context);
+    assert.deepEqual(context.animations[1].keyframes, [
+      { transform: "translateX(260px)" }, { transform: "translateX(0)" },
+    ]);
+    assert.equal(context.animations[1].currentTime, 50);
+  }
+});
+
+test("a deliberate right swipe plays the previous song", (t) => {
+  const { context, panel, advance } = setup(t);
+  panel.inert = false;
+  context.navigation.cursor = 1;
+  context.track = { ...context.track, id: "second" };
+  context.render();
+  context.animations.length = 0;
+  loadOnTrackChange(context);
+  panel.dispatch("pointerdown");
+  advance(40);
+  panel.dispatch("pointermove", { clientX: 320, clientY: 405 });
+  advance(16);
+  panel.dispatch("pointerup", { clientX: 320, clientY: 405 });
+  assert.deepEqual(context.steps, [-1]);
+  assert.equal(context.track.id, "track");
+  assert.deepEqual(context.animations[0].keyframes, [
+    { transform: "translateX(120px)" }, { transform: "translateX(100%)" },
+  ]);
+  finishLoading(context);
+  assert.equal(context.animations[1].keyframes[0].transform, "translateX(-240px)");
+});
+
+test("diagonal drags favour vertical scrubbing, even if they later turn sideways", (t) => {
+  for (const movement of [
+    { x: 140, y: 360 },
+    { x: 160, y: 360 },
+    { x: 188, y: 392 },
+  ]) {
+    const { context, panel, track, advance } = setup(t);
+    panel.dispatch("pointerdown");
+    advance(20);
+    panel.dispatch("pointermove", { clientX: movement.x, clientY: movement.y });
+    panel.dispatch("pointermove", { clientX: 20, clientY: 320 });
+    panel.dispatch("pointerup", { clientX: 20, clientY: 320 });
+    assert.deepEqual(context.steps, []);
+    assert.ok(context.seeks.length > 0);
+    assert.equal(track.style.transform, "translateY(-104px)");
+  }
+});
+
+test("small sideways movement does not steal a subsequent vertical drag", (t) => {
+  const { context, panel, advance } = setup(t);
+  panel.dispatch("pointerdown");
+  panel.dispatch("pointermove", { clientX: 185, clientY: 396 });
+  panel.dispatch("pointermove", { clientX: 180, clientY: 390 });
+  panel.dispatch("pointermove", { clientX: 50, clientY: 320 });
+  panel.dispatch("pointerup", { clientX: 50, clientY: 320 });
+  advance(1000);
+  assert.deepEqual(context.steps, []);
+  assert.ok(context.seeks.length > 0);
+});
+
+test("queue edges, short swipes and cancelled swipes return without changing song", (t) => {
+  for (const mode of ["edge", "short", "cancel", "single"]) {
+    const { context, elements, panel, advance, frames } = setup(t);
+    if (mode === "single") context.navigation.order = ["track"];
+    const x = mode === "edge" || mode === "single" ? 320 : mode === "short" ? 180 : 80;
+    panel.dispatch("pointerdown");
+    advance(mode === "short" ? 500 : 40);
+    panel.dispatch("pointermove", { clientX: x });
+    advance(16);
+    const painted = elements["lyrics-page"].style.transform;
+    panel.dispatch(mode === "cancel" ? "pointercancel" : "pointerup", { clientX: x });
+    assert.deepEqual(context.steps, [], mode);
+    assert.deepEqual(context.seeks, [], mode);
+    assert.equal(frames.size, 0, mode);
+    assert.equal(panel.hasPointerCapture(1), false, mode);
+    assert.deepEqual(context.animations[0].keyframes, [
+      { transform: painted }, { transform: "translateX(0)" },
+    ], mode);
+  }
+});
+
+test("swiping wraps with repeat and stays immediate with reduced motion", (t) => {
+  const { context, panel, advance } = setup(t);
+  panel.inert = false;
+  context.navigation.repeat = "all";
+  context.reduced = true;
+  loadOnTrackChange(context);
+  panel.dispatch("pointerdown");
+  advance(40);
+  panel.dispatch("pointermove", { clientX: 320 });
+  advance(16);
+  panel.dispatch("pointerup", { clientX: 320 });
+  assert.deepEqual(context.steps, [-1]);
+  assert.equal(context.track.id, "third");
+  finishLoading(context);
+  assert.equal(context.animations.length, 0);
+});
+
+test("re-grabbing a returning page continues from its visible position", (t) => {
+  const { context, elements, panel, advance } = setup(t);
+  panel.dispatch("pointerdown");
+  advance(100);
+  panel.dispatch("pointermove", { clientX: 180 });
+  advance(16);
+  panel.dispatch("pointerup", { clientX: 180 });
+  assert.equal(context.animations.length, 1);
+
+  context.renderedPageOffset = -12;
+  panel.dispatch("pointerdown");
+  panel.dispatch("pointermove", { clientX: 180 });
+  assert.equal(context.animations[0].cancelled, true);
+  assert.equal(elements["lyrics-page"].style.transform, "translateX(-12px)");
+  advance(16);
+  assert.equal(elements["lyrics-page"].style.transform, "translateX(-32px)");
+  panel.dispatch("pointercancel", { clientX: 180 });
+  assert.deepEqual(context.animations[1].keyframes, [
+    { transform: "translateX(-32px)" }, { transform: "translateX(0)" },
+  ]);
+});
+
+test("a track change during a swipe keeps the last painted position and releases capture", (t) => {
+  const { context, panel, advance, frames } = setup(t);
+  panel.inert = false;
+  loadOnTrackChange(context);
+  panel.dispatch("pointerdown");
+  panel.dispatch("pointermove", { clientX: 120 });
+  advance(16);
+  panel.dispatch("pointermove", { clientX: 100 });
+  assert.equal(frames.size, 1);
+  changeTrack(context, "second", 1, 1);
+  assert.equal(panel.hasPointerCapture(1), false);
+  assert.equal(frames.size, 0);
+  assert.equal(context.animations[0].keyframes[0].transform, "translateX(-80px)");
+  panel.dispatch("pointerup", { clientX: 100 });
+  assert.deepEqual(context.steps, []);
+  finishLoading(context);
+  assert.equal(context.animations[1].keyframes[0].transform, "translateX(280px)");
+});
+
+test("hiding the sheet cancels a swipe without leaving an old lyric highlighted", (t) => {
+  const visibility = createSheetVisibility();
+  visibility.update(1, 720);
+  const { context, elements, panel, track, advance } = setup(t, [], "android", visibility);
+  context.progress(context.state.lyrics[3].timeMs);
+  panel.dispatch("pointerdown");
+  panel.dispatch("pointermove", { clientX: 120 });
+  advance(16);
+  assert.equal(panel.hasPointerCapture(1), true);
+  visibility.update(0, 720);
+  assert.equal(panel.hasPointerCapture(1), false);
+  assert.equal(elements["lyrics-page"].style.transform, "");
+
+  context.position = context.state.lyrics[4].timeMs;
+  visibility.update(1, 720);
+  assert.deepEqual(track.lines.map((line, index) => line.classList.contains("is-active") ? index : -1)
+    .filter((index) => index >= 0), [4]);
+  panel.dispatch("pointerup", { clientX: 120 });
+  assert.deepEqual(context.steps, []);
+});
+
+test("a tap still seeks the nearest lyric without starting a swipe", (t) => {
+  const { context, panel } = setup(t);
+  context.renderedOffset = -60;
+  panel.dispatch("pointerdown");
+  panel.dispatch("pointerup");
+  assert.deepEqual(context.steps, []);
+  assert.equal(context.seeks.at(-1), context.state.lyrics[1].timeMs);
+});
+
+test("desktop horizontal drags do not switch songs", (t) => {
+  const { context, panel, advance } = setup(t, [], "desktop");
+  panel.dispatch("pointerdown");
+  advance(20);
+  panel.dispatch("pointermove", { clientX: 50 });
+  panel.dispatch("pointerup", { clientX: 50 });
+  assert.deepEqual(context.steps, []);
+});
 
 test("hidden lyrics prepare track changes and catch up without animation on reveal", (t) => {
   const visibility = createSheetVisibility();

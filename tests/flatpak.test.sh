@@ -6,7 +6,8 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 root="$work/project"
 mkdir -p "$root/scripts" "$root/src-tauri/tools" "$root/src-tauri/icons" "$work/bin" "$work/target/release" "$work/log"
-cp "$source_root/scripts/flatpak-build.sh" "$source_root/scripts/flatpak.desktop" "$root/scripts/"
+cp "$source_root/scripts/flatpak-build.sh" "$source_root/scripts/flatpak.desktop" \
+  "$source_root/scripts/com.wave.app.metainfo.xml" "$root/scripts/"
 cp "$source_root/src-tauri/icons/128x128.png" "$source_root/src-tauri/icons/128x128@2x.png" "$root/src-tauri/icons/"
 cp "$source_root/LICENSE" "$root/LICENSE"
 printf '1.2.3\n' > "$root/VERSION"
@@ -41,6 +42,25 @@ case "$command" in
       cmp "$app/files/bin/$tool" "$(if [ "$tool" = wave ]; then printf '%s/release/wave' "$CARGO_TARGET_DIR"; else printf 'src-tauri/tools/%s' "$tool"; fi)"
     done
     cmp scripts/flatpak.desktop "$app/files/share/applications/com.wave.app.desktop"
+    cmp scripts/com.wave.app.metainfo.xml "$app/files/share/metainfo/com.wave.app.metainfo.xml"
+    python3 - "$app" <<'PY'
+import pathlib
+import sys
+import xml.etree.ElementTree as ET
+
+app = pathlib.Path(sys.argv[1])
+metadata = ET.parse(app / "files/share/metainfo/com.wave.app.metainfo.xml").getroot()
+assert metadata.get("type") == "desktop-application"
+assert metadata.findtext("id") == "com.wave.app"
+assert metadata.findtext("name") == "Wave"
+assert metadata.findtext("developer/name") == "190Q"
+launchable = metadata.find("launchable")
+assert launchable is not None and launchable.get("type") == "desktop-id"
+assert launchable.text == "com.wave.app.desktop"
+desktop = (app / "files/share/applications" / launchable.text).read_text()
+assert "Name=Wave\n" in desktop
+assert "Icon=com.wave.app\n" in desktop
+PY
     cmp src-tauri/icons/128x128.png "$app/files/share/icons/hicolor/128x128/apps/com.wave.app.png"
     cmp src-tauri/icons/128x128@2x.png "$app/files/share/icons/hicolor/256x256/apps/com.wave.app.png"
     cmp LICENSE "$app/files/share/licenses/com.wave.app/LICENSE"

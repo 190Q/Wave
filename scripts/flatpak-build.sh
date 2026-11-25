@@ -17,6 +17,7 @@ for tool in yt-dlp ffmpeg ffprobe deno; do
   install -Dm755 "src-tauri/tools/$tool" "$stage/app/files/bin/$tool"
 done
 install -Dm644 scripts/flatpak.desktop "$stage/app/files/share/applications/com.wave.app.desktop"
+install -Dm644 scripts/com.wave.app.metainfo.xml "$stage/app/files/share/metainfo/com.wave.app.metainfo.xml"
 install -Dm644 src-tauri/icons/128x128.png "$stage/app/files/share/icons/hicolor/128x128/apps/com.wave.app.png"
 install -Dm644 src-tauri/icons/128x128@2x.png "$stage/app/files/share/icons/hicolor/256x256/apps/com.wave.app.png"
 install -Dm644 LICENSE "$stage/app/files/share/licenses/com.wave.app/LICENSE"

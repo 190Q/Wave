@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.wave.app</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Wave</name>
+  <summary>A local-first music player</summary>
+  <description>
+    <p>Import your music into a library, organise it into playlists, and listen with synced lyrics and an equaliser.</p>
+  </description>
+  <developer id="com.wave">
+    <name>190Q</name>
+  </developer>
+  <url type="homepage">https://github.com/190Q/Wave</url>
+  <url type="bugtracker">https://github.com/190Q/Wave/issues</url>
+  <launchable type="desktop-id">com.wave.app.desktop</launchable>
+</component>

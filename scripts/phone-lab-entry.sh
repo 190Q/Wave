@@ -4,7 +4,7 @@ set -eu
 export HOME=/home/wave
 if [ -f /input/wave.tar.gz ]; then
   mkdir -p /tmp/wave-package
-  for file in wave wave-bin wave-webkit.py VERSION; do
+  for file in wave wave-bin wave-webkit.py VERSION wave.svg wave-128.png wave-256.png; do
     if tar -tzf /input/wave.tar.gz | grep -Fxq "$file"; then
       tar -xzf /input/wave.tar.gz -C /tmp/wave-package "$file"
       [ -f "/tmp/wave-package/$file" ] && [ ! -L "/tmp/wave-package/$file" ] || {

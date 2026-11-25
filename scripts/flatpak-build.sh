@@ -12,18 +12,19 @@ stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 
 flatpak build-init "$stage/app" com.wave.app org.gnome.Platform org.gnome.Platform 51
-install -Dm755 "$binary" "$stage/app/files/bin/wave"
+install -Dm755 "$binary" "$stage/app/files/bin/com.wave.app"
 for tool in yt-dlp ffmpeg ffprobe deno; do
   install -Dm755 "src-tauri/tools/$tool" "$stage/app/files/bin/$tool"
 done
 install -Dm644 scripts/flatpak.desktop "$stage/app/files/share/applications/com.wave.app.desktop"
 install -Dm644 scripts/com.wave.app.metainfo.xml "$stage/app/files/share/metainfo/com.wave.app.metainfo.xml"
+install -Dm644 src-tauri/icons/app-icon.svg "$stage/app/files/share/icons/hicolor/scalable/apps/com.wave.app.svg"
 install -Dm644 src-tauri/icons/128x128.png "$stage/app/files/share/icons/hicolor/128x128/apps/com.wave.app.png"
 install -Dm644 src-tauri/icons/128x128@2x.png "$stage/app/files/share/icons/hicolor/256x256/apps/com.wave.app.png"
 install -Dm644 LICENSE "$stage/app/files/share/licenses/com.wave.app/LICENSE"
 
 flatpak build-finish "$stage/app" \
-  --command=wave --sdk=org.gnome.Sdk \
+  --command=com.wave.app --sdk=org.gnome.Sdk \
   --share=ipc --share=network \
   --socket=wayland --socket=fallback-x11 --socket=pulseaudio \
   --device=dri --filesystem=home \

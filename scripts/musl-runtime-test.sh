@@ -33,6 +33,9 @@ MOCK
 chmod +x "$temp/bin/curl"
 
 sh install.sh --version "$version" --install-deps
+cmp src-tauri/icons/app-icon.svg "$HOME/.local/share/icons/hicolor/scalable/apps/wave-bin.svg"
+cmp src-tauri/icons/128x128.png "$HOME/.local/share/icons/hicolor/128x128/apps/wave-bin.png"
+cmp src-tauri/icons/128x128@2x.png "$HOME/.local/share/icons/hicolor/256x256/apps/wave-bin.png"
 if ! ldd "$HOME/.local/bin/wave-bin" > "$temp/ldd.log" 2>&1; then
   cat "$temp/ldd.log" >&2
   exit 1
@@ -58,3 +61,7 @@ sh install.sh --uninstall
 test ! -e "$HOME/.local/bin/wave"
 test ! -e "$HOME/.local/bin/wave-bin"
 test ! -e "$HOME/.local/bin/wave-webkit.py"
+test ! -e "$HOME/.local/share/applications/wave-bin.desktop"
+test ! -e "$HOME/.local/share/icons/hicolor/scalable/apps/wave-bin.svg"
+test ! -e "$HOME/.local/share/icons/hicolor/128x128/apps/wave-bin.png"
+test ! -e "$HOME/.local/share/icons/hicolor/256x256/apps/wave-bin.png"

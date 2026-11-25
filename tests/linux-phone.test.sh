@@ -11,7 +11,7 @@ export MOCK_LOG="$work/log"
 export MOCK_ARCHIVE="$work/phone.tar.gz"
 export MOCK_JSON="$work/release.json"
 export MOCK_ARCH=aarch64 MOCK_LIBC=musl
-unset WAVE_PREFIX
+unset WAVE_PREFIX XDG_DATA_HOME
 : > "$MOCK_LOG"
 
 cat > "$work/bin/uname" <<'MOCK'
@@ -67,6 +67,9 @@ chmod +x "$work/bin/"*
 cp "$root/scripts/musl-launcher.sh" "$work/archive/wave"
 cp "$root/scripts/wave-webkit.py" "$work/archive/wave-webkit.py"
 cp "$root/install.sh" "$work/archive/install.sh"
+cp "$root/src-tauri/icons/app-icon.svg" "$work/archive/wave.svg"
+cp "$root/src-tauri/icons/128x128.png" "$work/archive/wave-128.png"
+cp "$root/src-tauri/icons/128x128@2x.png" "$work/archive/wave-256.png"
 printf '1.2.3\n' > "$work/archive/VERSION"
 cat > "$work/archive/wave-bin" <<'MOCK'
 #!/bin/sh
@@ -74,33 +77,61 @@ printf '%s\n' "$@" > "$HOME/launched"
 printf '%s\n' "${GTK_USE_PORTAL-unset}" > "$HOME/portal"
 MOCK
 chmod +x "$work/archive/wave" "$work/archive/wave-bin"
-tar -czf "$MOCK_ARCHIVE" -C "$work/archive" wave wave-bin wave-webkit.py install.sh VERSION
+tar -czf "$MOCK_ARCHIVE" -C "$work/archive" wave wave-bin wave-webkit.py install.sh VERSION wave.svg wave-128.png wave-256.png
 cat > "$MOCK_JSON" <<'JSON'
 {"browser_download_url": "https://example.test/Wave_1.2.3_aarch64_musl.tar.gz"}
 {"browser_download_url": "https://example.test/Wave_1.2.3_aarch64.AppImage"}
 {"browser_download_url": "https://example.test/Wave_1.2.3_arm64.deb"}
 JSON
 
+mkdir -p "$HOME/.local/share/applications"
+printf 'old desktop entry\n' > "$HOME/.local/share/applications/wave.desktop"
 MOCK_DEPS_INSTALLED=1 sh "$root/install.sh" --version 1.2.3 > "$work/default.log" 2> "$work/default.err"
 [ -x "$HOME/.local/bin/wave" ] && [ -x "$HOME/.local/bin/wave-bin" ] && [ -f "$HOME/.local/bin/wave-webkit.py" ]
 grep -Fxq "Wave 1.2.3 installed to $HOME/.local/bin/wave" "$work/default.log"
-grep -Fq "Exec=\"$HOME/.local/bin/wave\"" "$HOME/.local/share/applications/wave.desktop"
+grep -Fq "Exec=\"$HOME/.local/bin/wave\"" "$HOME/.local/share/applications/wave-bin.desktop"
+grep -Fxq 'Icon=wave-bin' "$HOME/.local/share/applications/wave-bin.desktop"
+grep -Fxq 'StartupWMClass=Wave-bin' "$HOME/.local/share/applications/wave-bin.desktop"
+[ ! -e "$HOME/.local/share/applications/wave.desktop" ]
+cmp "$work/archive/wave.svg" "$HOME/.local/share/icons/hicolor/scalable/apps/wave-bin.svg"
+cmp "$work/archive/wave-128.png" "$HOME/.local/share/icons/hicolor/128x128/apps/wave-bin.png"
+cmp "$work/archive/wave-256.png" "$HOME/.local/share/icons/hicolor/256x256/apps/wave-bin.png"
 ! grep -Fq "warning: Running as root:" "$work/default.err"
 MOCK_DEPS_INSTALLED=1 sh "$work/archive/install.sh" --local > "$work/default.log" 2> "$work/default.err"
 grep -Fxq "Wave 1.2.3 installed to $HOME/.local/bin/wave" "$work/default.log"
+cmp "$work/archive/wave.svg" "$HOME/.local/share/icons/hicolor/scalable/apps/wave-bin.svg"
+cmp "$work/archive/wave-128.png" "$HOME/.local/share/icons/hicolor/128x128/apps/wave-bin.png"
+cmp "$work/archive/wave-256.png" "$HOME/.local/share/icons/hicolor/256x256/apps/wave-bin.png"
 MOCK_UID=0 MOCK_DEPS_INSTALLED=1 sh "$work/archive/install.sh" --local > "$work/root.log" 2> "$work/root.err"
 grep -Fq "warning: Running as root: the desktop entry and default install use $HOME." "$work/root.err"
 sh "$root/install.sh" --uninstall
 [ ! -e "$HOME/.local/bin/wave" ] && [ ! -e "$HOME/.local/bin/wave-bin" ] && [ ! -e "$HOME/.local/bin/wave-webkit.py" ]
 [ ! -e "$HOME/.local/share/applications/wave.desktop" ]
+[ ! -e "$HOME/.local/share/applications/wave-bin.desktop" ]
+[ ! -e "$HOME/.local/share/icons/hicolor/scalable/apps/wave-bin.svg" ]
+[ ! -e "$HOME/.local/share/icons/hicolor/128x128/apps/wave-bin.png" ]
+[ ! -e "$HOME/.local/share/icons/hicolor/256x256/apps/wave-bin.png" ]
 printf 'default installation uses the current home and warns when run as root\n'
+
+data_home="$work/custom data"
+XDG_DATA_HOME="$data_home" MOCK_DEPS_INSTALLED=1 sh "$work/archive/install.sh" --local
+grep -Fxq 'Icon=wave-bin' "$data_home/applications/wave-bin.desktop"
+cmp "$work/archive/wave.svg" "$data_home/icons/hicolor/scalable/apps/wave-bin.svg"
+cmp "$work/archive/wave-128.png" "$data_home/icons/hicolor/128x128/apps/wave-bin.png"
+cmp "$work/archive/wave-256.png" "$data_home/icons/hicolor/256x256/apps/wave-bin.png"
+XDG_DATA_HOME="$data_home" sh "$root/install.sh" --uninstall
+[ ! -e "$data_home/applications/wave-bin.desktop" ]
+[ ! -e "$data_home/icons/hicolor/scalable/apps/wave-bin.svg" ]
+[ ! -e "$data_home/icons/hicolor/128x128/apps/wave-bin.png" ]
+[ ! -e "$data_home/icons/hicolor/256x256/apps/wave-bin.png" ]
+printf 'XDG_DATA_HOME changes the desktop entry and icon location\n'
 
 env_prefix="$work/environment prefix"
 WAVE_PREFIX="$env_prefix" MOCK_DEPS_INSTALLED=1 sh "$work/archive/install.sh" --local
 [ -x "$env_prefix/bin/wave" ] && [ -x "$env_prefix/bin/wave-bin" ]
-grep -Fq "Exec=\"$env_prefix/bin/wave\"" "$HOME/.local/share/applications/wave.desktop"
+grep -Fq "Exec=\"$env_prefix/bin/wave\"" "$HOME/.local/share/applications/wave-bin.desktop"
 WAVE_PREFIX="$env_prefix" sh "$root/install.sh" --uninstall
-[ ! -e "$env_prefix/bin/wave" ] && [ ! -e "$HOME/.local/share/applications/wave.desktop" ]
+[ ! -e "$env_prefix/bin/wave" ] && [ ! -e "$HOME/.local/share/applications/wave-bin.desktop" ]
 printf 'WAVE_PREFIX changes the install location\n'
 
 prefix="$work/custom prefix"
@@ -114,7 +145,7 @@ grep -q 'mesa-dri-gallium' "$MOCK_LOG"
 grep -q 'mesa-gles' "$MOCK_LOG"
 grep -q 'xdg-desktop-portal-phosh' "$MOCK_LOG"
 [ -x "$prefix/bin/wave" ] && [ -x "$prefix/bin/wave-bin" ] && [ -f "$prefix/bin/wave-webkit.py" ]
-grep -Fq "Exec=\"$prefix/bin/wave\"" "$HOME/.local/share/applications/wave.desktop"
+grep -Fq "Exec=\"$prefix/bin/wave\"" "$HOME/.local/share/applications/wave-bin.desktop"
 "$prefix/bin/wave" help
 grep -qx help "$HOME/launched"
 grep -qx 1 "$HOME/portal"
@@ -122,7 +153,7 @@ GTK_USE_PORTAL=0 "$prefix/bin/wave" help
 grep -qx 0 "$HOME/portal"
 sh "$root/install.sh" --dir "$prefix" --uninstall
 [ ! -e "$prefix/bin/wave" ] && [ ! -e "$prefix/bin/wave-bin" ] && [ ! -e "$prefix/bin/wave-webkit.py" ]
-[ ! -e "$HOME/.local/share/applications/wave.desktop" ]
+[ ! -e "$HOME/.local/share/applications/wave-bin.desktop" ]
 printf 'musl installation, launch, and uninstall passed\n'
 
 : > "$MOCK_LOG"
@@ -187,6 +218,8 @@ cp "$work/archive/wave-bin" "$work/legacy-archive/wave"
 WAVE_LOCAL_PACKAGE_DIR="$work/legacy-archive" MOCK_DEPS_INSTALLED=1 \
   sh "$root/install.sh" --local --dir "$prefix"
 [ ! -e "$prefix/bin/wave-bin" ] && [ ! -e "$prefix/bin/wave-webkit.py" ]
+[ ! -e "$HOME/.local/share/applications/wave-bin.desktop" ]
+grep -Fxq 'StartupWMClass=Wave' "$HOME/.local/share/applications/wave.desktop"
 "$prefix/bin/wave" old-local-release
 grep -qx old-local-release "$HOME/launched"
 printf 'legacy extracted phone archives install with the current installer\n'
@@ -215,7 +248,7 @@ if MOCK_DEPS_INSTALLED=1 sh "$root/install.sh" --version 1.2.3 --dir "$prefix"; 
   exit 1
 fi
 grep -qx 'existing install' "$prefix/bin/wave"
-tar -czf "$MOCK_ARCHIVE" -C "$work/archive" wave wave-bin wave-webkit.py install.sh VERSION
+tar -czf "$MOCK_ARCHIVE" -C "$work/archive" wave wave-bin wave-webkit.py install.sh VERSION wave.svg wave-128.png wave-256.png
 printf 'incomplete phone packages preserve the existing executable\n'
 
 printf '%s\n' '{"browser_download_url": "https://example.test/Wave_1.2.3_aarch64.AppImage"}' > "$MOCK_JSON"
@@ -266,6 +299,7 @@ cp "$work/archive/wave-bin" "$work/archive/wave"
 tar -czf "$MOCK_ARCHIVE" -C "$work/archive" wave
 MOCK_DEPS_INSTALLED=1 sh "$root/install.sh" --version 1.2.3 --dir "$prefix"
 [ ! -e "$prefix/bin/wave-bin" ]
+grep -Fxq 'StartupWMClass=Wave' "$HOME/.local/share/applications/wave.desktop"
 "$prefix/bin/wave" old-release
 grep -qx old-release "$HOME/launched"
 printf 'legacy single-binary tarballs still install\n'

@@ -717,9 +717,12 @@ function commandMusl() {
     copyFileSync(join(root, "scripts", "wave-webkit.py"), join(staging, "wave-webkit.py"));
     copyFileSync(join(root, "install.sh"), join(staging, "install.sh"));
     copyFileSync(VERSION_FILE, join(staging, "VERSION"));
+    copyFileSync(join(root, "src-tauri", "icons", "app-icon.svg"), join(staging, "wave.svg"));
+    copyFileSync(join(root, "src-tauri", "icons", "128x128.png"), join(staging, "wave-128.png"));
+    copyFileSync(join(root, "src-tauri", "icons", "128x128@2x.png"), join(staging, "wave-256.png"));
     chmodSync(join(staging, "wave"), 0o755);
     chmodSync(join(staging, "wave-bin"), 0o755);
-    run("tar", ["-czf", archive, "-C", staging, "wave", "wave-bin", "wave-webkit.py", "install.sh", "VERSION"]);
+    run("tar", ["-czf", archive, "-C", staging, "wave", "wave-bin", "wave-webkit.py", "install.sh", "VERSION", "wave.svg", "wave-128.png", "wave-256.png"]);
   } finally {
     rmSync(staging, { recursive: true, force: true });
   }

@@ -39,6 +39,7 @@ USAGE
 
 VERSION="${WAVE_VERSION:-}"
 PREFIX="${WAVE_PREFIX:-$HOME/.local}"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 UNINSTALL=0
 LOCAL=0
 DEPS=ask
@@ -64,7 +65,10 @@ remove_appimage() {
     rm -f "$PREFIX/bin/wave-bin" "$PREFIX/share/wave/musl-install"
     rm -f "$PREFIX/bin/wave-webkit.py"
   fi
-  rm -f "$HOME/.local/share/applications/wave.desktop"
+  rm -f "$DATA_HOME/applications/wave.desktop" "$DATA_HOME/applications/wave-bin.desktop"
+  rm -f "$DATA_HOME/icons/hicolor/scalable/apps/wave-bin.svg" \
+    "$DATA_HOME/icons/hicolor/128x128/apps/wave-bin.png" \
+    "$DATA_HOME/icons/hicolor/256x256/apps/wave-bin.png"
   say "Removed the local install from $PREFIX/bin."
 }
 
@@ -144,9 +148,12 @@ fi
 say "Installing Wave $VERSION"
 
 desktop_entry() {
-  mkdir -p "$HOME/.local/share/applications"
+  desktop_id="${1:-wave}"
+  icon="${2:-}"
+  window_class="${3:-}"
+  mkdir -p "$DATA_HOME/applications"
   exec_path=$(printf '%s' "$PREFIX/bin/wave" | sed 's/\\/\\\\/g; s/"/\\"/g; s/`/\\`/g; s/\$/\\$/g; s/%/%%/g')
-  cat > "$HOME/.local/share/applications/wave.desktop" <<DESKTOP
+  cat > "$DATA_HOME/applications/$desktop_id.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=Wave
@@ -155,6 +162,9 @@ Exec="$exec_path"
 Terminal=false
 Categories=Audio;Music;Player;AudioVideo;
 DESKTOP
+  if [ -n "$icon" ]; then
+    printf 'Icon=%s\nStartupWMClass=%s\n' "$icon" "$window_class" >> "$DATA_HOME/applications/$desktop_id.desktop"
+  fi
 }
 
 local_installed() {
@@ -176,7 +186,7 @@ if [ "$MUSL" -eq 1 ]; then
   if [ "$LOCAL" -eq 1 ]; then
     [ -f "$local_dir/wave" ] && [ ! -L "$local_dir/wave" ] || die "the phone package is missing wave"
     cp "$local_dir/wave" "$TMP/wave"
-    for file in wave-bin wave-webkit.py; do
+    for file in wave-bin wave-webkit.py wave.svg wave-128.png wave-256.png; do
       if [ -e "$local_dir/$file" ] || [ -L "$local_dir/$file" ]; then
         [ -f "$local_dir/$file" ] && [ ! -L "$local_dir/$file" ] || die "the phone package contains an invalid $file"
         cp "$local_dir/$file" "$TMP/$file"
@@ -186,8 +196,8 @@ if [ "$MUSL" -eq 1 ]; then
     [ -n "$musl" ] || die "the v$VERSION release has no aarch64 musl package"
     fetch "$musl" "$TMP/wave.tar.gz"
     tar -xzf "$TMP/wave.tar.gz" -C "$TMP" wave || die "the musl archive does not contain wave"
-    for file in wave-bin wave-webkit.py; do
-      if tar -tzf "$TMP/wave.tar.gz" | grep -qx "$file"; then
+    for file in wave-bin wave-webkit.py wave.svg wave-128.png wave-256.png; do
+      if tar -tzf "$TMP/wave.tar.gz" | grep -Fxq "$file"; then
         tar -xzf "$TMP/wave.tar.gz" -C "$TMP" "$file" || die "could not extract $file"
         [ -f "$TMP/$file" ] && [ ! -L "$TMP/$file" ] || die "the musl archive contains an invalid $file"
       fi
@@ -268,7 +278,22 @@ if [ "$MUSL" -eq 1 ]; then
   fi
   chmod +x "$PREFIX/bin/wave"
   : > "$PREFIX/share/wave/musl-install"
-  desktop_entry
+  for icon in scalable:wave.svg 128x128:wave-128.png 256x256:wave-256.png; do
+    size="${icon%%:*}"
+    file="${icon#*:}"
+    if [ -f "$TMP/$file" ]; then
+      icon_dir="$DATA_HOME/icons/hicolor/$size/apps"
+      mkdir -p "$icon_dir"
+      cp "$TMP/$file" "$icon_dir/wave-bin.${file##*.}"
+    fi
+  done
+  if [ -f "$TMP/wave-bin" ]; then
+    rm -f "$DATA_HOME/applications/wave.desktop" "$HOME/.local/share/applications/wave.desktop"
+    desktop_entry wave-bin wave-bin Wave-bin
+  else
+    rm -f "$DATA_HOME/applications/wave-bin.desktop"
+    desktop_entry wave wave-bin Wave
+  fi
   local_installed
 elif [ -n "$deb" ] && command -v dpkg >/dev/null 2>&1; then
   fetch "$deb" "$TMP/wave.deb"

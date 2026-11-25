@@ -8,7 +8,7 @@ root="$work/project"
 mkdir -p "$root/scripts" "$root/src-tauri/tools" "$root/src-tauri/icons" "$work/bin" "$work/target/release" "$work/log"
 cp "$source_root/scripts/flatpak-build.sh" "$source_root/scripts/flatpak.desktop" \
   "$source_root/scripts/com.wave.app.metainfo.xml" "$root/scripts/"
-cp "$source_root/src-tauri/icons/128x128.png" "$source_root/src-tauri/icons/128x128@2x.png" "$root/src-tauri/icons/"
+cp "$source_root/src-tauri/icons/app-icon.svg" "$source_root/src-tauri/icons/128x128.png" "$source_root/src-tauri/icons/128x128@2x.png" "$root/src-tauri/icons/"
 cp "$source_root/LICENSE" "$root/LICENSE"
 printf '1.2.3\n' > "$root/VERSION"
 printf 'wave executable\n' > "$work/target/release/wave"
@@ -37,9 +37,9 @@ case "$command" in
     app="$1"
     shift
     printf '%s\n' "$@" > "$FLATPAK_TEST_LOG/finish"
-    for tool in wave yt-dlp ffmpeg ffprobe deno; do
+    for tool in com.wave.app yt-dlp ffmpeg ffprobe deno; do
       [ -x "$app/files/bin/$tool" ]
-      cmp "$app/files/bin/$tool" "$(if [ "$tool" = wave ]; then printf '%s/release/wave' "$CARGO_TARGET_DIR"; else printf 'src-tauri/tools/%s' "$tool"; fi)"
+      cmp "$app/files/bin/$tool" "$(if [ "$tool" = com.wave.app ]; then printf '%s/release/wave' "$CARGO_TARGET_DIR"; else printf 'src-tauri/tools/%s' "$tool"; fi)"
     done
     cmp scripts/flatpak.desktop "$app/files/share/applications/com.wave.app.desktop"
     cmp scripts/com.wave.app.metainfo.xml "$app/files/share/metainfo/com.wave.app.metainfo.xml"
@@ -59,8 +59,11 @@ assert launchable is not None and launchable.get("type") == "desktop-id"
 assert launchable.text == "com.wave.app.desktop"
 desktop = (app / "files/share/applications" / launchable.text).read_text()
 assert "Name=Wave\n" in desktop
+assert "Exec=com.wave.app\n" in desktop
 assert "Icon=com.wave.app\n" in desktop
+assert "StartupWMClass=Com.wave.app\n" in desktop
 PY
+    cmp src-tauri/icons/app-icon.svg "$app/files/share/icons/hicolor/scalable/apps/com.wave.app.svg"
     cmp src-tauri/icons/128x128.png "$app/files/share/icons/hicolor/128x128/apps/com.wave.app.png"
     cmp src-tauri/icons/128x128@2x.png "$app/files/share/icons/hicolor/256x256/apps/com.wave.app.png"
     cmp LICENSE "$app/files/share/licenses/com.wave.app/LICENSE"
@@ -91,7 +94,7 @@ export PATH="$work/bin:$PATH"
 sh "$root/scripts/flatpak-build.sh"
 test -s "$work/target/flatpak/Wave_1.2.3_aarch64_phone.flatpak"
 test ! -e "$(cat "$work/log/stage")"
-for option in --command=wave --sdk=org.gnome.Sdk --share=ipc --share=network \
+for option in --command=com.wave.app --sdk=org.gnome.Sdk --share=ipc --share=network \
   --socket=wayland --socket=fallback-x11 --socket=pulseaudio --device=dri \
   --filesystem=home --own-name=org.mpris.MediaPlayer2.wave \
   --talk-name=org.freedesktop.Notifications --env=GTK_USE_PORTAL=1; do

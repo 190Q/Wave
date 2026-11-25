@@ -2,7 +2,8 @@
 Type=Application
 Name=Wave
 Comment=A local-first music player
-Exec=wave
+Exec=com.wave.app
 Icon=com.wave.app
+StartupWMClass=Com.wave.app
 Terminal=false
 Categories=Audio;Music;Player;AudioVideo;

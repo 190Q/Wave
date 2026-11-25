@@ -152,8 +152,10 @@ available yt-dlp version, which may need updating as YouTube changes.
 
 By default, the installer places the launcher at `~/.local/bin/wave`, with its
 supporting files in the same directory, and creates
-`~/.local/share/applications/wave.desktop`. If `~/.local/bin` is not on
-`PATH`, run the launcher by its full path or add the directory to `PATH`.
+`~/.local/share/applications/wave-bin.desktop` and icons under
+`~/.local/share/icons/hicolor/`, or in `XDG_DATA_HOME` if set. If
+`~/.local/bin` is not on `PATH`, run the launcher by its full path or add the
+directory to `PATH`.
 Running the installer as root instead uses root's `HOME`, usually `/root`.
 Set `WAVE_PREFIX` or use `--dir` to change the installation prefix;
 `--uninstall` removes Wave but leaves shared packages installed. WebKit

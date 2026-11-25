@@ -126,6 +126,10 @@ test("musl releases archive the launcher and the compiled phone executable", (t)
   for (const file of ["release.mjs", "release-assets.mjs", "musl-launcher.sh", "wave-webkit.py"]) {
     copyFileSync(fileURLToPath(new URL(`../scripts/${file}`, import.meta.url)), join(root, "scripts", file));
   }
+  mkdirSync(join(root, "src-tauri", "icons"), { recursive: true });
+  for (const file of ["app-icon.svg", "128x128.png", "128x128@2x.png"]) {
+    copyFileSync(fileURLToPath(new URL(`../src-tauri/icons/${file}`, import.meta.url)), join(root, "src-tauri", "icons", file));
+  }
   copyFileSync(fileURLToPath(new URL("../install.sh", import.meta.url)), join(root, "install.sh"));
   writeFileSync(join(root, "VERSION"), "1.2.3\n");
   const mock = join(root, "mock-build.cjs");
@@ -145,7 +149,8 @@ test("musl releases archive the launcher and the compiled phone executable", (t)
       const stage = args[3];
       fs.writeFileSync(path.join(process.cwd(), "archive.json"), JSON.stringify({
         args, launcher: fs.readFileSync(path.join(stage, "wave"), "utf8"),
-        binary: fs.readFileSync(path.join(stage, "wave-bin"), "utf8")
+        binary: fs.readFileSync(path.join(stage, "wave-bin"), "utf8"),
+        icons: ["wave.svg", "wave-128.png", "wave-256.png"].map(name => fs.readFileSync(path.join(stage, name)).toString("base64"))
       }));
     };
     require("node:module").syncBuiltinESMExports();
@@ -156,10 +161,12 @@ test("musl releases archive the launcher and the compiled phone executable", (t)
   assert.equal(result.status, 0, result.stderr);
   assert.match(readFileSync(join(root, "build-command"), "utf8"), /--target aarch64-unknown-linux-musl --config src-tauri\/tauri\.phone\.conf\.json/);
   const archive = JSON.parse(readFileSync(join(root, "archive.json"), "utf8"));
-  assert.deepEqual(archive.args.slice(-5), ["wave", "wave-bin", "wave-webkit.py", "install.sh", "VERSION"]);
+  assert.deepEqual(archive.args.slice(-8), ["wave", "wave-bin", "wave-webkit.py", "install.sh", "VERSION", "wave.svg", "wave-128.png", "wave-256.png"]);
   assert.match(archive.args[1], /Wave_1\.2\.3_aarch64_musl\.tar\.gz$/);
   assert.match(archive.launcher, /WAVE_WEBKIT_HELPER_DIR/);
   assert.equal(archive.binary, "compiled binary");
+  assert.deepEqual(archive.icons, ["app-icon.svg", "128x128.png", "128x128@2x.png"].map((file) =>
+    readFileSync(new URL(`../src-tauri/icons/${file}`, import.meta.url)).toString("base64")));
   assert.deepEqual(readdirSync(join(root, "src-tauri", "target", "musl")), []);
 });
 

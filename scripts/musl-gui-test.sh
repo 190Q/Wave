@@ -136,6 +136,9 @@ for attempt in $(seq 1 20); do
   sleep 1
 done
 [ -n "$window" ] || { cat "$work/app.log" >&2; printf 'Wave has no visible window\n' >&2; exit 1; }
+window_class="$(xdotool getwindowclassname "$window")"
+desktop_class="$(sed -n 's/^StartupWMClass=//p' "${XDG_DATA_HOME:-$HOME/.local/share}/applications/wave-bin.desktop")"
+[ "$window_class" = "$desktop_class" ] || { printf 'Wave window class %s does not match %s\n' "$window_class" "$desktop_class" >&2; exit 1; }
 sleep 2
 parec --device=wave_test.monitor --format=s16le --rate=8000 --channels=1 > "$work/playback.raw" &
 capture_pid=$!

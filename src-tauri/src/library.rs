@@ -45,15 +45,43 @@ pub fn library_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     let root = match ROOT.get() {
         Some(root) => root.clone(),
         None => {
-            let resolved = app
-                .path()
-                .app_data_dir()
-                .map_err(|e| format!("could not resolve the app data directory: {e}"))?
-                .join("library");
+            #[cfg(desktop)]
+            let shared = crate::dev_library::shared();
+            #[cfg(not(desktop))]
+            let shared = false;
+
+            #[cfg(desktop)]
+            let shared_root = if shared {
+                Some(crate::dev_library::installed_data_dir(app)?.join("library"))
+            } else {
+                None
+            };
+            #[cfg(not(desktop))]
+            let shared_root: Option<PathBuf> = None;
+
+            let resolved = match shared_root {
+                Some(root) => root,
+                None => app
+                    .path()
+                    .app_data_dir()
+                    .map_err(|e| format!("could not resolve the app data directory: {e}"))?
+                    .join("library"),
+            };
+            if shared && !resolved.join(SONGS_DIR).is_dir() {
+                return Err(format!(
+                    "the installed Wave library was not found at {}; use npm run tauri dev isolated for a test library",
+                    resolved.display()
+                ));
+            }
             let _ = ROOT.set(resolved.clone());
             resolved
         }
     };
+
+    #[cfg(desktop)]
+    if crate::dev_library::shared() {
+        return Ok(root);
+    }
 
     for dir in [SONGS_DIR, CONFIG_DIR] {
         let path = root.join(dir);

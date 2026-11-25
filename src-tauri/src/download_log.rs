@@ -146,11 +146,17 @@ impl Log {
 
 /// Where the log is kept, with the folder made ready for it.
 fn log_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("could not resolve the app data directory: {e}"))?
-        .join(LOG_DIR);
+    #[cfg(desktop)]
+    let data = if crate::dev_library::shared() {
+        crate::dev_library::installed_data_dir(app)?
+    } else {
+        app.path().app_data_dir()
+            .map_err(|e| format!("could not resolve the app data directory: {e}"))?
+    };
+    #[cfg(not(desktop))]
+    let data = app.path().app_data_dir()
+        .map_err(|e| format!("could not resolve the app data directory: {e}"))?;
+    let dir = data.join(LOG_DIR);
 
     fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     Ok(dir.join(LOG_FILE))

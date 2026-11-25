@@ -17,6 +17,8 @@ mod cli;
 mod cover_fetch;
 mod deezer;
 mod deezer_import;
+#[cfg(desktop)]
+mod dev_library;
 mod download;
 mod download_log;
 mod genre_fetch;
@@ -152,22 +154,39 @@ fn reveal_main_window(app: &tauri::AppHandle) {
 fn prepare(app: &tauri::AppHandle) -> Result<(), String> {
     app.manage(state::Store::load(app)?);
 
-    let analytics = match analytics::Analytics::open(app) {
-        Ok(analytics) => analytics,
-        Err(error) => {
-            eprintln!("the listening history will not be kept: {error}");
-            analytics::Analytics::in_memory()
-        }
-    };
-    app.manage(analytics);
+    app.manage(open_analytics(app)?);
 
     // Last, because the upgrade renumbers both of the above.
     app.manage(open_catalog(app)?);
     Ok(())
 }
 
+fn open_analytics(app: &tauri::AppHandle) -> Result<analytics::Analytics, String> {
+    #[cfg(desktop)]
+    if dev_library::shared() {
+        let dir = dev_library::installed_data_dir(app)?;
+        return analytics::Analytics::open_shared(&dir)
+            .map_err(|error| format!("the shared listening record cannot be opened: {error}; use npm run tauri dev isolated for a separate library"));
+    }
+
+    Ok(match analytics::Analytics::open(app) {
+        Ok(analytics) => analytics,
+        Err(error) => {
+            eprintln!("the listening history will not be kept: {error}");
+            analytics::Analytics::in_memory()
+        }
+    })
+}
+
 fn open_catalog(app: &tauri::AppHandle) -> Result<catalog::Catalog, String> {
     let root = library::library_root(app)?;
+    #[cfg(desktop)]
+    if dev_library::shared() {
+        eprintln!("wave: using the installed library at {}", root.display());
+        return catalog::Catalog::open_shared(&root)
+            .map_err(|error| format!("the shared library cannot be opened: {error}"));
+    }
+
     let catalog = catalog::Catalog::open(&root)
         .map_err(|error| format!("the library cannot be opened: {error}"))?;
     let store = app.state::<state::Store>();
@@ -188,17 +207,21 @@ fn install_tls_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-/// Desktop development builds must not share WebView or library state with an
-/// installed copy, which can be running at the same time.
+/// Desktop development builds use their own WebView and settings, whether the
+/// library is shared with an installed copy or kept separate.
 #[cfg(desktop)]
-fn configure_desktop_identity(config: &mut tauri::utils::config::Config, development: bool) {
+fn configure_desktop_identity(
+    config: &mut tauri::utils::config::Config,
+    development: bool,
+    shared: bool,
+) {
     if !development {
         return;
     }
 
-    config.identifier.push_str(".dev");
+    config.identifier.push_str(if shared { ".dev.shared" } else { ".dev" });
     if let Some(window) = config.app.windows.iter_mut().find(|window| window.label == "main") {
-        window.title.push_str(" Dev");
+        window.title.push_str(if shared { " Dev (Shared)" } else { " Dev" });
     }
 }
 
@@ -213,7 +236,7 @@ mod desktop_identity_tests {
     #[test]
     fn development_has_its_own_identity_and_window_title() {
         let mut config = config();
-        configure_desktop_identity(&mut config, true);
+        configure_desktop_identity(&mut config, true, false);
 
         assert_eq!(config.identifier, "com.wave.app.dev");
         assert_eq!(config.app.windows[0].title, "Wave Dev");
@@ -222,7 +245,7 @@ mod desktop_identity_tests {
     #[test]
     fn release_keeps_its_existing_identity_and_window_title() {
         let mut config = config();
-        configure_desktop_identity(&mut config, false);
+        configure_desktop_identity(&mut config, false, false);
 
         assert_eq!(config.identifier, "com.wave.app");
         assert_eq!(config.app.windows[0].title, "Wave");
@@ -231,10 +254,28 @@ mod desktop_identity_tests {
     #[test]
     fn current_build_uses_the_corresponding_identity() {
         let mut config = config();
-        configure_desktop_identity(&mut config, cfg!(dev));
+        configure_desktop_identity(&mut config, cfg!(dev), false);
 
         let expected = if cfg!(dev) { "com.wave.app.dev" } else { "com.wave.app" };
         assert_eq!(config.identifier, expected);
+    }
+
+    #[test]
+    fn shared_development_has_its_own_identity_and_window_title() {
+        let mut config = config();
+        configure_desktop_identity(&mut config, true, true);
+
+        assert_eq!(config.identifier, "com.wave.app.dev.shared");
+        assert_eq!(config.app.windows[0].title, "Wave Dev (Shared)");
+    }
+
+    #[test]
+    fn release_ignores_the_shared_development_option() {
+        let mut config = config();
+        configure_desktop_identity(&mut config, false, true);
+
+        assert_eq!(config.identifier, "com.wave.app");
+        assert_eq!(config.app.windows[0].title, "Wave");
     }
 }
 
@@ -248,7 +289,7 @@ pub fn run() {
     #[cfg(desktop)]
     let context = {
         let mut context = context;
-        configure_desktop_identity(context.config_mut(), cfg!(dev));
+        configure_desktop_identity(context.config_mut(), cfg!(dev), dev_library::shared());
         context
     };
 

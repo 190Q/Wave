@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
+#[cfg(desktop)]
+use rusqlite::OpenFlags;
 
 use crate::identity;
 use crate::library::CONFIG_DIR;
@@ -161,6 +163,42 @@ impl Catalog {
         };
         catalog.create_schema()?;
         Ok(catalog)
+    }
+
+    /// Opens an installed app's catalog without creating or migrating it.
+    #[cfg(desktop)]
+    pub fn open_shared(root: &Path) -> Result<Self, String> {
+        let path = root.join(CONFIG_DIR).join(CATALOG_FILE);
+        let connection = Connection::open_with_flags(
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ).map_err(|e| format!("could not open {}: {e}", path.display()))?;
+
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(|e| format!("could not read the shared catalog version: {e}"))?;
+        if version != SCHEMA_VERSION {
+            return Err(format!(
+                "the installed catalog version is {version}, but this build needs {SCHEMA_VERSION}; use an isolated library until the versions match"
+            ));
+        }
+        let layout: Option<String> = connection
+            .query_row("SELECT value FROM meta WHERE key = ?1", params![LAYOUT_VERSION_KEY], |row| row.get(0))
+            .optional()
+            .map_err(|e| format!("could not read the shared library layout: {e}"))?;
+        if layout.as_deref() != Some(LAYOUT_VERSION) {
+            return Err("the installed library needs an upgrade; use an isolated library until the installed app has upgraded it".to_string());
+        }
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .map_err(|e| format!("could not prepare {}: {e}", path.display()))?;
+
+        Ok(Self {
+            root: root.to_path_buf(),
+            path,
+            connection: Mutex::new(connection),
+            library_operation: Mutex::new(()),
+        })
     }
 
     pub fn reorder_playlist(&self, id: &str, entries: &[String]) -> Result<(), String> {
@@ -1460,6 +1498,52 @@ mod tests {
         std::fs::write(&path, b"not a database").unwrap();
         assert!(Catalog::open(&root).is_err());
         assert_eq!(std::fs::read(path).unwrap(), b"not a database");
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn shared_catalog_reuses_installed_songs_and_playlists() {
+        let root = scratch("shared-catalog");
+        let installed = Catalog::open(&root).unwrap();
+        installed.set_meta(LAYOUT_VERSION_KEY, LAYOUT_VERSION).unwrap();
+        installed.upsert_track(&song("one", "One", "hash-one")).unwrap();
+
+        let shared = Catalog::open_shared(&root).unwrap();
+        assert_eq!(shared.tracks().unwrap().len(), 1);
+        let id = shared.create_playlist("Shared playlist").unwrap();
+        assert_eq!(one_playlist(&installed, &id).name, "Shared playlist");
+
+        drop(shared);
+        drop(installed);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn shared_catalog_never_creates_or_upgrades_an_installed_catalog() {
+        let root = scratch("shared-catalog-compatibility");
+        assert!(Catalog::open_shared(&root).is_err());
+        assert!(!root.join(CONFIG_DIR).exists());
+
+        let installed = Catalog::open(&root).unwrap();
+        installed.set_meta(LAYOUT_VERSION_KEY, LAYOUT_VERSION).unwrap();
+        installed.guard().execute_batch("PRAGMA user_version = 1;").unwrap();
+        drop(installed);
+        let path = root.join(CONFIG_DIR).join(CATALOG_FILE);
+        let before = std::fs::read(&path).unwrap();
+        let error = Catalog::open_shared(&root).err().unwrap();
+        assert!(error.contains("catalog version"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};")).unwrap();
+        connection.execute("DELETE FROM meta WHERE key = ?1", params![LAYOUT_VERSION_KEY]).unwrap();
+        drop(connection);
+        let before = std::fs::read(&path).unwrap();
+        let error = Catalog::open_shared(&root).err().unwrap();
+        assert!(error.contains("library needs an upgrade"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

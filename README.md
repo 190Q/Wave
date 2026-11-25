@@ -333,10 +333,37 @@ npx tauri android dev      # Run on an Android device or emulator
 Android APK, run `npm run release -- android` (or add `debug` for a debug build).
 The APK is written to `src-tauri/target/android/`.
 
-Desktop development builds use **Wave Dev** (`com.wave.app.dev`) and can run
-alongside an installed release. They keep a separate library, settings and
-WebView data, and cannot install release updates. The installed app's data is
-not copied or changed.
+Desktop development builds can run alongside an installed release. By default,
+`npm run tauri dev` uses the installed library. Select the library explicitly
+with either command:
+
+```sh
+npm run tauri dev shared
+npm run tauri dev isolated
+```
+
+Shared mode uses the installed app's actual songs, artwork and playlist catalog:
+edits and deletions affect the installed library. Its source credentials and
+tool configuration in `library/config/.env` are shared too. Restart the other
+app to see changes made by one instance. If Wave is not installed, use isolated
+mode to create a separate test library.
+
+Starting shared Dev scans the library and may update the catalog. Avoid editing
+or importing while either app is scanning, editing or importing: their file
+operations are not coordinated across processes. If the installed catalog needs
+a migration or does not match the development build, shared mode refuses to
+open it.
+
+Shared Dev loads a fresh copy of the installed settings, likes, queue and window
+state each time it starts; changes to those in Dev stay separate and are reset
+from the installed app on the next launch. Wave Swell uses the installed
+listening history, so plays, imports and clearing history affect both apps.
+The import log is shared too.
+
+Both modes keep their own WebView data and cannot install release updates.
+Isolated mode never uses the installed library or other installed data. When
+the local API is enabled in shared Dev, it uses an available loopback port and
+prints that port in the terminal, leaving the installed app's port free.
 
 Android debug builds install as **Wave Dev** (`com.wave.app.dev`), alongside the
 release app (`com.wave.app`). They have separate private data, and Wave Dev

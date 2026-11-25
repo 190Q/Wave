@@ -5,6 +5,8 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
+#[cfg(desktop)]
+use rusqlite::OpenFlags;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Runtime, State};
 
@@ -306,6 +308,33 @@ impl Analytics {
         })
     }
 
+    #[cfg(desktop)]
+    pub fn open_shared(dir: &Path) -> Result<Self, String> {
+        let path = dir.join(DB_FILE);
+        let conn = Connection::open_with_flags(
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ).map_err(|e| format!("could not open {}: {e}", path.display()))?;
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(|e| format!("could not read the listening record version: {e}"))?;
+        if version != SCHEMA_VERSION {
+            return Err(format!(
+                "the installed listening record version is {version}, but this build needs {SCHEMA_VERSION}"
+            ));
+        }
+        for table in ["plays", "sessions", "tracks", "events"] {
+            conn.prepare(&format!("SELECT * FROM {table} LIMIT 0"))
+                .map_err(|e| format!("the installed listening record is missing {table}: {e}"))?;
+        }
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .map_err(|e| format!("could not prepare {}: {e}", path.display()))?;
+
+        Ok(Self {
+            conn: Mutex::new(conn),
+            path,
+        })
+    }
+
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
@@ -429,7 +458,8 @@ impl Analytics {
     /// Writes a listen, or updates the row the same listen already has.
     pub fn record_play(&self, play: &PlayRecord) -> Result<(), String> {
         let mut conn = self.guard();
-        let tx = conn.transaction().map_err(db_error)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_error)?;
 
         let existing: Option<(Option<i64>, i64)> = tx
             .query_row(
@@ -1200,6 +1230,89 @@ mod tests {
     fn session_count(store: &Analytics) -> i64 {
         let conn = store.guard();
         count(&conn, "SELECT COUNT(*) FROM sessions").unwrap()
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn shared_analytics_reads_and_updates_the_same_history() {
+        let dir = std::env::temp_dir().join(format!("wave-analytics-{}", crate::identity::new_id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(DB_FILE);
+        let conn = Connection::open(&path).unwrap();
+        Analytics::prepare(&conn).unwrap();
+        let installed = Analytics { conn: Mutex::new(conn), path };
+        let at = now_ms();
+        installed.record_play(&play("installed", "song", at, 60_000, true, "ended")).unwrap();
+
+        let shared = Analytics::open_shared(&dir).unwrap();
+        assert_eq!(shared.stats().unwrap().plays, 1);
+        shared.record_play(&play("dev", "song", at + 100_000, 60_000, true, "ended")).unwrap();
+        assert_eq!(installed.stats().unwrap().plays, 2);
+
+        drop(shared);
+        drop(installed);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn simultaneous_shared_listens_are_recorded() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = std::env::temp_dir().join(format!("wave-analytics-{}", crate::identity::new_id()));
+        fs::create_dir_all(&dir).unwrap();
+        let conn = Connection::open(dir.join(DB_FILE)).unwrap();
+        Analytics::prepare(&conn).unwrap();
+        drop(conn);
+
+        let first = Analytics::open_shared(&dir).unwrap();
+        let second = Analytics::open_shared(&dir).unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let run = |store: Analytics, prefix: &'static str, barrier: Arc<Barrier>| {
+            std::thread::spawn(move || {
+                barrier.wait();
+                for index in 0..20 {
+                    let id = format!("{prefix}-{index}");
+                    store.record_play(&play(&id, "song", 1_000 + index * 1_000, 30_000, true, "ended"))
+                        .unwrap();
+                }
+            })
+        };
+        let left = run(first, "installed", barrier.clone());
+        let right = run(second, "dev", barrier);
+        left.join().unwrap();
+        right.join().unwrap();
+        let shared = Analytics::open_shared(&dir).unwrap();
+        assert_eq!(shared.stats().unwrap().plays, 40);
+        drop(shared);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn shared_analytics_never_creates_or_migrates_the_database() {
+        let dir = std::env::temp_dir().join(format!("wave-analytics-{}", crate::identity::new_id()));
+        assert!(Analytics::open_shared(&dir).is_err());
+        assert!(!dir.exists());
+
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(DB_FILE);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA user_version = 2;").unwrap();
+        drop(conn);
+        let before = fs::read(&path).unwrap();
+        let error = Analytics::open_shared(&dir).err().unwrap();
+        assert!(error.contains("listening record version"), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), before);
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA user_version = 1;").unwrap();
+        drop(conn);
+        let before = fs::read(&path).unwrap();
+        let error = Analytics::open_shared(&dir).err().unwrap();
+        assert!(error.contains("missing plays"), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

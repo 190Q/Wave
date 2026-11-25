@@ -55,11 +55,21 @@ impl Api {
 
 fn start(app: &AppHandle) -> Result<RunningServer, String> {
     let env = read_env(app);
-    let port = port_of(env.api_port.as_deref());
-    let address = format!("127.0.0.1:{port}");
+    let configured_port = port_of(env.api_port.as_deref());
+    #[cfg(desktop)]
+    let shared = crate::dev_library::shared();
+    #[cfg(not(desktop))]
+    let shared = false;
+    let address = format!("127.0.0.1:{}", listen_port(configured_port, shared));
     let server = server::bind(&address).map_err(|error| {
         format!("The local API could not bind to {address}: {error}. Set WAVE_API_PORT in the config to use another port.")
     })?;
+    let port = server.server_addr().to_ip()
+        .ok_or_else(|| "The local API did not report its address.".to_string())?
+        .port();
+    if shared {
+        eprintln!("wave: development local API listening on 127.0.0.1:{port}");
+    }
 
     let started_at = Instant::now();
     let listening = server.clone();
@@ -793,6 +803,10 @@ fn port_of(value: Option<&str>) -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
+fn listen_port(configured: u16, shared: bool) -> u16 {
+    if shared { 0 } else { configured }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -806,6 +820,14 @@ mod tests {
         assert_eq!(port_of(Some("http")), DEFAULT_PORT);
         assert_eq!(port_of(Some("0")), DEFAULT_PORT);
         assert_eq!(port_of(Some("70000")), DEFAULT_PORT);
+    }
+
+    #[test]
+    fn shared_development_uses_an_available_port() {
+        assert_eq!(listen_port(45679, false), 45679);
+        assert_eq!(listen_port(45679, true), 0);
+        let server = server::bind(&format!("127.0.0.1:{}", listen_port(45679, true))).unwrap();
+        assert_ne!(server.server_addr().to_ip().unwrap().port(), 0);
     }
 
     #[test]

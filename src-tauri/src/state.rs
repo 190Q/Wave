@@ -424,7 +424,11 @@ pub struct Store {
 impl Store {
     pub fn load<R: Runtime>(app: &AppHandle<R>) -> Result<Self, String> {
         note_min_frame(app);
-        let mut state = read_state(app)?;
+        Self::load_at_path(&initial_state_path(app)?)
+    }
+
+    fn load_at_path(path: &Path) -> Result<Self, String> {
+        let mut state = read_state_at_path(path)?;
         sanitise_geometries(&mut state);
         Ok(Self {
             inner: Mutex::new(state),
@@ -523,8 +527,12 @@ pub fn state_file<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     state_path(app)
 }
 
-fn read_state<R: Runtime>(app: &AppHandle<R>) -> Result<PersistedState, String> {
-    read_state_at_path(&state_path(app)?)
+fn initial_state_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    #[cfg(desktop)]
+    if crate::dev_library::shared() {
+        return Ok(crate::dev_library::installed_config_dir(app)?.join(STATE_FILE));
+    }
+    state_path(app)
 }
 
 fn read_state_at_path(path: &Path) -> Result<PersistedState, String> {
@@ -1388,6 +1396,53 @@ mod tests {
 
     fn patch(value: Value) -> Map<String, Value> {
         value.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn installed_state_is_loaded_fresh_and_dev_changes_stay_separate() {
+        let dir = scratch();
+        let installed_path = dir.join("installed.json");
+        let dev_path = dir.join("dev.json");
+        let installed = PersistedState {
+            settings: Settings { volume: 42, theme: "installed".into(), ..Settings::default() },
+            likes: vec!["first".into()],
+            session: Session {
+                playback: Playback { order: vec!["first".into()], position_ms: 1234, ..Playback::default() },
+                queue_open: true,
+                ..Session::default()
+            },
+            window: Some(WindowGeometry { width: 900, height: 655, x: 12, y: 34, ..WindowGeometry::default() }),
+            ..PersistedState::default()
+        };
+        write_state(&installed_path, &installed).unwrap();
+        let original = fs::read(&installed_path).unwrap();
+
+        let dev = Store::load_at_path(&installed_path).unwrap();
+        let loaded = dev.snapshot();
+        assert_eq!(loaded.settings.volume, 42);
+        assert_eq!(loaded.settings.theme, "installed");
+        assert_eq!(loaded.likes, vec!["first"]);
+        assert_eq!(loaded.session.playback.order, vec!["first"]);
+        assert_eq!(loaded.session.playback.position_ms, 1234);
+        assert!(loaded.session.queue_open);
+        assert_eq!(loaded.window, installed.window);
+
+        dev.update_at_path(&dev_path, |state| {
+            state.likes.push("dev-only".into());
+            state.settings.volume = 10;
+        }).unwrap();
+        assert_eq!(fs::read(&installed_path).unwrap(), original);
+        assert_eq!(Store::load_at_path(&dev_path).unwrap().snapshot().likes, vec!["first", "dev-only"]);
+
+        let mut updated = installed;
+        updated.likes.push("installed-later".into());
+        updated.session.playback.position_ms = 4321;
+        write_state(&installed_path, &updated).unwrap();
+        let restarted = Store::load_at_path(&installed_path).unwrap().snapshot();
+        assert_eq!(restarted.likes, vec!["first", "installed-later"]);
+        assert_eq!(restarted.settings.volume, 42);
+        assert_eq!(restarted.session.playback.position_ms, 4321);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

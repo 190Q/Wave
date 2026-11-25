@@ -82,13 +82,15 @@ fn rows<T>(
 }
 
 fn snapshot(analytics: &Analytics) -> Result<Backup, String> {
-    let conn = analytics.guard();
+    let mut conn = analytics.guard();
+    let tx = conn.transaction()
+        .map_err(|e| format!("Could not read the listening record: {e}"))?;
     let read = || -> rusqlite::Result<Backup> {
         Ok(Backup {
             format: "wave-analytics".into(),
             version: 1,
             tracks: rows(
-                &conn,
+                &tx,
                 "SELECT track_id, title, artist, album, album_artist, genre, year, duration_ms, media_type, codec, first_seen_at, last_seen_at FROM tracks",
                 |r| {
                     Ok(Track {
@@ -108,7 +110,7 @@ fn snapshot(analytics: &Analytics) -> Result<Backup, String> {
                 },
             )?,
             sessions: rows(
-                &conn,
+                &tx,
                 "SELECT id, started_at, ended_at, plays, ms_played FROM sessions",
                 |r| {
                     Ok(Session {
@@ -121,7 +123,7 @@ fn snapshot(analytics: &Analytics) -> Result<Backup, String> {
                 },
             )?,
             plays: rows(
-                &conn,
+                &tx,
                 "SELECT listen_id, track_id, started_at, ended_at, ms_played, duration_ms, completed, reason, source_id, source_name, source_kind, shuffle, repeat, session_id FROM plays",
                 |r| {
                     Ok(Play {
@@ -143,7 +145,7 @@ fn snapshot(analytics: &Analytics) -> Result<Backup, String> {
                 },
             )?,
             events: rows(
-                &conn,
+                &tx,
                 "SELECT id, at, kind, track_id, playlist_id, value FROM events",
                 |r| {
                     Ok(Event {
@@ -158,7 +160,9 @@ fn snapshot(analytics: &Analytics) -> Result<Backup, String> {
             )?,
         })
     };
-    read().map_err(|e| format!("Could not read the listening record: {e}"))
+    let backup = read().map_err(|e| format!("Could not read the listening record: {e}"))?;
+    tx.commit().map_err(|e| format!("Could not read the listening record: {e}"))?;
+    Ok(backup)
 }
 
 fn match_tracks(backup: &mut Backup, catalog: &Catalog) -> Result<(), String> {
@@ -376,6 +380,47 @@ mod tests {
             (1, 1, 1, 1, 60000)
         );
         assert_eq!(target.play_counts().unwrap().get("song"), Some(&1));
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn concurrent_exports_keep_sessions_and_plays_consistent() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = std::env::temp_dir().join(format!("wave-export-{}", crate::identity::new_id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("analytics.db");
+        populated().guard().execute("VACUUM INTO ?1", params![path.to_string_lossy()]).unwrap();
+        let reader = Analytics::open_shared(&dir).unwrap();
+        let writer = Analytics::open_shared(&dir).unwrap();
+        writer.guard().query_row("PRAGMA journal_mode = WAL", [], |_| Ok(())).unwrap();
+
+        let barrier = Arc::new(Barrier::new(2));
+        let start = barrier.clone();
+        let thread = std::thread::spawn(move || {
+            start.wait();
+            for index in 0..100 {
+                let mut conn = writer.guard();
+                let tx = conn.transaction().unwrap();
+                tx.execute(
+                    "INSERT INTO plays (listen_id, track_id, started_at, ms_played, session_id) VALUES (?1, 'song', ?2, 1000, 7)",
+                    params![format!("concurrent-{index}"), 70_000 + index],
+                ).unwrap();
+                tx.execute("UPDATE sessions SET plays = plays + 1, ms_played = ms_played + 1000 WHERE id = 7", []).unwrap();
+                tx.commit().unwrap();
+                std::thread::yield_now();
+            }
+        });
+        barrier.wait();
+        for _ in 0..100 {
+            let backup = snapshot(&reader).unwrap();
+            assert_eq!(backup.sessions[0].plays, backup.plays.len() as i64);
+            assert_eq!(backup.sessions[0].ms_played, backup.plays.iter().map(|play| play.ms_played).sum::<i64>());
+            std::thread::yield_now();
+        }
+        thread.join().unwrap();
+        drop(reader);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

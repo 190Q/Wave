@@ -15,6 +15,13 @@ const context = {
   player: {
     snapshot: () => context.snapshot,
     onChange: (callback) => { context.change = callback; },
+    moveTo: (id) => {
+      context.moves.push(id);
+      context.snapshot.cursor = context.snapshot.order.indexOf(id);
+      context.snapshot.currentId = id;
+      context.change();
+    },
+    playTrack: (id) => { context.plays.push(id); },
   },
 };
 globalThis.__queueAnimationTest = context;
@@ -35,8 +42,9 @@ const mocks = {
     export const trackById = (id) => id ? {
       id, title: id, artist: "artist", artworkPath: context.missing.has(id) ? null : id,
     } : undefined;
-    export const artworkUrlFor = (track) =>
-      track.artworkPath && (context.readyIds ? context.readyIds.has(track.id) : context.ready)
+    export const artworkUrlFor = (track, tier) =>
+      track.artworkPath && !(tier === "idle" && context.idleUnloaded.has(track.id)) &&
+      (context.readyIds ? context.readyIds.has(track.id) : context.ready)
         ? "url-" + track.id : null;
     export const colourFor = () => "#123456";
     export const mayRevealArtwork = () => context.kind === "desktop" || context.ready;
@@ -44,13 +52,18 @@ const mocks = {
     export const prefetchArtwork = (ids) => context.prefetches.push(ids);
     export const prioritizeNearbyArtwork = (order, cursor, looping) => {
       context.priority = { order, cursor, looping };
+      context.priorityRuns += 1;
     };
-    export const pruneArtworkQueue = (window, queue) => { context.pruned = { window, queue }; };
+    export const pruneArtworkQueue = (window, queue) => {
+      context.pruned = { window, queue };
+      context.pruneRuns += 1;
+    };
     export const stepTrack = () => {};
   `,
   "./artwork": `
     export const coverStyle = (track, tier, reveal = true) =>
       reveal && track.artworkPath &&
+      !(tier === "idle" && globalThis.__queueAnimationTest.idleUnloaded.has(track.id)) &&
       (globalThis.__queueAnimationTest.readyIds
         ? globalThis.__queueAnimationTest.readyIds.has(track.id)
         : globalThis.__queueAnimationTest.ready) ? "url-" + track.id : "colour-" + track.id;
@@ -106,8 +119,21 @@ class FakeElement {
     this.offsetWidth = 100;
     this.offsetHeight = 100;
     this.clientHeight = 800;
+    this.listeners = new Map();
+    this.capturedPointers = new Set();
   }
-  addEventListener() {}
+  addEventListener(type, callback) {
+    if (!this.listeners.has(type)) this.listeners.set(type, []);
+    this.listeners.get(type).push(callback);
+  }
+  dispatch(type, properties = {}) {
+    const event = { type, target: this, button: 0, pointerId: 1, clientX: 0, ...properties };
+    for (const listener of this.listeners.get(type) ?? []) listener(event);
+  }
+  closest(selector) { return selector === ".card" && this.className === "card" ? this : null; }
+  setPointerCapture(id) { this.capturedPointers.add(id); }
+  hasPointerCapture(id) { return this.capturedPointers.has(id); }
+  releasePointerCapture(id) { this.capturedPointers.delete(id); }
   append(...elements) { elements.forEach((element) => this.appendChild(element)); }
   appendChild(element) {
     element.remove();
@@ -146,17 +172,22 @@ function snapshot(sourceId, count, cursor = 0) {
     get queueRevision() { return this.order.join("|"); } };
 }
 
-function setup(kind = "android", observeSize = false, visibility) {
+function setup(kind = "android", observeSize = false, visibility, idleUnloaded = new Set()) {
   context.kind = kind;
   context.state = { queueOpen: true, collections: [] };
   context.ready = true;
   context.readyIds = null;
+  context.idleUnloaded = idleUnloaded;
   context.missing = new Set();
   context.reducedMotion = false;
   context.swaps = [];
   context.prefetches = [];
   context.pruned = null;
   context.priority = null;
+  context.priorityRuns = 0;
+  context.pruneRuns = 0;
+  context.moves = [];
+  context.plays = [];
   context.snapshot = snapshot("first", 30);
   const carousel = new FakeElement();
   const stage = new FakeElement();
@@ -214,6 +245,139 @@ function setup(kind = "android", observeSize = false, visibility) {
 
 const { mountQueue } = await vite.ssrLoadModule("/src/ui/queue.ts");
 const { createSheetVisibility } = await vite.ssrLoadModule("/src/ui/sheet-visibility.ts");
+
+function runFrame(frames) {
+  const [id, callback] = frames.entries().next().value;
+  frames.delete(id);
+  callback();
+}
+
+test("Linux phone drag frames update positions without repeating artwork work", () => {
+  const { carousel, live, frames } = setup("linuxPhone");
+  const priorityRuns = context.priorityRuns;
+  const pruneRuns = context.pruneRuns;
+  const swaps = context.swaps.length;
+  const first = live.children.find((card) => card.dataset.slot === "0");
+  const second = live.children.find((card) => card.dataset.slot === "1");
+
+  carousel.dispatch("pointerdown", { clientX: 200 });
+  carousel.dispatch("pointermove", { clientX: 150 });
+  carousel.dispatch("pointermove", { clientX: 104 });
+  assert.equal(frames.size, 1);
+  runFrame(frames);
+
+  assert.equal(context.priorityRuns, priorityRuns);
+  assert.equal(context.pruneRuns, pruneRuns);
+  assert.equal(context.swaps.length, swaps);
+  assert.equal(first.dataset.offset, String(-2 / 3));
+  assert.equal(first.style.transition, "none");
+  assert.ok(Number(second.style.zIndex) > Number(first.style.zIndex));
+  assert.match(second.style.zIndex, /^-?\d+$/);
+
+  carousel.dispatch("pointerup", { clientX: 104 });
+  assert.deepEqual(context.moves, ["first-1"]);
+  assert.equal(carousel.classList.contains("is-dragging"), false);
+  assert.equal(carousel.hasPointerCapture(1), false);
+});
+
+test("Linux phone drag loads artwork when a card enters the visible range", () => {
+  const { carousel, live, frames } = setup("linuxPhone", false, undefined, new Set(["first-6"]));
+  const sixth = live.children.find((card) => card.dataset.slot === "6");
+  assert.equal(sixth.dataset.artwork, "");
+
+  carousel.dispatch("pointerdown", { clientX: 300 });
+  carousel.dispatch("pointermove", { clientX: 170 });
+  const priorityRuns = context.priorityRuns;
+  runFrame(frames);
+  assert.equal(context.priorityRuns, priorityRuns);
+  assert.equal(sixth.dataset.artwork, "");
+
+  carousel.dispatch("pointermove", { clientX: 140 });
+  runFrame(frames);
+  assert.ok(context.priorityRuns > priorityRuns);
+  assert.equal(sixth.dataset.artwork, "url-first-6");
+  assert.ok(context.swaps.at(-1).some(({ style }) => style === "url-first-6"));
+});
+
+test("Linux phone drag rebuilds its card window and retains normal artwork updates", () => {
+  const { carousel, live, frames } = setup("linuxPhone");
+  const priorityRuns = context.priorityRuns;
+  carousel.dispatch("pointerdown", { clientX: 900 });
+  carousel.dispatch("pointermove", { clientX: 468 });
+  runFrame(frames);
+
+  assert.ok(context.priorityRuns > priorityRuns);
+  assert.ok(live.children.some((card) => card.dataset.slot === "11"));
+  assert.equal(live.children.find((card) => card.dataset.slot === "3").dataset.offset, "0");
+  assert.ok(live.children.every((card) => !card.classList.contains("is-entering")));
+  assert.equal(frames.size, 0);
+
+  carousel.dispatch("pointermove", { clientX: -396 });
+  runFrame(frames);
+  assert.equal(live.children.some((card) => card.dataset.slot === "0"), false);
+  assert.ok(live.children.every((card) => !card.classList.contains("is-leaving")));
+  assert.equal(frames.size, 0);
+  carousel.dispatch("pointerup", { clientX: -396 });
+  assert.deepEqual(context.moves, ["first-9"]);
+
+  context.ready = false;
+  context.snapshot = snapshot("second", 30, 3);
+  context.change();
+  assert.ok(live.children.some((card) => card.dataset.trackId === "second-3"));
+  context.ready = true;
+  context.change();
+  assert.ok(context.swaps.at(-1).some(({ style }) => style === "url-second-3"));
+});
+
+test("a Linux phone drag ignores other pointers and cancellation uses the last position", () => {
+  const { carousel, frames } = setup("linuxPhone");
+  carousel.dispatch("pointerdown", { clientX: 200 });
+  carousel.dispatch("pointerdown", { pointerId: 2, clientX: 500, isPrimary: false });
+  carousel.dispatch("pointermove", { pointerId: 2, clientX: -500 });
+  carousel.dispatch("pointerup", { pointerId: 2, clientX: -500 });
+  assert.equal(frames.size, 0);
+  assert.equal(carousel.classList.contains("is-dragging"), true);
+  assert.equal(carousel.hasPointerCapture(1), true);
+
+  carousel.dispatch("pointermove", { clientX: 100 });
+  carousel.dispatch("pointercancel", { clientX: 0 });
+  assert.deepEqual(context.moves, ["first-1"]);
+  assert.equal(frames.size, 0);
+  assert.equal(carousel.hasPointerCapture(1), false);
+});
+
+test("Linux phone dragging wraps a looping queue without turning the swipe into a tap", () => {
+  const { carousel, live, frames } = setup("linuxPhone");
+  context.snapshot.repeat = "all";
+  context.change();
+  while (frames.size > 0) runFrame(frames);
+
+  const previous = live.children.find((card) => card.dataset.slot === "-1");
+  carousel.dispatch("pointerdown", { target: previous, clientX: 100 });
+  carousel.dispatch("pointermove", { clientX: 244 });
+  runFrame(frames);
+  assert.equal(previous.dataset.offset, "0");
+  carousel.dispatch("pointerup", { clientX: 244 });
+  carousel.dispatch("click", { target: previous });
+  assert.deepEqual(context.moves, ["first-29"]);
+  assert.deepEqual(context.plays, []);
+
+  carousel.dispatch("pointerdown", { target: previous, clientX: 100 });
+  carousel.dispatch("pointerup", { clientX: 100 });
+  carousel.dispatch("click", { target: previous });
+  assert.deepEqual(context.plays, ["first-29"]);
+});
+
+test("Android and desktop drag frames retain their existing full render", () => {
+  for (const kind of ["android", "desktop"]) {
+    const { carousel, frames } = setup(kind);
+    const pruneRuns = context.pruneRuns;
+    carousel.dispatch("pointerdown", { clientX: 200 });
+    carousel.dispatch("pointermove", { clientX: 100 });
+    runFrame(frames);
+    assert.ok(context.pruneRuns > pruneRuns);
+  }
+});
 
 test("an unchanged hidden queue stops transitions without rendering again on reveal", () => {
   const visibility = createSheetVisibility();

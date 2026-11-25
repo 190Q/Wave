@@ -85,6 +85,7 @@ export function mountQueue(visibility?: SheetVisibility): void {
   let renderedSourceId: string | null = null;
   let renderedLooping: boolean | null = null;
   let windowCenter = Number.NaN;
+  let artworkCenter = Number.NaN;
   let popTimer: number | null = null;
 
   let centerSlot = 0;
@@ -439,6 +440,9 @@ export function mountQueue(visibility?: SheetVisibility): void {
       return;
     }
 
+    const leftSlot = Math.floor(virtualCenter);
+    const rightCloser = virtualCenter - leftSlot > 0.5;
+
     for (const [slot, card] of cards) {
       const offset = slot - virtualCenter;
 
@@ -472,9 +476,16 @@ export function mountQueue(visibility?: SheetVisibility): void {
         void card.offsetWidth;
         card.style.transition = normal;
       }
-      card.style.zIndex = String(100 - distance);
-      card.style.opacity = hidden ? "0" : "1";
-      card.style.pointerEvents = hidden ? "none" : "auto";
+      const relative = slot - leftSlot;
+      const rank = relative <= 0
+        ? -relative * 2 + (rightCloser ? 1 : 0)
+        : (relative - 1) * 2 + (rightCloser ? 0 : 1);
+      const zIndex = String(100 - rank);
+      const opacity = hidden ? "0" : "1";
+      const pointerEvents = hidden ? "none" : "auto";
+      if (card.style.zIndex !== zIndex) card.style.zIndex = zIndex;
+      if (card.style.opacity !== opacity) card.style.opacity = opacity;
+      if (card.style.pointerEvents !== pointerEvents) card.style.pointerEvents = pointerEvents;
 
       card.classList.toggle("is-current", offset === 0);
       card.classList.toggle("is-past", offset < 0);
@@ -627,6 +638,36 @@ export function mountQueue(visibility?: SheetVisibility): void {
       return;
     }
     dragRem = (dragX - dragStartX) / remPx;
+
+    if (device() === "linuxPhone") {
+      const snapshot = player.snapshot();
+      const total = snapshot.order.length;
+      const looping = snapshot.repeat !== "off";
+      const rawCenter = centerSlot - dragRem / spacingRem;
+      const virtualCenter = looping ? rawCenter : resist(rawCenter, total, false);
+      let newlyVisible = false;
+      for (const slot of cards.keys()) {
+        if (Math.abs(slot - artworkCenter) > VISIBLE_RANGE &&
+            Math.abs(slot - virtualCenter) <= VISIBLE_RANGE) {
+          newlyVisible = true;
+          break;
+        }
+      }
+      if (
+        (!visibility || visibility.visible("stack")) &&
+        snapshot.queueRevision === cachedRevision &&
+        snapshot.cursor === lastCursor &&
+        snapshot.travel === lastTravel &&
+        looping === renderedLooping &&
+        washFrame === null &&
+        !newlyVisible &&
+        Math.abs(Math.round(virtualCenter) - windowCenter) <= REBUILD_MARGIN
+      ) {
+        place(total, virtualCenter, false);
+        return;
+      }
+    }
+
     render();
   };
 
@@ -639,12 +680,14 @@ export function mountQueue(visibility?: SheetVisibility): void {
   };
 
   carousel.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) {
+    if (dragging || event.isPrimary === false || event.button !== 0 ||
+        (event.target as HTMLElement).closest("button")) {
       return;
     }
     dragging = true;
     dragPointerId = event.pointerId;
     dragStartX = event.clientX;
+    dragX = event.clientX;
     dragRem = 0;
     suppressClick = false;
     carousel.setPointerCapture(event.pointerId);
@@ -652,14 +695,14 @@ export function mountQueue(visibility?: SheetVisibility): void {
   });
 
   carousel.addEventListener("pointermove", (event) => {
-    if (!dragging) {
+    if (!dragging || event.pointerId !== dragPointerId) {
       return;
     }
     moveDrag(event.clientX);
   });
 
   const endDrag = (event: PointerEvent): void => {
-    if (!dragging) {
+    if (!dragging || event.pointerId !== dragPointerId) {
       return;
     }
     dragging = false;
@@ -672,7 +715,7 @@ export function mountQueue(visibility?: SheetVisibility): void {
     if (carousel.hasPointerCapture(event.pointerId)) {
       carousel.releasePointerCapture(event.pointerId);
     }
-    dragRem = (event.clientX - dragStartX) / remPx;
+    dragRem = ((event.type === "pointercancel" ? dragX : event.clientX) - dragStartX) / remPx;
     settle();
   };
 
@@ -901,19 +944,21 @@ export function mountQueue(visibility?: SheetVisibility): void {
 
     if (!(Math.abs(materialCenter - windowCenter) <= REBUILD_MARGIN)) {
       windowCenter = materialCenter;
+      const phoneDrag = dragging && device() === "linuxPhone";
       syncWindow(
         snapshot.order,
         total,
         looping,
         materialCenter,
-        fresh ? (grown > 0 ? grown : null) : "all",
-        reused,
+        fresh ? (grown > 0 ? grown : null) : phoneDrag ? null : "all",
+        reused || phoneDrag,
       );
     }
 
     carousel.classList.toggle("is-empty", total === 0);
     place(total, virtualCenter, !dragging);
     syncCards(snapshot.order, total, looping);
+    artworkCenter = virtualCenter;
 
     if (total > 0) {
       const window = new Set<string>();

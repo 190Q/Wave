@@ -333,6 +333,11 @@ npx tauri android dev      # Run on an Android device or emulator
 Android APK, run `npm run release -- android` (or add `debug` for a debug build).
 The APK is written to `src-tauri/target/android/`.
 
+Desktop development builds use **Wave Dev** (`com.wave.app.dev`) and can run
+alongside an installed release. They keep a separate library, settings and
+WebView data, and cannot install release updates. The installed app's data is
+not copied or changed.
+
 Android debug builds install as **Wave Dev** (`com.wave.app.dev`), alongside the
 release app (`com.wave.app`). They have separate private data, and Wave Dev
 cannot install release updates. Do not use `tauri android dev --release` to

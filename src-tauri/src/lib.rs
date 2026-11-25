@@ -188,12 +188,69 @@ fn install_tls_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
+/// Desktop development builds must not share WebView or library state with an
+/// installed copy, which can be running at the same time.
+#[cfg(desktop)]
+fn configure_desktop_identity(config: &mut tauri::utils::config::Config, development: bool) {
+    if !development {
+        return;
+    }
+
+    config.identifier.push_str(".dev");
+    if let Some(window) = config.app.windows.iter_mut().find(|window| window.label == "main") {
+        window.title.push_str(" Dev");
+    }
+}
+
+#[cfg(all(test, desktop))]
+mod desktop_identity_tests {
+    use super::configure_desktop_identity;
+
+    fn config() -> tauri::utils::config::Config {
+        serde_json::from_str(include_str!("../tauri.conf.json")).unwrap()
+    }
+
+    #[test]
+    fn development_has_its_own_identity_and_window_title() {
+        let mut config = config();
+        configure_desktop_identity(&mut config, true);
+
+        assert_eq!(config.identifier, "com.wave.app.dev");
+        assert_eq!(config.app.windows[0].title, "Wave Dev");
+    }
+
+    #[test]
+    fn release_keeps_its_existing_identity_and_window_title() {
+        let mut config = config();
+        configure_desktop_identity(&mut config, false);
+
+        assert_eq!(config.identifier, "com.wave.app");
+        assert_eq!(config.app.windows[0].title, "Wave");
+    }
+
+    #[test]
+    fn current_build_uses_the_corresponding_identity() {
+        let mut config = config();
+        configure_desktop_identity(&mut config, cfg!(dev));
+
+        let expected = if cfg!(dev) { "com.wave.app.dev" } else { "com.wave.app" };
+        assert_eq!(config.identifier, expected);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "android")]
     install_tls_provider();
 
     let context: tauri::Context = tauri::generate_context!();
+
+    #[cfg(desktop)]
+    let context = {
+        let mut context = context;
+        configure_desktop_identity(context.config_mut(), cfg!(dev));
+        context
+    };
 
     // A phone is started by the system, from an icon rather than a terminal, so
     // there is no command line to read and no console to read it from.

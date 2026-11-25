@@ -177,6 +177,10 @@ pub fn update_status(app: AppHandle, store: State<'_, Store>) -> Option<UpdateIn
 /// Downloads the stored installer and hands it over: Windows and an AppImage
 /// run it and close the app, a phone leaves the install to the system.
 fn install_stored(app: &AppHandle) -> Result<(), String> {
+    if !release_install_allowed() {
+        return Err("development builds cannot install release updates".to_string());
+    }
+
     let store = app.state::<Store>();
     let Some(info) = store.snapshot().update else {
         return Err("there is no update to install".to_string());
@@ -430,18 +434,22 @@ fn installer_names() -> (&'static str, &'static str) {
     ("", "")
 }
 
+fn release_install_allowed() -> bool {
+    !cfg!(all(desktop, dev))
+}
+
 /// True when Wave can replace its own install rather than pointing at the
 /// release page.
 #[cfg(windows)]
 fn can_install_itself() -> bool {
-    true
+    release_install_allowed()
 }
 
 /// An AppImage can replace itself. A `.deb` or `.rpm` install needs root, so
 /// it is left to the release page.
 #[cfg(target_os = "linux")]
 fn can_install_itself() -> bool {
-    std::env::var_os("APPIMAGE").is_some()
+    release_install_allowed() && std::env::var_os("APPIMAGE").is_some()
 }
 
 #[cfg(target_os = "android")]
@@ -532,6 +540,19 @@ fn exit_soon(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(desktop, dev))]
+    #[test]
+    fn desktop_development_cannot_install_release_updates() {
+        assert!(!release_install_allowed());
+        assert!(!can_install_itself());
+    }
+
+    #[cfg(all(desktop, not(dev)))]
+    #[test]
+    fn desktop_release_can_install_release_updates() {
+        assert!(release_install_allowed());
+    }
 
     fn asset(name: &str) -> Asset {
         Asset {

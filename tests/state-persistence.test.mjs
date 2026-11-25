@@ -529,14 +529,78 @@ test("a full scan preserves tracks that land while its snapshot is in flight", a
 test("folder import clears its status when cancelled or rejected", async () => {
   await app.importFolder(async () => null);
   assert.equal(app.getState().folderImport, null);
+  assert.equal(app.getState().localImportResult, null);
   const originalImport = globalThis.__testIpc.importFolder;
   globalThis.__testIpc.importFolder = async () => { throw new Error("Disk full"); };
   try {
     await app.importFolder(async () => false);
     assert.equal(app.getState().folderImport, null);
     assert.match(app.getState().notice, /Disk full/);
+    assert.match(app.getState().localImportResult, /Disk full/);
   } finally {
     globalThis.__testIpc.importFolder = originalImport;
+  }
+});
+
+test("selected files and phone music follow progress and retain the outcome", async () => {
+  for (const [method, command] of [["importPickedFiles", "importPickedFiles"], ["importPhoneMusic", "scanPhoneMusic"]]) {
+    const pending = deferred();
+    const originalImport = globalThis.__testIpc[command];
+    globalThis.__testIpc[command] = () => pending.promise;
+    try {
+      const importing = app[method]();
+      await tick();
+      assert.notEqual(app.getState().folderImport, null);
+      listeners.get("folder-import-progress")({ payload: "Importing song 2 of 5: Track.mp3" });
+      assert.equal(app.getState().folderImport, "Importing song 2 of 5: Track.mp3");
+      await app.importFolder(async () => { throw new Error("another picker opened"); });
+      pending.resolve({ ...outcome(), songs: 5, errors: [] });
+      await importing;
+      assert.equal(app.getState().folderImport, null);
+      assert.match(app.getState().localImportResult, /5 songs imported/);
+      listeners.get("folder-import-progress")({ payload: "stale update" });
+      assert.equal(app.getState().localImportResult, "5 songs imported");
+    } finally {
+      globalThis.__testIpc[command] = originalImport;
+    }
+  }
+});
+
+test("phone folder and file picker cancellation or failure clear progress", async () => {
+  const originalFolder = globalThis.__testIpc.importPhoneFolder;
+  const originalPicker = globalThis.__testIpc.pickPhoneAudioFiles;
+  const originalScan = globalThis.__testIpc.scanPhoneMusic;
+  try {
+    globalThis.__testIpc.importPhoneFolder = async () => null;
+    await app.importPhoneFolder();
+    assert.equal(app.getState().folderImport, null);
+    assert.equal(app.getState().localImportResult, null);
+
+    globalThis.__testIpc.pickPhoneAudioFiles = async () => null;
+    await app.importPickedFiles();
+    assert.equal(app.getState().folderImport, null);
+    assert.equal(app.getState().localImportResult, null);
+
+    globalThis.__testIpc.scanPhoneMusic = async () => { throw new Error("Permission denied"); };
+    await app.importPhoneMusic();
+    assert.equal(app.getState().folderImport, null);
+    assert.match(app.getState().localImportResult, /Permission denied/);
+  } finally {
+    globalThis.__testIpc.importPhoneFolder = originalFolder;
+    globalThis.__testIpc.pickPhoneAudioFiles = originalPicker;
+    globalThis.__testIpc.scanPhoneMusic = originalScan;
+  }
+});
+
+test("successful link imports retain their completion message", async () => {
+  const originalImport = globalThis.__testIpc.importYoutube;
+  globalThis.__testIpc.importYoutube = async () => ({ ...outcome(), songs: 2, errors: [] });
+  try {
+    await app.importLink("https://youtu.be/example", false);
+    assert.equal(app.getState().importing.phase, "done");
+    assert.match(app.getState().importing.message, /2 songs imported/);
+  } finally {
+    globalThis.__testIpc.importYoutube = originalImport;
   }
 });
 

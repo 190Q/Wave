@@ -41,7 +41,7 @@ import { dialogFits } from "./fit";
 import { highlightHtml } from "./highlight";
 import { fillIcons } from "./icons";
 import { placePicker, windowFrame } from "./picker";
-import { claimPopup, releasePopup } from "./popups";
+import { claimPopup, isOtherPopupShowing, releasePopup } from "./popups";
 
 const DIALOG_MS = 220;
 
@@ -130,11 +130,21 @@ export function mountImportDialog(): void {
     const lyrics = body.querySelector<HTMLElement>("#import-lyrics-state");
     const transfer = body.querySelector<HTMLElement>("#import-transfer-state");
     const folder = body.querySelector<HTMLElement>("#import-folder-state");
+    const loudness = body.querySelector<HTMLElement>("#import-loudness-state");
     if (folder) {
-      folder.textContent = state.folderImport ?? "";
+      folder.textContent = state.folderImport ?? state.localImportResult ?? "";
+    }
+    if (loudness) {
+      loudness.textContent = state.analysing
+        ? `Analysing song loudness: ${state.analysing.done} of ${state.analysing.total}.`
+        : "";
     }
     if (transfer) {
-      transfer.innerHTML = state.transferProgress ? progressHtml(state.transferProgress) : "";
+      const download = device() === "android" ? state.downloadProgress : null;
+      transfer.innerHTML = [state.transferProgress, download]
+        .filter((progress): progress is ImportProgress => progress != null)
+        .map(progressHtml)
+        .join("");
     }
     if (lyrics) {
       lyrics.innerHTML = state.lyricsProgress ? progressHtml(state.lyricsProgress) : "";
@@ -324,6 +334,24 @@ export function mountImportDialog(): void {
   openPanel = panel.toggle;
   closeButton.addEventListener("click", close);
 
+  const askWithoutClosing = async <T>(ask: () => Promise<T>): Promise<T> => {
+    const wasOpen = dialog.open && !dialog.classList.contains("is-closed");
+    if (wasOpen) {
+      releasePopup(close);
+    }
+    try {
+      return await ask();
+    } finally {
+      if (wasOpen && dialog.open && !dialog.classList.contains("is-closed")) {
+        if (isOtherPopupShowing(close)) {
+          close();
+        } else {
+          claimPopup(close);
+        }
+      }
+    }
+  };
+
   body.addEventListener("click", (event) => {
     const target = event.target as HTMLElement;
 
@@ -360,24 +388,20 @@ export function mountImportDialog(): void {
   const runImportAction = (action: string): void => {
     switch (action) {
       case "folder":
-        close();
-        void importFolder(() => choiceDialog({
+        void importFolder(() => askWithoutClosing(() => choiceDialog({
           title: "Import this folder",
           message: "Add only the songs to your library, or also create a playlist from this folder? Songs that share a title but differ by artist or album stay separate tracks, and songs whose audio the library already has are skipped.",
           confirmLabel: "As a playlist",
           cancelLabel: "Songs only",
-        }));
+        })));
         return;
       case "files":
-        close();
         void importPickedFiles();
         return;
       case "phone":
-        close();
         void importPhoneMusic();
         return;
       case "phone-folder":
-        close();
         void importPhoneFolder();
         return;
       case "fix":
@@ -385,13 +409,12 @@ export function mountImportDialog(): void {
         void fixTagsAndCovers();
         return;
       case "wavelist":
-        close();
-        void importWaveList(() => choiceDialog({
+        void importWaveList(() => askWithoutClosing(() => choiceDialog({
           title: "Import this Wave playlist",
           message: "Add the songs to your library, or also create a playlist? Songs already in your library are reused.",
           confirmLabel: "As a playlist",
           cancelLabel: "Songs only",
-        }));
+        })));
         return;
       case "link-panel":
         open(fallback, true);
@@ -399,7 +422,6 @@ export function mountImportDialog(): void {
       case "link": {
         const field = body.querySelector<HTMLInputElement>("#import-link-url");
         if (field) {
-          close();
           void startLinkImport(field.value);
         }
         return;
@@ -450,6 +472,9 @@ export function mountImportDialog(): void {
       return;
     }
     panel.dismiss();
+    if (["folder", "files", "phone", "phone-folder", "wavelist"].includes(action)) {
+      open(fallback);
+    }
     runImportAction(action);
   });
 
@@ -465,12 +490,12 @@ export function mountImportDialog(): void {
 
     let downloadDuplicates = false;
     if (plan.duplicates > 0) {
-      downloadDuplicates = await confirmDialog({
+      downloadDuplicates = await askWithoutClosing(() => confirmDialog({
         title: "Already in your library",
         message: duplicateMessage(plan),
         confirmLabel: "Download again",
         cancelLabel: "No",
-      });
+      }));
     }
 
     await importLink(url, downloadDuplicates);
@@ -593,6 +618,7 @@ function localSection(): string {
         <button class="pill" type="button" data-import="fix">Fix tags and covers</button>
       </div>
       <div id="import-folder-state" class="import-hint" aria-live="polite"></div>
+      <div id="import-loudness-state" class="import-hint" aria-live="polite"></div>
       <div id="import-transfer-state" aria-live="polite"></div>`,
     );
   }
@@ -609,6 +635,7 @@ function localSection(): string {
       <button class="pill" type="button" data-import="wavelist">Import Wave playlist</button>
     </div>
     <div id="import-folder-state" class="import-hint" aria-live="polite"></div>
+    <div id="import-loudness-state" class="import-hint" aria-live="polite"></div>
     <div id="import-transfer-state" aria-live="polite"></div>`,
   );
 }

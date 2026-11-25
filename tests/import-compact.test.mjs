@@ -11,25 +11,26 @@ const mocks = {
     const context = () => globalThis.__importTest;
     export const getState = () => context().state;
     export const importLogPath = async () => context().logPath ?? "";
-    export const importFolder = () => { context().actions.push("folder"); };
+    export const importFolder = (choose) => { context().actions.push("folder"); context().chooseFolder = choose; };
     export const importWaveList = (choose) => { context().actions.push("wavelist"); context().chooseWave = choose; };
     export const collectionById = () => undefined;
     export const fetchCovers = () => {}, fetchGenres = () => {}, fetchLyrics = () => {};
-    export const fixTagsAndCovers = () => {}, importPhoneFolder = () => {};
-    export const importPhoneMusic = () => {}, importPickedFiles = () => { context().actions.push("files"); };
+    export const fixTagsAndCovers = () => {};
+    export const importPhoneFolder = () => { context().actions.push("phone-folder"); };
+    export const importPhoneMusic = () => { context().actions.push("phone"); };
+    export const importPickedFiles = () => { context().actions.push("files"); };
     export const importLink = async (url, duplicates) => { context().actions.push(["importLink", url, duplicates]); };
     export const openImportLog = () => { context().actions.push("log"); }, openSpotifyConfig = () => {};
-    export const planLink = async (url) => { context().actions.push(["planLink", url]); return { duplicates: 0 }; };
+    export const planLink = async (url) => { context().actions.push(["planLink", url]); return context().plan ?? { duplicates: 0 }; };
     export const refreshDeezerStatus = () => {};
     export const refreshSpotifyStatus = () => {}, refreshYoutubeStatus = () => {};
-    export const jobRunning = () => false, serviceOf = () => "youtube";
+    export const jobRunning = (progress) => !!progress && progress.phase !== "done" && progress.phase !== "failed";
+    export const serviceOf = () => "youtube";
     export const setNotice = () => {}, subscribe = (handler) => { context().subscribers.push(handler); };
   `,
-  "./confirm": "export const choiceDialog = async (options) => { globalThis.__importTest.choice = options; return false; }; export const confirmDialog = () => {};",
   "./highlight": "export const highlightHtml = (value) => value;",
   "./icons": "export const fillIcons = () => {};",
   "./picker": "export const placePicker = () => {}; export const windowFrame = () => {};",
-  "./popups": "export const claimPopup = () => {}; export const releasePopup = () => {};",
 };
 
 const vite = await createServer({
@@ -79,6 +80,11 @@ class Element extends Events {
       add: (name) => classes.add(name),
       remove: (name) => classes.delete(name),
       contains: (name) => classes.has(name),
+      toggle: (name, force = !classes.has(name)) => {
+        if (force) classes.add(name);
+        else classes.delete(name);
+        return force;
+      },
     };
     this.style = { setProperty() {} };
     this.innerHTML = "";
@@ -100,18 +106,24 @@ function setup(device, height, collections = [{ id: "library", name: "Library" }
     state: { collections, recentImports: [], settings: { searchAlgorithm: "substring" } },
   };
   globalThis.__importTest = context;
-  const ids = ["import-dialog", "import-open", "import-close", "import-body", "import-toggle", "import-drop-list"];
+  const ids = [
+    "import-dialog", "import-open", "import-close", "import-body", "import-toggle", "import-drop-list",
+    "confirm-dialog", "confirm-title", "confirm-message", "confirm-cancel", "confirm-accept",
+  ];
   const elements = Object.fromEntries(ids.map((id) => [id, new Element()]));
   const dialog = elements["import-dialog"];
-  dialog.open = false;
-  dialog.showModal = () => { dialog.open = true; };
-  dialog.close = () => { dialog.open = false; };
+  for (const modal of [dialog, elements["confirm-dialog"]]) {
+    modal.open = false;
+    modal.showModal = () => { modal.open = true; };
+    modal.close = () => { modal.open = false; };
+  }
   globalThis.document = Object.assign(new Events(), {
     documentElement: new Element(),
     getElementById: (id) => elements[id] ?? null,
   });
   globalThis.window = Object.assign(new Events(), { innerHeight: height, setTimeout, clearTimeout });
   globalThis.getComputedStyle = () => ({ fontSize: "16px", paddingLeft: "0px" });
+  mountConfirm();
   return { context, elements, dialog };
 }
 
@@ -119,7 +131,15 @@ function actions(html) {
   return [...html.matchAll(/data-import="([^"]+)"/g)].map((match) => match[1]);
 }
 
+function clickImport(elements, action) {
+  elements["import-body"].dispatch("click", {
+    target: { closest: (selector) => selector === "[data-import]" ? { dataset: { import: action } } : null },
+  });
+}
+
 const { mountImportDialog } = await vite.ssrLoadModule("/src/ui/import-dialog.ts");
+const { mountConfirm } = await vite.ssrLoadModule("/src/ui/confirm.ts");
+const { claimPopup } = await vite.ssrLoadModule("/src/ui/popups.ts");
 
 test("Wave playlist import offers a playlist or songs only", async () => {
   const { context, elements } = setup("desktop", 350);
@@ -128,28 +148,29 @@ test("Wave playlist import offers a playlist or songs only", async () => {
   elements["import-drop-list"].dispatch("click", {
     target: { closest: () => ({ dataset: { import: "wavelist" } }) },
   });
-  assert.equal(await context.chooseWave(), false);
-  assert.equal(context.choice.confirmLabel, "As a playlist");
-  assert.equal(context.choice.cancelLabel, "Songs only");
+  const answer = context.chooseWave();
+  assert.equal(elements["confirm-accept"].textContent, "As a playlist");
+  assert.equal(elements["confirm-cancel"].textContent, "Songs only");
+  elements["confirm-cancel"].dispatch("click");
+  assert.equal(await answer, false);
 });
 
 test("desktop compact import shows and runs only the local import actions", () => {
-  const { context, elements, dialog } = setup("desktop", 350);
-  mountImportDialog();
-  elements["import-open"].dispatch("click");
-
-  assert.equal(dialog.open, false);
-  assert.equal(elements["import-toggle"].classList.contains("is-open"), true);
-  assert.deepEqual(actions(elements["import-drop-list"].innerHTML), ["folder", "files", "wavelist"]);
-
   for (const action of ["folder", "files", "wavelist"]) {
+    const { context, elements, dialog } = setup("desktop", 350);
+    mountImportDialog();
+    elements["import-open"].dispatch("click");
+    assert.equal(dialog.open, false);
+    assert.equal(elements["import-toggle"].classList.contains("is-open"), true);
+    assert.deepEqual(actions(elements["import-drop-list"].innerHTML), ["folder", "files", "wavelist"]);
     elements["import-drop-list"].dispatch("click", {
       target: { closest: () => ({ dataset: { import: action } }) },
     });
     assert.equal(elements["import-toggle"].classList.contains("is-open"), false);
-    elements["import-open"].dispatch("click");
+    assert.equal(dialog.open, true);
+    assert.equal(dialog.classList.contains("is-closed"), false);
+    assert.deepEqual(context.actions, [action]);
   }
-  assert.deepEqual(context.actions, ["folder", "files", "wavelist"]);
 });
 
 test("desktop import places file selection beside folders and the log in recent imports", async () => {
@@ -209,6 +230,121 @@ test("Linux phone import dialog follows folder progress", () => {
   assert.equal(status.textContent, "Importing 2 of 50: Book 2.m4b (50%)");
 });
 
+test("local imports keep the panel open and display progress, completion, and loudness", () => {
+  const { context, elements, dialog } = setup("android", 800);
+  const folder = { textContent: "" };
+  const loudness = { textContent: "" };
+  const transfer = { innerHTML: "" };
+  elements["import-body"].querySelector = (selector) => ({
+    "#import-folder-state": folder,
+    "#import-loudness-state": loudness,
+    "#import-transfer-state": transfer,
+  })[selector] ?? null;
+  mountImportDialog();
+  elements["import-open"].dispatch("click");
+
+  for (const action of ["files", "phone-folder", "phone", "wavelist"]) {
+    clickImport(elements, action);
+    assert.equal(dialog.classList.contains("is-closed"), false);
+  }
+  context.state.folderImport = "Importing song 2 of 5: Track.mp3";
+  context.state.analysing = { done: 3, total: 5 };
+  context.state.transferProgress = {
+    phase: "downloading", done: 2, total: 5, label: "Track",
+    message: "Downloading missing songs.", failures: [], reused: 0, startedAt: Date.now(),
+  };
+  context.state.downloadProgress = {
+    phase: "downloading", done: 3, total: 5, label: "Next track",
+    message: "Downloading playlist.", failures: [], reused: 0, startedAt: Date.now(),
+  };
+  context.subscribers.forEach((handler) => handler());
+  assert.equal(folder.textContent, "Importing song 2 of 5: Track.mp3");
+  assert.equal(loudness.textContent, "Analysing song loudness: 3 of 5.");
+  assert.match(transfer.innerHTML, /2 of 5 - Track/);
+  assert.match(transfer.innerHTML, /Downloading missing songs/);
+  assert.match(transfer.innerHTML, /3 of 5 - Next track/);
+  assert.match(transfer.innerHTML, /Downloading playlist/);
+
+  context.state.folderImport = null;
+  context.state.localImportResult = "5 songs imported";
+  context.state.analysing = null;
+  context.subscribers.forEach((handler) => handler());
+  assert.equal(folder.textContent, "5 songs imported");
+  assert.equal(loudness.textContent, "");
+});
+
+test("folder and Wave playlist choices leave the import panel open", async () => {
+  const { context, elements, dialog } = setup("desktop", 800);
+  mountImportDialog();
+  elements["import-open"].dispatch("click");
+  for (const [action, choose] of [["folder", "chooseFolder"], ["wavelist", "chooseWave"]]) {
+    clickImport(elements, action);
+    const answer = context[choose]();
+    assert.equal(elements["confirm-dialog"].open, true);
+    assert.equal(dialog.classList.contains("is-closed"), false);
+    elements["confirm-cancel"].dispatch("click");
+    assert.equal(await answer, false);
+    assert.equal(dialog.open, true);
+    assert.equal(dialog.classList.contains("is-closed"), false);
+  }
+});
+
+test("dismissing an import choice leaves the import panel open", async () => {
+  const { context, elements, dialog } = setup("desktop", 800);
+  mountImportDialog();
+  elements["import-open"].dispatch("click");
+  clickImport(elements, "folder");
+  const answer = context.chooseFolder();
+  elements["confirm-dialog"].dispatch("cancel", { preventDefault() {} });
+  assert.equal(await answer, null);
+  assert.equal(dialog.open, true);
+  assert.equal(dialog.classList.contains("is-closed"), false);
+});
+
+test("link imports keep the panel and duplicate confirmation open while progress updates", async () => {
+  const { context, elements, dialog } = setup("android", 800);
+  const field = { value: "https://youtu.be/example" };
+  const status = { innerHTML: "" };
+  elements["import-body"].querySelector = (selector) =>
+    selector === "#import-link-url" ? field : selector === "#import-link-state" ? status : null;
+  context.plan = { name: "Example", total: 2, duplicates: 1, examples: ["Song"] };
+  mountImportDialog();
+  elements["import-open"].dispatch("click");
+  clickImport(elements, "link");
+  await Promise.resolve();
+  assert.equal(elements["confirm-dialog"].open, true);
+  assert.equal(dialog.classList.contains("is-closed"), false);
+  elements["confirm-accept"].dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 230));
+  assert.deepEqual(context.actions, [
+    ["planLink", field.value],
+    ["importLink", field.value, true],
+  ]);
+  context.state.importing = {
+    phase: "downloading", done: 1, total: 2, label: "Song",
+    message: "Downloading songs.", failures: [], reused: 0, startedAt: Date.now(),
+  };
+  context.subscribers.forEach((handler) => handler());
+  assert.match(status.innerHTML, /1 of 2 - Song/);
+  assert.match(status.innerHTML, /Downloading songs/);
+  assert.equal(dialog.classList.contains("is-closed"), false);
+  elements["import-close"].dispatch("click");
+  assert.equal(dialog.classList.contains("is-closed"), true);
+  context.subscribers.forEach((handler) => handler());
+  assert.equal(dialog.classList.contains("is-closed"), true);
+});
+
+test("a different popup dismisses both the confirmation and the import panel", async () => {
+  const { context, elements, dialog } = setup("desktop", 800);
+  mountImportDialog();
+  elements["import-open"].dispatch("click");
+  clickImport(elements, "folder");
+  const answer = context.chooseFolder();
+  claimPopup(() => {});
+  assert.equal(await answer, null);
+  assert.equal(dialog.classList.contains("is-closed"), true);
+});
+
 test("Android full import offers YouTube without Spotify or desktop tools", () => {
   const { elements, dialog } = setup("android", 800);
   mountImportDialog();
@@ -244,6 +380,7 @@ test("Android compact import opens the link field and keeps it open when the key
     target: { closest: (selector) => selector === "[data-import]" ? { dataset: { import: "link" } } : null },
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(dialog.classList.contains("is-closed"), false);
   assert.deepEqual(context.actions, [
     ["planLink", "https://youtu.be/dQw4w9WgXcQ"],
     ["importLink", "https://youtu.be/dQw4w9WgXcQ", false],
@@ -259,5 +396,24 @@ test("Android compact import keeps the fetch actions and disables them without c
   assert.deepEqual(actions(html), ["files", "phone-folder", "wavelist", "link-panel", "phone", "fix", "lyrics", "covers", "genres"]);
   for (const action of ["lyrics", "covers", "genres"]) {
     assert.match(html, new RegExp(`data-import="${action}"[^>]* disabled`));
+  }
+});
+
+test("Android compact local imports open a panel that follows progress", () => {
+  for (const action of ["files", "phone-folder", "phone", "wavelist"]) {
+    const { context, elements, dialog } = setup("android", 350);
+    const status = { textContent: "" };
+    elements["import-body"].querySelector = (selector) =>
+      selector === "#import-folder-state" ? status : null;
+    mountImportDialog();
+    elements["import-open"].dispatch("click");
+    elements["import-drop-list"].dispatch("click", {
+      target: { closest: () => ({ dataset: { import: action } }) },
+    });
+    assert.equal(dialog.open, true);
+    assert.equal(dialog.classList.contains("is-closed"), false);
+    context.state.folderImport = "Importing song 1 of 3: Track.mp3";
+    context.subscribers.forEach((handler) => handler());
+    assert.equal(status.textContent, "Importing song 1 of 3: Track.mp3");
   }
 });

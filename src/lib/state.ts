@@ -150,6 +150,7 @@ export interface AppState {
   /** Transient message shown in the status strip. */
   notice: string | null;
   folderImport: string | null;
+  localImportResult: string | null;
   /** What the import dialog shows about the Spotify credentials. */
   spotify: SpotifyStatus | null;
   spotifyChecking: boolean;
@@ -328,6 +329,7 @@ const state: AppState = {
   lyricsLoading: false,
   notice: null,
   folderImport: null,
+  localImportResult: null,
   spotify: null,
   spotifyChecking: false,
   deezer: null,
@@ -1439,12 +1441,25 @@ function importNotice(outcome: ImportOutcome, found = ""): string {
   return `${message}${failure ? `. ${failure}` : ""}`;
 }
 
-export async function importFolder(choose: () => Promise<boolean | null>): Promise<void> {
+function beginLocalImport(message: string): boolean {
   if (state.folderImport !== null) {
+    return false;
+  }
+  state.localImportResult = null;
+  state.folderImport = message;
+  setNotice(null);
+  return true;
+}
+
+function finishLocalImport(message: string): void {
+  state.localImportResult = message;
+  setNotice(message);
+}
+
+export async function importFolder(choose: () => Promise<boolean | null>): Promise<void> {
+  if (!beginLocalImport("Choose a music folder to import...")) {
     return;
   }
-  state.folderImport = "Choose a music folder to import...";
-  setNotice(null);
   try {
     const folder = await ipc.pickFolder();
     if (!folder) {
@@ -1465,9 +1480,9 @@ export async function importFolder(choose: () => Promise<boolean | null>): Promi
     state.folderImport = "Looking up song information...";
     emit();
     const found = await completeImport(outcome);
-    setNotice(importNotice(outcome, found));
+    finishLocalImport(importNotice(outcome, found));
   } catch (error) {
-    setNotice(describe(error));
+    finishLocalImport(describe(error));
   } finally {
     state.folderImport = null;
     emit();
@@ -1476,39 +1491,50 @@ export async function importFolder(choose: () => Promise<boolean | null>): Promi
 
 /** Imports the files a picker handed back. On Android those are content URIs. */
 export async function importPickedFiles(): Promise<void> {
+  if (!beginLocalImport("Choose music files to import...")) {
+    return;
+  }
   try {
     const paths = await (isAndroidPlatform ? ipc.pickPhoneAudioFiles() : ipc.pickAudioFiles());
     if (!paths || paths.length === 0) {
       return;
     }
 
-    setNotice("Importing...");
+    state.folderImport = "Importing music...";
+    emit();
     const outcome = await ipc.importPickedFiles(paths);
     applyPersisted(outcome.state);
+    state.folderImport = "Refreshing your library...";
+    emit();
     await rescan(true);
+    state.folderImport = "Looking up song information...";
+    emit();
     const found = await completeImport(outcome);
-    setNotice(importNotice(outcome, found));
+    finishLocalImport(importNotice(outcome, found));
   } catch (error) {
-    setNotice(describe(error));
+    finishLocalImport(describe(error));
+  } finally {
+    state.folderImport = null;
+    emit();
   }
 }
 
 export async function importPhoneFolder(): Promise<void> {
-  if (state.folderImport !== null) {
+  if (!beginLocalImport("Choose a music folder to import...")) {
     return;
   }
-  state.folderImport = "Choose a music folder to import...";
-  setNotice(null);
   try {
     const outcome = await ipc.importPhoneFolder();
     if (!outcome) {
       return;
     }
     applyPersisted(outcome.state);
+    state.folderImport = "Refreshing your library...";
+    emit();
     await rescan(true);
-    setNotice(importNotice(outcome));
+    finishLocalImport(importNotice(outcome));
   } catch (error) {
-    setNotice(describe(error));
+    finishLocalImport(describe(error));
   } finally {
     state.folderImport = null;
     emit();
@@ -1517,15 +1543,24 @@ export async function importPhoneFolder(): Promise<void> {
 
 /** Imports what the phone's own music folders hold. */
 export async function importPhoneMusic(): Promise<void> {
+  if (!beginLocalImport("Looking through your music folders...")) {
+    return;
+  }
   try {
-    setNotice("Looking through your music folders...");
     const outcome = await ipc.scanPhoneMusic();
     applyPersisted(outcome.state);
+    state.folderImport = "Refreshing your library...";
+    emit();
     await rescan(true);
+    state.folderImport = "Looking up song information...";
+    emit();
     const found = await completeImport(outcome);
-    setNotice(importNotice(outcome, found));
+    finishLocalImport(importNotice(outcome, found));
   } catch (error) {
-    setNotice(describe(error));
+    finishLocalImport(describe(error));
+  } finally {
+    state.folderImport = null;
+    emit();
   }
 }
 
@@ -2063,9 +2098,7 @@ export async function importLink(url: string, downloadDuplicates: boolean): Prom
             `${plural(outcome.songs, "song")} imported, ${outcome.errors.length} failed.`,
             outcome.errors,
           )
-        : outcome.songs === 0
-          ? finishedProgress("done", message)
-          : null;
+        : finishedProgress("done", message);
   } catch (error) {
     const message = describe(error);
     setNotice(message);

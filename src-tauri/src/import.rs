@@ -307,7 +307,10 @@ fn import_selected(
     files: impl IntoIterator<Item = (String, String)>,
 ) -> ImportOutcome {
     let mut outcome = ImportOutcome::default();
-    for (uri, name) in files {
+    let files: Vec<_> = files.into_iter().collect();
+    let total = files.len();
+    for (index, (uri, name)) in files.into_iter().enumerate() {
+        let _ = app.emit(FOLDER_PROGRESS_EVENT, format!("Importing song {} of {total}: {name}", index + 1));
         if let Err(error) = validate_picked_audio(&name) {
             outcome.errors.push(error);
             continue;
@@ -386,9 +389,7 @@ pub fn import_phone_folder(app: AppHandle) -> Result<Option<ImportOutcome>, Stri
         }
         for file in &audio_files {
             processed += 1;
-            if processed == 1 || processed % 10 == 0 || processed == total {
-                let _ = app.emit("phone-folder-import", format!("Importing song {processed} of {total}..."));
-            }
+            let _ = app.emit("phone-folder-import", format!("Importing song {processed} of {total}: {}", file.name));
             let name = picked_name(&file.name);
             let staged = PickedStage::new(&root, &name)?;
             let dir = &staged.dir;

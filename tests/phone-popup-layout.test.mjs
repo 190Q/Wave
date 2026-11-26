@@ -74,6 +74,25 @@ test("phone search and equaliser overlays respect the safe area", async () => {
   }
 });
 
+test("phone equaliser scrolling reaches the safe area edges", async () => {
+  const css = parse(await readFile(new URL("../src/styles/android.css", import.meta.url), "utf8"));
+  const prefix = ':is([data-device="android"], [data-device="linuxPhone"])';
+  const body = css.nodes.find((node) => node.type === "rule" && node.selectors.includes(`${prefix} .eq-body`));
+  assert.ok(body);
+  assert.equal(body.nodes.find((node) => node.prop === "padding-inline")?.value, "0");
+
+  const androidBody = css.nodes.find((node) =>
+    node.type === "rule" && node.selectors.includes('[data-device="android"] .eq-body'),
+  );
+  assert.ok(androidBody);
+  assert.equal(androidBody.nodes.find((node) => node.prop === "padding"), undefined);
+  assert.equal(androidBody.nodes.find((node) => node.prop === "padding-block")?.value, "1rem 1.25rem");
+  const androidSide = css.nodes.find((node) =>
+    node.type === "rule" && node.selectors.includes('[data-device="android"] .eq-side'),
+  );
+  assert.equal(androidSide?.nodes.find((node) => node.prop === "overflow-y")?.value, "auto");
+});
+
 test("phone notices sit below the topbar instead of covering popup buttons", async () => {
   const css = parse(await readFile(new URL("../src/styles/android.css", import.meta.url), "utf8"));
   const prefix = ':is([data-device="android"], [data-device="linuxPhone"])';

@@ -328,6 +328,10 @@ html:is([data-device="android"], [data-device="linuxPhone"]) {
   padding: var(--inset-top) var(--inset-right) var(--inset-bottom) var(--inset-left);
 }
 
+:is([data-device="android"], [data-device="linuxPhone"]) .eq-body {
+  padding-inline: 0;
+}
+
 /* The equaliser keeps only its right column. The graph and the bands stay in
    the markup, since mountEq wants all four elements to be there. */
 [data-device="android"] .eq-graph,
@@ -340,7 +344,7 @@ html:is([data-device="android"], [data-device="linuxPhone"]) {
   grid-template-rows: minmax(0, 1fr);
   grid-template-areas: "side";
   gap: 0;
-  padding: 1rem 1.25rem 1.25rem;
+  padding-block: 1rem 1.25rem;
   overflow: hidden;
 }
 

@@ -249,7 +249,7 @@ test("mini-player shortcuts cannot change pinning or resize the window", async (
   const script = ts.transpile(source.slice(start, end));
   const handlers = new Map();
   const calls = [];
-  const state = { settings: { shortcutSlots: [] } };
+  const state = { settings: { shortcutSlots: [] }, windowSlots: [] };
   let mini = false;
   const root = { classList: { contains: () => mini, add() {}, remove() {} } };
   runInNewContext(`${script}\nmountShortcuts();`, {
@@ -294,6 +294,11 @@ test("mini-player shortcuts cannot change pinning or resize the window", async (
     press("1", { code: "Digit1", ctrlKey: true, shiftKey: true });
   }
   assert.deepEqual(calls.slice(2), ["snap-window-position", "toggle-mini-player", "play-pause"]);
+
+  state.settings.shortcutSlots[0] = "snap-window";
+  state.windowSlots[0] = { miniPlayer: true };
+  press("1", { code: "Digit1", ctrlKey: true, shiftKey: true });
+  assert.equal(calls.at(-1), "snap-window");
 
   mini = false;
   state.settings.shortcutSlots[0] = "snap-window-size";

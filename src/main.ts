@@ -197,13 +197,14 @@ function mountShortcuts(): void {
       const digit = /^Digit([1-9])$/.exec(event.code)?.[1];
       if (digit) {
         const slot = Number(digit) - 1;
-        const action = getState().settings.shortcutSlots[slot];
+        const { settings, windowSlots } = getState();
+        const action = settings.shortcutSlots[slot];
         if (action) {
           event.preventDefault();
           if (!mini || ![
             "toggle-queue", "focus-search", "open-swell", "toggle-always-on-top",
             "snap-window", "snap-window-size", "toggle-maximise",
-          ].includes(action)) {
+          ].includes(action) || (action === "snap-window" && windowSlots?.[slot]?.miniPlayer)) {
             void runSlotAction(action, slot);
           }
           return;

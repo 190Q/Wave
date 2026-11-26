@@ -202,7 +202,7 @@ const handlers: Record<string, Handler> = {
     while (slots.length <= at) {
       slots.push(null);
     }
-    slots[at] = savedFrame(at);
+    slots[at] = { ...savedFrame(at), miniPlayer: persisted.settings.miniPlayer };
     persisted.windowSlots = slots;
     return snapshot();
   },

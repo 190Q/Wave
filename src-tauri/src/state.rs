@@ -383,6 +383,14 @@ pub struct WindowGeometry {
     pub maximized: bool,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WindowSlot {
+    #[serde(flatten)]
+    pub geometry: WindowGeometry,
+    pub mini_player: bool,
+}
+
 /// How much of a saved frame a slot snap puts back: all of it, or one half.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -417,7 +425,7 @@ pub struct PersistedState {
     pub session: Session,
     pub window: Option<WindowGeometry>,
     /// One saved frame per `Ctrl+Shift+1..9` slot, for the snap action.
-    pub window_slots: Vec<Option<WindowGeometry>>,
+    pub window_slots: Vec<Option<WindowSlot>>,
     /// The last few imports, newest first.
     pub recent_imports: Vec<ImportRecord>,
     /// The last Spotify setup answer, so a restart does not start from nothing.
@@ -872,7 +880,9 @@ fn sanitise_geometries(state: &mut PersistedState) {
         clamp_geometry(window);
     }
     for slot in state.window_slots.iter_mut().flatten() {
-        clamp_geometry(slot);
+        if !slot.mini_player {
+            clamp_geometry(&mut slot.geometry);
+        }
     }
 }
 
@@ -916,6 +926,13 @@ fn frame_to_remember(
 
 #[cfg(desktop)]
 fn read_window_geometry<R: Runtime>(window: &WebviewWindow<R>) -> Result<WindowGeometry, String> {
+    let mut geometry = read_window_geometry_unclamped(window)?;
+    clamp_geometry(&mut geometry);
+    Ok(geometry)
+}
+
+#[cfg(desktop)]
+fn read_window_geometry_unclamped<R: Runtime>(window: &WebviewWindow<R>) -> Result<WindowGeometry, String> {
     let maximized = window_is_maximized(window);
 
     let scale = window.scale_factor().unwrap_or(1.0);
@@ -930,16 +947,14 @@ fn read_window_geometry<R: Runtime>(window: &WebviewWindow<R>) -> Result<WindowG
         .flatten()
         .and_then(|m| m.name().map(|n| n.to_string()));
 
-    let mut geometry = WindowGeometry {
+    Ok(WindowGeometry {
         width: size.width,
         height: size.height,
         x: position.x,
         y: position.y,
         monitor,
         maximized,
-    };
-    clamp_geometry(&mut geometry);
-    Ok(geometry)
+    })
 }
 
 #[cfg(desktop)]
@@ -1032,8 +1047,6 @@ fn lands_on_screen<R: Runtime>(
     window: &WebviewWindow<R>,
     geometry: &WindowGeometry,
 ) -> bool {
-    const VISIBLE: i32 = 120;
-
     let Ok(monitors) = app.available_monitors() else {
         return true;
     };
@@ -1054,8 +1067,14 @@ fn lands_on_screen<R: Runtime>(
         let size = monitor.size();
         let across = right.min(area.x + size.width as i32) - left.max(area.x);
         let down = bottom.min(area.y + size.height as i32) - top.max(area.y);
-        across >= VISIBLE && down >= VISIBLE
+        frame_overlap_is_visible(across, down, right - left, bottom - top)
     })
+}
+
+#[cfg(desktop)]
+fn frame_overlap_is_visible(across: i32, down: i32, width: i32, height: i32) -> bool {
+    const VISIBLE: i32 = 120;
+    across >= VISIBLE.min((width / 2).max(1)) && down >= VISIBLE.min((height / 2).max(1))
 }
 
 #[cfg(desktop)]
@@ -1266,7 +1285,15 @@ pub fn save_window_slot(
         return Ok(store.snapshot());
     };
 
-    let Some(geometry) = read_frame(&window) else {
+    let mini_player = store.snapshot().settings.mini_player;
+    let geometry = if mini_player && !window.is_minimized().unwrap_or(false) {
+        read_window_geometry_unclamped(&window).ok()
+    } else if mini_player {
+        None
+    } else {
+        read_frame(&window)
+    };
+    let Some(geometry) = geometry else {
         return Err("the window frame could not be read".to_string());
     };
 
@@ -1274,7 +1301,7 @@ pub fn save_window_slot(
         while state.window_slots.len() < SLOT_COUNT {
             state.window_slots.push(None);
         }
-        state.window_slots[slot] = Some(geometry);
+        state.window_slots[slot] = Some(WindowSlot { geometry, mini_player });
     })
 }
 
@@ -1288,16 +1315,24 @@ pub fn apply_window_slot(
     part: SnapPart,
 ) -> Result<(), String> {
     let state = store.snapshot();
-    if state.settings.mini_player && part != SnapPart::Position {
-        return Ok(());
-    }
-    let Some(Some(geometry)) = state.window_slots.get(slot) else {
+    let Some(Some(saved)) = state.window_slots.get(slot) else {
         return Err("no window frame is saved for that slot".to_string());
     };
+    if state.settings.mini_player && part != SnapPart::Position
+        && !(part == SnapPart::Frame && saved.mini_player)
+    {
+        return Ok(());
+    }
     let Some(window) = app.get_webview_window("main") else {
         return Ok(());
     };
-    apply_geometry(&app, &window, geometry, part);
+    if state.settings.mini_player {
+        if lands_on_screen(&app, &window, &saved.geometry) {
+            let _ = window.set_position(tauri::PhysicalPosition::new(saved.geometry.x, saved.geometry.y));
+        }
+    } else {
+        apply_geometry(&app, &window, &saved.geometry, part);
+    }
     Ok(())
 }
 
@@ -1454,6 +1489,28 @@ mod tests {
         assert_eq!(restarted.settings.volume, 42);
         assert_eq!(restarted.session.playback.position_ms, 4321);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn window_slots_keep_mini_player_state_and_load_older_frames() {
+        let raw = r#"{
+            "windowSlots": [
+                {"width": 900, "height": 655, "x": 40, "y": 60},
+                {"width": 340, "height": 92, "x": 800, "y": 500, "miniPlayer": true}
+            ]
+        }"#;
+        let mut state: PersistedState = serde_json::from_str(raw).unwrap();
+        sanitise_geometries(&mut state);
+        let old = state.window_slots[0].as_ref().unwrap();
+        assert!(!old.mini_player);
+        assert_eq!((old.geometry.width, old.geometry.height), (900, 655));
+        let mini = state.window_slots[1].as_ref().unwrap();
+        assert!(mini.mini_player);
+        assert_eq!((mini.geometry.width, mini.geometry.height), (340, 92));
+        assert_eq!((mini.geometry.x, mini.geometry.y), (800, 500));
+
+        let restored: PersistedState = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert_eq!(restored.window_slots, state.window_slots);
     }
 
     #[test]
@@ -1887,6 +1944,16 @@ mod tests {
             assert_eq!(restored.show_titlebar, preference);
             assert_eq!(restored.volume, 42);
         }
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn small_frames_remain_visible_without_the_normal_window_height() {
+        assert!(frame_overlap_is_visible(340, 92, 340, 92));
+        assert!(frame_overlap_is_visible(340, 46, 340, 92));
+        assert!(!frame_overlap_is_visible(340, 45, 340, 92));
+        assert!(frame_overlap_is_visible(120, 120, 900, 655));
+        assert!(!frame_overlap_is_visible(119, 120, 900, 655));
     }
 
     #[cfg(desktop)]

@@ -543,6 +543,10 @@ export interface WindowGeometry {
   maximized: boolean;
 }
 
+export interface WindowSlot extends WindowGeometry {
+  miniPlayer?: boolean;
+}
+
 /** A newer release than the one running, as the last check found it. */
 export interface UpdateInfo {
   /** The release version, without the leading `v`. */
@@ -575,7 +579,7 @@ export interface PersistedState {
   artworkColours: Record<string, string>;
   session: Session;
   window: WindowGeometry | null;
-  windowSlots: (WindowGeometry | null)[];
+  windowSlots: (WindowSlot | null)[];
   /** The last few imports, newest first. */
   recentImports: ImportRecord[];
   /** The last Spotify setup answer, so a restart does not start from nothing. */

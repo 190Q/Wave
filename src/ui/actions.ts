@@ -3,11 +3,13 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { applyWindowSlot } from "../lib/ipc";
 import {
   cycleAccent,
+  getState,
   player,
   setNotice,
   toggleAlwaysOnTop,
   toggleMiniPlayer,
   toggleQueue,
+  updateSettings,
 } from "../lib/state";
 import type { SnapPart } from "../types";
 import { openSwell } from "./library";
@@ -32,6 +34,10 @@ async function withWindow(run: (window: AppWindow) => Promise<void>): Promise<vo
 
 /** Puts the window back where a slot remembers it, in whole or in part. */
 async function snapWindow(slot: number, part: SnapPart): Promise<void> {
+  const { settings, windowSlots } = getState();
+  if (part !== "size" && windowSlots[slot]?.miniPlayer && !settings.miniPlayer) {
+    if (!await updateSettings({ miniPlayer: true })) return;
+  }
   try {
     await applyWindowSlot(slot, part);
   } catch {

@@ -38,7 +38,7 @@ import type {
   TrackMetadata,
   UpdateInfo,
   UpdateProgress,
-  WindowGeometry,
+  WindowSlot,
   YoutubeStatus,
 } from "../types";
 import { flushAnalytics, mountAnalytics, notePlaybackError, noteTrackEnded, recordEvent, rememberTracks } from "./analytics";
@@ -131,7 +131,7 @@ export interface AppState {
   /** The last few imports, newest first. */
   recentImports: ImportRecord[];
   /** One saved window frame per shortcut slot, `null` while unset. */
-  windowSlots: (WindowGeometry | null)[];
+  windowSlots: (WindowSlot | null)[];
   /** Track id -> `#rrggbb`, mirrored from the persisted cache. */
   colours: Map<string, string>;
   settings: Settings;

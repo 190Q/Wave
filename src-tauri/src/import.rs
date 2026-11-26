@@ -104,6 +104,14 @@ pub struct Landed {
 }
 
 pub fn land(app: &AppHandle, path: &Path) -> Result<Landed, String> {
+    land_with_source(app, path, None)
+}
+
+pub fn land_download(app: &AppHandle, file: &crate::download::Downloaded) -> Result<Landed, String> {
+    land_with_source(app, &file.path, file.youtube_id.as_deref())
+}
+
+fn land_with_source(app: &AppHandle, path: &Path, youtube_id: Option<&str>) -> Result<Landed, String> {
     let root = library_root(app)?;
     let catalog = app.state::<Catalog>();
     let file_name = path
@@ -121,6 +129,9 @@ pub fn land(app: &AppHandle, path: &Path) -> Result<Landed, String> {
         &SidecarIndex::default(),
         false,
     )?;
+    if let Some(video_id) = youtube_id {
+        catalog.set_youtube_id(&id, video_id)?;
+    }
 
     let landed = Landed {
         id: id.clone(),
@@ -182,6 +193,7 @@ pub fn refresh(app: &AppHandle, id: &str) -> Result<(), String> {
     )?;
     // A song is not newly added just because something was written into it.
     row.added_at = known.added_at;
+    row.youtube_id = known.youtube_id;
     catalog.upsert_track(&row)?;
 
     let _ = app.emit(LANDED_EVENT, vec![library::to_track(&row, &root)]);
@@ -225,6 +237,7 @@ pub(crate) fn refresh_after_tags(
         root, &known.id, &root.join(&known.rel_path), &known.original_name, None,
     )?;
     row.added_at = known.added_at;
+    row.youtube_id = known.youtube_id.clone();
     catalog.upsert_edited_track(&row, known.bytes)?;
     Ok(row)
 }

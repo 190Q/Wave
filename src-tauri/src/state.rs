@@ -282,7 +282,11 @@ impl PendingTrack {
             duration_ms: meta.duration_ms,
             synced_lyrics: None,
             source: source.to_string(),
-            source_id: source_id.to_string(),
+            source_id: if source == "wavelist" {
+                meta.youtube_id().unwrap_or_else(|| source_id.to_string())
+            } else {
+                source_id.to_string()
+            },
         }
     }
 
@@ -300,6 +304,8 @@ impl PendingTrack {
             isrc: self.isrc.clone(),
             cover_url: self.cover_url.clone(),
             duration_ms: self.duration_ms,
+            youtube_id: (self.source == "wavelist")
+                .then(|| crate::youtube::video_id(&self.source_id)).flatten(),
             ..TrackMeta::default()
         }
     }

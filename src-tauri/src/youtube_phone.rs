@@ -1,6 +1,5 @@
 use std::fs;
 use std::future::Future;
-use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(target_os = "android")]
 use std::sync::Mutex;
@@ -375,7 +374,13 @@ async fn search_matches(yt: &PhoneYoutube, meta: &TrackMeta) -> Result<Vec<Video
     Ok(matches.into_iter().map(|(_, video)| video).collect())
 }
 
-pub(crate) fn fetch_matching(yt: &PhoneYoutube, job: &Job<'_>) -> Result<PathBuf, String> {
+pub(crate) fn fetch_matching(yt: &PhoneYoutube, job: &Job<'_>) -> Result<download::Downloaded, String> {
+    if job.meta.youtube_id().is_some() {
+        return fetch(yt, job);
+    }
+    if job.meta.youtube_id.is_some() || job.meta.source_url.is_some() {
+        return Err("The YouTube video ID is invalid.".to_string());
+    }
     let matches = tauri::async_runtime::block_on(search_matches(yt, job.meta))?;
     let cover = job.cover.as_deref().and_then(|path| fs::read(path).ok())
         .or_else(|| crate::cover_fetch::look_up(
@@ -399,7 +404,7 @@ pub(crate) fn fetch_matching(yt: &PhoneYoutube, job: &Job<'_>) -> Result<PathBuf
     Err(failure.unwrap_or_else(|| "No matching YouTube audio was found.".to_string()))
 }
 
-fn fetch_video(yt: &PhoneYoutube, job: &Job<'_>, video: &VideoInfo, cover: Option<Vec<u8>>) -> Result<PathBuf, String> {
+fn fetch_video(yt: &PhoneYoutube, job: &Job<'_>, video: &VideoInfo, cover: Option<Vec<u8>>) -> Result<download::Downloaded, String> {
     let path = job.dir.join("audio.m4a");
     fs::create_dir_all(&job.dir).map_err(|error| format!("Could not create the download folder: {error}"))?;
     let format = video.formats().audio_only().container(&Container::M4a).best_audio()
@@ -410,7 +415,7 @@ fn fetch_video(yt: &PhoneYoutube, job: &Job<'_>, video: &VideoInfo, cover: Optio
     })?;
     download::landed(&path, job.meta)?;
     download::tag(&path, job.meta, cover)?;
-    Ok(path)
+    Ok(download::Downloaded { path, youtube_id: crate::youtube::video_id(&video.id) })
 }
 
 fn download_error(error: ytdown::Error) -> String {
@@ -430,12 +435,13 @@ fn video_error(error: ytdown::Error) -> String {
     }
 }
 
-fn fetch(yt: &PhoneYoutube, job: &Job<'_>) -> Result<PathBuf, String> {
-    let url = job.meta.source_url.as_deref().ok_or("The YouTube video has no link.")?;
+fn fetch(yt: &PhoneYoutube, job: &Job<'_>) -> Result<download::Downloaded, String> {
+    let id = job.meta.youtube_id().ok_or("The YouTube video has no valid ID.")?;
+    let url = format!("https://www.youtube.com/watch?v={id}");
     let path = job.dir.join("audio.m4a");
     fs::create_dir_all(&job.dir).map_err(|error| format!("Could not create the download folder: {error}"))?;
-    tauri::async_runtime::block_on(async {
-        let video = match yt.resolve(url).await.map_err(video_error)? {
+    let actual_id = tauri::async_runtime::block_on(async {
+        let video = match yt.resolve(&url).await.map_err(video_error)? {
             MediaInfo::Single(video) => video,
             _ => return Err("The YouTube link did not point to a video.".to_string()),
         };
@@ -446,11 +452,13 @@ fn fetch(yt: &PhoneYoutube, job: &Job<'_>) -> Result<PathBuf, String> {
             .map_err(|_| "YouTube did not provide a compatible audio stream.".to_string())?;
         yt.downloader.download(format, &path).resume(false).chunk_size(200 * 1024).await
             .map_err(download_error)?;
-        Ok::<(), String>(())
+        Ok::<String, String>(video.id)
     })?;
     download::landed(&path, job.meta)?;
-    download::tag(&path, job.meta, download::fetch_cover(job.meta.cover_url.as_deref()))?;
-    Ok(path)
+    let cover = job.cover.as_deref().and_then(|path| fs::read(path).ok())
+        .or_else(|| download::fetch_cover(job.meta.cover_url.as_deref()));
+    download::tag(&path, job.meta, cover)?;
+    Ok(download::Downloaded { path, youtube_id: crate::youtube::video_id(&actual_id) })
 }
 
 #[cfg(test)]
@@ -793,7 +801,7 @@ mod tests {
             };
             let dir = std::env::temp_dir().join(format!("wave-youtube-song-{}", crate::identity::new_id()));
             let job = Job { key: 0, meta: &meta, dir: dir.clone(), cover: None };
-            let path = fetch(&yt, &job).unwrap();
+            let path = fetch(&yt, &job).unwrap().path;
             assert!(fs::metadata(&path).unwrap().len() > 10_000);
             fs::remove_dir_all(dir).unwrap();
         }
@@ -813,7 +821,7 @@ mod tests {
         };
         let dir = std::env::temp_dir().join(format!("wave-youtube-match-{}", crate::identity::new_id()));
         let job = Job { key: 0, meta: &meta, dir: dir.clone(), cover: None };
-        let path = fetch_matching(&yt, &job).unwrap();
+        let path = fetch_matching(&yt, &job).unwrap().path;
         assert!(fs::metadata(&path).unwrap().len() > 10_000);
         let tags = lofty::read_from_path(&path).unwrap();
         use lofty::prelude::{Accessor, TaggedFileExt};
@@ -863,7 +871,7 @@ mod tests {
         assert_eq!(link.tracks.len(), 1);
         let dir = std::env::temp_dir().join(format!("wave-youtube-mix-{}", crate::identity::new_id()));
         let job = Job { key: 0, meta: &link.tracks[0], dir: dir.clone(), cover: None };
-        let path = fetch(&yt, &job).unwrap();
+        let path = fetch(&yt, &job).unwrap().path;
         assert!(fs::metadata(&path).unwrap().len() > 10_000);
         let tags = lofty::read_from_path(&path).unwrap();
         use lofty::prelude::{Accessor, TaggedFileExt};
@@ -883,7 +891,7 @@ mod tests {
         assert_eq!(link.kind, Kind::Single);
         let dir = std::env::temp_dir().join(format!("wave-youtube-test-{}", crate::identity::new_id()));
         let job = Job { key: 0, meta: &link.tracks[0], dir: dir.clone(), cover: None };
-        let path = fetch(&yt, &job).unwrap();
+        let path = fetch(&yt, &job).unwrap().path;
         assert!(fs::metadata(&path).unwrap().len() > 10_000);
         let tags = lofty::read_from_path(&path).unwrap();
         use lofty::prelude::{Accessor, TaggedFileExt};

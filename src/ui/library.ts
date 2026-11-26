@@ -1275,7 +1275,7 @@ function detailActions(collection: Collection, pendingCount: number): string {
               <span class="btn-icon" data-icon="shuffle"></span>
               <span>Shuffle</span>
             </button>
-            ${device() === "android" && pendingCount > 0 ? `
+            ${pendingCount > 0 ? `
             <button class="pill" type="button" data-download="${id}">
               <span class="btn-icon" data-icon="import"></span>
               <span>Download ${plural(pendingCount, "song")}</span>

@@ -230,7 +230,7 @@ fn run_inner(
         let label = track_label(&tracks[fetched.key]);
         handled += 1;
 
-        match fetched.file.and_then(|file| import::land(app, &file)) {
+        match fetched.file.and_then(|file| import::land_download(app, &file)) {
             Ok(song) => {
                 let done = import::complete(app, &song.id);
 
@@ -294,6 +294,7 @@ fn download_message(todo: usize, duplicates: usize) -> String {
 #[derive(Default)]
 pub(crate) struct TrackIndex {
     candidates: HashMap<String, Vec<TrackRow>>,
+    youtube: HashMap<String, Vec<String>>,
 }
 
 fn library_index(app: &AppHandle) -> TrackIndex {
@@ -312,6 +313,12 @@ pub(crate) fn catalog_index(catalog: &Catalog) -> Result<TrackIndex, String> {
 }
 
 pub(crate) fn remember(index: &mut TrackIndex, row: TrackRow) {
+    if let Some(video_id) = row.youtube_id.as_ref().and_then(|id| crate::youtube::video_id(id)) {
+        let ids = index.youtube.entry(video_id).or_default();
+        if !ids.contains(&row.id) {
+            ids.push(row.id.clone());
+        }
+    }
     let artist = row.artist.as_deref().unwrap_or_default();
     if fold(&row.title).is_empty() || fold(main_artist(artist)).is_empty() {
         return;
@@ -329,12 +336,19 @@ fn meta_key(meta: &TrackMeta) -> String {
 
 /// The library song this track answers to, if the library holds one.
 pub(crate) fn held<'a>(index: &'a TrackIndex, meta: &TrackMeta) -> Option<&'a String> {
+    let youtube_id = meta.youtube_id();
+    if let Some(id) = youtube_id.as_ref().and_then(|id| index.youtube.get(id)).and_then(|ids| ids.first()) {
+        return Some(id);
+    }
     let artist = meta.artists.join(", ");
     if fold(&meta.title).is_empty() || fold(main_artist(&artist)).is_empty() {
         return None;
     }
     let mut matches = index.candidates.get(&loose_key(&meta.title, &artist))?
-        .iter().filter(|row| compatible(row, meta));
+        .iter().filter(|row| {
+            !matches!((&youtube_id, &row.youtube_id), (Some(wanted), Some(found)) if wanted != found)
+                && compatible(row, meta)
+        });
     let first = matches.next()?;
     if matches.next().is_some() { None } else { Some(&first.id) }
 }
@@ -656,6 +670,26 @@ mod tests {
         assert!(held(&index, &meta).is_none());
         meta.artists.clear();
         assert!(held(&index, &meta).is_none());
+    }
+
+    #[test]
+    fn matches_the_same_video_and_does_not_confuse_different_uploads() {
+        let mut track = row("one", "Song", "Artist", "Album");
+        track.youtube_id = Some("aaaaaaaaaaa".into());
+        let mut index = TrackIndex::default();
+        remember(&mut index, track);
+        let mut meta = TrackMeta {
+            title: "Song".into(), artists: vec!["Artist".into()], album: "Album".into(),
+            youtube_id: Some("aaaaaaaaaaa".into()), ..TrackMeta::default()
+        };
+        assert_eq!(held(&index, &meta).map(String::as_str), Some("one"));
+        meta.title = "Renamed".into();
+        assert_eq!(held(&index, &meta).map(String::as_str), Some("one"));
+        meta.title = "Song".into();
+        meta.youtube_id = Some("bbbbbbbbbbb".into());
+        assert!(held(&index, &meta).is_none());
+        meta.youtube_id = None;
+        assert_eq!(held(&index, &meta).map(String::as_str), Some("one"));
     }
 
     #[test]

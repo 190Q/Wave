@@ -21,6 +21,40 @@ const CHECKED_FOR: Duration = Duration::from_secs(600);
 type CheckedLink = (Instant, String, Link);
 static CHECKED_MIX: Mutex<Option<CheckedLink>> = Mutex::new(None);
 
+pub(crate) fn video_id(value: &str) -> Option<String> {
+    let value = value.trim();
+    let valid = |id: &str| id.len() == 11
+        && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-');
+    if valid(value) {
+        return Some(value.to_string());
+    }
+    let url = reqwest::Url::parse(value).ok()?;
+    if url.scheme() != "https" || url.port().is_some() || !url.username().is_empty() || url.password().is_some() {
+        return None;
+    }
+    let id = match url.host_str()? {
+        "youtu.be" => {
+            let mut parts = url.path_segments()?.filter(|part| !part.is_empty());
+            let id = parts.next()?.to_string();
+            if parts.next().is_some() { return None; }
+            id
+        }
+        "youtube.com" | "www.youtube.com" | "m.youtube.com" | "music.youtube.com" => {
+            if url.path() == "/watch" {
+                url.query_pairs().find(|(key, _)| key == "v")?.1.into_owned()
+            } else {
+                let mut parts = url.path_segments()?.filter(|part| !part.is_empty());
+                if !matches!(parts.next(), Some("shorts" | "embed" | "v")) { return None; }
+                let id = parts.next()?.to_string();
+                if parts.next().is_some() { return None; }
+                id
+            }
+        }
+        _ => return None,
+    };
+    valid(&id).then_some(id)
+}
+
 /// What a pasted link needs: the download tools, and nothing else.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -265,6 +299,28 @@ pub async fn youtube_status(app: AppHandle) -> Result<YoutubeStatus, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_only_youtube_video_ids() {
+        for value in [
+            "dQw4w9WgXcQ",
+            "https://youtu.be/dQw4w9WgXcQ?t=20",
+            "https://music.youtube.com/watch?v=dQw4w9WgXcQ&list=PL123",
+            "https://youtube.com/shorts/dQw4w9WgXcQ",
+        ] {
+            assert_eq!(video_id(value).as_deref(), Some("dQw4w9WgXcQ"));
+        }
+        for value in [
+            "bad",
+            "https://youtube.com.evil.example/watch?v=dQw4w9WgXcQ",
+            "https://youtube.com@evil.example/watch?v=dQw4w9WgXcQ",
+            "http://youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://youtube.com/playlist?list=PL123",
+            "https://youtu.be/dQw4w9WgXcQ/extra",
+        ] {
+            assert_eq!(video_id(value), None);
+        }
+    }
 
     #[test]
     fn a_one_video_playlist_is_still_a_collection() {

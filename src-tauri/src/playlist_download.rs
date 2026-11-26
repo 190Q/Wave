@@ -140,7 +140,7 @@ fn run_inner(
         let label = import_source::track_label(&want.meta);
         handled += 1;
 
-        match fetched.file.and_then(|file| import::land(app, &file)) {
+        match fetched.file.and_then(|file| import::land_download(app, &file)) {
             Ok(song) => {
                 let restored = match lyrics::restore(&catalog, &song.id, want.synced_lyrics.as_deref()) {
                     Ok(saved) => saved,
@@ -322,7 +322,7 @@ fn run_phone(app: &AppHandle, playlist_id: &str, entry_ids: &[String]) -> Result
             cover: track.cover_path.as_deref().map(PathBuf::from),
         };
         let result = crate::youtube_phone::fetch_matching(&yt, &job)
-            .and_then(|file| import::land(app, &file));
+            .and_then(|file| import::land_download(app, &file));
         let _ = std::fs::remove_dir_all(&job.dir);
         result
     }, |id| import::complete(app, id), || {
@@ -453,6 +453,31 @@ mod tests {
         assert_eq!(result.songs, 1);
         assert_eq!(result.skipped, 0);
         assert_eq!(catalog.playlist_entries(&id).unwrap(), vec!["first", "held", "first", "last"]);
+    }
+
+    #[test]
+    fn phone_retry_passes_the_saved_youtube_id_to_the_downloader() {
+        let root = std::env::temp_dir().join(format!("wave-pending-source-{}", crate::identity::new_id()));
+        let catalog = Catalog::open(&root).unwrap();
+        let track = PendingTrack::from_meta(&TrackMeta {
+            title: "Waiting".into(),
+            youtube_id: Some("abcdefghijk".into()),
+            ..TrackMeta::default()
+        }, "wavelist", "");
+        let id = catalog.create_imported_playlist("Imported", &[track.id.clone()], &[track]).unwrap();
+        drop(catalog);
+
+        let catalog = Catalog::open(&root).unwrap();
+        let mut report = Reporter::quiet();
+        let outcome = fill_phone(&catalog, &id, &[], &mut report, |_, track| {
+            assert_eq!(track.meta().youtube_id.as_deref(), Some("abcdefghijk"));
+            Ok(add_song(&catalog, "downloaded", &track.title))
+        }, |_| import::Complete::default(), || {}).unwrap();
+        assert_eq!(outcome.songs, 1);
+        assert!(outcome.errors.is_empty());
+        assert_eq!(catalog.playlist_entries(&id).unwrap(), ["downloaded"]);
+        drop(catalog);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

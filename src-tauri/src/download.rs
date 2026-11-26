@@ -257,25 +257,30 @@ struct Found {
 /// The file it wrote, which is the one to file into the library. A file that was
 /// already there is left as it stands, so a re-run picks up where the last one
 /// left off.
+pub struct Downloaded {
+    pub path: PathBuf,
+    pub youtube_id: Option<String>,
+}
+
 pub fn download(
     tools: &Tools,
     meta: &TrackMeta,
     out_dir: &Path,
     cover: Option<&Path>,
-) -> Result<PathBuf, String> {
+) -> Result<Downloaded, String> {
     let target = out_dir.join(format!("{AUDIO_STEM}.mp3"));
 
     if target.is_file() {
         if landed(&target, meta).is_ok() {
-            return Ok(target);
+            return Ok(Downloaded { path: target, youtube_id: None });
         }
         let _ = fs::remove_file(&target);
     }
 
     fs::create_dir_all(out_dir).map_err(|e| format!("could not create {}: {e}", out_dir.display()))?;
 
-    let path = match fetch(tools, meta, out_dir, &target) {
-        Ok(path) => path,
+    let file = match fetch(tools, meta, out_dir, &target) {
+        Ok(file) => file,
         Err(error) => {
             let _ = fs::remove_dir_all(out_dir);
             fail(tools, meta, &error);
@@ -283,13 +288,13 @@ pub fn download(
         }
     };
 
-    tag(&path, meta, cover_bytes(cover, meta.cover_url.as_deref())).map_err(|e| {
+    tag(&file.path, meta, cover_bytes(cover, meta.cover_url.as_deref())).map_err(|e| {
         let message = format!("downloaded, but could not tag it: {e}");
         fail(tools, meta, &message);
         message
     })?;
 
-    Ok(path)
+    Ok(file)
 }
 
 const CONCURRENCY: usize = 4;
@@ -307,7 +312,7 @@ pub struct Job<'a> {
 /// What one job produced, and the key it was given.
 pub struct Fetched {
     pub key: usize,
-    pub file: Result<PathBuf, String>,
+    pub file: Result<Downloaded, String>,
 }
 
 fn in_parallel<T: Send>(total: usize, work: impl Fn(usize) -> T + Sync, mut keep: impl FnMut(T)) {
@@ -354,15 +359,30 @@ pub fn fetch_all(tools: &Tools, jobs: &[Job<'_>], keep: impl FnMut(Fetched)) {
     );
 }
 
-fn fetch(tools: &Tools, meta: &TrackMeta, out_dir: &Path, target: &Path) -> Result<PathBuf, String> {
+fn fetch(tools: &Tools, meta: &TrackMeta, out_dir: &Path, target: &Path) -> Result<Downloaded, String> {
+    fetch_candidates(meta, out_dir, target, candidates(tools, meta)?, |candidate, target| {
+        pull(tools, candidate, target)
+    })
+}
+
+fn fetch_candidates(
+    meta: &TrackMeta,
+    out_dir: &Path,
+    target: &Path,
+    candidates: Vec<Candidate>,
+    mut pull: impl FnMut(&Candidate, &Path) -> Result<PathBuf, String>,
+) -> Result<Downloaded, String> {
     let mut failures: Vec<String> = Vec::new();
 
-    for candidate in candidates(tools, meta)? {
+    for candidate in candidates {
         clear(out_dir, target);
 
-        match pull(tools, &candidate, target) {
+        match pull(&candidate, target) {
             Ok(path) => match landed(&path, meta) {
-                Ok(()) => return Ok(path),
+                Ok(()) => return Ok(Downloaded {
+                    path,
+                    youtube_id: crate::youtube::video_id(&candidate.id),
+                }),
                 Err(error) => {
                     let _ = fs::remove_file(&path);
                     failures.push(error);
@@ -379,16 +399,19 @@ fn fetch(tools: &Tools, meta: &TrackMeta, out_dir: &Path, target: &Path) -> Resu
 }
 
 fn candidates(tools: &Tools, meta: &TrackMeta) -> Result<Vec<Candidate>, String> {
-    let Some(url) = &meta.source_url else {
+    let Some(id) = meta.youtube_id() else {
+        if meta.source_url.is_some() || meta.youtube_id.is_some() {
+            return Err("The YouTube video ID is invalid.".to_string());
+        }
         return choose(tools, meta);
     };
 
     Ok(vec![Candidate {
-        id: url.clone(),
+        id: id.clone(),
         title: meta.title.clone(),
         channel: meta.artists.join(", "),
         duration_ms: meta.duration_ms,
-        url: Some(url.clone()),
+        url: None,
         song: false,
     }])
 }
@@ -1888,13 +1911,47 @@ mod tests {
         let song = TrackMeta {
             title: "Song".to_string(),
             artists: vec!["Artist".to_string()],
-            source_url: Some("https://www.youtube.com/watch?v=abc".to_string()),
+            source_url: Some("https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string()),
             ..TrackMeta::default()
         };
 
         let chosen = candidates(&tools(None, None), &song).unwrap();
         assert_eq!(chosen.len(), 1);
-        assert_eq!(chosen[0].target(), "https://www.youtube.com/watch?v=abc");
+        assert_eq!(chosen[0].target(), "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+    }
+
+    #[test]
+    fn a_saved_video_id_is_downloaded_without_searching() {
+        let song = TrackMeta { youtube_id: Some("dQw4w9WgXcQ".into()), ..TrackMeta::default() };
+        let chosen = candidates(&tools(None, None), &song).unwrap();
+        assert_eq!(chosen[0].target(), "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+        let invalid = TrackMeta { youtube_id: Some("invalid".into()), ..song };
+        assert!(candidates(&tools(None, None), &invalid).is_err());
+    }
+
+    #[test]
+    fn records_the_fallback_that_actually_downloaded() {
+        let root = std::env::temp_dir().join(format!("wave-fallback-{}", crate::identity::new_id()));
+        let output = root.join("output");
+        fs::create_dir_all(&output).unwrap();
+        let fixture = silent_mp3(&root);
+        let target = output.join("audio.mp3");
+        let mut attempted = Vec::new();
+        let result = fetch_candidates(
+            &TrackMeta::default(), &output, &target,
+            vec![hit("aaaaaaaaaaa", "First"), hit("bbbbbbbbbbb", "Second")],
+            |candidate, target| {
+                attempted.push(candidate.id.clone());
+                if candidate.id == "aaaaaaaaaaa" {
+                    return Err("unavailable".into());
+                }
+                fs::copy(&fixture, target).unwrap();
+                Ok(target.to_path_buf())
+            },
+        ).unwrap();
+        assert_eq!(attempted, ["aaaaaaaaaaa", "bbbbbbbbbbb"]);
+        assert_eq!(result.youtube_id.as_deref(), Some("bbbbbbbbbbb"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

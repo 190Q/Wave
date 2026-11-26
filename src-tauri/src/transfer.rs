@@ -19,7 +19,6 @@ use crate::import::{self, ImportOutcome};
 use crate::import_source;
 use crate::library;
 use crate::lyrics;
-use crate::playlists;
 use crate::progress::{Output, Reporter};
 use crate::source::{read_env, TrackMeta};
 use crate::state::PendingTrack;
@@ -47,6 +46,22 @@ pub(crate) fn read_bytes(app: &AppHandle, path: &str) -> Result<Vec<u8>, String>
         return Err("The export is too large to read.".into());
     }
     Ok(bytes)
+}
+
+fn playlist_entries(list: &WaveList, ids: Vec<Option<String>>) -> (Vec<String>, Vec<PendingTrack>) {
+    let mut entries = Vec::with_capacity(list.tracks.len());
+    let mut pending = Vec::new();
+    for (position, (meta, id)) in list.tracks.iter().zip(ids).enumerate() {
+        if let Some(id) = id {
+            entries.push(id);
+        } else {
+            let mut track = PendingTrack::from_meta(meta, "wavelist", "");
+            track.synced_lyrics = list.lyrics.get(position).cloned().flatten();
+            entries.push(track.id.clone());
+            pending.push(track);
+        }
+    }
+    (entries, pending)
 }
 
 pub(crate) fn write_bytes(app: &AppHandle, path: &str, bytes: &[u8]) -> Result<(), String> {
@@ -193,6 +208,7 @@ fn track_meta(track: &TrackRow) -> TrackMeta {
         disc_number: track.disc_no,
         genres: track.genre.clone().into_iter().collect(),
         duration_ms: Some(track.duration_ms),
+        youtube_id: track.youtube_id.clone(),
         ..TrackMeta::default()
     }
 }
@@ -382,7 +398,7 @@ pub(crate) fn run(
                 }
             };
 
-            match import::land(app, &file) {
+            match import::land_download(app, &file) {
                 Ok(song) => {
                     let restored = restore_lyrics(&catalog, &song.id, list.lyrics_at(position), &label, report);
                     let done = import::complete(app, &song.id);
@@ -415,9 +431,12 @@ pub(crate) fn run(
             state: PersistedState::default(),
         };
 
-        let playlist: Vec<String> = ids.into_iter().flatten().collect();
-        if create_playlist && !playlist.is_empty() {
-            outcome.playlist = Some(playlists::write(app, &list.name, &playlist)?);
+        if create_playlist {
+            let (entries, pending) = playlist_entries(&list, ids);
+            outcome.skipped = pending.len();
+            let id = catalog.create_imported_playlist(&list.name, &entries, &pending)?;
+            outcome.playlist = Some(list.name.clone());
+            outcome.playlist_id = Some(id);
         }
 
         outcome.errors.extend_from_slice(report.failures());
@@ -557,7 +576,7 @@ fn import_phone_songs(
             cover: None,
         };
         let result = crate::youtube_phone::fetch_matching(yt.as_ref().unwrap(), &job)
-            .and_then(|file| import::land(app, &file));
+            .and_then(|file| import::land_download(app, &file));
         let _ = fs::remove_dir_all(&job.dir);
         result
     }, |id| import::complete(app, id));
@@ -657,6 +676,65 @@ mod tests {
         assert_eq!(list.tracks[0].title, "Song");
         assert_eq!(list.tracks[0].artists, vec!["Artist"]);
         assert_eq!(list.tracks[0].genres, vec!["Rock"]);
+    }
+
+    #[test]
+    fn twenty_song_export_keeps_failed_entries_and_video_ids_after_restart() {
+        let original = Catalog::in_memory().unwrap();
+        let ids: Vec<_> = (0..20).map(|index| format!("track-{index}")).collect();
+        for (index, id) in ids.iter().enumerate() {
+            original.upsert_track(&TrackRow {
+                id: id.clone(), rel_path: format!("{id}.mp3"), title: format!("Song {index}"),
+                artist: Some("Artist".into()), ..TrackRow::default()
+            }).unwrap();
+            original.set_youtube_id(id, &format!("{index:011}")).unwrap();
+        }
+        let mut exported = export_list(&original, "Twenty".into(), &ids).unwrap();
+        exported.lyrics = (0..20).map(|index| Some(format!("[00:01]Song {index}"))).collect();
+        let raw = serde_json::to_string(&exported).unwrap();
+        assert!(raw.contains("\"youtubeId\":\"00000000000\""));
+        assert!(!raw.contains("youtube.com"));
+        let list = read_list(encode_list(&exported).unwrap().as_slice()).unwrap();
+        assert_eq!(list.tracks.len(), 20);
+
+        let root = std::env::temp_dir().join(format!("wave-transfer-twenty-{}", crate::identity::new_id()));
+        let catalog = Catalog::open(&root).unwrap();
+        let failed = [2, 6, 14, 19];
+        let mut landed = Vec::new();
+        for (index, meta) in list.tracks.iter().enumerate() {
+            if failed.contains(&index) {
+                landed.push(None);
+            } else {
+                let id = format!("landed-{index}");
+                catalog.upsert_track(&TrackRow {
+                    id: id.clone(), rel_path: format!("{id}.mp3"), title: meta.title.clone(),
+                    artist: Some("Artist".into()), ..TrackRow::default()
+                }).unwrap();
+                catalog.set_youtube_id(&id, meta.youtube_id.as_deref().unwrap()).unwrap();
+                landed.push(Some(id));
+            }
+        }
+        let (entries, pending) = playlist_entries(&list, landed);
+        assert_eq!(entries.len(), 20);
+        assert_eq!(pending.len(), 4);
+        let playlist = catalog.create_imported_playlist(&list.name, &entries, &pending).unwrap();
+        drop(catalog);
+
+        let catalog = Catalog::open(&root).unwrap();
+        let restored = catalog.playlists().unwrap().remove(0);
+        assert_eq!(restored.entries, entries);
+        assert_eq!(restored.track_ids.len(), 16);
+        assert_eq!(restored.pending.len(), 4);
+        let again = playlist_export_list(&catalog, &playlist).unwrap();
+        for (index, meta) in again.tracks.iter().enumerate() {
+            assert_eq!(meta.title, format!("Song {index}"));
+            assert_eq!(meta.youtube_id.as_deref(), Some(format!("{index:011}").as_str()));
+            if failed.contains(&index) {
+                assert_eq!(again.lyrics_at(index), list.lyrics_at(index));
+            }
+        }
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -1618,7 +1618,7 @@ export async function importWaveList(choose: () => Promise<boolean | null>): Pro
     const outcome = await ipc.importWaveList(path, createPlaylist);
     applyPersisted(outcome.state);
     await refreshImportedLyrics(outcome);
-    const message = importSummary(outcome, isAndroidPlatform);
+    const message = importSummary(outcome, isAndroidPlatform || Boolean(outcome.playlistId));
     setNotice(message);
     state.transferProgress = {
       phase: outcome.errors.length ? "failed" : "done",

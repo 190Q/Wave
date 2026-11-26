@@ -310,6 +310,14 @@ test("Android imported playlists offer bulk and individual pending downloads", (
   assert.equal(progress.innerHTML, "");
 });
 
+test("desktop imported playlists offer bulk retry for pending downloads", () => {
+  const { list, pane } = setup({ pending: true });
+  assert.match(pane.innerHTML, /data-download="playlist"/);
+  assert.match(pane.innerHTML, /Download 1 song/);
+  list.dispatch("click", new FakeElement({ download: "playlist" }));
+  assert.deepEqual(context.downloaded, [{ id: "playlist", entries: [] }]);
+});
+
 test("touch selection retains Select all and Clear selection in the menu", () => {
   const { list, pane, rows } = setup({ touch: true, kind: "generated" });
   rightClick(list, rows[0]);

@@ -26,6 +26,7 @@ export interface Track {
   peak: number | null;
   /** When the library first filed the song, epoch milliseconds. */
   addedAt: number;
+  youtubeId?: string | null;
 }
 
 export interface TrackMetadata {

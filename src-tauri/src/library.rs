@@ -148,6 +148,7 @@ pub struct Track {
     /// True peak, linear. `None` until the song has been measured.
     pub peak: Option<f32>,
     pub added_at: i64,
+    pub youtube_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -519,6 +520,7 @@ fn reconcile(
         row.lufs = previous.lufs;
         row.peak = previous.peak;
         row.loudness_bytes = previous.loudness_bytes;
+        row.youtube_id = previous.youtube_id.clone();
     }
     Ok(Some((row, true)))
 }
@@ -649,6 +651,7 @@ fn read_row(
         missing: false,
         added_at: identity::now_ms(),
         updated_at: identity::now_ms(),
+        youtube_id: None,
     })
 }
 
@@ -830,6 +833,7 @@ pub fn to_track(row: &TrackRow, root: &Path) -> Track {
         lufs: row.lufs,
         peak: row.peak,
         added_at: row.added_at,
+        youtube_id: row.youtube_id.clone(),
     }
 }
 
@@ -1382,6 +1386,26 @@ mod tests {
         catalog.upsert_track(&row).unwrap();
         catalog.set_loudness(&row.id, -12.0, 0.8, row.bytes).unwrap();
         (root, catalog, row)
+    }
+
+    #[test]
+    fn youtube_source_survives_tag_rereads_without_changing_audio() {
+        let (root, catalog, row) = editable_song("Song.wav");
+        let path = root.join(&row.rel_path);
+        let audio = fs::read(&path).unwrap();
+        catalog.set_youtube_id(&row.id, "https://youtu.be/dQw4w9WgXcQ").unwrap();
+        let summary = sweep_root(&root, &catalog, true, true);
+        assert!(summary.errors.is_empty(), "{:?}", summary.errors);
+        assert_eq!(summary.changed[0].youtube_id.as_deref(), Some("dQw4w9WgXcQ"));
+        assert_eq!(catalog.track(&row.id).unwrap().unwrap().youtube_id.as_deref(), Some("dQw4w9WgXcQ"));
+        assert_eq!(fs::read(path).unwrap(), audio);
+        drop(catalog);
+        let catalog = Catalog::open(&root).unwrap();
+        assert_eq!(catalog.track(&row.id).unwrap().unwrap().youtube_id.as_deref(), Some("dQw4w9WgXcQ"));
+        catalog.delete_tracks(&[row.id.clone()]).unwrap();
+        assert!(catalog.meta(&format!("youtube:{}", row.id)).is_none());
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

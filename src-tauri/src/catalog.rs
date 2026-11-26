@@ -20,7 +20,8 @@ pub const LAYOUT_VERSION: &str = "2";
 const TRACK_COLUMNS: &str = "id, rel_path, original_name, bytes, modified_ms, content_hash, \
      title, artist, album, album_artist, track_no, disc_no, year, genre, duration_ms, codec, \
      bitrate, sample_rate, has_embedded_art, cover_path, lyrics_path, lufs, peak, \
-     loudness_bytes, missing, added_at, updated_at";
+     loudness_bytes, missing, added_at, updated_at, \
+     (SELECT value FROM meta WHERE key = 'youtube:' || tracks.id)";
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS tracks (
@@ -135,6 +136,7 @@ pub struct TrackRow {
     pub missing: bool,
     pub added_at: i64,
     pub updated_at: i64,
+    pub youtube_id: Option<String>,
 }
 
 pub struct Catalog {
@@ -379,6 +381,15 @@ impl Catalog {
             )
             .map(|_| ())
             .map_err(|e| format!("could not record {key}: {e}"))
+    }
+
+    pub fn set_youtube_id(&self, id: &str, video_id: &str) -> Result<(), String> {
+        let video_id = crate::youtube::video_id(video_id).ok_or("Invalid YouTube video ID.")?;
+        self.guard().execute(
+            "INSERT OR IGNORE INTO meta (key, value) \
+             SELECT 'youtube:' || id, ?2 FROM tracks WHERE id = ?1",
+            params![id, video_id],
+        ).map(|_| ()).map_err(|e| format!("could not save the YouTube source: {e}"))
     }
 
     pub fn tracks(&self) -> Result<Vec<TrackRow>, String> {
@@ -642,6 +653,9 @@ impl Catalog {
             .map_err(|e| format!("could not start a catalog write: {e}"))?;
 
         for id in ids {
+            transaction
+                .execute("DELETE FROM meta WHERE key = 'youtube:' || ?1", params![id])
+                .map_err(|e| format!("could not remove the YouTube source: {e}"))?;
             transaction
                 .execute("DELETE FROM playlist_tracks WHERE track_id = ?1", params![id])
                 .map_err(|e| format!("could not drop a playlist entry: {e}"))?;
@@ -920,7 +934,6 @@ impl Catalog {
         self.create_playlist_with_pending(name, GENERATED_KIND, entries, pending)
     }
 
-    #[cfg(any(target_os = "android", test))]
     pub fn create_imported_playlist(
         &self,
         name: &str,
@@ -1257,6 +1270,7 @@ fn read_track(row: &Row<'_>) -> rusqlite::Result<TrackRow> {
         missing: row.get::<_, i64>(24)? != 0,
         added_at: row.get(25)?,
         updated_at: row.get(26)?,
+        youtube_id: row.get(27)?,
     })
 }
 

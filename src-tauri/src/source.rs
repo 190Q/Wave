@@ -29,7 +29,17 @@ pub struct TrackMeta {
     pub cover_url: Option<String>,
     pub duration_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub youtube_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source_url: Option<String>,
+}
+
+impl TrackMeta {
+    pub(crate) fn youtube_id(&self) -> Option<String> {
+        self.youtube_id.as_deref()
+            .and_then(crate::youtube::video_id)
+            .or_else(|| self.source_url.as_deref().and_then(crate::youtube::video_id))
+    }
 }
 
 /// The credentials and tool overrides read from the config `.env`. The file is

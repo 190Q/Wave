@@ -246,6 +246,7 @@ mod tests {
             lufs: None,
             peak: None,
             added_at: 0,
+            youtube_id: None,
         }
     }
 

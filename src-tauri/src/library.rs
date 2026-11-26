@@ -163,6 +163,21 @@ pub struct TrackMetadata {
     disc_no: Option<u32>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditedTrack {
+    track: Track,
+    previous_path: Option<String>,
+    cleanup_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct MetadataCleanup {
+    track_id: String,
+    previous_path: String,
+    updated_path: String,
+}
+
 impl TrackMetadata {
     fn from_row(row: &TrackRow) -> Self {
         Self {
@@ -1053,10 +1068,14 @@ pub fn edit_track(
     catalog: State<'_, Catalog>,
     track_id: String,
     metadata: TrackMetadata,
-) -> Result<Track, String> {
+) -> Result<EditedTrack, String> {
     let root = library_root(&app)?;
-    let row = edit_metadata(&root, &catalog, &track_id, metadata)?;
-    Ok(to_track(&row, &root))
+    let (row, cleanup) = edit_metadata(&root, &catalog, &track_id, metadata)?;
+    Ok(EditedTrack {
+        track: to_track(&row, &root),
+        previous_path: cleanup.as_ref().map(|(_, previous)| root.join(previous).to_string_lossy().into_owned()),
+        cleanup_id: cleanup.map(|(id, _)| id),
+    })
 }
 
 fn edit_metadata(
@@ -1064,7 +1083,7 @@ fn edit_metadata(
     catalog: &Catalog,
     track_id: &str,
     metadata: TrackMetadata,
-) -> Result<TrackRow, String> {
+) -> Result<(TrackRow, Option<(String, String)>), String> {
     let _operation = catalog.library_operation();
     let metadata = metadata.validate()?;
     let previous = catalog.track(track_id)?
@@ -1072,7 +1091,7 @@ fn edit_metadata(
         .ok_or_else(|| "That song is no longer in the library.".to_string())?;
     let before = TrackMetadata::from_row(&previous);
     if metadata == before {
-        return Ok(previous);
+        return Ok((previous, None));
     }
 
     let audio = root.join(&previous.rel_path);
@@ -1142,14 +1161,25 @@ fn edit_metadata(
     }
 
     let extension = audio.extension().and_then(|value| value.to_str()).unwrap_or("audio");
-    let temp = root.join(CONFIG_DIR).join(format!(".edit-{}.{extension}", identity::new_id()));
+    let edit_id = identity::new_id();
+    let temp = root.join(CONFIG_DIR).join(format!(".edit-{edit_id}.{extension}"));
+    let dir = audio.parent().ok_or_else(|| "The song has no folder.".to_string())?;
+    let target = dir.join(format!("audio-{edit_id}.{extension}"));
+    let target_relative = relative(root, &target).ok_or_else(|| "Could not locate the edited song.".to_string())?;
+    let cleanup_dir = root.join(CONFIG_DIR).join("metadata-edits");
+    let marker = cleanup_dir.join(format!("{edit_id}.json"));
+    let cleanup = MetadataCleanup {
+        track_id: previous.id.clone(),
+        previous_path: previous.rel_path.clone(),
+        updated_path: target_relative.clone(),
+    };
+    let mut committed = false;
     let result = (|| {
         fs::copy(&audio, &temp).map_err(|e| format!("Could not prepare the song for editing: {e}"))?;
         tag.save_to_path(&temp, WriteOptions::default())
             .map_err(|e| format!("Could not write the song tags: {e}"))?;
-        let dir = audio.parent().ok_or_else(|| "The song has no folder.".to_string())?;
         let mut updated = read_row(
-            &previous.id, &temp, dir, &previous.rel_path, &previous.original_name,
+            &previous.id, &temp, dir, &target_relative, &previous.original_name,
             identity::stamp_of(&temp)?, None,
         )?;
         if TrackMetadata::from_row(&updated) != metadata {
@@ -1158,15 +1188,81 @@ fn edit_metadata(
         if identity::stamp_of(&audio)? != stamp {
             return Err("The song changed while it was being edited. Try again.".to_string());
         }
-        fs::rename(&temp, &audio)
-            .map_err(|e| format!("Could not replace the song file: {e}"))?;
+        fs::create_dir_all(&cleanup_dir).map_err(|e| format!("Could not prepare the song edit: {e}"))?;
+        let record = serde_json::to_vec(&cleanup).map_err(|e| format!("Could not prepare the song edit: {e}"))?;
+        fs::write(&marker, record).map_err(|e| format!("Could not prepare the song edit: {e}"))?;
+        fs::rename(&temp, &target)
+            .map_err(|e| format!("Could not save the edited song file: {e}"))?;
         updated.added_at = previous.added_at;
         catalog.upsert_edited_track(&updated, previous.bytes)?;
-        catalog.track(&updated.id)?
-            .ok_or_else(|| "The updated song is no longer in the library.".to_string())
+        committed = true;
+        let row = catalog.track(&updated.id)?
+            .ok_or_else(|| "The updated song is no longer in the library.".to_string())?;
+        Ok((row, Some((edit_id, previous.rel_path.clone()))))
     })();
     let _ = fs::remove_file(&temp);
+    if result.is_err() && !committed {
+        let _ = fs::remove_file(&target);
+        let _ = fs::remove_file(&marker);
+    }
     result
+}
+
+fn cleanup_metadata_edit(root: &Path, catalog: &Catalog, edit_id: &str) -> Result<(), String> {
+    if !identity::is_id(edit_id) {
+        return Err("That song edit is not valid.".to_string());
+    }
+    let _operation = catalog.library_operation();
+    let marker = root.join(CONFIG_DIR).join("metadata-edits").join(format!("{edit_id}.json"));
+    let bytes = match fs::read(&marker) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("Could not read the song edit: {error}")),
+    };
+    let edit: MetadataCleanup = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("Could not read the song edit: {e}"))?;
+    let dir = track_dir(root, &edit.track_id);
+    let previous = root.join(&edit.previous_path);
+    let updated = root.join(&edit.updated_path);
+    let expected_stem = format!("audio-{edit_id}");
+    if !identity::is_id(&edit.track_id)
+        || previous.parent() != Some(dir.as_path())
+        || updated.parent() != Some(dir.as_path())
+        || !has_extension(&previous, AUDIO_EXTENSIONS)
+        || !has_extension(&updated, AUDIO_EXTENSIONS)
+        || updated.file_stem().and_then(|stem| stem.to_str()) != Some(expected_stem.as_str())
+        || previous == updated
+    {
+        return Err("That song edit is not valid.".to_string());
+    }
+    let row = catalog.track(&edit.track_id)?
+        .filter(|row| !row.missing && root.join(&row.rel_path).is_file())
+        .ok_or_else(|| "The current song file is unavailable.".to_string())?;
+    let obsolete = if row.rel_path == edit.previous_path { &updated } else { &previous };
+    match fs::remove_file(obsolete) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Could not remove the previous song file: {error}")),
+    }
+    fs::remove_file(marker).map_err(|e| format!("Could not finish the song edit: {e}"))
+}
+
+#[tauri::command(async)]
+pub fn cleanup_track_edit(catalog: State<'_, Catalog>, edit_id: String) -> Result<(), String> {
+    cleanup_metadata_edit(catalog.root(), &catalog, &edit_id)
+}
+
+pub fn recover_metadata_edits(root: &Path, catalog: &Catalog) {
+    let Ok(entries) = fs::read_dir(root.join(CONFIG_DIR).join("metadata-edits")) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        if let Some(id) = path.file_stem().and_then(|value| value.to_str()) {
+            let _ = cleanup_metadata_edit(root, catalog, id);
+        }
+    }
 }
 
 #[tauri::command]
@@ -1429,7 +1525,11 @@ mod tests {
             track_no: Some(3),
             disc_no: Some(2),
         };
-        let updated = edit_metadata(&root, &catalog, &row.id, metadata.clone()).unwrap();
+        let original = fs::read(root.join(&row.rel_path)).unwrap();
+        let (updated, cleanup) = edit_metadata(&root, &catalog, &row.id, metadata.clone()).unwrap();
+        assert_ne!(updated.rel_path, row.rel_path);
+        assert_eq!(fs::read(root.join(&row.rel_path)).unwrap(), original);
+        assert_eq!(cleanup.as_ref().unwrap().1, row.rel_path);
         assert_eq!(TrackMetadata::from_row(&updated), metadata);
         assert_eq!(updated.id, row.id);
         assert_eq!(updated.added_at, row.added_at);
@@ -1441,6 +1541,9 @@ mod tests {
         let (reread, _) = reconcile(&track_dir(&root, &row.id), &root, &known, &mut Vec::new(), true)
             .unwrap().unwrap();
         assert_eq!(TrackMetadata::from_row(&reread), metadata);
+        cleanup_metadata_edit(&root, &catalog, &cleanup.unwrap().0).unwrap();
+        assert!(!root.join(&row.rel_path).exists());
+        assert!(root.join(&updated.rel_path).exists());
         drop(catalog);
         fs::remove_dir_all(root).unwrap();
     }
@@ -1461,8 +1564,8 @@ mod tests {
         catalog.upsert_track(&refreshed).unwrap();
         let mut metadata = TrackMetadata::from_row(&refreshed);
         metadata.title = "New title".to_string();
-        edit_metadata(&root, &catalog, &row.id, metadata).unwrap();
-        let tagged = lofty::read_from_path(&audio).unwrap();
+        let (updated, _) = edit_metadata(&root, &catalog, &row.id, metadata).unwrap();
+        let tagged = lofty::read_from_path(root.join(&updated.rel_path)).unwrap();
         let tag = tagged.primary_tag().unwrap();
         assert_eq!(tag.comment().as_deref(), Some("Keep this comment"));
         assert_eq!(tag.track_total(), Some(12));
@@ -1503,7 +1606,7 @@ mod tests {
             metadata.year = Some(2024);
             metadata.track_no = Some(2);
             metadata.disc_no = Some(1);
-            let updated = edit_metadata(&root, &catalog, &id, metadata.clone())
+            let (updated, _) = edit_metadata(&root, &catalog, &id, metadata.clone())
                 .unwrap_or_else(|error| panic!("{extension}: {error}"));
             assert_eq!(TrackMetadata::from_row(&updated), metadata, "{extension}");
             let known = catalog.rows_by_id().unwrap();
@@ -1538,17 +1641,74 @@ mod tests {
         metadata.album = Some("Album".to_string());
         metadata.genre = Some("Rock".to_string());
         metadata.year = Some(2020);
-        let updated = edit_metadata(&root, &catalog, &row.id, metadata).unwrap();
-        let audio = root.join(&row.rel_path);
+        let (updated, _) = edit_metadata(&root, &catalog, &row.id, metadata).unwrap();
+        let audio = root.join(&updated.rel_path);
         let stamp = identity::stamp_of(&audio).unwrap();
-        edit_metadata(&root, &catalog, &row.id, TrackMetadata::from_row(&updated)).unwrap();
+        let (_, cleanup) = edit_metadata(&root, &catalog, &row.id, TrackMetadata::from_row(&updated)).unwrap();
+        assert!(cleanup.is_none());
         assert_eq!(identity::stamp_of(&audio).unwrap(), stamp);
         let mut cleared = TrackMetadata::from_row(&updated);
         cleared.album = None;
         cleared.genre = None;
         cleared.year = None;
-        let updated = edit_metadata(&root, &catalog, &row.id, cleared.clone()).unwrap();
+        let (updated, _) = edit_metadata(&root, &catalog, &row.id, cleared.clone()).unwrap();
         assert_eq!(TrackMetadata::from_row(&updated), cleared);
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pending_metadata_edits_recover_after_restart_without_removing_current_audio() {
+        let (root, catalog, row) = editable_song("Song.wav");
+        let mut metadata = TrackMetadata::from_row(&row);
+        metadata.title = "First edit".to_string();
+        let (first, _) = edit_metadata(&root, &catalog, &row.id, metadata.clone()).unwrap();
+        metadata.title = "Second edit".to_string();
+        let (second, _) = edit_metadata(&root, &catalog, &row.id, metadata).unwrap();
+        assert!(root.join(&row.rel_path).exists());
+        assert!(root.join(&first.rel_path).exists());
+        assert!(root.join(&second.rel_path).exists());
+
+        recover_metadata_edits(&root, &catalog);
+        assert!(!root.join(&row.rel_path).exists());
+        assert!(!root.join(&first.rel_path).exists());
+        assert!(root.join(&second.rel_path).exists());
+        assert_eq!(catalog.track(&row.id).unwrap().unwrap().rel_path, second.rel_path);
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_preserves_the_original_when_a_metadata_edit_was_not_committed() {
+        let (root, catalog, row) = editable_song("Song.wav");
+        let id = identity::new_id();
+        let updated = track_dir(&root, &row.id).join(format!("audio-{id}.wav"));
+        fs::copy(root.join(&row.rel_path), &updated).unwrap();
+        let directory = root.join(CONFIG_DIR).join("metadata-edits");
+        fs::create_dir_all(&directory).unwrap();
+        let record = MetadataCleanup {
+            track_id: row.id.clone(),
+            previous_path: row.rel_path.clone(),
+            updated_path: relative(&root, &updated).unwrap(),
+        };
+        fs::write(directory.join(format!("{id}.json")), serde_json::to_vec(&record).unwrap()).unwrap();
+
+        recover_metadata_edits(&root, &catalog);
+        assert!(root.join(&row.rel_path).exists());
+        assert!(!updated.exists());
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_keeps_the_old_audio_if_the_current_file_is_missing() {
+        let (root, catalog, row) = editable_song("Song.wav");
+        let mut metadata = TrackMetadata::from_row(&row);
+        metadata.title = "Edited".to_string();
+        let (updated, cleanup) = edit_metadata(&root, &catalog, &row.id, metadata).unwrap();
+        fs::remove_file(root.join(&updated.rel_path)).unwrap();
+        assert!(cleanup_metadata_edit(&root, &catalog, &cleanup.unwrap().0).is_err());
+        assert!(root.join(&row.rel_path).exists());
         drop(catalog);
         fs::remove_dir_all(root).unwrap();
     }

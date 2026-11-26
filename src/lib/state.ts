@@ -558,6 +558,26 @@ const engine = new AudioEngine({
 
 let audioStreamBase: string | null = null;
 
+const metadataCleanup = new Map<string, string>();
+
+function cleanMetadataEdits(): void {
+  for (const [id, path] of metadataCleanup) {
+    if (engine.uses(path)) continue;
+    metadataCleanup.delete(id);
+    void ipc.cleanupTrackEdit(id).catch(() => {
+      window.setTimeout(() => {
+        if (!engine.uses(path)) {
+          void ipc.cleanupTrackEdit(id).catch(() => {});
+        } else {
+          metadataCleanup.set(id, path);
+        }
+      }, 500);
+    });
+  }
+}
+
+engine.onRelease(cleanMetadataEdits);
+
 function audioPath(track: Track): string {
   return trackAudioPath(track.path, track.id, audioStreamBase);
 }
@@ -2373,8 +2393,7 @@ export async function deleteTracks(trackIds: string[]): Promise<void> {
 }
 
 export async function editTrack(trackId: string, metadata: TrackMetadata): Promise<void> {
-  const before = state.tracksById.get(trackId);
-  const track = await ipc.editTrack(trackId, metadata);
+  const { track, previousPath, cleanupId } = await ipc.editTrack(trackId, metadata);
   scanSequence += 1;
   state.tracksById = new Map(state.tracksById).set(track.id, track);
   state.tracks = [...state.tracksById.values()].sort((left, right) =>
@@ -2382,14 +2401,9 @@ export async function editTrack(trackId: string, metadata: TrackMetadata): Promi
   );
   refreshCollections();
   rememberTracks([track]);
-  const fields: (keyof TrackMetadata)[] = [
-    "title", "artist", "album", "albumArtist", "genre", "year", "trackNo", "discNo",
-  ];
-  if (
-    before && player.currentId === trackId && engine.hasFile &&
-    fields.some((field) => before[field] !== track[field])
-  ) {
-    player.reloadCurrent();
+  if (previousPath && cleanupId) {
+    metadataCleanup.set(cleanupId, trackAudioPath(previousPath, trackId, audioStreamBase));
+    cleanMetadataEdits();
   }
   emit();
   await rescan();

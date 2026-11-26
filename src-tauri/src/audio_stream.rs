@@ -25,6 +25,26 @@ pub struct AudioStream {
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
+fn authorized_request<'a>(
+    url: &'a str,
+    host: Option<&str>,
+    method: &Method,
+    token: &str,
+    port: u16,
+) -> Option<(&'a str, Option<&'a str>)> {
+    let (path, file) = match url.split_once('?') {
+        Some((path, query)) => {
+            let file = query.strip_prefix("file=")?;
+            if file.is_empty() || file.contains('&') {
+                return None;
+            }
+            (path, Some(file))
+        }
+        None => (url, None),
+    };
+    Some((authorized_id(path, host, method, token, port)?, file))
+}
+
 #[cfg(any(target_os = "linux", test))]
 fn resolve_staged_audio(base: &Path, id: &str) -> Option<PathBuf> {
     if !crate::identity::is_id(id) {
@@ -98,7 +118,7 @@ fn serve(request: Request, app: &AppHandle, root: &Path, token: &str, port: u16)
         .iter()
         .find(|header| header.field.equiv("Host"))
         .map(|header| header.value.as_str());
-    let Some(id) = authorized_id(request.url(), host, request.method(), token, port) else {
+    let Some((id, file)) = authorized_request(request.url(), host, request.method(), token, port) else {
         let _ = request.respond(empty(404));
         return;
     };
@@ -110,7 +130,7 @@ fn serve(request: Request, app: &AppHandle, root: &Path, token: &str, port: u16)
 
     let catalog = app.state::<Catalog>();
     #[cfg(target_os = "linux")]
-    let staged = id.strip_prefix("editor-").and_then(|id| {
+    let staged = id.strip_prefix("editor-").filter(|_| file.is_none()).and_then(|id| {
         library::library_root(app).ok().and_then(|base| resolve_staged_audio(&base, id))
     });
     #[cfg(not(target_os = "linux"))]
@@ -119,7 +139,7 @@ fn serve(request: Request, app: &AppHandle, root: &Path, token: &str, port: u16)
         catalog.track(id).ok().flatten().filter(|row| !row.missing).and_then(|row| {
             library::library_root(app)
                 .ok()
-                .and_then(|base| resolve_audio(&base, root, &row.rel_path))
+                .and_then(|base| resolve_track_audio(&base, root, &row.rel_path, file))
         })
     });
     let Some(path) = path else {
@@ -135,6 +155,23 @@ fn serve(request: Request, app: &AppHandle, root: &Path, token: &str, port: u16)
     let response = file_response(&path, range, request.method() == &Method::Head)
         .unwrap_or_else(|_| empty(500));
     let _ = request.respond(response);
+}
+
+fn resolve_track_audio(base: &Path, root: &Path, relative: &str, file: Option<&str>) -> Option<PathBuf> {
+    let Some(file) = file else {
+        return resolve_audio(base, root, relative);
+    };
+    let name = percent_encoding::percent_decode_str(file).decode_utf8().ok()?;
+    if name.is_empty() || name.contains(['/', '\\']) || Path::new(name.as_ref()).file_name()?.to_str()? != name {
+        return None;
+    }
+    let dir = base.join(relative).parent()?.canonicalize().ok()?;
+    if !dir.starts_with(root) {
+        return None;
+    }
+    let path = dir.join(name.as_ref()).canonicalize().ok()?;
+    (path.parent() == Some(dir.as_path()) && path.is_file() && library::has_extension(&path, library::AUDIO_EXTENSIONS))
+        .then_some(path)
 }
 
 fn resolve_audio(base: &Path, root: &Path, relative: &str) -> Option<PathBuf> {
@@ -350,6 +387,35 @@ mod tests {
         assert!(resolve_audio(&base, &root, "songs/audio.mp3").is_some());
         assert!(resolve_audio(&base, &root, "private.txt").is_none());
         assert!(resolve_audio(&base, &root, "songs/../private.txt").is_none());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn requested_file_versions_stay_in_the_same_song_folder() {
+        let base = std::env::temp_dir().join(format!("wave-stream-version-{}", uuid::Uuid::new_v4()));
+        let songs = base.join("songs");
+        let dir = songs.join("track");
+        let other = songs.join("other");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(dir.join("old song.mp3"), b"original").unwrap();
+        std::fs::write(dir.join("audio-new.mp3"), b"modified").unwrap();
+        std::fs::write(other.join("private.mp3"), b"private").unwrap();
+        std::fs::write(dir.join("private.txt"), b"private").unwrap();
+        let root = songs.canonicalize().unwrap();
+        let current = "songs/track/audio-new.mp3";
+        let old = resolve_track_audio(&base, &root, current, Some("old%20song.mp3")).unwrap();
+        assert_eq!(std::fs::read(old).unwrap(), b"original");
+        assert_eq!(std::fs::read(resolve_track_audio(&base, &root, current, None).unwrap()).unwrap(), b"modified");
+        for name in ["../other/private.mp3", "%2e%2e%2fother%2fprivate.mp3", "private.txt", "%5cprivate.mp3"] {
+            assert!(resolve_track_audio(&base, &root, current, Some(name)).is_none(), "{name}");
+        }
+        assert_eq!(
+            authorized_request("/secret/track?file=old%20song.mp3", Some("127.0.0.1:1234"), &Method::Get, "secret", 1234),
+            Some(("track", Some("old%20song.mp3")))
+        );
+        assert!(authorized_request("/secret/track?file=a&file=b", Some("127.0.0.1:1234"), &Method::Get, "secret", 1234).is_none());
+        assert!(authorized_request("/secret/track?file=a", Some("example.com:1234"), &Method::Get, "secret", 1234).is_none());
         std::fs::remove_dir_all(base).unwrap();
     }
 

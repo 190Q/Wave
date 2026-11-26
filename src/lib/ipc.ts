@@ -173,8 +173,14 @@ export function deleteTracks(trackIds: string[]): Promise<PersistedState> {
   return invoke("delete_tracks", { trackIds });
 }
 
-export function editTrack(trackId: string, metadata: TrackMetadata): Promise<Track> {
+export function editTrack(trackId: string, metadata: TrackMetadata): Promise<{
+  track: Track; previousPath: string | null; cleanupId: string | null;
+}> {
   return invoke("edit_track", { trackId, metadata });
+}
+
+export function cleanupTrackEdit(editId: string): Promise<void> {
+  return invoke("cleanup_track_edit", { editId });
 }
 
 export async function pickEditorAudio(): Promise<string | null> {

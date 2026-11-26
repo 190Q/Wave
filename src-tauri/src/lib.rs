@@ -199,6 +199,7 @@ fn open_catalog(app: &tauri::AppHandle) -> Result<catalog::Catalog, String> {
         Ok(None) => {}
         Err(error) => eprintln!("the library could not be upgraded: {error}"),
     }
+    library::recover_metadata_edits(&root, &catalog);
     Ok(catalog)
 }
 
@@ -418,6 +419,7 @@ pub fn run() {
             library::scan_library,
             library::reread_tags,
             library::edit_track,
+            library::cleanup_track_edit,
             #[cfg(desktop)]
             song_editor::stage_editor_audio,
             #[cfg(desktop)]

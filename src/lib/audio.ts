@@ -47,6 +47,7 @@ export class AudioEngine {
 
   private readonly retiring = new Map<HTMLAudioElement, number>();
   private readonly timeListeners = new Set<() => void>();
+  private readonly releaseListeners = new Set<() => void>();
   private cancelReplacement: (() => void) | null = null;
   private incoming: { element: HTMLAudioElement; frame: number; factor: number } | null = null;
   private volume = 0;
@@ -64,9 +65,14 @@ export class AudioEngine {
     }
   };
 
-  /** Whether a file is loaded, so a reload has something to ask for again. */
-  get hasFile(): boolean {
-    return this.loadedPath !== null;
+  uses(path: string): boolean {
+    const url = sourceUrl(path);
+    return this.el.src === url || [...this.retiring.keys()].some((element) => element.src === url);
+  }
+
+  onRelease(listener: () => void): () => void {
+    this.releaseListeners.add(listener);
+    return () => this.releaseListeners.delete(listener);
   }
 
   /** Asks for files in a way the equaliser can read. */
@@ -128,6 +134,7 @@ export class AudioEngine {
       this.el.crossOrigin = crossOrigin;
     }
     this.el.src = sourceUrl(path);
+    this.notifyRelease();
 
     this.seek(positionMs);
     if (autoplay) {
@@ -341,6 +348,13 @@ export class AudioEngine {
     el.pause();
     el.removeAttribute("src");
     el.load();
+    this.notifyRelease();
+  }
+
+  private notifyRelease(): void {
+    queueMicrotask(() => {
+      for (const listener of this.releaseListeners) listener();
+    });
   }
 
   private readonly handleMetadata = (): void => {
@@ -487,7 +501,9 @@ export function assetUrl(path: string): string {
 }
 
 export function trackAudioPath(path: string, id: string, streamBase: string | null): string {
-  return streamBase ? `${streamBase}/${encodeURIComponent(id)}` : path;
+  if (!streamBase) return path;
+  const file = path.split(/[\\/]/).pop() ?? "";
+  return `${streamBase}/${encodeURIComponent(id)}?file=${encodeURIComponent(file)}`;
 }
 
 /** The asset URL for a library file, or the bare path outside Tauri. */

@@ -83,3 +83,16 @@ test("a valid scroll position still draws the rows in the viewport", () => {
 
   assert.deepEqual(rows(host), [20, 21, 22, 23, 24]);
 });
+
+test("refreshing a cleared window leaves non-windowed content intact", () => {
+  const scroller = new Element();
+  const host = new Element(scroller);
+  const list = new WindowedList({ scroller, host, rowHeight: 40, spacerTag: "div" });
+  list.set(10, row);
+  list.clear();
+  host.innerHTML = row(42);
+
+  list.refresh();
+
+  assert.equal(host.innerHTML, row(42));
+});

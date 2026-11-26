@@ -89,6 +89,8 @@
 }
 
 .sheet-foot {
+  max-height: 40%;
+  overflow-y: auto;
   border-top: 0.0625rem solid rgb(255 255 255 / 0.1);
   padding-top: 0.6rem;
   font-size: 0.75rem;

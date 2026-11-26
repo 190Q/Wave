@@ -212,6 +212,21 @@ test("reopening the library keeps an in-progress playlist editor", () => {
   assert.match(host.innerHTML, /aria-label="New playlist name"/);
 });
 
+test("a collection change does not blank a non-windowed list", () => {
+  setup({ open: false });
+  const button = context.elements["new-playlist"];
+  const host = context.elements["library-rows"];
+  button.dispatch("click", button);
+  context.menu.items.find(({ label }) => label === "Empty playlist").action();
+
+  context.state.collections = [{
+    id: "replacement", kind: "playlist", name: "Replacement", subtitle: "0 songs", entries: [], trackIds: [],
+  }];
+  context.render();
+
+  assert.match(host.innerHTML, /data-collection="replacement"/);
+});
+
 test("collection highlight only appears for search results and follows keyboard navigation", () => {
   const second = { id: "second", kind: "playlist", name: "Playlist two", subtitle: "0 songs", entries: [], trackIds: [] };
   const { pane } = setup({ open: false, extraCollections: [second] });

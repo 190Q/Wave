@@ -72,6 +72,9 @@ export class WindowedList {
 
   /** Redraws the window as it stands, for a change to the rows themselves. */
   refresh(): void {
+    if (this.renderRow === null) {
+      return;
+    }
     this.start = -1;
     this.end = -1;
     this.paint(true);

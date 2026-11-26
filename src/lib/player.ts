@@ -73,6 +73,7 @@ export class Player {
   private listenedAt = 0;
 
   private playing = false;
+  private pendingNativeState: boolean | null = null;
   private resumeAfterInterruption = false;
   private shuffle = false;
   private repeat: RepeatMode = "off";
@@ -111,6 +112,26 @@ export class Player {
     }
     const position = Math.min(this.engine.positionMs, this.sourceOf(this.currentId)?.durationMs ?? 0);
     this.loadCurrent(this.playing, position);
+    this.emitChange();
+    this.emitProgress();
+  }
+
+  followNative(trackId: string, playing: boolean): void {
+    const index = this.order.indexOf(trackId);
+    if (index < 0) return;
+    if (this.pendingNativeState !== null) {
+      if (trackId !== this.currentId || this.pendingNativeState !== playing) return;
+      this.pendingNativeState = null;
+    }
+    const changed = this.cursor !== index || this.playing !== playing;
+    if (!changed) return;
+    this.cursor = index;
+    this.loadedId = trackId;
+    this.playing = playing;
+    this.resumeAfterInterruption = false;
+    this.stopFade();
+    this.level = this.targetLevel();
+    this.startClock();
     this.emitChange();
     this.emitProgress();
   }
@@ -227,7 +248,7 @@ export class Player {
     this.emitProgress();
   }
 
-  restore(playback: Playback): void {
+  restore(playback: Playback, native?: { playing: boolean }): void {
     const order = playback.order.length > 0 ? playback.order : playback.sourceOrder;
     if (order.length === 0) {
       return;
@@ -243,12 +264,19 @@ export class Player {
     this.repeat = playback.repeat === "all" ? "all" : "off";
     this.muted = playback.muted;
     this.sampleListening();
-    this.playing = false;
+    this.playing = native?.playing ?? false;
+    this.pendingNativeState = null;
     this.resumeAfterInterruption = false;
-    this.level = 0;
-    this.applyLevel();
     this.stopFade();
-    this.loadCurrent(false, Math.max(playback.positionMs, 0));
+    if (native) {
+      this.loadedId = this.currentId;
+      this.level = this.targetLevel();
+      this.startClock();
+    } else {
+      this.level = 0;
+      this.applyLevel();
+      this.loadCurrent(false, Math.max(playback.positionMs, 0));
+    }
     this.orderRevision += 1;
     this.emitChange();
     this.emitProgress();
@@ -281,6 +309,7 @@ export class Player {
     }
     this.resumeAfterInterruption = false;
     this.playing = true;
+    this.pendingNativeState = true;
 
     if (this.loadedId !== this.currentId) {
       this.loadCurrent(true);
@@ -330,6 +359,7 @@ export class Player {
     }
     this.sampleListening();
     this.playing = false;
+    this.pendingNativeState = false;
     if (interrupted) {
       this.cancelInterruptedPlayback();
     } else {
@@ -589,6 +619,7 @@ export class Player {
     this.sampleListening();
     this.stopFade();
     this.playing = false;
+    this.pendingNativeState = null;
     this.resumeAfterInterruption = false;
     this.level = 0;
     this.applyLevel();
@@ -628,6 +659,7 @@ export class Player {
     }
 
     this.loadedId = id;
+    this.pendingNativeState = autoplay;
     this.engine.load(source.path, { autoplay, positionMs });
     this.resetListeningClock();
 
@@ -640,6 +672,7 @@ export class Player {
   /** Starts the current track from its head, keeping the playing state. */
   private startCurrent(): void {
     this.playing = true;
+    this.pendingNativeState = true;
     this.loadCurrent(true);
     this.emitChange();
     this.emitProgress();
@@ -648,6 +681,7 @@ export class Player {
   private finish(): void {
     this.stopFade();
     this.playing = false;
+    this.pendingNativeState = false;
     this.resumeAfterInterruption = false;
     this.level = 0;
     this.applyLevel();

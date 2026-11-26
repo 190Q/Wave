@@ -167,9 +167,12 @@ internal fun dispatchPlaybackControl(view: WebView, action: String, value: Doubl
 )
 class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
   private var webView: WebView? = null
+  private var nativePlayback: NativePlaybackClient? = null
+  private var nativeAvailable = false
   private var insets: Insets? = null
   private var startScript: ScriptHandler? = null
   private var playing = false
+  private val controlCallback: (String, Double?) -> Unit = { action, value -> report(action, value) }
   private val audioManager by lazy { activity.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
   private val audioDevices = object : AudioDeviceCallback() {
     override fun onAudioDevicesAdded(addedDevices: Array<AudioDeviceInfo>) = outputsChanged()
@@ -182,7 +185,10 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
   override fun load(webView: WebView) {
     this.webView = webView
     audioManager.registerAudioDeviceCallback(audioDevices, playbackHandler)
-    MediaPlayback.onControl = { action, value -> report(action, value) }
+    MediaPlayback.onControl = controlCallback
+    nativePlayback = registerNativePlaybackBridge(webView)
+    nativeAvailable = nativePlayback != null
+    nativePlayback?.setVisible(true)
     registerPlaybackBridge(webView) { update ->
       when (update) {
         is PlaybackUpdate.NowPlaying -> showSong(update.song)
@@ -241,11 +247,14 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun setControls(invoke: Invoke) {
-    MediaPlayback.setControls(activity, invoke.parseArgs(ControlsArgs::class.java).enabled)
+    val enabled = invoke.parseArgs(ControlsArgs::class.java).enabled
+    nativePlayback?.send(org.json.JSONObject().put("type", "controls").put("enabled", enabled))
+    if (!nativeAvailable) MediaPlayback.setControls(activity, enabled)
     invoke.resolve()
   }
 
   override fun onResume(activity: AppCompatActivity) {
+    nativePlayback?.setVisible(true)
     // The page is up by now, so this is the push that lands: the listener's
     // first pass usually runs before the page exists at all.
     readInsets()
@@ -257,7 +266,18 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   override fun onStop(activity: AppCompatActivity) {
+    if (!activity.isChangingConfigurations) nativePlayback?.setVisible(false)
     keepPlaying()
+  }
+
+  override fun onDestroy(activity: AppCompatActivity) {
+    playing = false
+    nativePlayback?.close()
+    nativePlayback = null
+    if (MediaPlayback.onControl === controlCallback) MediaPlayback.onControl = null
+    audioManager.unregisterAudioDeviceCallback(audioDevices)
+    startScript?.remove()
+    webView = null
   }
 
   /** Shows a song, or takes the notification down when there is none. */
@@ -303,7 +323,7 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
   fun stopSession(invoke: Invoke) {
     playing = false
     keepAliveLogged = false
-    MediaPlayback.clear(activity)
+    if (!nativeAvailable) MediaPlayback.clear(activity)
     invoke.resolve()
   }
 
@@ -426,8 +446,9 @@ class MediaSessionPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     resumePlaybackWebView(view) {
+      if (webView !== view || !playing) return@resumePlaybackWebView
       playbackHandler.postDelayed({
-        if (playing) {
+        if (playing && webView === view) {
           view.onResume()
           view.resumeTimers()
         }

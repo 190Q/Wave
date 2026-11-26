@@ -43,6 +43,7 @@ import type {
 } from "../types";
 import { flushAnalytics, mountAnalytics, notePlaybackError, noteTrackEnded, recordEvent, rememberTracks } from "./analytics";
 import { nearbyArtwork } from "./artwork-priority";
+import { AndroidAudioEngine, type NativeSnapshot } from "./android-audio";
 import { AudioEngine, trackAudioPath } from "./audio";
 import { mountAudioWatchdog } from "./audio-watchdog";
 import type { EqProfile } from "./autoeq";
@@ -292,6 +293,7 @@ const state: AppState = {
     recentColours: [],
     resumeOnLaunch: true,
     resumeCollections: true,
+    backgroundPlayback: true,
     reduceMotion: "system",
     rememberWindow: true,
     showTitlebar: null,
@@ -401,7 +403,8 @@ function applySettingsFields(
     }
   }
   state.settings = { ...state.settings, ...patch };
-  eq.apply(state.settings);
+  syncNativeBackgroundPlayback();
+  applyEqualiser();
 }
 
 function applyPlaylists(playlists: Playlist[]): void {
@@ -506,7 +509,7 @@ export const eqChain = eq;
 
 let corsRetryTrack: string | null = null;
 
-const engine = new AudioEngine({
+const audioHandlers = {
   onBeforeLoad: () => {
     if (corsRetryTrack !== null && corsRetryTrack !== player.currentId) {
       corsRetryTrack = null;
@@ -556,7 +559,41 @@ const engine = new AudioEngine({
       eq.detach(element);
     }
   },
-});
+} satisfies import("./audio").AudioEngineHandlers;
+
+const nativeAudio = isAndroidPlatform && window.waveNativePlayback
+  ? new AndroidAudioEngine(audioHandlers, noteTrackEnded)
+  : null;
+const engine = nativeAudio ?? new AudioEngine(audioHandlers);
+let nativeSnapshot: NativeSnapshot | null = null;
+
+let nativeBackgroundPlaybackSent: boolean | undefined;
+
+function syncNativeBackgroundPlayback(): void {
+  if (!nativeAudio) return;
+  const enabled = state.settings.backgroundPlayback ?? true;
+  if (enabled === nativeBackgroundPlaybackSent) return;
+  nativeBackgroundPlaybackSent = enabled;
+  nativeAudio.send({ type: "background", enabled });
+}
+
+let nativeEqualiserSent = "";
+
+function applyEqualiser(): void {
+  eq.apply(nativeAudio ? { ...state.settings, eqOutputId: "" } : state.settings);
+  if (!nativeAudio || !state.ready) return;
+  const settings = {
+    enabled: state.settings.eqEnabled,
+    bands: state.settings.eqBands,
+    autoPreamp: state.settings.eqAutoPreamp,
+    preampDb: state.settings.eqPreampDb,
+    limiter: state.settings.eqLimiter,
+  };
+  const key = JSON.stringify(settings);
+  if (key === nativeEqualiserSent) return;
+  nativeEqualiserSent = key;
+  nativeAudio.send({ type: "equaliser", settings });
+}
 
 let audioStreamBase: string | null = null;
 
@@ -606,7 +643,7 @@ function handleCorsRefused(): void {
 export const player = new Player(engine, (trackId) => {
   const track = state.tracksById.get(trackId);
   return track
-    ? { path: audioPath(track), durationMs: track.durationMs, gain: trackGain(track) }
+    ? { path: nativeAudio ? track.path : audioPath(track), durationMs: track.durationMs, gain: trackGain(track) }
     : undefined;
 });
 
@@ -618,13 +655,67 @@ eq.onRoutingChange(() => {
   }
 });
 
-mountAudioWatchdog(engine, player, (message) => {
-  console.warn(message);
-});
+if (nativeAudio) {
+  nativeAudio.onState((snapshot) => {
+    const eqChanged = snapshot.eqActive !== nativeSnapshot?.eqActive ||
+      snapshot.eqPreampDb !== nativeSnapshot?.eqPreampDb;
+    nativeSnapshot = snapshot;
+    const track = snapshot.currentId ? state.tracksById.get(snapshot.currentId) : undefined;
+    if (state.ready && track && track.path === snapshot.path) {
+      player.followNative(track.id, snapshot.playing);
+    }
+    if (state.ready && eqChanged) emit();
+  });
+} else {
+  mountAudioWatchdog(engine, player, (message) => {
+    console.warn(message);
+  });
+}
 
 /** The gain a song plays at, or `1` while normalization is switched off. */
 function trackGain(track: Track): number {
   return state.settings.normalizeVolume ? gainFor(track) : 1;
+}
+
+export function usesNativePlayback(): boolean {
+  return nativeAudio !== null;
+}
+
+let nativeQueueSent = "";
+
+export function syncNativeQueue(): void {
+  if (!nativeAudio || !state.ready) return;
+  const snapshot = player.snapshot();
+  if (!snapshot.currentId && nativeSnapshot?.available) return;
+  const playback = {
+    sourceId: snapshot.sourceId,
+    sourceName: snapshot.sourceName,
+    sourceOrder: snapshot.sourceOrder,
+    order: snapshot.order,
+    cursor: snapshot.cursor,
+    positionMs: Math.round(snapshot.positionMs),
+    shuffle: snapshot.shuffle,
+    repeat: snapshot.repeat,
+    muted: snapshot.muted,
+  };
+  const tracks = snapshot.order.flatMap((id) => {
+    const track = state.tracksById.get(id);
+    return track ? [{
+      id,
+      path: track.path,
+      title: track.title,
+      artist: track.artist ?? "",
+      album: track.album ?? "",
+      durationMs: track.durationMs,
+      artwork: track.artworkPath ?? "",
+      colour: colourFor(track),
+      gain: trackGain(track),
+    }] : [];
+  });
+  const key = JSON.stringify({ playback: { ...playback, positionMs: 0 }, tracks });
+  if (key === nativeQueueSent) return;
+  nativeQueueSent = key;
+  nativeAudio.send({ type: "queue", playback, tracks });
 }
 
 /** One queue step, shared by the arrow keys and the wheel. */
@@ -1164,6 +1255,7 @@ export async function init(): Promise<string | null> {
     enabled: () => state.settings.analyticsEnabled,
   });
   await readAppVersion();
+  if (nativeAudio) nativeSnapshot = await nativeAudio.connect();
   let startupError: string | null = null;
   try {
     if (isAndroidPlatform || isWebKitGtk) {
@@ -1180,30 +1272,39 @@ export async function init(): Promise<string | null> {
     applyPersisted(persisted, true, true, true);
     seedEqOrigin();
     applySession(session);
-    player.setVolume(state.settings.volume);
-    const deferQueueRepair = state.settings.resumeOnLaunch &&
-      (session?.playback?.order.length ?? 0) > 0;
+    if (!nativeSnapshot?.live) player.setVolume(state.settings.volume);
+    const resumable = nativeSnapshot?.available && nativeSnapshot.playback?.order?.length
+      ? nativeSnapshot.playback
+      : session?.playback;
+    const deferQueueRepair = (state.settings.resumeOnLaunch || nativeSnapshot?.live === true) &&
+      (resumable?.order.length ?? 0) > 0;
     await rescan(false, deferQueueRepair);
-    if (state.settings.resumeOnLaunch) {
-      const playback = session?.playback;
+    if (state.settings.resumeOnLaunch || nativeSnapshot?.live) {
+      const native = nativeSnapshot?.available ? nativeSnapshot : null;
+      const index = native?.currentId ? resumable?.order.indexOf(native.currentId) ?? -1 : -1;
+      const playback = resumable && native && index >= 0
+        ? { ...resumable, cursor: index, positionMs: native.positionMs }
+        : resumable;
       const currentId = playback?.order[playback.cursor];
       const incomplete = playback && state.scanErrors.length > 0 &&
         [...playback.order, ...playback.sourceOrder].some((id) => !state.tracksById.has(id));
       if (incomplete) {
         if (currentId && state.tracksById.has(currentId)) {
-          restorePlayback(playback);
+          restorePlayback(playback, native?.live ? native : null);
         }
         pendingPlayback = playback;
         pendingQueueRevision = player.snapshot().queueRevision;
       } else {
-        restorePlayback(playback);
+        restorePlayback(playback, native?.live ? native : null);
       }
     }
     if (deferQueueRepair && !player.currentId && !pendingPlayback) {
       repairQueue();
     }
+    if (nativeSnapshot?.live) player.setVolume(state.settings.volume);
     wirePersistence();
     state.ready = true;
+    applyEqualiser();
   } catch (error) {
     startupError = describe(error);
     state.notice = startupError;
@@ -3073,6 +3174,7 @@ function applyPersisted(next: PersistedState, settings = false, likes = false, p
       ...eqUnsaved,
       ...(volumeUnsaved ? { volume: player.snapshot().volume } : {}),
     };
+    syncNativeBackgroundPlayback();
     if (!volumeUnsaved && next.settings.volume !== player.snapshot().volume) {
       player.setVolume(next.settings.volume);
     }
@@ -3094,7 +3196,7 @@ function applyPersisted(next: PersistedState, settings = false, likes = false, p
   state.update = next.update ?? null;
   applyColours(next.artworkColours ?? {});
   refreshCollections();
-  eq.apply(state.settings);
+  applyEqualiser();
 }
 
 /** True when two sets of likes hold the same songs. */
@@ -3230,7 +3332,7 @@ let pendingPlayback: Playback | undefined;
 let pendingQueueRevision: number | null = null;
 let collectionPlayback: Record<string, Playback> = {};
 
-function restorePlayback(playback: Playback | undefined): boolean {
+function restorePlayback(playback: Playback | undefined, native: NativeSnapshot | null = null): boolean {
   if (!playback || playback.order.length === 0) {
     return false;
   }
@@ -3251,7 +3353,7 @@ function restorePlayback(playback: Playback | undefined): boolean {
     sourceOrder,
     cursor: Math.max(index, 0),
     positionMs: index < 0 ? 0 : playback.positionMs,
-  });
+  }, native && index >= 0 ? { playing: native.playing } : undefined);
   return true;
 }
 
@@ -3495,6 +3597,7 @@ eq.onOutputChange(() => {
 });
 
 function activeEqOutputs(): string[] {
+  if (nativeAudio) return eqActiveOutputs;
   const selected = eq.outputId;
   if (!selected || selected === "default") {
     return eqActiveOutputs;
@@ -3522,6 +3625,7 @@ export interface EqOrigin {
 export interface EqStatus {
   blocked: "unsupported" | "cors" | null;
   live: boolean;
+  spectrumAvailable: boolean;
   preampDb: number;
   autoPreampDb: number;
   canChooseOutput: boolean;
@@ -3534,12 +3638,14 @@ export interface EqStatus {
 }
 
 export function eqStatus(): EqStatus {
+  const nativePreamp = nativeSnapshot?.eqPreampDb ?? 0;
   return {
-    blocked: eq.blockedReason,
-    live: eq.live,
-    preampDb: eq.preampDb,
-    autoPreampDb: eq.autoPreampDb(),
-    canChooseOutput: eq.canChooseOutput,
+    blocked: nativeAudio ? null : eq.blockedReason,
+    live: nativeAudio ? nativeSnapshot?.eqActive === true : eq.live,
+    spectrumAvailable: !nativeAudio,
+    preampDb: nativeAudio ? nativePreamp : eq.preampDb,
+    autoPreampDb: nativeAudio ? nativePreamp - state.settings.eqPreampDb : eq.autoPreampDb(),
+    canChooseOutput: nativeAudio ? false : eq.canChooseOutput,
     outputs: eqOutputsKnown,
     sinkOutputs: eqSinkOutputs,
     activeOutputIds: activeEqOutputs(),
@@ -3553,7 +3659,7 @@ export function eqStatus(): EqStatus {
 function applyEqPatch(patch: Partial<Settings>): void {
   markSettingsPatch(patch);
   state.settings = { ...state.settings, ...patch };
-  eq.apply(state.settings);
+  applyEqualiser();
   scheduleEqSave(patch);
   emit();
 }

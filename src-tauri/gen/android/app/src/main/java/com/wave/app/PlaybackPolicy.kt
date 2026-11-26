@@ -10,6 +10,9 @@ internal fun notificationPermissionNeeded(
 internal fun playbackWakeLockNeeded(foreground: Boolean, playing: Boolean): Boolean =
   foreground && playing
 
+internal fun playbackServiceCanStop(taskRemoved: Boolean, playing: Boolean, pending: Boolean): Boolean =
+  taskRemoved && !playing && !pending
+
 internal fun artworkSampleSize(width: Int, height: Int, maxEdge: Int): Int {
   if (width <= 0 || height <= 0 || maxEdge <= 0) return 1
   val longest = maxOf(width, height).toLong()

@@ -207,7 +207,7 @@ function setup(device = "desktop", androidPlatform = false) {
     state: {
       settings: {
         shortcutSlots: [], reduceMotion: "system", searchAlgorithm: "substring",
-        showTitlebar: null, analyticsEnabled: true, localApiEnabled: false,
+        showTitlebar: null, analyticsEnabled: true, localApiEnabled: false, backgroundPlayback: true,
       },
       collections: [], tracks: [], windowSlots: [], scanErrors: [],
       root: "", skipped: 0, scanning: false, analysing: null,
@@ -273,6 +273,37 @@ test("Discord presence appears on desktop and Linux phones, not Android", () => 
     assert.match(body.innerHTML, /data-toggle="systemMediaControls"/);
     assert.match(body.innerHTML, /data-toggle="normalizeVolume"/);
   }
+});
+
+test("background playback is an Android-only setting and saves both choices", async () => {
+  for (const [device, androidPlatform, visible] of [
+    ["desktop", false, false],
+    ["linuxPhone", false, false],
+    ["android", false, true],
+    ["desktop", true, true],
+  ]) {
+    const { body } = setup(device, androidPlatform);
+    mountSettings();
+    openSettings();
+    assert.equal(body.innerHTML.includes('data-toggle="backgroundPlayback"'), visible);
+    if (visible) assert.match(body.innerHTML, /aria-checked="true" data-toggle="backgroundPlayback"/);
+  }
+
+  const { body, context, save } = setup("android", true);
+  mountSettings();
+  openSettings();
+  const toggle = new Element();
+  toggle.dataset.toggle = "backgroundPlayback";
+  body.dispatch("click", { target: toggle });
+  assert.equal(toggle.getAttribute("aria-checked"), "false");
+  assert.deepEqual(context.saved, []);
+  save.dispatch("click");
+  await Promise.resolve();
+  assert.deepEqual(context.saved, [{ backgroundPlayback: false }]);
+  body.dispatch("click", { target: toggle });
+  save.dispatch("click");
+  await Promise.resolve();
+  assert.deepEqual(context.saved[1], { backgroundPlayback: true });
 });
 
 test("the local API developer setting is hidden on Android and off by default", () => {

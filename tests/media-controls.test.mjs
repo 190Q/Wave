@@ -52,7 +52,9 @@ const mocks = {
         return typeof value === "function" ? value.bind(context.player) : value;
       }
     });
-    export const getState = () => ({ settings: context.settings });
+    export const getState = () => ({ settings: context.settings, ready: true });
+    export const usesNativePlayback = () => context.nativePlayback;
+    export const syncNativeQueue = () => { context.nativeQueueUpdates++; };
     export const currentTrack = () => trackById(context.player.currentId);
     export const trackById = (id) => id ? { id, title: id, durationMs: 120000 } : undefined;
     export const colourFor = () => "#123456";
@@ -125,7 +127,7 @@ class FakeAudio {
   load() {}
 }
 
-function setup(PlayerClass = Player, mount = mountPresence, controls = true, sendSong = null, bridge = false, tauri = true) {
+function setup(PlayerClass = Player, mount = mountPresence, controls = true, sendSong = null, bridge = false, tauri = true, native = false) {
   context.elements = [];
   context.frames = new Map();
   context.nextFrame = 1;
@@ -148,6 +150,8 @@ function setup(PlayerClass = Player, mount = mountPresence, controls = true, sen
   context.bridgeMessages = [];
   context.ackBridge = true;
   context.tauri = tauri;
+  context.nativePlayback = native;
+  context.nativeQueueUpdates = 0;
   context.mediaActions = new Map();
   context.settings = { systemMediaControls: controls, discordPresence: false, localApiEnabled: true };
 
@@ -247,6 +251,50 @@ function finishFrames() {
     if (context.frames.delete(id)) callback(performance.now() + 400);
   }
 }
+
+test("native playback does not duplicate WebView media session updates", async () => {
+  const { player } = setup(AndroidPlayer, mountAndroidPresence, true, null, true, true, true);
+  player.pause();
+  finishFrames();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(context.nativeQueueUpdates > 0);
+  assert.deepEqual(context.bridgeMessages, []);
+  assert.deepEqual(context.songs, []);
+  assert.deepEqual(context.queues, []);
+});
+
+test("a stale native checkpoint cannot cancel a pending pause", () => {
+  const { engine, player } = setup(AndroidPlayer, mountAndroidPresence);
+  player.pause();
+  player.followNative("one", true);
+  assert.equal(player.snapshot().playing, false);
+  finishFrames();
+  assert.equal(engine.element.paused, true);
+  player.followNative("one", false);
+  player.followNative("two", true);
+  assert.equal(player.currentId, "two");
+  assert.equal(player.snapshot().playing, true);
+});
+
+test("restoring a live native player does not load its track again", () => {
+  const { engine, player } = setup(AndroidPlayer, mountAndroidPresence);
+  const source = engine.element.src;
+  const snapshot = player.snapshot();
+  player.restore({
+    sourceId: snapshot.sourceId,
+    sourceName: snapshot.sourceName,
+    sourceOrder: [...snapshot.sourceOrder],
+    order: [...snapshot.order],
+    cursor: 1,
+    positionMs: 2000,
+    shuffle: false,
+    repeat: "off",
+    muted: false,
+  }, { playing: true });
+  assert.equal(player.currentId, "two");
+  assert.equal(player.snapshot().playing, true);
+  assert.equal(engine.element.src, source);
+});
 
 test("desktop media controls restore the window before focusing it", async () => {
   setup();

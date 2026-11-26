@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -26,16 +27,9 @@ import androidx.core.content.ContextCompat
 import androidx.media.app.NotificationCompat.MediaStyle
 import androidx.media.session.MediaButtonReceiver
 import java.io.File
+import org.json.JSONObject
 
-/**
- * What the notification shade, the lockscreen and the headset buttons see.
- *
- * The audio itself is the webview's, so this holds a report of what that audio
- * element is doing rather than a player of its own: the song, whether it is
- * playing and how far in. The session and the notification live here because
- * both the plugin that is told about the song and the playback service that
- * keeps the process alive need them.
- */
+/** The session and notification shared by the player and playback service. */
 object MediaPlayback {
   /** Sent to the playback service when a notification button is pressed. */
   const val ACTION_CONTROL = "com.wave.app.CONTROL"
@@ -61,6 +55,7 @@ object MediaPlayback {
   var onControl: ((String, Double?) -> Unit)? = null
 
   private var session: MediaSessionCompat? = null
+  private var appContext: Context? = null
   @Volatile
   private var notification: Notification? = null
   private var artwork: Bitmap? = null
@@ -89,6 +84,7 @@ object MediaPlayback {
 
   @Volatile
   private var controlsEnabled = true
+  private var controlsInitialised = false
 
   private var queue: List<QueueTrack> = emptyList()
 
@@ -106,7 +102,7 @@ object MediaPlayback {
     val session = session(context)
     lastSong = song
     playing = song.playing
-    MediaPlaybackService.syncPlayback()
+    val stopping = MediaPlaybackService.syncPlayback()
     session.setPlaybackState(state(song))
 
     val wanted = Shown.of(song)
@@ -131,14 +127,17 @@ object MediaPlayback {
       shown = wanted
     }
 
-    keepAlive(context, true)
+    if (!stopping) keepAlive(context, true)
     keptAt = SystemClock.elapsedRealtime()
   }
 
   @Synchronized
   fun setControls(context: Context, enabled: Boolean) {
+    loadControls(context)
     if (controlsEnabled == enabled) return
     controlsEnabled = enabled
+    context.getSharedPreferences("wave-media", Context.MODE_PRIVATE).edit()
+      .putBoolean("controls-enabled", enabled).apply()
     session?.isActive = enabled && lastSong != null
     shown = null
     lastSong?.let { show(context, it) }
@@ -168,33 +167,37 @@ object MediaPlayback {
   fun press(action: String?, value: Double?) {
     if (!controlsEnabled) return
     val press = action ?: return
+    val context = appContext
+    if (context != null && NativePlayback.handleControl(context, press, value)) return
     onControl?.invoke(press, value)
   }
 
-  /**
-   * Starts or stops the playback service, which is what keeps the process and
-   * the webview's audio alive once the app is in the background.
-   */
-  private fun keepAlive(context: Context, wanted: Boolean) {
+  /** Starts or stops the playback service. */
+  private fun keepAlive(context: Context, wanted: Boolean): Boolean {
     val intent = Intent(context, MediaPlaybackService::class.java)
     if (!wanted) {
       context.stopService(intent)
-      return
+      return true
     }
 
-    try {
+    return try {
       ContextCompat.startForegroundService(context, intent)
+      true
     } catch (error: Exception) {
       // Android refuses to start a foreground service from the background, and
       // refuses one whose type it will not allow. Neither is worth the app.
       Log.w("Wave", "the playback service could not be started", error)
+      false
     }
   }
 
-  private fun session(context: Context): MediaSessionCompat {
+  fun startService(context: Context): Boolean = keepAlive(context, true)
+
+  fun session(context: Context): MediaSessionCompat {
     session?.let { return it }
 
-    Log.i("Wave", "audio focus is managed by the WebView")
+    appContext = context.applicationContext
+    loadControls(context)
     val created = MediaSessionCompat(context, "Wave")
 
     created.setFlags(
@@ -207,6 +210,11 @@ object MediaPlayback {
     created.setCallback(
       object : MediaSessionCompat.Callback() {
         override fun onPlay() = press("play", null)
+        override fun onPlayFromMediaId(mediaId: String?, extras: Bundle?) {
+          if (mediaId != null && NativePlayback.recentTrack(context)?.optString("id") == mediaId) {
+            press("play", null)
+          }
+        }
         override fun onPause() = press("pause", null)
         override fun onStop() = press("stop", null)
         override fun onSkipToNext() = press("next", null)
@@ -223,6 +231,41 @@ object MediaPlayback {
     created.isActive = controlsEnabled
     session = created
     return created
+  }
+
+  private fun loadControls(context: Context) {
+    if (controlsInitialised) return
+    controlsEnabled = context.getSharedPreferences("wave-media", Context.MODE_PRIVATE)
+      .getBoolean("controls-enabled", true)
+    controlsInitialised = true
+  }
+
+  fun releaseSession(context: Context) {
+    shown = null
+    notification = null
+    lastSong = null
+    playing = false
+    session?.isActive = false
+    session?.release()
+    session = null
+    NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
+  }
+
+  fun prepareResume(context: Context, track: JSONObject) {
+    val song = Song().apply {
+      title = track.optString("title")
+      artist = track.optString("artist")
+      album = track.optString("album")
+      durationMs = track.optLong("durationMs")
+      positionMs = NativePlayback.snapshot(context).optLong("positionMs")
+      artworkPath = track.optString("artwork")
+    }
+    artwork = artworkCache.get(song.artworkPath.orEmpty())
+    session(context).apply {
+      setMetadata(metadata(song))
+      setPlaybackState(state(song))
+      isActive = controlsEnabled
+    }
   }
 
   private fun metadata(song: Song): MediaMetadataCompat {
@@ -244,6 +287,7 @@ object MediaPlayback {
 
   private fun state(song: Song): PlaybackStateCompat {
     var actions = PlaybackStateCompat.ACTION_PLAY or
+      PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID or
       PlaybackStateCompat.ACTION_PAUSE or
       PlaybackStateCompat.ACTION_PLAY_PAUSE or
       PlaybackStateCompat.ACTION_STOP or
@@ -438,7 +482,7 @@ object MediaPlayback {
     press: String,
     value: Double?
   ): NotificationCompat.Action {
-    val intent = Intent(context, MediaPlaybackService::class.java)
+    val intent = Intent(context, MediaActionReceiver::class.java)
       .setAction(ACTION_CONTROL)
       .putExtra(EXTRA_PRESS, press)
 
@@ -446,7 +490,7 @@ object MediaPlayback {
       intent.putExtra(EXTRA_VALUE, value)
     }
 
-    val pending = PendingIntent.getService(
+    val pending = PendingIntent.getBroadcast(
       context,
       ++requests,
       intent,
@@ -494,5 +538,17 @@ object MediaPlayback {
         song.playing,
       )
     }
+  }
+}
+
+class MediaActionReceiver : BroadcastReceiver() {
+  override fun onReceive(context: Context, intent: Intent) {
+    MediaPlayback.session(context)
+    val value = if (intent.hasExtra(MediaPlayback.EXTRA_VALUE)) {
+      intent.getDoubleExtra(MediaPlayback.EXTRA_VALUE, 0.0)
+    } else {
+      null
+    }
+    MediaPlayback.press(intent.getStringExtra(MediaPlayback.EXTRA_PRESS), value)
   }
 }

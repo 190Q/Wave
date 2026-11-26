@@ -1041,7 +1041,7 @@ export function mountEq(): void {
 
       <div class="eq-group">
         <span class="eq-group-title">Follows the output</span>
-        ${canRoute || settings.eqOutputId ? field("Send audio to", "output", "Send audio to") : ""}
+        ${status.canChooseOutput && (canRoute || settings.eqOutputId) ? field("Send audio to", "output", "Send audio to") : ""}
         ${outputRows || `<p class="eq-note">No named outputs are available.</p>`}
         ${status.nativeOutputs && !status.routeKnown
           ? `<p class="eq-note">The current media output cannot be detected automatically.</p>`
@@ -1194,6 +1194,7 @@ export function mountEq(): void {
         parts.push(`automatic level ${status.autoPreampDb.toFixed(1)} dB`);
       }
     }
+    if (!status.spectrumAvailable) parts.push("Spectrum unavailable with native Android playback");
     readout.textContent =
       parts.length > 0
         ? `${parts.join(". ")}.`

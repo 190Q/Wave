@@ -163,6 +163,8 @@ export interface Settings {
   resumeOnLaunch: boolean;
   /** Remembers the queue, cursor and position for each collection. */
   resumeCollections: boolean;
+  /** Allows Android playback and media resumption while Wave is not visible. */
+  backgroundPlayback: boolean;
   /** Overrides the system animation preference. */
   reduceMotion: ReduceMotionMode;
   /** Remembers the window size and position between launches. */

@@ -53,6 +53,7 @@ const DIALOG_MS = 220;
 type ToggleKey =
   | "resumeOnLaunch"
   | "resumeCollections"
+  | "backgroundPlayback"
   | "rememberWindow"
   | "showTitlebar"
   | "normalizeVolume"
@@ -225,7 +226,7 @@ export function mountSettings(): void {
       ?.closest<HTMLElement>("[data-slot-open]")?.dataset.slotOpen;
     const state = getState();
     body.innerHTML = [
-      playbackHtml(draft),
+      playbackHtml(draft, android || isAndroidPlatform),
       nowPlayingHtml(draft, android || isAndroidPlatform),
       appearanceHtml(draft),
       android ? "" : windowHtml(draft),
@@ -590,7 +591,7 @@ function sameValue(left: unknown, right: unknown): boolean {
   return left === right;
 }
 
-function playbackHtml(settings: Settings): string {
+function playbackHtml(settings: Settings, android: boolean): string {
   return section(
     "Playback",
     `${toggleRow(
@@ -605,6 +606,12 @@ function playbackHtml(settings: Settings): string {
       "Remember the queue and song position for each playlist. Shuffle and replaying the current playlist start fresh.",
       settings.resumeCollections,
     )}
+    ${android ? toggleRow(
+      "backgroundPlayback",
+      "Background playback",
+      "Keep playing when Wave is not visible and allow playback to resume from system media controls. When off, playback pauses as Wave leaves the screen.",
+      settings.backgroundPlayback ?? true,
+    ) : ""}
     ${toggleRow(
       "normalizeVolume",
       "Normalize volume",

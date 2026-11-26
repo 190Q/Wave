@@ -103,6 +103,7 @@ function defaultSettings(): Settings {
     recentColours: [],
     resumeOnLaunch: true,
     resumeCollections: true,
+    backgroundPlayback: true,
     reduceMotion: "system",
     rememberWindow: true,
     showTitlebar: null,

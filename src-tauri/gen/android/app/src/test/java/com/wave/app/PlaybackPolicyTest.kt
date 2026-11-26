@@ -19,6 +19,14 @@ class PlaybackPolicyTest {
   }
 
   @Test
+  fun aRemovedTaskStopsAfterPauseButNotDuringPlaybackOrStartup() {
+    assertFalse(playbackServiceCanStop(false, false, false))
+    assertFalse(playbackServiceCanStop(true, true, false))
+    assertFalse(playbackServiceCanStop(true, false, true))
+    assertTrue(playbackServiceCanStop(true, false, false))
+  }
+
+  @Test
   fun wakeLockIsHeldOnlyForForegroundPlayback() {
     assertTrue(playbackWakeLockNeeded(true, true))
     assertFalse(playbackWakeLockNeeded(true, false))

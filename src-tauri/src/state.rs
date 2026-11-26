@@ -133,6 +133,7 @@ pub struct Settings {
     pub recent_colours: Vec<String>,
     pub resume_on_launch: bool,
     pub resume_collections: bool,
+    pub background_playback: bool,
     pub reduce_motion: String,
     pub remember_window: bool,
     pub show_titlebar: Option<bool>,
@@ -183,6 +184,7 @@ impl Default for Settings {
             recent_colours: Vec::new(),
             resume_on_launch: true,
             resume_collections: true,
+            background_playback: true,
             reduce_motion: "system".to_string(),
             remember_window: true,
             show_titlebar: None,
@@ -1499,6 +1501,19 @@ mod tests {
             "resumeCollections": false
         }))).unwrap();
         assert!(!disabled.resume_collections);
+    }
+
+    #[test]
+    fn background_playback_defaults_on_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"volume":42}"#).unwrap();
+        assert!(old.background_playback);
+        let disabled = merge_settings(&old, patch(serde_json::json!({
+            "backgroundPlayback": false
+        }))).unwrap();
+        let json = serde_json::to_string(&disabled).unwrap();
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+        assert!(!restored.background_playback);
+        assert_eq!(restored.volume, 42);
     }
 
     #[test]

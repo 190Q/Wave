@@ -13,7 +13,9 @@ import {
   setVolume,
   stepTrack,
   subscribe,
+  syncNativeQueue,
   trackById,
+  usesNativePlayback,
 } from "./state";
 
 /** Sent by the backend when the system's own controls ask for something. */
@@ -126,7 +128,8 @@ export function mountPresence(): void {
   };
 
   const syncTimer = (): void => {
-    const needed = showing() && (player.snapshot().playing || retryNeeded || playbackRetry);
+    const needed = showing() &&
+      ((!usesNativePlayback() && player.snapshot().playing) || retryNeeded || playbackRetry);
     if (needed && timer === null) {
       timer = window.setInterval(() => {
         if (retryNeeded) {
@@ -186,6 +189,7 @@ export function mountPresence(): void {
   let sentQueue = -1;
 
   const pushQueue = (): void => {
+    if (usesNativePlayback()) return;
     if (!showing()) {
       sentQueue = -1;
       return;
@@ -219,6 +223,9 @@ export function mountPresence(): void {
   };
 
   const sync = (): void => {
+    const native = usesNativePlayback();
+    if (native && !getState().ready) return;
+    if (native) syncNativeQueue();
     if (webkitSession && typeof MediaMetadata !== "undefined") {
       const track = getState().settings.systemMediaControls ? currentTrack() : null;
       const metadata = track ? { title: track.title, artist: track.artist ?? "", album: track.album ?? "" } : null;
@@ -242,7 +249,7 @@ export function mountPresence(): void {
         });
       }
     }
-    push();
+    if (!native) push();
     syncTimer();
   };
 

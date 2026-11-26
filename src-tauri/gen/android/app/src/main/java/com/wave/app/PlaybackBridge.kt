@@ -11,6 +11,33 @@ internal sealed class PlaybackUpdate {
   data class Queue(val tracks: List<QueueTrack>) : PlaybackUpdate()
 }
 
+internal fun registerNativePlaybackBridge(view: WebView): NativePlaybackClient? {
+  if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return null
+  val client = NativePlaybackClient(view.context.applicationContext)
+  val origins = mutableSetOf("http://tauri.localhost", "https://tauri.localhost")
+  if (BuildConfig.DEBUG) {
+    origins.add("http://localhost:1420")
+    origins.add("http://10.0.2.2:1420")
+  }
+  try {
+    WebViewCompat.addWebMessageListener(view, "waveNativePlayback", origins) { _, message, _, mainFrame, reply ->
+      if (!mainFrame) return@addWebMessageListener
+      try {
+        val json = JSONObject(message.data ?: return@addWebMessageListener)
+        if (json.getString("type") == "connect") client.connect { reply.postMessage(it) }
+        else client.send(json)
+      } catch (error: Exception) {
+        Log.w("Wave", "invalid native playback update", error)
+      }
+    }
+  } catch (error: Exception) {
+    Log.w("Wave", "the native playback bridge could not be registered", error)
+    client.close()
+    return null
+  }
+  return client
+}
+
 internal fun registerPlaybackBridge(view: WebView, receive: (PlaybackUpdate) -> Unit) {
   if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return
   val origins = mutableSetOf("http://tauri.localhost", "https://tauri.localhost")

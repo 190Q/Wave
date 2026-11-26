@@ -59,11 +59,10 @@
             </intent-filter>
         </activity>
 
-        <!-- Keeps the process, and so the webview's audio, alive while a song
-             is loaded. The notification's own buttons are delivered to it. -->
         <service
             android:name=".MediaPlaybackService"
-            android:exported="false"
+            android:exported="true"
+            android:process=":playback"
             android:foregroundServiceType="mediaPlayback">
             <intent-filter>
                 <action android:name="android.media.browse.MediaBrowserService" />
@@ -71,14 +70,22 @@
         </service>
 
         <service
+            android:name=".NativePlaybackConnectionService"
+            android:exported="false"
+            android:process=":playback" />
+
+        <service
             android:name=".LibraryWorkService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <receiver android:name=".MediaActionReceiver" android:exported="false" android:process=":playback" />
 
         <!-- Hardware and Bluetooth buttons. The platform looks for exactly one
              receiver handling this action, and sets none when it cannot find one. -->
         <receiver
             android:name="androidx.media.session.MediaButtonReceiver"
+            android:process=":playback"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MEDIA_BUTTON" />

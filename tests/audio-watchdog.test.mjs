@@ -144,7 +144,7 @@ test("a sustained background stall is retried after a longer grace period", (t) 
   assert.equal(player.reloads, 0);
   check();
   assert.equal(player.reloads, 1);
-  assert.match(reports[0], /asked for again/);
+  assert.equal(reports[0], "Playback stopped unexpectedly. Wave is trying to resume the song.");
   for (let i = 0; i < 5; i += 1) check();
   assert.equal(player.reloads, 1);
 });
@@ -181,7 +181,7 @@ test("an unexpected background pause is reconciled after the longer grace period
   assert.equal(player.pauses, 0);
   check();
   assert.equal(player.pauses, 1);
-  assert.match(reports[0], /taken away by the system/);
+  assert.equal(reports[0], "Playback was interrupted by your device. Press play to resume.");
 });
 
 function interruptedPlayback(t, hidden = false, reconcile = true) {

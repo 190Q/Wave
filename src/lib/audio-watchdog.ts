@@ -38,12 +38,12 @@ export function mountAudioWatchdog(
 
     const element = engine.element;
     if (element.paused) {
-      report(`The sound was taken away by the system. ${describe(element)}`);
+      report("Playback was interrupted by your device. Press play to resume.");
       player.pauseForInterruption();
       return;
     }
 
-    report(`The sound stopped, so the song was asked for again. ${describe(element)}`);
+    report("Playback stopped unexpectedly. Wave is trying to resume the song.");
     player.reloadCurrent();
   };
 
@@ -112,12 +112,4 @@ export function mountAudioWatchdog(
 
   player.onChange(sync);
   sync();
-}
-
-function describe(element: HTMLAudioElement): string {
-  return (
-    `Volume ${element.volume.toFixed(2)}, muted ${element.muted}, ` +
-    `paused ${element.paused}, ready ${element.readyState}, ` +
-    `network ${element.networkState}, error ${element.error?.code ?? 0}.`
-  );
 }

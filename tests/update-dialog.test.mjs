@@ -11,9 +11,9 @@ const mocks = {
   `,
   "@tauri-apps/plugin-opener": "export const openUrl = async () => {};",
   "@tauri-apps/plugin-notification": `
-    export const isPermissionGranted = async () => false;
+    export const isPermissionGranted = async () => globalThis.__updateTest.permissionGranted;
     export const requestPermission = async () => "denied";
-    export const sendNotification = () => {};
+    export const sendNotification = (notice) => globalThis.__updateTest.notifications.push(notice);
   `,
   "../lib/device": "export const device = () => globalThis.__updateTest.device;",
   "../lib/format": `export const escapeHtml = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");`,
@@ -92,6 +92,8 @@ function setup(device = "android") {
     checks: 0,
     installs: 0,
     focused: true,
+    permissionGranted: false,
+    notifications: [],
     state: {
       appVersion: "0.2.0",
       updateChecking: false,
@@ -201,4 +203,19 @@ test("a desktop update found in the background still opens on focus", () => {
   context.focused = true;
   context.focusListener({ payload: true });
   assert.equal(elements["update-dialog"].open, true);
+});
+
+test("system update notifications explain where to find update options", async () => {
+  const { context } = setup("desktop");
+  context.permissionGranted = true;
+  context.state.update.features = ["A technical release note"];
+  context.state.update.automatic = false;
+  mountUpdate();
+  context.state.updateFoundAt = 1;
+  context.notify();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(context.notifications, [{
+    title: "Wave 0.3.0 is available",
+    body: "Open Wave to see what's new and your update options.",
+  }]);
 });

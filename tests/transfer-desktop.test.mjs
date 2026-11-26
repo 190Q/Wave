@@ -56,7 +56,7 @@ test("desktop playlist imports report songs waiting for retry", async () => {
   const progress = getState().transferProgress;
   assert.equal(progress.phase, "failed");
   assert.match(progress.message, /16 songs imported/);
-  assert.match(progress.message, /4 songs waiting for audio/);
+  assert.match(progress.message, /4 songs still waiting to be downloaded/);
   assert.deepEqual(progress.failures, ["Download failed"]);
   assert.ok(!commands.includes("download_playlist"));
 });

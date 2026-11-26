@@ -149,7 +149,7 @@ export function mountUpdate(): void {
       }
       sendNotification({
         title: `Wave ${info.version} is available`,
-        body: info.features[0] ?? "Open Wave to see what is new.",
+        body: "Open Wave to see what's new and your update options.",
       });
     } catch {
       // Not running inside Tauri, or the system refused the notification.

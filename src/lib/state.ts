@@ -537,7 +537,9 @@ const engine = new AudioEngine({
       engine.enableCors();
     }
     const title = currentTrack()?.title;
-    setNotice(title ? `Could not play "${title}".` : "That song could not be played.");
+    setNotice(title
+      ? `Could not play "${title}". Check that the audio file is available and supported.`
+      : "Could not play this song. Check that the audio file is available and supported.");
     notePlaybackError();
     player.handleError();
   },
@@ -1361,27 +1363,30 @@ export async function rescanLibrary(): Promise<void> {
   await backfillGenres();
 }
 
-export async function rereadTags(): Promise<void> {
-  setNotice("Reading the tags again...");
+export async function rereadTags(): Promise<string | null> {
+  setNotice("Refreshing song information from your music files...");
   try {
     await applyScan(await ipc.rereadTags());
-    setNotice(`${plural(state.tracks.length, "song")} read again.`);
+    setNotice(`Refreshed information for ${plural(state.tracks.length, "song")}.`);
+    return null;
   } catch (error) {
-    setNotice(describe(error));
+    const message = `Could not refresh song information: ${describe(error)}`;
+    setNotice(message);
+    return message;
   }
 }
 
 export async function fixTagsAndCovers(): Promise<void> {
-  await rereadTags();
+  const failure = await rereadTags();
 
   const ids = state.tracks.map((track) => track.id);
   if (ids.length === 0) {
-    setNotice("There is nothing in the library to fix.");
+    setNotice(failure ?? "Your library is empty. Import some music before looking for missing song information.");
     return;
   }
 
-  const parts = [await fillCovers(ids), await fillGenres(ids)];
-  setNotice(parts.filter(Boolean).join(", ") || "Nothing needed fixing.");
+  const parts = [failure ?? "", await fillCovers(ids), await fillGenres(ids)];
+  setNotice(joinNotices(parts) || "No song information was updated.");
 }
 
 /** Set while a pass is running, so a second one cannot start on top of it. */
@@ -1420,45 +1425,46 @@ async function completeImport(outcome: ImportOutcome): Promise<string> {
     return "";
   }
 
-  setNotice(`Looking up ${plural(ids.length, "song")}...`);
+  setNotice(`Looking for missing cover art and genres for ${plural(ids.length, "song")}...`);
   const parts = [await fillCovers(ids), await fillGenres(ids)];
-  return parts.filter(Boolean).join(", ");
+  return joinNotices(parts);
 }
 
 /** The one-line summary both import paths finish with. */
 function importSummary(outcome: ImportOutcome, waitingForAudio = false): string {
-  const parts = [`${plural(outcome.songs, "song")} imported`];
+  const parts = [outcome.songs > 0 ? `${plural(outcome.songs, "song")} imported.` : "No new songs were imported."];
   if (outcome.duplicates > 0) {
-    parts.push(waitingForAudio
-      ? `${plural(outcome.duplicates, "song")} already in your library`
-      : `${plural(outcome.duplicates, "duplicate")} skipped`);
+    parts.push(`${plural(outcome.duplicates, "song")} already in your library.`);
   }
   if (outcome.similar > 0) {
-    parts.push(`${plural(outcome.similar, "song")} sharing a title`);
+    parts.push(`${plural(outcome.similar, "song")} added with matching song details but different audio.`);
   }
   if (outcome.images > 0) {
-    parts.push(plural(outcome.images, "image"));
+    parts.push(`Cover art added for ${plural(outcome.images, "song")}.`);
   }
   if (outcome.lyrics > 0) {
-    parts.push(plural(outcome.lyrics, "lyric file"));
+    parts.push(`Lyrics added for ${plural(outcome.lyrics, "song")}.`);
   }
   if (outcome.playlist) {
-    parts.push(`playlist "${outcome.playlist}" created`);
+    parts.push(`Playlist "${outcome.playlist}" created.`);
   }
   if (waitingForAudio && outcome.skipped > 0) {
-    parts.push(`${plural(outcome.skipped, "song")} waiting for audio`);
+    parts.push(`${plural(outcome.skipped, "song")} still waiting to be downloaded.`);
   }
   if (outcome.errors.length > 0) {
-    parts.push(`${outcome.errors.length} failed`);
+    parts.push(`${plural(outcome.errors.length, "problem")} encountered.`);
   }
-  return parts.join(", ");
+  return parts.join(" ");
 }
 
 function importNotice(outcome: ImportOutcome, found = ""): string {
-  const message = [importSummary(outcome), found].filter(Boolean).join(", ");
   const failure = outcome.errors.find((error) => error.includes("playlists could not be refreshed:")) ??
     outcome.errors[0];
-  return `${message}${failure ? `. ${failure}` : ""}`;
+  return joinNotices([importSummary(outcome), found, failure ?? ""]);
+}
+
+function joinNotices(parts: string[]): string {
+  return parts.filter(Boolean).map((part) => /[.!?]$/.test(part) ? part : `${part}.`).join(" ");
 }
 
 function beginLocalImport(message: string): boolean {
@@ -1502,7 +1508,7 @@ export async function importFolder(choose: () => Promise<boolean | null>): Promi
     const found = await completeImport(outcome);
     finishLocalImport(importNotice(outcome, found));
   } catch (error) {
-    finishLocalImport(describe(error));
+    finishLocalImport(`Could not finish importing the folder: ${describe(error)}`);
   } finally {
     state.folderImport = null;
     emit();
@@ -1532,7 +1538,7 @@ export async function importPickedFiles(): Promise<void> {
     const found = await completeImport(outcome);
     finishLocalImport(importNotice(outcome, found));
   } catch (error) {
-    finishLocalImport(describe(error));
+    finishLocalImport(`Could not finish importing the selected files: ${describe(error)}`);
   } finally {
     state.folderImport = null;
     emit();
@@ -1554,7 +1560,7 @@ export async function importPhoneFolder(): Promise<void> {
     await rescan(true);
     finishLocalImport(importNotice(outcome));
   } catch (error) {
-    finishLocalImport(describe(error));
+    finishLocalImport(`Could not finish importing the folder: ${describe(error)}`);
   } finally {
     state.folderImport = null;
     emit();
@@ -1577,7 +1583,7 @@ export async function importPhoneMusic(): Promise<void> {
     const found = await completeImport(outcome);
     finishLocalImport(importNotice(outcome, found));
   } catch (error) {
-    finishLocalImport(describe(error));
+    finishLocalImport(`Could not finish importing music from your phone: ${describe(error)}`);
   } finally {
     state.folderImport = null;
     emit();
@@ -1632,8 +1638,9 @@ export async function importWaveList(choose: () => Promise<boolean | null>): Pro
       void downloadPending(outcome.playlistId, []);
     }
   } catch (error) {
-    state.transferProgress = failedProgress(describe(error));
-    setNotice(describe(error));
+    const message = `Could not finish importing the Wave playlist: ${describe(error)}`;
+    state.transferProgress = failedProgress(message);
+    setNotice(message);
   } finally {
     transferPending = false;
     emit();
@@ -1655,7 +1662,7 @@ export async function exportCollection(collectionId: string): Promise<void> {
       setNotice(`Exported ${plural(count, "song")} to a Wave playlist.`);
     }
   } catch (error) {
-    setNotice(describe(error));
+    setNotice(`Could not finish exporting the playlist: ${describe(error)}`);
   } finally {
     exporting = false;
   }
@@ -1753,29 +1760,23 @@ export function jobRunning(progress: ImportProgress | null): boolean {
 
 /** The one-line summary a finished covers fetch leaves behind. */
 function coversSummary(outcome: CoversOutcome): string {
-  const parts = [`${outcome.restored} restored`];
+  const parts = [outcome.restored > 0 ? `Cover art added for ${plural(outcome.restored, "song")}.` : "No cover art was added."];
   if (outcome.tagged > 0) {
-    parts.push(`${outcome.tagged} given tags`);
-  }
-  if (outcome.embedded > 0) {
-    parts.push(`${outcome.embedded} from the files`);
-  }
-  if (outcome.online > 0) {
-    parts.push(`${outcome.online} fetched`);
+    parts.push(`Missing song information added for ${plural(outcome.tagged, "song")}.`);
   }
   if (outcome.skipped > 0) {
-    parts.push(`${outcome.skipped} already had covers`);
+    parts.push(`${plural(outcome.skipped, "song")} already had cover art.`);
   }
   if (outcome.untagged > 0) {
-    parts.push(`${outcome.untagged} with no artist tag`);
+    parts.push(`${plural(outcome.untagged, "song")} had no artist. Add an artist and try again.`);
   }
   if (outcome.missing > 0) {
-    parts.push(`${outcome.missing} not found`);
+    parts.push(`No cover art found for ${plural(outcome.missing, "song")}.`);
   }
   if (outcome.errors.length > 0) {
-    parts.push(`${outcome.errors.length} failed`);
+    parts.push(`${plural(outcome.errors.length, "problem")} while looking for cover art.`);
   }
-  return parts.join(", ");
+  return parts.join(" ");
 }
 
 /** Restores missing cover art for every song in a collection. */
@@ -1822,40 +1823,39 @@ async function fillCovers(trackIds: string[]): Promise<string> {
       startedAt: Date.now(),
     };
   } catch (error) {
-    message = describe(error);
+    message = `Could not finish looking for cover art: ${describe(error)}`;
     setNotice(message);
     state.coversProgress = failedProgress(message);
-    message = "";
   }
   return message;
 }
 
 /** The one-line summary a finished genre pass leaves behind. */
 function genresSummary(outcome: GenresOutcome): string {
-  const parts = [`${outcome.tagged} tagged`];
+  const parts = [outcome.tagged > 0 ? `Genres added for ${plural(outcome.tagged, "song")}.` : "No genres were added."];
   if (outcome.skipped > 0) {
-    parts.push(`${outcome.skipped} already had genres`);
+    parts.push(`${plural(outcome.skipped, "song")} already had a genre.`);
   }
   if (outcome.untagged > 0) {
-    parts.push(`${outcome.untagged} with no artist tag`);
+    parts.push(`${plural(outcome.untagged, "song")} had no artist. Add an artist and try again.`);
   }
   if (outcome.missing > 0) {
-    parts.push(`${outcome.missing} not found`);
+    parts.push(`No genre found for ${plural(outcome.missing, "song")}.`);
   }
   if (outcome.paused > 0) {
-    parts.push(`waited out the rate limit ${outcome.paused === 1 ? "once" : `${outcome.paused} times`}`);
+    parts.push("The music service asked Wave to slow down.");
   }
   if (outcome.errors.length > 0) {
-    parts.push(`${outcome.errors.length} failed`);
+    parts.push(`${plural(outcome.errors.length, "problem")} while looking for genres.`);
   }
   if (outcome.gaveUp) {
     parts.push(
       outcome.remaining > 0
-        ? `stopped early, ${plural(outcome.remaining, "song")} still without a genre, run it again to carry on`
-        : "stopped early",
+        ? `The search stopped early with ${plural(outcome.remaining, "song")} left to check. Try again to continue.`
+        : "The search stopped early. Try again.",
     );
   }
-  return parts.join(", ");
+  return parts.join(" ");
 }
 
 /** Writes the genre of every song in a collection into its file. */
@@ -1904,10 +1904,9 @@ async function fillGenres(trackIds: string[]): Promise<string> {
       startedAt: Date.now(),
     };
   } catch (error) {
-    message = describe(error);
+    message = `Could not finish looking for genres: ${describe(error)}`;
     setNotice(message);
     state.genresProgress = failedProgress(message);
-    message = "";
   }
   emit();
   return message;
@@ -1928,7 +1927,7 @@ async function backfillGenres(): Promise<void> {
     await rescan();
     setNotice(genresSummary(outcome));
   } catch (error) {
-    setNotice(describe(error));
+    setNotice(`Could not finish looking for genres: ${describe(error)}`);
   } finally {
     genresRunning = false;
     state.genresProgress = null;
@@ -1938,23 +1937,23 @@ async function backfillGenres(): Promise<void> {
 
 /** The one-line summary a finished lyrics fetch leaves behind. */
 function lyricsSummary(outcome: LyricsOutcome): string {
-  const parts = [`${outcome.fetched} with lyrics`];
+  const parts = [outcome.fetched > 0 ? `Lyrics added for ${plural(outcome.fetched, "song")}.` : "No lyrics were added."];
   if (outcome.synced > 0) {
-    parts.push(`${outcome.synced} with timings`);
+    parts.push(`${plural(outcome.synced, "song")} ${outcome.synced === 1 ? "has" : "have"} lyrics that follow the music.`);
   }
   if (outcome.skipped > 0) {
-    parts.push(`${outcome.skipped} already had them`);
+    parts.push(`${plural(outcome.skipped, "song")} already had lyrics.`);
   }
   if (outcome.untagged > 0) {
-    parts.push(`${outcome.untagged} with no artist tag`);
+    parts.push(`${plural(outcome.untagged, "song")} had no artist. Add an artist and try again.`);
   }
   if (outcome.missing > 0) {
-    parts.push(`${outcome.missing} not found`);
+    parts.push(`No lyrics found for ${plural(outcome.missing, "song")}.`);
   }
   if (outcome.errors.length > 0) {
-    parts.push(`${outcome.errors.length} failed`);
+    parts.push(`${plural(outcome.errors.length, "problem")} while looking for lyrics.`);
   }
-  return parts.join(", ");
+  return parts.join(" ");
 }
 
 /** Looks lyrics up for every song in a collection and files them. */
@@ -1994,7 +1993,7 @@ export async function fetchLyrics(collectionId: string): Promise<void> {
       startedAt: Date.now(),
     };
   } catch (error) {
-    const message = describe(error);
+    const message = `Could not finish looking for lyrics: ${describe(error)}`;
     setNotice(message);
     state.lyricsProgress = failedProgress(message);
   }
@@ -2006,7 +2005,7 @@ export async function openSpotifyConfig(): Promise<void> {
   try {
     await ipc.openSpotifyConfig();
   } catch (error) {
-    setNotice(describe(error));
+    setNotice(`Could not open the Spotify configuration folder: ${describe(error)}`);
   }
 }
 
@@ -2015,7 +2014,7 @@ export async function openImportLog(): Promise<void> {
   try {
     await ipc.openImportLog();
   } catch (error) {
-    setNotice(describe(error));
+    setNotice(`Could not open the download log: ${describe(error)}`);
   }
 }
 
@@ -2081,7 +2080,7 @@ export async function planLink(url: string): Promise<ImportPlan | null> {
     emit();
     return plan;
   } catch (error) {
-    const message = describe(error);
+    const message = `Could not check this link: ${describe(error)}`;
     setNotice(message);
     state.importing = failedProgress(message);
     emit();
@@ -2123,13 +2122,10 @@ export async function importLink(url: string, downloadDuplicates: boolean): Prom
     setNotice(message);
     state.importing =
       outcome.errors.length > 0
-        ? failedProgress(
-            `${plural(outcome.songs, "song")} imported, ${outcome.errors.length} failed.`,
-            outcome.errors,
-          )
+        ? failedProgress(message, outcome.errors)
         : finishedProgress("done", message);
   } catch (error) {
-    const message = describe(error);
+    const message = `Could not finish importing from this link: ${describe(error)}`;
     setNotice(message);
     state.importing = failedProgress(message);
   }
@@ -2284,7 +2280,7 @@ export async function toggleLikeTrack(trackId: string): Promise<void> {
     recordEvent(state.likes.has(trackId) ? "like" : "unlike", { trackIds: [trackId] });
     emit();
   } catch (error) {
-    setNotice(describe(error));
+    setNotice(`Could not finish updating liked songs: ${describe(error)}`);
   }
 }
 
@@ -2299,7 +2295,7 @@ export async function setTracksLiked(trackIds: string[], liked: boolean): Promis
     recordEvent(liked ? "like" : "unlike", { trackIds });
     emit();
   } catch (error) {
-    setNotice(describe(error));
+    setNotice(`Could not finish updating liked songs: ${describe(error)}`);
   }
 }
 
@@ -2308,7 +2304,7 @@ export async function createPlaylist(name: string): Promise<void> {
     await queuePlaylistWrite(() => ipc.createPlaylist(name));
     emit();
   } catch (error) {
-    setNotice(describe(error));
+    setNotice(`Could not finish creating the playlist: ${describe(error)}`);
   }
 }
 
@@ -2332,7 +2328,7 @@ export async function createPlaylistWithTracks(name: string, trackIds: string[])
     });
     emit();
   } catch (error) {
-    setNotice(describe(error));
+    setNotice(`Could not finish creating the playlist: ${describe(error)}`);
   }
 }
 
@@ -2341,7 +2337,7 @@ export async function renamePlaylist(id: string, name: string): Promise<void> {
     await queuePlaylistWrite(() => ipc.renamePlaylist(id, name));
     emit();
   } catch (error) {
-    setNotice(describe(error));
+    setNotice(`Could not finish renaming the playlist: ${describe(error)}`);
   }
 }
 
@@ -2353,7 +2349,7 @@ export async function deletePlaylist(id: string): Promise<void> {
     state.recents = state.recents.filter((entry) => entry !== id);
     emit();
   } catch (error) {
-    setNotice(describe(error));
+    setNotice(`Could not finish deleting the playlist: ${describe(error)}`);
   }
 }
 
@@ -2495,7 +2491,7 @@ export async function addTracksToPlaylist(id: string, trackIds: string[]): Promi
     });
     emit();
   } catch (error) {
-    setNotice(describe(error));
+    setNotice(`Could not finish adding songs to the playlist: ${describe(error)}`);
   }
 }
 
@@ -2509,7 +2505,7 @@ export async function removeTracksFromPlaylist(id: string, trackIds: string[]): 
     });
     emit();
   } catch (error) {
-    setNotice(describe(error));
+    setNotice(`Could not finish removing songs from the playlist: ${describe(error)}`);
   }
 }
 
@@ -2518,7 +2514,7 @@ export async function reorderPlaylist(id: string, trackIds: string[]): Promise<v
     await queuePlaylistWrite(() => ipc.reorderPlaylist(id, trackIds));
     emit();
   } catch (error) {
-    setNotice(describe(error));
+    setNotice(`Could not finish reordering the playlist: ${describe(error)}`);
   }
 }
 
@@ -2563,7 +2559,7 @@ export async function generatePlaylist(mode: PlaylistMode, genre: string | null)
     );
     state.generateProgress = null;
   } catch (error) {
-    const message = describe(error);
+    const message = `Could not finish creating the playlist: ${describe(error)}`;
     setNotice(message);
     state.generateProgress = failedProgress(message);
   }
@@ -2575,14 +2571,14 @@ let downloading = false;
 
 /** The one-line summary a finished playlist download leaves behind. */
 function downloadSummary(outcome: ImportOutcome): string {
-  const parts = [`${plural(outcome.songs, "song")} downloaded`];
+  const parts = [outcome.songs > 0 ? `${plural(outcome.songs, "song")} downloaded.` : "No new songs were downloaded."];
   if (outcome.duplicates > 0) {
-    parts.push(`${plural(outcome.duplicates, "duplicate")} skipped`);
+    parts.push(`${plural(outcome.duplicates, "song")} already in your library.`);
   }
   if (outcome.errors.length > 0) {
-    parts.push(`${outcome.errors.length} failed`);
+    parts.push(`${plural(outcome.errors.length, "problem")} encountered. Check the download details.`);
   }
-  return parts.join(", ");
+  return parts.join(" ");
 }
 
 /** Fetches a generated playlist's pending entries, an empty list meaning all of them. */
@@ -2610,17 +2606,15 @@ export async function downloadPending(playlistId: string, entryIds: string[]): P
     const outcome = await ipc.downloadPlaylist(playlistId, entryIds);
     applyPersisted(outcome.state);
     await refreshImportedLyrics(outcome);
-    setNotice(downloadSummary(outcome));
+    const message = downloadSummary(outcome);
+    setNotice(message);
     // Only a failure stays on screen; a clean run needs no line left behind.
     state.downloadProgress =
       outcome.errors.length > 0
-        ? failedProgress(
-            `${plural(outcome.songs, "song")} downloaded, ${outcome.errors.length} failed.`,
-            outcome.errors,
-          )
+        ? failedProgress(message, outcome.errors)
         : null;
   } catch (error) {
-    const message = describe(error);
+    const message = `Could not finish downloading the playlist: ${describe(error)}`;
     setNotice(message);
     state.downloadProgress = failedProgress(message);
   } finally {
@@ -2662,7 +2656,7 @@ export async function captureWindowSlot(slot: number): Promise<void> {
     applyPersisted(await ipc.saveWindowSlot(slot));
     emit();
   } catch (error) {
-    setNotice(describe(error));
+    setNotice(`Could not save the window position and size for this shortcut: ${describe(error)}`);
   }
 }
 
@@ -2873,7 +2867,7 @@ export async function updateSettings(patch: Partial<Settings>): Promise<boolean>
     emit();
     return true;
   } catch (error) {
-    setNotice(describe(error));
+    setNotice(`Could not finish saving your settings: ${describe(error)}`);
     return false;
   }
 }

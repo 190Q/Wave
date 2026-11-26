@@ -1293,13 +1293,13 @@ export function mountEq(): void {
       .then((text) => {
         const profile = parseEqProfile(text, name);
         if (!profile) {
-          setNotice("That file does not hold a curve Wave can read.");
+          setNotice("Wave could not find a supported equaliser profile in this file. Choose an AutoEq or Equalizer APO profile.");
           return;
         }
         importEqProfile(profile, name);
-        setNotice(`Imported ${name}.`);
+        setNotice(`Equaliser profile "${name}" imported.`);
       })
-      .catch(() => setNotice("That file could not be read."))
+      .catch(() => setNotice("Could not read the equaliser profile. Check the file and try again."))
       .finally(() => {
         file.value = "";
       });

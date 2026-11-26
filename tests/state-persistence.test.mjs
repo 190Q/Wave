@@ -444,13 +444,13 @@ test("folder, file, and phone music imports show the first detailed error", asyn
   ];
   for (const action of actions) {
     await action();
-    assert.match(app.getState().notice, /1 failed.*Cannot copy this file/);
+    assert.match(app.getState().notice, /1 problem encountered.*Cannot copy this file/);
   }
   assert.deepEqual(audioPickerCalls, ["android"]);
   importErrors = ["Cannot copy this file", "Import finished, but the playlists could not be refreshed: unavailable"];
   for (const action of actions) {
     await action();
-    assert.match(app.getState().notice, /2 failed.*playlists could not be refreshed: unavailable/);
+    assert.match(app.getState().notice, /2 problems encountered.*playlists could not be refreshed: unavailable/);
   }
   importErrors = ["Cannot copy this file"];
 });
@@ -473,6 +473,17 @@ test("folder import refreshes all imported tracks without a landed event", async
   } finally {
     globalThis.__testIpc.scanLibrary = originalScan;
     scanTracks = [];
+  }
+});
+
+test("playlist errors identify the action while keeping the underlying detail", async () => {
+  const originalCreate = globalThis.__testIpc.createPlaylist;
+  globalThis.__testIpc.createPlaylist = async () => { throw new Error("Disk full"); };
+  try {
+    await app.createPlaylist("Mix");
+    assert.equal(app.getState().notice, "Could not finish creating the playlist: Disk full");
+  } finally {
+    globalThis.__testIpc.createPlaylist = originalCreate;
   }
 });
 
@@ -559,7 +570,7 @@ test("selected files and phone music follow progress and retain the outcome", as
       assert.equal(app.getState().folderImport, null);
       assert.match(app.getState().localImportResult, /5 songs imported/);
       listeners.get("folder-import-progress")({ payload: "stale update" });
-      assert.equal(app.getState().localImportResult, "5 songs imported");
+      assert.equal(app.getState().localImportResult, "5 songs imported.");
     } finally {
       globalThis.__testIpc[command] = originalImport;
     }
@@ -584,7 +595,7 @@ test("phone folder and file picker cancellation or failure clear progress", asyn
     globalThis.__testIpc.scanPhoneMusic = async () => { throw new Error("Permission denied"); };
     await app.importPhoneMusic();
     assert.equal(app.getState().folderImport, null);
-    assert.match(app.getState().localImportResult, /Permission denied/);
+    assert.match(app.getState().localImportResult, /Could not finish importing music from your phone: Permission denied/);
   } finally {
     globalThis.__testIpc.importPhoneFolder = originalFolder;
     globalThis.__testIpc.pickPhoneAudioFiles = originalPicker;
@@ -682,4 +693,123 @@ test("refreshing restored analytics snapshots the destination library", async ()
   remembered.length = 0;
   await app.refreshAnalytics();
   assert.deepEqual(remembered, [["destination-song"]]);
+});
+
+test("library lookup notices explain results, missing information and unfinished work", async () => {
+  const originalCovers = globalThis.__testIpc.fetchCovers;
+  const originalGenres = globalThis.__testIpc.fetchGenres;
+  const originalLyrics = globalThis.__testIpc.fetchLyrics;
+  scanTracks = Array.from({ length: 6 }, (_, index) => ({
+    id: `lookup-${index}`, title: `Song ${index}`, path: `song-${index}`,
+    durationMs: 1000, artist: null, album: null, genre: null,
+  }));
+  scanErrors = [];
+  await app.rescan(true);
+  globalThis.__testIpc.fetchCovers = async () => ({
+    restored: 1, tagged: 1, embedded: 1, online: 0, skipped: 1, untagged: 1, missing: 1, errors: ["cover failed"],
+  });
+  globalThis.__testIpc.fetchGenres = async () => ({
+    tagged: 1, skipped: 1, untagged: 1, missing: 1, paused: 1, gaveUp: true, remaining: 1, errors: ["genre failed"],
+  });
+  globalThis.__testIpc.fetchLyrics = async () => ({
+    fetched: 1, synced: 1, skipped: 1, untagged: 1, missing: 1, errors: ["lyrics failed"],
+  });
+  try {
+    await app.fetchCovers("all");
+    const covers = app.getState().coversProgress;
+    assert.match(covers.message, /Cover art added for 1 song\./);
+    assert.match(covers.message, /1 song had no artist\. Add an artist and try again\./);
+    assert.match(covers.message, /No cover art found for 1 song\./);
+    assert.match(covers.message, /1 problem while looking for cover art\./);
+    assert.deepEqual(covers.failures, ["cover failed"]);
+
+    await app.fetchGenres("all");
+    const genres = app.getState().genresProgress;
+    assert.match(genres.message, /Genres added for 1 song\./);
+    assert.match(genres.message, /No genre found for 1 song\./);
+    assert.match(genres.message, /1 song left to check\. Try again to continue\./);
+    assert.deepEqual(genres.failures, ["genre failed"]);
+
+    await app.fetchLyrics("all");
+    const lyrics = app.getState().lyricsProgress;
+    assert.match(lyrics.message, /Lyrics added for 1 song\./);
+    assert.match(lyrics.message, /1 song has lyrics that follow the music\./);
+    assert.match(lyrics.message, /No lyrics found for 1 song\./);
+    assert.match(lyrics.message, /1 problem while looking for lyrics\./);
+    assert.deepEqual(lyrics.failures, ["lyrics failed"]);
+  } finally {
+    globalThis.__testIpc.fetchCovers = originalCovers;
+    globalThis.__testIpc.fetchGenres = originalGenres;
+    globalThis.__testIpc.fetchLyrics = originalLyrics;
+    scanTracks = [];
+  }
+});
+
+test("import results retain metadata lookup failures and explain reused songs", async () => {
+  const originalImport = globalThis.__testIpc.importPickedFiles;
+  const originalCovers = globalThis.__testIpc.fetchCovers;
+  const originalGenres = globalThis.__testIpc.fetchGenres;
+  globalThis.__testIpc.importPickedFiles = async () => ({
+    ...outcome(), songs: 1, duplicates: 2, images: 1, lyrics: 1, trackIds: ["new"], errors: [],
+  });
+  globalThis.__testIpc.fetchCovers = async () => { throw new Error("Connection unavailable"); };
+  globalThis.__testIpc.fetchGenres = async () => ({
+    tagged: 0, skipped: 1, untagged: 0, missing: 0, paused: 0, gaveUp: false, remaining: 0, errors: [],
+  });
+  try {
+    await app.importPickedFiles();
+    const message = app.getState().localImportResult;
+    assert.match(message, /1 song imported\. 2 songs already in your library\./);
+    assert.match(message, /Cover art added for 1 song\. Lyrics added for 1 song\./);
+    assert.match(message, /Could not finish looking for cover art: Connection unavailable/);
+    assert.match(message, /No genres were added\./);
+    assert.match(message, /1 song already had a genre\./);
+    assert.equal(app.getState().coversProgress.phase, "failed");
+  } finally {
+    globalThis.__testIpc.importPickedFiles = originalImport;
+    globalThis.__testIpc.fetchCovers = originalCovers;
+    globalThis.__testIpc.fetchGenres = originalGenres;
+  }
+});
+
+test("partial playlist downloads retain the results and error details", async () => {
+  const originalDownload = globalThis.__testIpc.downloadPlaylist;
+  globalThis.__testIpc.downloadPlaylist = async () => ({
+    ...outcome(), songs: 1, duplicates: 2, errors: ["Song could not be downloaded"],
+  });
+  try {
+    await app.downloadPending("playlist", []);
+    const progress = app.getState().downloadProgress;
+    assert.equal(progress.phase, "failed");
+    assert.equal(progress.message, "1 song downloaded. 2 songs already in your library. 1 problem encountered. Check the download details.");
+    assert.deepEqual(progress.failures, ["Song could not be downloaded"]);
+  } finally {
+    globalThis.__testIpc.downloadPlaylist = originalDownload;
+  }
+});
+
+test("repair results retain song-information refresh errors", async () => {
+  const originalRead = globalThis.__testIpc.rereadTags;
+  const originalCovers = globalThis.__testIpc.fetchCovers;
+  const originalGenres = globalThis.__testIpc.fetchGenres;
+  scanTracks = [{ id: "repair", title: "Song", path: "song", durationMs: 1000, artist: null, album: null, genre: null }];
+  await app.rescan(true);
+  globalThis.__testIpc.rereadTags = async () => { throw new Error("Read failed"); };
+  globalThis.__testIpc.fetchCovers = async () => ({
+    restored: 0, tagged: 0, embedded: 0, online: 0, skipped: 1, untagged: 0, missing: 0, errors: [],
+  });
+  globalThis.__testIpc.fetchGenres = async () => ({
+    tagged: 0, skipped: 1, untagged: 0, missing: 0, paused: 0, gaveUp: false, remaining: 0, errors: [],
+  });
+  try {
+    await app.fixTagsAndCovers();
+    assert.match(app.getState().notice, /Could not refresh song information: Read failed\./);
+    assert.match(app.getState().notice, /1 song already had cover art\./);
+    assert.match(app.getState().notice, /1 song already had a genre\./);
+  } finally {
+    globalThis.__testIpc.rereadTags = originalRead;
+    globalThis.__testIpc.fetchCovers = originalCovers;
+    globalThis.__testIpc.fetchGenres = originalGenres;
+    scanTracks = [];
+  }
 });

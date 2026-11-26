@@ -35,7 +35,7 @@ async function snapWindow(slot: number, part: SnapPart): Promise<void> {
   try {
     await applyWindowSlot(slot, part);
   } catch {
-    setNotice("No window frame is saved for that slot yet.");
+    setNotice("No window position or size is saved for this shortcut. Set it up in Settings first.");
   }
 }
 

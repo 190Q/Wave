@@ -10,6 +10,7 @@ use crate::download;
 use crate::download_log;
 use crate::import::{self, ImportOutcome};
 use crate::import_source::{self, PROGRESS_EVENT};
+use crate::lyrics;
 use crate::progress::{Output, Reporter};
 use crate::source::{read_env, TrackMeta};
 use crate::state::{PendingTrack, PersistedState, Store};
@@ -24,6 +25,7 @@ struct Wanted {
     id: String,
     meta: TrackMeta,
     cover: Option<PathBuf>,
+    synced_lyrics: Option<String>,
 }
 
 pub fn run(
@@ -81,6 +83,7 @@ fn run_inner(
 
     let mut wanted: Vec<Wanted> = Vec::new();
     let mut reused: Vec<String> = Vec::new();
+    let mut restored_lyrics = 0usize;
 
     for (place, track) in chosen.iter().enumerate() {
         let meta = track.meta();
@@ -88,6 +91,13 @@ fn run_inner(
 
         match import_source::held(&known, &meta) {
             Some(id) => {
+                match lyrics::restore(&catalog, id, track.synced_lyrics.as_deref()) {
+                    Ok(saved) => restored_lyrics += usize::from(saved),
+                    Err(error) => {
+                        report.fail(format!("{label}: {error}"));
+                        continue;
+                    }
+                }
                 landed.insert(track.id.clone(), id.clone());
                 reused.push(label);
             }
@@ -95,6 +105,7 @@ fn run_inner(
                 place,
                 id: track.id.clone(),
                 cover: track.cover_path.as_deref().map(PathBuf::from),
+                synced_lyrics: track.synced_lyrics.clone(),
                 meta,
             }),
         }
@@ -119,7 +130,7 @@ fn run_inner(
 
     let mut songs = 0usize;
     let mut images = 0usize;
-    let mut lyrics = 0usize;
+    let mut lyrics = restored_lyrics;
     let mut similar = 0usize;
     let mut duplicates = reused.len();
     let mut handled = 0usize;
@@ -131,12 +142,20 @@ fn run_inner(
 
         match fetched.file.and_then(|file| import::land(app, &file)) {
             Ok(song) => {
+                let restored = match lyrics::restore(&catalog, &song.id, want.synced_lyrics.as_deref()) {
+                    Ok(saved) => saved,
+                    Err(error) => {
+                        report.fail(format!("{label}: {error}"));
+                        report.at(handled, &label);
+                        return;
+                    }
+                };
                 let done = import::complete(app, &song.id);
 
                 songs += usize::from(!song.duplicate);
                 duplicates += usize::from(song.duplicate);
                 images += usize::from(song.cover || done.cover);
-                lyrics += usize::from(song.lyrics || done.lyrics);
+                lyrics += usize::from(restored || song.lyrics || done.lyrics);
                 similar += usize::from(song.similar);
                 landed.insert(want.id.clone(), song.id);
             }
@@ -260,12 +279,21 @@ fn fill_phone(
                 }
             }
         };
+        let restored = match lyrics::restore(catalog, &id, track.synced_lyrics.as_deref()) {
+            Ok(saved) => saved,
+            Err(error) => {
+                report.fail(format!("{label}: {error}"));
+                continue;
+            }
+        };
         catalog.resolve_pending(playlist_id, &[(track.id.clone(), id)])?;
         updated();
         if let Some((id, cover, lyrics)) = downloaded {
             let done = complete(&id);
             outcome.images += usize::from(cover || done.cover);
-            outcome.lyrics += usize::from(lyrics || done.lyrics);
+            outcome.lyrics += usize::from(restored || lyrics || done.lyrics);
+        } else {
+            outcome.lyrics += usize::from(restored);
         }
     }
     outcome.errors = report.failures().to_vec();
@@ -443,6 +471,29 @@ mod tests {
         }, || notified.set(true)).unwrap();
         assert_eq!(outcome.images, 1);
         assert_eq!(outcome.lyrics, 1);
+    }
+
+    #[test]
+    fn phone_download_restores_pending_lyrics_before_completion() {
+        let root = std::env::temp_dir().join(format!("wave-pending-{}", crate::identity::new_id()));
+        let catalog = Catalog::open(&root).unwrap();
+        let mut track = pending("First");
+        track.synced_lyrics = Some("[00:01.250]Saved words\r\n".into());
+        let id = catalog.create_imported_playlist("Imported", &[track.id.clone()], &[track]).unwrap();
+        let mut report = Reporter::quiet();
+        let outcome = fill_phone(&catalog, &id, &[], &mut report, |_, track| {
+            std::fs::create_dir_all(crate::library::track_dir(&root, "first")).unwrap();
+            Ok(add_song(&catalog, "first", &track.title))
+        }, |song_id| {
+            let text = std::fs::read_to_string(crate::library::lyrics_path(&root, song_id)).unwrap();
+            assert_eq!(text, "[00:01.250]Saved words\r\n");
+            import::Complete::default()
+        }, || {}).unwrap();
+        assert_eq!(outcome.lyrics, 1);
+        assert!(catalog.pending_tracks(&id).unwrap().is_empty());
+        assert!(outcome.errors.is_empty());
+        drop(catalog);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

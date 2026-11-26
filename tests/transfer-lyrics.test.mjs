@@ -10,11 +10,22 @@ Object.defineProperty(globalThis, "navigator", {
 globalThis.Audio = class {
   paused = true;
   addEventListener() {}
+  removeEventListener() {}
+  pause() {}
+  removeAttribute() {}
+  load() {}
 };
+globalThis.HTMLMediaElement = { HAVE_METADATA: 1 };
 globalThis.document = { addEventListener() {} };
 
 const lyricsRequests = [];
 const exports = [];
+const scans = [];
+let importOutcome;
+const importedTrack = {
+  id: "same", title: "Same", path: "song.mp3", artist: null, album: null, genre: null,
+  durationMs: 180000, artworkPath: null, lyricsPath: "lyrics.lrc", lufs: null, peak: null,
+};
 globalThis.window = {
   setInterval() {},
   setTimeout() {},
@@ -23,10 +34,21 @@ globalThis.window = {
       if (command === "load_lyrics") {
         return new Promise((resolve, reject) => lyricsRequests.push({ id: args.trackId, resolve, reject }));
       }
+      if (command === "library_info") return Promise.resolve({ tracks: 1 });
+      if (command === "get_state") return Promise.resolve({});
       if (command === "plugin:dialog|save") return Promise.resolve("content://exports/list");
+      if (command === "plugin:dialog|open") return Promise.resolve("content://imports/list");
       if (command === "export_wavelist") {
         exports.push(args);
         return Promise.resolve(args.trackIds.length);
+      }
+      if (command === "import_wavelist" || command === "download_playlist") return Promise.resolve(importOutcome);
+      if (command === "scan_library") {
+        scans.push(args.full);
+        return Promise.resolve({
+          changed: args.full ? [importedTrack] : [], removed: [], total: 1, root: "library",
+          skipped: 0, errors: [],
+        });
       }
       throw new Error(`Unexpected command: ${command}`);
     },
@@ -43,7 +65,7 @@ const vite = await createServer({
 });
 after(() => vite.close());
 
-const { ensureLyrics, exportCollection, getState, subscribe } = await vite.ssrLoadModule("/src/lib/state.ts");
+const { downloadPending, ensureLyrics, exportCollection, getState, importWaveList, subscribe } = await vite.ssrLoadModule("/src/lib/state.ts");
 
 test("exports pending-only and mixed playlists using their ordered entries", async () => {
   const state = getState();
@@ -123,4 +145,36 @@ test("an old failure cannot clear a newer request for the same track", async () 
   await Promise.all([first, middle]);
   assert.equal(getState().lyricsTrackId, "same");
   assert.deepEqual(getState().lyrics, [{ timeMs: 4000, text: "Current again" }]);
+});
+
+test("playlist imports and downloads refresh restored lyrics for the current track", async () => {
+  const state = getState();
+  state.tracksById = new Map([["same", importedTrack]]);
+  state.lyricsTrackId = "same";
+  state.lyrics = [];
+  importOutcome = {
+    songs: 0, images: 0, lyrics: 1, skipped: 0, duplicates: 1, similar: 0,
+    playlist: null, playlistId: null, trackIds: [], errors: [], state: {},
+  };
+  for (const action of [
+    () => importWaveList(async () => false),
+    () => downloadPending("playlist", []),
+  ]) {
+    const pending = action();
+    for (let attempt = 0; attempt < 50 && lyricsRequests.length === 0; attempt++) {
+      await new Promise(setImmediate);
+    }
+    const request = lyricsRequests.shift();
+    assert.equal(request?.id, "same");
+    request.resolve("[00:05]Restored");
+    await pending;
+    assert.deepEqual(state.lyrics, [{ timeMs: 5000, text: "Restored" }]);
+  }
+  assert.deepEqual(scans, [true, true]);
+  assert.deepEqual(state.scanErrors, []);
+
+  importOutcome.lyrics = 0;
+  await importWaveList(async () => false);
+  assert.deepEqual(scans, [true, true, false]);
+  assert.equal(lyricsRequests.length, 0);
 });

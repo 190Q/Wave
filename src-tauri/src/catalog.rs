@@ -12,7 +12,7 @@ use crate::state::{PendingTrack, Playlist, GENERATED_KIND};
 
 pub const CATALOG_FILE: &str = "library.db";
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 pub const LAYOUT_VERSION_KEY: &str = "layout_version";
 pub const LAYOUT_VERSION: &str = "2";
@@ -92,13 +92,14 @@ CREATE TABLE IF NOT EXISTS pending_tracks (
   source       TEXT NOT NULL DEFAULT '',
   source_id    TEXT NOT NULL DEFAULT '',
   added_at     INTEGER NOT NULL DEFAULT 0,
-  duration_ms  INTEGER
+  duration_ms  INTEGER,
+  synced_lyrics TEXT
 );
 CREATE INDEX IF NOT EXISTS pending_tracks_playlist ON pending_tracks (playlist_id);
 "#;
 
 const PENDING_COLUMNS: &str = "id, title, artists, album, album_artist, genres, isrc, cover_url, \
-     cover_path, release_date, track_number, disc_number, source, source_id, duration_ms";
+     cover_path, release_date, track_number, disc_number, source, source_id, duration_ms, synced_lyrics";
 
 #[derive(Debug, Clone, Default)]
 pub struct TrackRow {
@@ -328,6 +329,11 @@ impl Catalog {
                 connection
                     .execute_batch("ALTER TABLE pending_tracks ADD COLUMN duration_ms INTEGER")
                     .map_err(|e| format!("could not add the waiting lengths: {e}"))?;
+            }
+            if !has_column(&connection, "pending_tracks", "synced_lyrics") {
+                connection
+                    .execute_batch("ALTER TABLE pending_tracks ADD COLUMN synced_lyrics TEXT")
+                    .map_err(|e| format!("could not add the waiting lyrics: {e}"))?;
             }
         }
 
@@ -1271,6 +1277,7 @@ fn read_pending(row: &Row<'_>) -> rusqlite::Result<PendingTrack> {
         source: row.get(12)?,
         source_id: row.get(13)?,
         duration_ms: row.get::<_, Option<i64>>(14)?.map(|value| value as u64),
+        synced_lyrics: row.get(15)?,
     })
 }
 
@@ -1318,8 +1325,8 @@ fn write_pending(
         .execute(
             "INSERT INTO pending_tracks (id, playlist_id, title, artists, album, album_artist, \
              genres, isrc, cover_url, cover_path, release_date, track_number, disc_number, source, \
-             source_id, added_at, duration_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+             source_id, added_at, duration_ms, synced_lyrics) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 track.id,
                 playlist_id,
@@ -1338,6 +1345,7 @@ fn write_pending(
                 track.source_id,
                 identity::now_ms(),
                 track.duration_ms.map(|value| value as i64),
+                track.synced_lyrics,
             ],
         )
         .map(|_| ())
@@ -1515,6 +1523,26 @@ mod tests {
 
         drop(shared);
         drop(installed);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn upgrades_version_five_catalog_and_keeps_pending_metadata() {
+        let root = scratch("pending-lyrics-upgrade");
+        std::fs::create_dir_all(root.join(CONFIG_DIR)).unwrap();
+        let connection = Connection::open(root.join(CONFIG_DIR).join(CATALOG_FILE)).unwrap();
+        let old_pending = PENDING_TABLE.replace("  duration_ms  INTEGER,\n  synced_lyrics TEXT", "  duration_ms  INTEGER");
+        connection.execute_batch(&format!("{SCHEMA}{old_pending} PRAGMA user_version = 5;")).unwrap();
+        connection.execute("INSERT INTO playlists (id, name) VALUES ('p', 'Playlist')", []).unwrap();
+        connection.execute("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES ('p', 'waiting', 0)", []).unwrap();
+        connection.execute("INSERT INTO pending_tracks (id, playlist_id, title) VALUES ('waiting', 'p', 'Song')", []).unwrap();
+        drop(connection);
+        let catalog = Catalog::open(&root).unwrap();
+        let pending = catalog.pending_tracks("p").unwrap();
+        assert_eq!(pending[0].title, "Song");
+        assert_eq!(pending[0].synced_lyrics, None);
+        assert!(has_column(&catalog.guard(), "pending_tracks", "synced_lyrics"));
+        drop(catalog);
         std::fs::remove_dir_all(root).unwrap();
     }
 

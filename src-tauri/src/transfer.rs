@@ -18,6 +18,7 @@ use crate::download_log;
 use crate::import::{self, ImportOutcome};
 use crate::import_source;
 use crate::library;
+use crate::lyrics;
 use crate::playlists;
 use crate::progress::{Output, Reporter};
 use crate::source::{read_env, TrackMeta};
@@ -64,7 +65,8 @@ pub(crate) fn write_bytes(app: &AppHandle, path: &str, bytes: &[u8]) -> Result<(
     fs::write(path, bytes).map_err(|e| format!("Could not save the export: {e}"))
 }
 
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
+const MAGIC: &[u8] = b"WAVE\x03";
 
 pub const PROGRESS_EVENT: &str = "wavelist-import";
 
@@ -75,12 +77,17 @@ struct WaveList {
     version: u32,
     name: String,
     tracks: Vec<TrackMeta>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    lyrics: Vec<Option<String>>,
 }
 
 impl WaveList {
     fn validate(&self) -> Result<(), String> {
         if self.format != "wave-playlist" || self.version != VERSION {
             return Err("This is not a supported Wave playlist export.".into());
+        }
+        if !self.lyrics.is_empty() && self.lyrics.len() != self.tracks.len() {
+            return Err("The playlist lyrics do not match the song list.".into());
         }
         if self.name.trim().is_empty() || self.name.len() > 1024
             || self.tracks.is_empty() || self.tracks.len() > 10_000
@@ -93,6 +100,10 @@ impl WaveList {
             }
         }
         Ok(())
+    }
+
+    fn lyrics_at(&self, index: usize) -> Option<&str> {
+        self.lyrics.get(index).and_then(Option::as_deref)
     }
 }
 
@@ -108,11 +119,25 @@ struct LegacyList {
 #[serde(rename_all = "camelCase")]
 struct LegacyEntry {
     meta: TrackMeta,
+    #[serde(default)]
+    synced_lyrics: Option<String>,
 }
 
 fn read(path: &Path) -> Result<WaveList, String> {
     let file = fs::File::open(path).map_err(|e| format!("Could not open the export: {e}"))?;
     read_list(file)
+}
+
+fn decompress(bytes: &[u8], limit: u64) -> Result<Vec<u8>, String> {
+    let mut decoded = Vec::new();
+    brotli::Decompressor::new(bytes, 4096)
+        .take(limit + 1)
+        .read_to_end(&mut decoded)
+        .map_err(|e| format!("Could not decompress the Wave playlist export: {e}"))?;
+    if decoded.len() as u64 > limit {
+        return Err("The playlist export is too large to read.".into());
+    }
+    Ok(decoded)
 }
 
 fn read_list(file: impl Read) -> Result<WaveList, String> {
@@ -124,20 +149,31 @@ fn read_list(file: impl Read) -> Result<WaveList, String> {
         return Err("The playlist export is too large to read.".into());
     }
 
+    if bytes.starts_with(MAGIC) {
+        bytes = decompress(&bytes[MAGIC.len()..], MAX_FILE_BYTES)?;
+    }
     let value: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|e| format!("Could not read the Wave playlist export: {e}"))?;
 
     let list = match value.get("version").and_then(serde_json::Value::as_u64) {
         Some(version) if version == u64::from(VERSION) => serde_json::from_value(value)
             .map_err(|e| format!("Could not read the Wave playlist export: {e}"))?,
+        Some(2) => {
+            let mut list: WaveList = serde_json::from_value(value)
+                .map_err(|e| format!("Could not read the Wave playlist export: {e}"))?;
+            list.version = VERSION;
+            list
+        }
         Some(1) => {
             let legacy: LegacyList = serde_json::from_value(value)
                 .map_err(|e| format!("Could not read the Wave playlist export: {e}"))?;
+            let lyrics = legacy.tracks.iter().map(|entry| entry.synced_lyrics.clone()).collect();
             WaveList {
                 format: legacy.format,
                 version: VERSION,
                 name: legacy.name,
                 tracks: legacy.tracks.into_iter().map(|entry| entry.meta).collect(),
+                lyrics,
             }
         }
         _ => return Err("This is not a supported Wave playlist export.".into()),
@@ -191,30 +227,60 @@ fn export_list(catalog: &Catalog, name: String, ids: &[String]) -> Result<WaveLi
         .flat_map(|playlist| playlist.pending)
         .map(|track| (track.id.clone(), track))
         .collect();
+    let mut words = Vec::with_capacity(ids.len());
+    let mut total = 0u64;
+    let mut cached: HashMap<String, Option<String>> = HashMap::new();
     let entries = ids.iter().map(|id| {
-        if let Some(track) = pending.get(id) {
-            Ok(track.meta())
+        let (meta, text) = if let Some(track) = pending.get(id) {
+            (track.meta(), track.synced_lyrics.clone())
         } else if let Some(track) = tracks.get(id) {
-            Ok(track_meta(track))
+            let text = match cached.get(id) {
+                Some(text) => text.clone(),
+                None => {
+                    let text = lyrics::read_track(catalog.root(), track, MAX_FILE_BYTES - total)?;
+                    cached.insert(id.clone(), text.clone());
+                    text
+                }
+            };
+            (track_meta(track), text)
         } else {
-            Err(format!("A selected song is no longer in the library: {id}"))
+            return Err(format!("A selected song is no longer in the library: {id}"));
+        };
+        total = total.saturating_add(text.as_ref().map_or(0, |text| text.len() as u64));
+        if total > MAX_FILE_BYTES {
+            return Err("The playlist lyrics are too large to export.".into());
         }
+        words.push(text);
+        Ok(meta)
     }).collect::<Result<Vec<_>, _>>()?;
     let list = WaveList {
         format: "wave-playlist".into(),
         version: VERSION,
         name,
         tracks: entries,
+        lyrics: if words.iter().any(Option::is_some) { words } else { Vec::new() },
     };
     list.validate()?;
     Ok(list)
 }
 
-fn write_list(_app: &AppHandle, path: &Path, list: &WaveList) -> Result<usize, String> {
-    let bytes = serde_json::to_vec(&list).map_err(|e| e.to_string())?;
+fn encode_list(list: &WaveList) -> Result<Vec<u8>, String> {
+    let raw = serde_json::to_vec(list).map_err(|e| e.to_string())?;
+    if raw.len() as u64 > MAX_FILE_BYTES {
+        return Err("The playlist export is too large to save.".into());
+    }
+    let mut bytes = MAGIC.to_vec();
+    brotli::CompressorReader::new(raw.as_slice(), 4096, 11, 22)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Could not compress the playlist export: {e}"))?;
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Err("The playlist export is too large to save.".into());
     }
+    Ok(bytes)
+}
+
+fn write_list(_app: &AppHandle, path: &Path, list: &WaveList) -> Result<usize, String> {
+    let bytes = encode_list(list)?;
     #[cfg(target_os = "android")]
     if path.to_string_lossy().starts_with("content://") {
         let target = FilePath::from_str(&path.to_string_lossy()).map_err(|e| e.to_string())?;
@@ -236,6 +302,16 @@ fn staging_dir(app: &AppHandle) -> Result<import_source::DownloadStaging, String
         .map_err(|e| e.to_string())?
         .join("transfer");
     import_source::reserve_staging(&dir)
+}
+
+fn restore_lyrics(catalog: &Catalog, id: &str, text: Option<&str>, label: &str, report: &mut Reporter) -> bool {
+    match lyrics::restore(catalog, id, text) {
+        Ok(saved) => saved,
+        Err(error) => {
+            report.fail(format!("{label}: {error}"));
+            false
+        }
+    }
 }
 
 pub(crate) fn run(
@@ -286,6 +362,7 @@ pub(crate) fn run(
 
             // A song the library already holds keeps its place without a download.
             if let Some(id) = import_source::held(&existing, meta) {
+                lyrics += usize::from(restore_lyrics(&catalog, id, list.lyrics_at(position), &label, report));
                 ids[position] = Some(id.clone());
                 duplicates += 1;
                 report.reuse(&label);
@@ -307,12 +384,13 @@ pub(crate) fn run(
 
             match import::land(app, &file) {
                 Ok(song) => {
+                    let restored = restore_lyrics(&catalog, &song.id, list.lyrics_at(position), &label, report);
                     let done = import::complete(app, &song.id);
 
                     songs += usize::from(!song.duplicate);
                     duplicates += usize::from(song.duplicate);
                     images += usize::from(song.cover || done.cover);
-                    lyrics += usize::from(song.lyrics || done.lyrics);
+                    lyrics += usize::from(restored || song.lyrics || done.lyrics);
                     similar += usize::from(song.similar);
                     if let Some(row) = catalog.track(&song.id)? {
                         import_source::remember(&mut existing, row);
@@ -356,17 +434,19 @@ pub(crate) fn run(
 #[cfg(any(target_os = "android", test))]
 fn imported_entries(
     tracks: &[TrackMeta],
+    words: &[Option<String>],
     existing: &import_source::TrackIndex,
 ) -> (Vec<String>, Vec<PendingTrack>, usize) {
     let mut entries = Vec::with_capacity(tracks.len());
     let mut pending = Vec::new();
     let mut matched = 0;
-    for meta in tracks {
+    for (position, meta) in tracks.iter().enumerate() {
         if let Some(id) = import_source::held(existing, meta) {
             entries.push(id.clone());
             matched += 1;
         } else {
-            let track = PendingTrack::from_meta(meta, "wavelist", "");
+            let mut track = PendingTrack::from_meta(meta, "wavelist", "");
+            track.synced_lyrics = words.get(position).cloned().flatten();
             entries.push(track.id.clone());
             pending.push(track);
         }
@@ -388,11 +468,19 @@ fn run_phone(app: &AppHandle, path: &str, report: &mut Reporter, create_playlist
         return import_phone_songs(app, &catalog, &list, report);
     }
     let existing = import_source::catalog_index(&catalog)?;
-    let (entries, pending, matched) = imported_entries(&list.tracks, &existing);
+    let (entries, pending, matched) = imported_entries(&list.tracks, &list.lyrics, &existing);
     let playlist_id = catalog.create_imported_playlist(&list.name, &entries, &pending)?;
+    let pending_ids: std::collections::HashSet<&str> = pending.iter().map(|track| track.id.as_str()).collect();
+    let restored = entries.iter().enumerate().filter(|(_, id)| !pending_ids.contains(id.as_str()))
+        .map(|(position, id)| {
+            let label = import_source::track_label(&list.tracks[position]);
+            usize::from(restore_lyrics(&catalog, id, list.lyrics_at(position), &label, report))
+        }).sum();
     let mut outcome = ImportOutcome {
         duplicates: matched,
         skipped: pending.len(),
+        lyrics: restored,
+        errors: report.failures().to_vec(),
         playlist: Some(list.name.clone()),
         playlist_id: Some(playlist_id),
         ..ImportOutcome::default()
@@ -406,6 +494,7 @@ fn run_phone(app: &AppHandle, path: &str, report: &mut Reporter, create_playlist
 fn import_songs(
     catalog: &Catalog,
     tracks: &[TrackMeta],
+    words: &[Option<String>],
     report: &mut Reporter,
     mut fetch: impl FnMut(usize, &TrackMeta) -> Result<import::Landed, String>,
     mut complete: impl FnMut(&str) -> import::Complete,
@@ -417,7 +506,10 @@ fn import_songs(
     for (position, meta) in tracks.iter().enumerate() {
         let label = import_source::track_label(meta);
         report.at(position + 1, &label);
-        if import_source::held(&known, meta).is_some() {
+        if let Some(id) = import_source::held(&known, meta) {
+            outcome.lyrics += usize::from(restore_lyrics(
+                catalog, id, words.get(position).and_then(Option::as_deref), &label, report,
+            ));
             outcome.duplicates += 1;
             report.reuse(&label);
             continue;
@@ -427,9 +519,12 @@ fn import_songs(
                 outcome.songs += usize::from(!song.duplicate);
                 outcome.duplicates += usize::from(song.duplicate);
                 outcome.similar += usize::from(song.similar);
+                let restored = restore_lyrics(
+                    catalog, &song.id, words.get(position).and_then(Option::as_deref), &label, report,
+                );
                 let done = complete(&song.id);
                 outcome.images += usize::from(song.cover || done.cover);
-                outcome.lyrics += usize::from(song.lyrics || done.lyrics);
+                outcome.lyrics += usize::from(restored || song.lyrics || done.lyrics);
                 if let Some(row) = catalog.track(&song.id)? {
                     import_source::remember(&mut known, row);
                 }
@@ -451,7 +546,7 @@ fn import_phone_songs(
     let guard = crate::library_work::Guard::start(app, "Importing songs");
     let staging = staging_dir(app)?;
     let mut yt = None;
-    let result = import_songs(catalog, &list.tracks, report, |position, meta| {
+    let result = import_songs(catalog, &list.tracks, &list.lyrics, report, |position, meta| {
         if yt.is_none() {
             yt = Some(crate::youtube_phone::extractor()?);
         }
@@ -481,13 +576,13 @@ pub(crate) fn resolve_imported(catalog: &Catalog) -> Result<(), String> {
     }
     let existing = import_source::catalog_index(catalog)?;
     for list in lists {
-        let matches: Vec<_> = list.pending.iter()
-            .filter(|track| track.source == "wavelist")
-            .filter_map(|track| {
-                import_source::held(&existing, &track.meta())
-                    .map(|id| (track.id.clone(), id.clone()))
-            })
-            .collect();
+        let mut matches = Vec::new();
+        for track in list.pending.iter().filter(|track| track.source == "wavelist") {
+            if let Some(id) = import_source::held(&existing, &track.meta()) {
+                lyrics::restore(catalog, id, track.synced_lyrics.as_deref())?;
+                matches.push((track.id.clone(), id.clone()));
+            }
+        }
         if !matches.is_empty() {
             catalog.resolve_imported_pending(&list.id, &matches)?;
         }
@@ -542,6 +637,7 @@ mod tests {
                 genres: vec!["Rock".into()],
                 ..TrackMeta::default()
             }],
+            lyrics: Vec::new(),
         }
     }
 
@@ -556,7 +652,7 @@ mod tests {
 
     #[test]
     fn round_trip_keeps_the_song_list() {
-        let list: WaveList = serde_json::from_slice(&serde_json::to_vec(&list()).unwrap()).unwrap();
+        let list = read_list(encode_list(&list()).unwrap().as_slice()).unwrap();
         list.validate().unwrap();
         assert_eq!(list.tracks[0].title, "Song");
         assert_eq!(list.tracks[0].artists, vec!["Artist"]);
@@ -570,9 +666,57 @@ mod tests {
     }
 
     #[test]
+    fn compresses_the_entire_playlist_and_preserves_timed_lyrics() {
+        let mut original = list();
+        original.tracks = (0..20).map(|index| TrackMeta {
+            title: format!("Song number {index}"),
+            artists: vec!["The test artist".into()],
+            album: "The test album".into(),
+            ..TrackMeta::default()
+        }).collect();
+        let text = "[ar:An artist]\r\n[offset:250]\r\n[00:01.25][00:08.50]Héllo, 世界!\r\n".repeat(20);
+        original.lyrics = (0..20).map(|index| (index != 5).then(|| text.clone())).collect();
+        let raw = serde_json::to_vec(&original).unwrap();
+        let encoded = encode_list(&original).unwrap();
+        assert!(encoded.starts_with(MAGIC));
+        assert!(encoded.len() < raw.len() / 3, "{} versus {}", encoded.len(), raw.len());
+        assert!(!encoded.windows(b"Song number".len()).any(|window| window == b"Song number"));
+        assert!(!encoded.windows(b"offset:250".len()).any(|window| window == b"offset:250"));
+        let decoded = read_list(encoded.as_slice()).unwrap();
+        assert_eq!(decoded.tracks[19].title, "Song number 19");
+        assert_eq!(decoded.lyrics_at(0), Some(text.as_str()));
+        assert_eq!(decoded.lyrics_at(5), None);
+        assert_eq!(decoded.lyrics_at(19), Some(text.as_str()));
+    }
+
+    #[test]
+    fn rejects_corrupt_or_oversized_compressed_data_and_mismatched_lyrics() {
+        let mut encoded = encode_list(&list()).unwrap();
+        encoded.truncate(encoded.len() / 2);
+        assert!(read_list(encoded.as_slice()).is_err());
+        let mut compressed = Vec::new();
+        brotli::CompressorReader::new(&vec![b'a'; 16_384][..], 4096, 1, 22)
+            .read_to_end(&mut compressed).unwrap();
+        assert!(decompress(&compressed, 1024).is_err());
+        let mut invalid = list();
+        invalid.lyrics = vec![None, Some("[00:01]Extra".into())];
+        assert!(read_list(encode_list(&invalid).unwrap().as_slice()).is_err());
+    }
+
+    #[test]
+    fn reads_the_second_json_format_without_lyrics() {
+        let mut legacy = list();
+        legacy.version = 2;
+        let read = read_list(serde_json::to_vec(&legacy).unwrap().as_slice()).unwrap();
+        assert_eq!(read.version, VERSION);
+        assert_eq!(read.tracks[0].title, "Song");
+        assert_eq!(read.lyrics_at(0), None);
+    }
+
+    #[test]
     fn rejects_unknown_versions_and_invalid_songs() {
         let mut list = list();
-        list.version = 3;
+        list.version = 4;
         assert!(list.validate().is_err());
         list.version = VERSION;
         list.tracks[0].title.clear();
@@ -603,6 +747,7 @@ mod tests {
         assert_eq!(list.version, VERSION);
         assert_eq!(list.tracks.len(), 1);
         assert_eq!(list.tracks[0].title, "Song");
+        assert_eq!(list.lyrics_at(0), Some("[00:01]Words"));
     }
 
     #[test]
@@ -635,7 +780,7 @@ mod tests {
         let id = catalog.create_generated_playlist("Mixed", &ids, &[pending]).unwrap();
 
         let exported = playlist_export_list(&catalog, &id).unwrap();
-        let parsed = read_list(serde_json::to_vec(&exported).unwrap().as_slice()).unwrap();
+        let parsed = read_list(encode_list(&exported).unwrap().as_slice()).unwrap();
         assert_eq!(parsed.name, "Mixed");
         assert_eq!(parsed.tracks.iter().map(|track| track.title.as_str()).collect::<Vec<_>>(),
             ["Waiting", "Held", "Missing audio", "Waiting"]);
@@ -656,6 +801,82 @@ mod tests {
         catalog.set_playlist_entries(&id, &["unknown".into()]).unwrap();
         assert!(playlist_export_list(&catalog, &id).is_err());
         assert!(playlist_export_list(&catalog, "unknown").is_err());
+    }
+
+    #[test]
+    fn exports_sidecars_and_pending_lyrics_then_restores_them_after_restart() {
+        let root = std::env::temp_dir().join(format!("wave-transfer-{}", crate::identity::new_id()));
+        let catalog = Catalog::open(&root).unwrap();
+        let held_dir = library::track_dir(&root, "held");
+        fs::create_dir_all(&held_dir).unwrap();
+        let held_words = "[00:01.000]Déjà vu\r\n[00:02.500]Again\r\n";
+        fs::write(held_dir.join("lyrics.lrc"), held_words).unwrap();
+        catalog.upsert_track(&TrackRow {
+            id: "held".into(), rel_path: "songs/held/audio.mp3".into(), title: "Held".into(),
+            artist: Some("Artist".into()), ..TrackRow::default()
+        }).unwrap();
+        let words = vec![Some("[00:03.250]Waiting\n".to_string())];
+        let missing = TrackMeta { title: "Waiting".into(), artists: vec!["Artist".into()], ..TrackMeta::default() };
+        let (entries, pending, _) = imported_entries(&[missing], &words, &import_source::TrackIndex::default());
+        let ids = vec!["held".into(), entries[0].clone(), "held".into()];
+        let playlist_id = catalog.create_imported_playlist("Mixed", &ids, &pending).unwrap();
+        drop(catalog);
+
+        let catalog = Catalog::open(&root).unwrap();
+        let exported = playlist_export_list(&catalog, &playlist_id).unwrap();
+        let decoded = read_list(encode_list(&exported).unwrap().as_slice()).unwrap();
+        assert_eq!(decoded.lyrics_at(0), Some(held_words));
+        assert_eq!(decoded.lyrics_at(1), words[0].as_deref());
+        assert_eq!(decoded.lyrics_at(2), Some(held_words));
+
+        let downloaded_dir = library::track_dir(&root, "downloaded");
+        fs::create_dir_all(&downloaded_dir).unwrap();
+        catalog.upsert_track(&TrackRow {
+            id: "downloaded".into(), rel_path: "songs/downloaded/audio.mp3".into(),
+            title: "Waiting".into(), artist: Some("Artist".into()), ..TrackRow::default()
+        }).unwrap();
+        resolve_imported(&catalog).unwrap();
+        assert_eq!(fs::read_to_string(downloaded_dir.join("lyrics.lrc")).unwrap(), words[0].as_deref().unwrap());
+        assert_eq!(catalog.track("downloaded").unwrap().unwrap().lyrics_path.as_deref(), Some("songs/downloaded/lyrics.lrc"));
+        assert_eq!(catalog.playlist_entries(&playlist_id).unwrap(), ["held", "downloaded", "held"]);
+        assert!(catalog.pending_tracks(&playlist_id).unwrap().is_empty());
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn songs_only_import_restores_before_completion_without_overwriting() {
+        let root = std::env::temp_dir().join(format!("wave-transfer-{}", crate::identity::new_id()));
+        let catalog = Catalog::open(&root).unwrap();
+        for id in ["held", "downloaded"] {
+            fs::create_dir_all(library::track_dir(&root, id)).unwrap();
+        }
+        let original = "[00:01]Destination lyrics";
+        fs::write(library::lyrics_path(&root, "held"), original).unwrap();
+        catalog.upsert_track(&TrackRow {
+            id: "held".into(), rel_path: "songs/held/audio.mp3".into(),
+            title: "Held".into(), artist: Some("Artist".into()), ..TrackRow::default()
+        }).unwrap();
+        let tracks = ["Held", "New"].map(|title| TrackMeta {
+            title: title.into(), artists: vec!["Artist".into()], ..TrackMeta::default()
+        });
+        let words = [Some("[00:02]Exported held".into()), Some("[00:03]Exported new".into())];
+        let mut report = Reporter::quiet();
+        let outcome = import_songs(&catalog, &tracks, &words, &mut report, |_, meta| {
+            catalog.upsert_track(&TrackRow {
+                id: "downloaded".into(), rel_path: "songs/downloaded/audio.mp3".into(),
+                title: meta.title.clone(), artist: Some("Artist".into()), ..TrackRow::default()
+            }).unwrap();
+            Ok(import::Landed { id: "downloaded".into(), duplicate: false, similar: false, cover: false, lyrics: false })
+        }, |id| {
+            assert_eq!(fs::read_to_string(library::lyrics_path(&root, id)).unwrap(), "[00:03]Exported new");
+            import::Complete::default()
+        }).unwrap();
+        assert_eq!(outcome.lyrics, 1);
+        assert!(outcome.errors.is_empty());
+        assert_eq!(fs::read_to_string(library::lyrics_path(&root, "held")).unwrap(), original);
+        drop(catalog);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -681,7 +902,7 @@ mod tests {
         });
         tracks.push(tracks[0].clone());
         let (entries, pending, matched) =
-            imported_entries(&tracks, &import_source::catalog_index(&catalog).unwrap());
+            imported_entries(&tracks, &[], &import_source::catalog_index(&catalog).unwrap());
         assert_eq!(matched, 2);
         assert_eq!(entries, vec!["one", &pending[0].id, "one"]);
 
@@ -700,7 +921,7 @@ mod tests {
     #[test]
     fn removing_a_missing_entry_does_not_restore_it_later() {
         let catalog = Catalog::in_memory().unwrap();
-        let (entries, pending, _) = imported_entries(&list().tracks, &import_source::TrackIndex::default());
+        let (entries, pending, _) = imported_entries(&list().tracks, &[], &import_source::TrackIndex::default());
         let id = catalog.create_imported_playlist("Imported", &entries, &pending).unwrap();
         catalog.remove_from_playlist(&id, &entries).unwrap();
         assert!(catalog.pending_tracks(&id).unwrap().is_empty());
@@ -724,7 +945,7 @@ mod tests {
         });
         let mut fetched = Vec::new();
         let mut report = Reporter::quiet();
-        let outcome = import_songs(&catalog, &tracks, &mut report, |_, meta| {
+        let outcome = import_songs(&catalog, &tracks, &[], &mut report, |_, meta| {
             fetched.push(meta.title.clone());
             if meta.title == "Failed" {
                 return Err("offline".into());

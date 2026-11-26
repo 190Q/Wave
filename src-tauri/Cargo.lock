@@ -6147,6 +6147,7 @@ version = "0.4.1"
 dependencies = [
  "async-trait",
  "blake3",
+ "brotli",
  "discord-rich-presence",
  "ebur128",
  "futures",

@@ -254,6 +254,8 @@ pub struct PendingTrack {
     pub track_number: Option<u32>,
     pub disc_number: Option<u32>,
     pub duration_ms: Option<u64>,
+    #[serde(skip)]
+    pub synced_lyrics: Option<String>,
     /// Where it came from. Kept in the catalog rather than sent to the UI.
     #[serde(skip)]
     pub source: String,
@@ -278,6 +280,7 @@ impl PendingTrack {
             track_number: meta.track_number,
             disc_number: meta.disc_number,
             duration_ms: meta.duration_ms,
+            synced_lyrics: None,
             source: source.to_string(),
             source_id: source_id.to_string(),
         }

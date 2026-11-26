@@ -202,7 +202,10 @@ copied Wave `songs` folder with its artwork and lyrics.
 To move a playlist, export a collection from **Settings → Library** on desktop
 and import the resulting `.wavelist` from **Import**. Choose whether to create
 a playlist or import only its songs. Wave matches songs already in the library
-and searches YouTube for missing audio. For Android, copying the original songs
+and searches YouTube for missing audio. Exports are compressed and include any
+timed lyrics; existing lyrics on the destination are left untouched. Older
+JSON exports can still be imported, but older Wave versions cannot read the
+new compressed files. For Android, copying the original songs
 first preserves the original files; see the migration guide
 [below](#migrating-to-android).
 
@@ -232,7 +235,7 @@ and names derived only from the original filenames may not survive the copy.
 1. On desktop, open **Settings → Library → Export playlist**, select a
    playlist and click **Export**. Repeat for each playlist you want to transfer;
    you can also export **Liked Songs**. Each `.wavelist` contains an ordered
-   list and metadata, not audio, and only includes songs in your library.
+   list, metadata and available timed lyrics, but not audio.
 2. In the same settings section, click **Open in Explorer** and copy the entire
    `songs` folder, including its subfolders, artwork and lyrics. Keep the folder
    structure intact.

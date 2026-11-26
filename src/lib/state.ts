@@ -1586,6 +1586,15 @@ export async function importPhoneMusic(): Promise<void> {
 
 let transferPending = false;
 
+async function refreshImportedLyrics(outcome: ImportOutcome): Promise<void> {
+  await rescan(outcome.lyrics > 0);
+  const track = state.lyricsTrackId && state.tracksById.get(state.lyricsTrackId);
+  if (outcome.lyrics > 0 && track) {
+    state.lyricsTrackId = null;
+    await ensureLyrics(track);
+  }
+}
+
 export async function importWaveList(choose: () => Promise<boolean | null>): Promise<void> {
   if (transferPending || jobRunning(state.transferProgress)) {
     return;
@@ -1608,7 +1617,7 @@ export async function importWaveList(choose: () => Promise<boolean | null>): Pro
     emit();
     const outcome = await ipc.importWaveList(path, createPlaylist);
     applyPersisted(outcome.state);
-    await rescan();
+    await refreshImportedLyrics(outcome);
     const message = importSummary(outcome, isAndroidPlatform);
     setNotice(message);
     state.transferProgress = {
@@ -2600,7 +2609,7 @@ export async function downloadPending(playlistId: string, entryIds: string[]): P
   try {
     const outcome = await ipc.downloadPlaylist(playlistId, entryIds);
     applyPersisted(outcome.state);
-    await rescan();
+    await refreshImportedLyrics(outcome);
     setNotice(downloadSummary(outcome));
     // Only a failure stays on screen; a clean run needs no line left behind.
     state.downloadProgress =

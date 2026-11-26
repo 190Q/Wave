@@ -757,7 +757,7 @@ export function mountEq(): void {
         return;
       }
       const target = event.target as HTMLElement;
-      if (canvas.contains(target)) {
+      if (canvas.contains(target) || picker.contains(target) || namePicker.contains(target)) {
         return;
       }
       // A strip takes the selection over; anything else lets it go.
@@ -866,6 +866,9 @@ export function mountEq(): void {
       .join("|")}`;
     if (shape !== bandsShape) {
       bandsShape = shape;
+      if (pickerOwner && bands.contains(pickerOwner)) {
+        closePicker();
+      }
       if (selected && !list.some((band) => band.id === selected)) {
         selected = null;
       }
@@ -1073,6 +1076,10 @@ export function mountEq(): void {
     ]);
     if (shape !== sideShape) {
       sideShape = shape;
+      if (pickerOwner && side.contains(pickerOwner)) {
+        closePicker();
+      }
+      closeNames();
       side.innerHTML = sideHtml(state, status);
       fillIcons(side);
     }
@@ -1130,6 +1137,9 @@ export function mountEq(): void {
   });
 
   // Anything that moves a button would leave its list behind.
+  bands.addEventListener("scroll", closePicker);
+  body.addEventListener("scroll", closePicker);
+  body.addEventListener("scroll", closeNames);
   side.addEventListener("scroll", closePicker);
   side.addEventListener("scroll", closeNames);
   window.addEventListener("resize", closePicker);
@@ -1205,8 +1215,6 @@ export function mountEq(): void {
     if (modal.hidden) {
       return;
     }
-    closePicker();
-    closeNames();
 
     const state = getState();
     const status = eqStatus();
@@ -1217,6 +1225,12 @@ export function mountEq(): void {
     paintBands(state.settings.eqBands);
     paintSide(state, status);
     paintReadout(status);
+    if (pickerOwner) {
+      placeList(pickerOwner);
+    }
+    if (nameField) {
+      placePicker(namePicker, nameField, windowFrame(), "above");
+    }
     if (frame === null) {
       draw();
     }

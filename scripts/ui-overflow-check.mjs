@@ -137,6 +137,65 @@ test("popup backdrops ignore releases from inside", async (t) => {
   }
 });
 
+test("equaliser pickers survive unrelated updates and close when rebuilt", async () => {
+  const { context, page } = await openApp(viewports[0]);
+  try {
+    await invoke(page, "eq", "openEq");
+    const drop = page.locator(".eq-band-shape").first();
+    await drop.click();
+    const picker = page.locator(".eq-picker");
+    await picker.waitFor({ state: "visible" });
+
+    await page.evaluate(async () => {
+      const state = await import("/src/lib/state.ts");
+      state.setEqPreampDb(state.getState().settings.eqPreampDb);
+    });
+    assert.equal(await picker.isVisible(), true);
+    await picker.getByRole("button", { name: "Low shelf", exact: true }).click();
+    assert.equal(await drop.locator(".eq-drop-label").textContent(), "Low shelf");
+    assert.equal(await drop.locator("..").evaluate((element) => element.classList.contains("is-on")), true);
+    assert.equal(await picker.isHidden(), true);
+
+    await drop.click();
+    await picker.waitFor({ state: "visible" });
+    await page.evaluate(async () => (await import("/src/lib/state.ts")).addEqBand());
+    assert.equal(await picker.isHidden(), true);
+    assert.equal(await drop.getAttribute("aria-expanded"), "false");
+
+    const sideDrop = page.locator("#eq-side .eq-drop").first();
+    await sideDrop.scrollIntoViewIfNeeded();
+    await sideDrop.click();
+    await picker.waitFor({ state: "visible" });
+    await page.evaluate(async () => {
+      const state = await import("/src/lib/state.ts");
+      state.setEqPreampDb(state.getState().settings.eqPreampDb);
+    });
+    assert.equal(await picker.isVisible(), true);
+    await page.evaluate(async () => {
+      const state = await import("/src/lib/state.ts");
+      state.setEqAutoPreamp(!state.getState().settings.eqAutoPreamp);
+    });
+    assert.equal(await picker.isHidden(), true);
+    assert.equal(await sideDrop.getAttribute("aria-expanded"), "false");
+
+    await page.evaluate(async () => (await import("/src/lib/state.ts")).saveEqPreset("Example"));
+    const name = page.locator("#eq-preset-name");
+    await name.fill("Ex");
+    const names = page.locator("#eq-modal .slot-picker.import-picker");
+    await names.waitFor({ state: "visible" });
+    await page.evaluate(async () => {
+      const state = await import("/src/lib/state.ts");
+      state.setEqPreampDb(state.getState().settings.eqPreampDb);
+    });
+    assert.equal(await names.isVisible(), true);
+    await names.getByRole("button", { name: "Example", exact: true }).click();
+    assert.equal(await name.inputValue(), "Example");
+    assert.equal(await names.isHidden(), true);
+  } finally {
+    await context.close();
+  }
+});
+
 async function check(page, selector) {
   await page.locator(selector).waitFor({ state: "visible" });
   assert.deepEqual(await overflow(page, selector), [], `Horizontal scrolling in ${selector}`);

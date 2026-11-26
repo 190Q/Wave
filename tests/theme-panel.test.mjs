@@ -128,11 +128,11 @@ const { mountTheme } = await vite.ssrLoadModule("/src/ui/theme.ts");
 const { createPanel } = await vite.ssrLoadModule("/src/ui/drop.ts");
 
 for (const device of ["android", "linuxPhone"]) {
-  test(`${device} theme stays open when the full-screen background is clicked`, () => {
+  test(`${device} theme stays open when the full-screen background is pressed`, () => {
     const { elements, dialog } = setup(device, 800);
     mountTheme();
     elements["theme-toggle-face"].dispatch("click");
-    dialog.dispatch("click", { target: dialog });
+    dialog.dispatch("pointerdown", { target: dialog, button: 0 });
     assert.equal(dialog.open, true);
     assert.equal(dialog.classList.contains("is-closed"), false);
   });
@@ -185,11 +185,11 @@ for (const device of ["android", "linuxPhone"]) {
   });
 }
 
-test("desktop theme backdrop clicks still close the dialog", () => {
+test("desktop theme backdrop presses still close the dialog", () => {
   const { elements, dialog } = setup("desktop", 800);
   mountTheme();
   elements["theme-toggle-face"].dispatch("click");
-  dialog.dispatch("click", { target: dialog });
+  dialog.dispatch("pointerdown", { target: dialog, button: 0 });
   assert.equal(dialog.classList.contains("is-closed"), true);
 });
 

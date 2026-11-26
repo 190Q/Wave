@@ -11,7 +11,7 @@ import { escapeHtml } from "../lib/format";
 import { reduceMotionActive } from "../lib/motion";
 import { getState, installUpdate, setNotice, subscribe } from "../lib/state";
 import type { UpdateInfo, UpdateProgress } from "../types";
-import { claimPopup, releasePopup } from "./popups";
+import { claimPopup, listenForBackdropPress, releasePopup } from "./popups";
 
 /** Matches the dialog's open/close transition in the stylesheet. */
 const DIALOG_MS = 220;
@@ -172,8 +172,8 @@ export function mountUpdate(): void {
 
   closeButton.addEventListener("click", closeDialog);
 
-  dialog.addEventListener("click", (event) => {
-    if (event.target === dialog && device() !== "linuxPhone") {
+  listenForBackdropPress(dialog, () => {
+    if (device() !== "linuxPhone") {
       closeDialog();
     }
   });

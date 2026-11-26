@@ -41,7 +41,7 @@ import { dialogFits } from "./fit";
 import { highlightHtml } from "./highlight";
 import { fillIcons } from "./icons";
 import { placePicker, windowFrame } from "./picker";
-import { claimPopup, isOtherPopupShowing, releasePopup } from "./popups";
+import { claimPopup, isOtherPopupShowing, listenForBackdropPress, releasePopup } from "./popups";
 
 const DIALOG_MS = 220;
 
@@ -569,8 +569,8 @@ export function mountImportDialog(): void {
     }
   });
 
-  dialog.addEventListener("click", (event) => {
-    if (event.target === dialog && device() === "desktop") {
+  listenForBackdropPress(dialog, () => {
+    if (device() === "desktop") {
       close();
     }
   });

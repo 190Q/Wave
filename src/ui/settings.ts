@@ -44,7 +44,7 @@ import { mountCollectionPicker } from "./collection-picker";
 import { openEq } from "./eq";
 import { fillIcons } from "./icons";
 import { placePicker } from "./picker";
-import { claimPopup, releasePopup } from "./popups";
+import { claimPopup, listenForBackdropPress, releasePopup } from "./popups";
 import { openUpdate } from "./update";
 
 const DIALOG_MS = 220;
@@ -502,8 +502,8 @@ export function mountSettings(): void {
     });
   });
 
-  dialog.addEventListener("click", (event) => {
-    if (event.target === dialog && device() === "desktop") {
+  listenForBackdropPress(dialog, () => {
+    if (device() === "desktop") {
       closeDialog();
     }
   });

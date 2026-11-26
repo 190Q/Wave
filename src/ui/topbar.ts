@@ -16,7 +16,7 @@ import type { Collection, SearchAlgorithm, Track } from "../types";
 import { collectionCoverHtml, resultCoverHtml } from "./artwork";
 import { hydrateCovers } from "./covers";
 import { highlightHtml } from "./highlight";
-import { listenForPress } from "./popups";
+import { listenForBackdropPress } from "./popups";
 
 const RESULT_LIMIT = 40;
 
@@ -251,11 +251,7 @@ export function mountTopbar(): void {
     search.focus();
   });
 
-  listenForPress(searchModal, (event) => {
-    if (event.target === searchModal) {
-      closeSearch();
-    }
-  });
+  listenForBackdropPress(searchModal, closeSearch);
 
   results.addEventListener("click", (event) => {
     const target = event.target as HTMLElement;

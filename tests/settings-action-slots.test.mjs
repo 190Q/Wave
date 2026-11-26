@@ -67,7 +67,8 @@ const mocks = {
       globalThis.__settingsTest.placements.push({ picker, anchor });
     };
   `,
-  "./popups": "export const claimPopup = () => {}; export const releasePopup = () => {};",
+  "./popups": `export const claimPopup = () => {}; export const releasePopup = () => {};
+    export { listenForBackdropPress } from "/src/ui/popups.ts";`,
   "./update": "export const openUpdate = () => { globalThis.__settingsTest.updateOpens += 1; };",
 };
 

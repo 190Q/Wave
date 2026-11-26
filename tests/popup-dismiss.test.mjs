@@ -92,7 +92,7 @@ class Element {
   }
   removeEventListener(type, listener) { this.listeners.get(type)?.delete(listener); }
   emit(type, target = this, extra = {}) {
-    const event = { type, target, defaultPrevented: false, ...extra };
+    const event = { type, target, button: 0, detail: 0, defaultPrevented: false, ...extra };
     for (const listener of this.listeners.get(type) ?? []) listener(event);
   }
   appendChild(child) { this.children.push(child); child.parent = this; }
@@ -239,6 +239,32 @@ for (const type of ["pointerdown", "touchstart", "click"]) {
     assert.equal(document.listeners.get(type)?.size, 0);
   });
 }
+
+test("search stays open when a drag starts inside and ends on the backdrop", () => {
+  const { elements } = setup();
+  mountTopbar();
+  focusSearch();
+  const backdrop = elements["search-modal"];
+  backdrop.emit("pointerdown", elements.search);
+  backdrop.emit("mousedown", elements.search);
+  backdrop.emit("pointerup");
+  backdrop.emit("mouseup");
+  backdrop.emit("click", backdrop, { detail: 1 });
+  assert.equal(backdrop.classList.contains("is-closed"), false);
+
+  backdrop.emit("mousedown");
+  assert.equal(backdrop.classList.contains("is-closed"), true);
+});
+
+test("secondary mouse presses do not dismiss the search backdrop", () => {
+  const { elements } = setup();
+  mountTopbar();
+  focusSearch();
+  const backdrop = elements["search-modal"];
+  backdrop.emit("pointerdown", backdrop, { button: 2 });
+  backdrop.emit("mousedown", backdrop, { button: 2 });
+  assert.equal(backdrop.classList.contains("is-closed"), false);
+});
 
 test("reopening search cancels its pending close", () => {
   const { elements, window } = setup();

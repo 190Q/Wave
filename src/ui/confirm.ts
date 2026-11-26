@@ -1,4 +1,4 @@
-import { claimPopup, releasePopup } from "./popups";
+import { claimPopup, listenForBackdropPress, releasePopup } from "./popups";
 
 const DIALOG_MS = 220;
 
@@ -84,11 +84,7 @@ export function mountConfirm(): void {
     event.preventDefault();
     closeDialog(dismissibleChoice ? null : false);
   });
-  dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) {
-      closeDialog(dismissibleChoice ? null : false);
-    }
-  });
+  listenForBackdropPress(dialog, () => closeDialog(dismissibleChoice ? null : false));
 
   ask = (options) =>
     new Promise((resolve) => {

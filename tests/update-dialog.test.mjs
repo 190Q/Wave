@@ -30,7 +30,8 @@ const mocks = {
     export const installUpdate = async () => { context().installs += 1; };
     export const setNotice = () => {};
   `,
-  "./popups": "export const claimPopup = () => {}; export const releasePopup = () => {};",
+  "./popups": `export const claimPopup = () => {}; export const releasePopup = () => {};
+    export { listenForBackdropPress } from "/src/ui/popups.ts";`,
 };
 
 const vite = await createServer({
@@ -72,7 +73,7 @@ class Element {
     toggle: (name, on) => on ? this.classes.add(name) : this.classes.delete(name),
   };
   addEventListener(type, handler) { this.listeners.set(type, handler); }
-  dispatch(type, event = {}) { this.listeners.get(type)?.({ target: this, ...event }); }
+  dispatch(type, event = {}) { this.listeners.get(type)?.({ type, target: this, button: 0, detail: 0, ...event }); }
   showModal() { this.open = true; }
   close() { this.open = false; }
 }
@@ -116,6 +117,31 @@ function setup(device = "android") {
 }
 
 const { mountUpdate, openUpdate } = await vite.ssrLoadModule("/src/ui/update.ts");
+
+test("the update backdrop ignores releases from inside and closes on a backdrop press", () => {
+  for (const device of ["desktop", "android"]) {
+    const { elements } = setup(device);
+    mountUpdate();
+    openUpdate();
+    const dialog = elements["update-dialog"];
+    dialog.dispatch("pointerdown", { target: elements["update-body"] });
+    dialog.dispatch("mousedown", { target: elements["update-body"] });
+    dialog.dispatch("pointerup");
+    dialog.dispatch("mouseup");
+    dialog.dispatch("click", { detail: 1 });
+    assert.equal(dialog.classList.contains("is-closed"), false);
+    dialog.dispatch("pointerdown");
+    assert.equal(dialog.classList.contains("is-closed"), true);
+  }
+});
+
+test("the Linux phone update backdrop does not dismiss the full-screen dialog", () => {
+  const { elements } = setup("linuxPhone");
+  mountUpdate();
+  openUpdate();
+  elements["update-dialog"].dispatch("pointerdown");
+  assert.equal(elements["update-dialog"].classList.contains("is-closed"), false);
+});
 
 test("Android and desktop show the same release details, actions and progress", () => {
   const views = [];

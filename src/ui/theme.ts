@@ -23,7 +23,7 @@ import {
 import { createPanel } from "./drop";
 import { dialogFits } from "./fit";
 import { fillIcons } from "./icons";
-import { claimPopup, releasePopup } from "./popups";
+import { claimPopup, listenForBackdropPress, releasePopup } from "./popups";
 import { themeWipe } from "./wipe";
 
 /** Matches the dialog's open/close transition in the stylesheet. */
@@ -250,8 +250,8 @@ export function mountTheme(): void {
 
   element("theme-close")?.addEventListener("click", () => closeDialog());
 
-  dialog.addEventListener("click", (event) => {
-    if (event.target === dialog && device() === "desktop") {
+  listenForBackdropPress(dialog, () => {
+    if (device() === "desktop") {
       closeDialog();
     }
   });

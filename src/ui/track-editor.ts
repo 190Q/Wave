@@ -1,7 +1,7 @@
 import { device, isTouch } from "../lib/device";
 import { editTrack, getState } from "../lib/state";
 import type { TrackMetadata } from "../types";
-import { claimPopup, releasePopup } from "./popups";
+import { claimPopup, listenForBackdropPress, releasePopup } from "./popups";
 
 const DIALOG_MS = 220;
 
@@ -79,8 +79,8 @@ export function mountTrackEditor(): void {
       close();
     }
   });
-  dialog.addEventListener("click", (event) => {
-    if (event.target === dialog && !saving && device() !== "linuxPhone") {
+  listenForBackdropPress(dialog, () => {
+    if (!saving && device() !== "linuxPhone") {
       close();
     }
   });

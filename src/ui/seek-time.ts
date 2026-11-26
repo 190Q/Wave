@@ -1,7 +1,7 @@
 import { isTouch } from "../lib/device";
 import { formatDuration } from "../lib/format";
 import { player } from "../lib/state";
-import { claimPopup, releasePopup } from "./popups";
+import { claimPopup, listenForBackdropPress, releasePopup } from "./popups";
 
 const DIALOG_MS = 220;
 
@@ -89,11 +89,7 @@ export function mountSeekTime(): void {
     event.preventDefault();
     close();
   });
-  dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) {
-      close();
-    }
-  });
+  listenForBackdropPress(dialog, close);
   input.addEventListener("input", clearError);
   form.addEventListener("submit", (event) => {
     event.preventDefault();

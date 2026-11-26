@@ -92,6 +92,51 @@ async function overflow(page, selector) {
   });
 }
 
+test("popup backdrops ignore releases from inside", async (t) => {
+  const { context, page } = await openApp(viewports[0]);
+  const popups = [
+    { name: "search", popup: "#search-modal", inside: "#search", open: () => page.locator("#search-open").click() },
+    { name: "theme", popup: "#theme-dialog", inside: "#picker-hex", open: () => page.locator("#theme-toggle-face").click() },
+    { name: "settings", popup: "#settings-dialog", inside: ".settings-head h2", open: () => page.locator("#settings-open").click() },
+    { name: "import", popup: "#import-dialog", inside: "#import-title", open: () => page.locator("#import-open").click() },
+    { name: "update", popup: "#update-dialog", inside: "#update-title", open: () => invoke(page, "update", "openUpdate") },
+    {
+      name: "confirmation", popup: "#confirm-dialog", inside: "#confirm-title",
+      open: () => invoke(page, "confirm", "confirmDialog", { title: "Test", message: "Test", confirmLabel: "Confirm" }),
+    },
+    { name: "seek", popup: "#seek-dialog", inside: "#seek-title", open: () => invoke(page, "seek-time", "openSeekTime") },
+    {
+      name: "track editor", popup: "#track-editor-dialog", inside: "#track-editor-title",
+      open: async () => invoke(page, "track-editor", "openTrackEditor", await firstTrack(page)),
+    },
+  ];
+  try {
+    for (const entry of popups) {
+      await t.test(entry.name, async () => {
+        await page.reload();
+        await page.waitForFunction(async () => {
+          const { getState } = await import("/src/lib/state.ts");
+          return getState().ready && !document.documentElement.classList.contains("is-starting");
+        });
+        await entry.open();
+        const popup = page.locator(entry.popup);
+        await popup.waitFor({ state: "visible" });
+        await page.locator(entry.inside).hover();
+        await page.mouse.down();
+        await page.mouse.move(5, 5);
+        await page.mouse.up();
+        assert.equal(await popup.evaluate((element) => element.classList.contains("is-closed")), false);
+
+        await page.mouse.down();
+        assert.equal(await popup.evaluate((element) => element.classList.contains("is-closed")), true);
+        await page.mouse.up();
+      });
+    }
+  } finally {
+    await context.close();
+  }
+});
+
 async function check(page, selector) {
   await page.locator(selector).waitFor({ state: "visible" });
   assert.deepEqual(await overflow(page, selector), [], `Horizontal scrolling in ${selector}`);

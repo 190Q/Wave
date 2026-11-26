@@ -52,3 +52,18 @@ export function listenForPress(
     target.removeEventListener("click", listener, capture);
   };
 }
+
+export function listenForBackdropPress(backdrop: HTMLElement, dismiss: Dismiss): void {
+  const onPress = (event: Event): void => {
+    if (event.target !== backdrop) return;
+    // A click after dragging can be retargeted to the backdrop.
+    if (event.type === "click" && (event as MouseEvent).detail !== 0) return;
+    if (
+      (event.type === "pointerdown" || event.type === "mousedown")
+      && (event as MouseEvent).button !== 0
+    ) return;
+    dismiss();
+  };
+  listenForPress(backdrop, onPress);
+  backdrop.addEventListener("mousedown", onPress);
+}

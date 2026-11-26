@@ -247,6 +247,7 @@
 
 .import-log-hint {
   margin-top: 0.5rem;
+  overflow-wrap: anywhere;
 }
 
 .import-history-row {

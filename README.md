@@ -74,6 +74,10 @@ an equaliser and a theme that follows the artwork.
   requests portrait orientation on phone-sized screens.
 - **Development builds:** The interface uses TypeScript and the DOM; the backend
   uses Rust and Tauri 2. Desktop and Android development commands are below.
+- **UI overflow checks:** Install the test browser with `npx playwright install
+  chromium`, then run `npm run test:ui` to check desktop and portrait phone
+  views and popups for unwanted horizontal scrolling. To use an existing
+  Chromium browser instead, set `WAVE_TEST_BROWSER` to its executable path.
 - **Equaliser benchmark:** With Node.js 22 or newer, run `npm run benchmark:eq`
   to compare native playback with the disabled equaliser graph in a muted,
   headless Chromium browser. Set `WAVE_BENCHMARK_BROWSER` to the executable if

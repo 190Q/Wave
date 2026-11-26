@@ -9,6 +9,7 @@
     "dev:phone": "vite --port 5199 --strictPort --open /dev/phone/index.html",
     "build": "tsc && vite build",
     "test": "node --test",
+    "test:ui": "node --test scripts/ui-overflow-check.mjs",
     "benchmark:eq": "node scripts/eq-bypass-benchmark.mjs",
     "test:webkit-popup": "node scripts/webkit-popup-check.mjs",
     "preview": "vite preview",
@@ -27,6 +28,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "playwright": "^1.65.1",
     "typescript": "~6.0.3",
     "vite": "^8.0.16"
   }

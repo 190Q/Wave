@@ -262,6 +262,11 @@
   font-weight: 700;
 }
 
+.slot-row .slot-option {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .keybind-group + .keybind-group {
   margin-top: 0.75rem;
 }

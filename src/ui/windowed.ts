@@ -175,9 +175,12 @@ export class WindowedList {
       const offset = this.offset();
       const height = this.rowHeight;
       const top = Math.max(0, this.scroller.scrollTop - offset);
-      const first = Math.max(0, Math.floor(top / height) - this.overscan);
-      const visible = Math.ceil(this.scroller.clientHeight / height) + this.overscan * 2;
-      const last = Math.min(this.count, first + Math.max(visible, 1));
+      const visible = Math.max(1, Math.ceil(this.scroller.clientHeight / height) + this.overscan * 2);
+      const first = Math.min(
+        Math.max(0, this.count - visible),
+        Math.max(0, Math.floor(top / height) - this.overscan),
+      );
+      const last = Math.min(this.count, first + visible);
 
       if (!redraw && first === this.start && last === this.end) {
         return;

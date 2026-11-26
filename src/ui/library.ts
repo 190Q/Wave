@@ -929,6 +929,9 @@ export function mountLibrary(): void {
       count.textContent = listCount;
       folders.innerHTML = renderLibrary(state);
       list.scrollTop = listScroll;
+      if (!wasOpen && shownCollections.length > 0 && !creating && !renaming) {
+        entryWindow.refresh();
+      }
       if ((creating || renaming) && !listRows.contains(document.activeElement)) {
         const input = listRows.querySelector<HTMLInputElement>(".entry-editor input");
         input?.focus();

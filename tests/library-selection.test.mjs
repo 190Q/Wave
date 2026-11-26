@@ -145,7 +145,7 @@ function setup({ touch = false, kind = "playlist", pending = false, open = true,
   };
   context.elements = Object.fromEntries([
     "sheet", "library", "library-rows", "library-pane", "sheet-count", "chips",
-    "sheet-search", "sheet-sort", "sheet-sort-label", "folders", "sheet-back",
+    "sheet-search", "sheet-sort", "sheet-sort-label", "folders", "sheet-back", "new-playlist",
   ].map((id) => [id, new FakeElement()]));
   const list = context.elements.library;
   const pane = context.elements["library-pane"];
@@ -166,6 +166,51 @@ function setup({ touch = false, kind = "playlist", pending = false, open = true,
 function rightClick(list, row) {
   return list.dispatch("contextmenu", row, { clientX: 30, clientY: 40 });
 }
+
+test("reopening the library refreshes cached collection rows", () => {
+  const { list } = setup({ open: false });
+  const host = context.elements["library-rows"];
+  let html = host.innerHTML;
+  let draws = 0;
+  Object.defineProperty(host, "innerHTML", {
+    get: () => html,
+    set: (value) => { html = value; draws += 1; },
+  });
+
+  list.scrollTop = 120;
+  context.state.libraryOpen = false;
+  context.render();
+  assert.equal(draws, 0);
+
+  list.scrollTop = 0;
+  context.state.libraryOpen = true;
+  context.render();
+  assert.ok(draws > 0);
+  assert.equal(list.scrollTop, 120);
+  assert.match(host.innerHTML, /data-collection="playlist"/);
+});
+
+test("reopening the library keeps an in-progress playlist editor", () => {
+  setup({ open: false });
+  const button = context.elements["new-playlist"];
+  const host = context.elements["library-rows"];
+  button.dispatch("click", button);
+  context.menu.items.find(({ label }) => label === "Empty playlist").action();
+  assert.match(host.innerHTML, /aria-label="New playlist name"/);
+  let html = host.innerHTML;
+  let draws = 0;
+  Object.defineProperty(host, "innerHTML", {
+    get: () => html,
+    set: (value) => { html = value; draws += 1; },
+  });
+
+  context.state.libraryOpen = false;
+  context.render();
+  context.state.libraryOpen = true;
+  context.render();
+  assert.equal(draws, 0);
+  assert.match(host.innerHTML, /aria-label="New playlist name"/);
+});
 
 test("collection highlight only appears for search results and follows keyboard navigation", () => {
   const second = { id: "second", kind: "playlist", name: "Playlist two", subtitle: "0 songs", entries: [], trackIds: [] };

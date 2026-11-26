@@ -112,8 +112,6 @@
   padding: 0.45rem;
   cursor: pointer;
   min-height: 3.4rem;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 3.4rem;
 }
 
 /* The stand-in for the rows a windowed list is not drawing. */

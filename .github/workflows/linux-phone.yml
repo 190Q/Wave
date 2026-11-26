@@ -15,7 +15,12 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
-      - run: node --test tests/linux-phone.test.mjs tests/flatpak.test.mjs tests/audio-stream-path.test.mjs tests/phone-lab.test.mjs tests/startup-diagnostics.test.mjs tests/release-assets.test.mjs tests/release-workflow.test.mjs
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y x11-utils xdotool xvfb xauth
+          npm run test:build-scripts
+          node --test tests/audio-stream-path.test.mjs tests/phone-lab.test.mjs tests/startup-diagnostics.test.mjs
+          xvfb-run -a sh tests/window-class-x11.test.sh
 
   musl:
     runs-on: ubuntu-22.04-arm

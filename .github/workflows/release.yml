@@ -37,6 +37,20 @@ jobs:
         with:
           node-version: 22
 
+      - name: Use current build test tooling
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+
+      - name: Test build and release scripts
+        working-directory: .release-tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y x11-utils xdotool xvfb xauth
+          npm run test:build-scripts
+          xvfb-run -a sh tests/window-class-x11.test.sh
+
       - name: Check Android signing
         env:
           KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
@@ -139,7 +153,7 @@ jobs:
       - name: Set up the phone Flatpak runtime
         if: matrix.platform == 'ubuntu-22.04-arm'
         run: |
-          sudo apt-get install -y flatpak fuse3 xvfb xdotool dbus-x11 pulseaudio pulseaudio-utils
+          sudo apt-get install -y flatpak fuse3 xvfb xdotool x11-utils dbus-x11 pulseaudio pulseaudio-utils
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
           flatpak install --user --noninteractive -y flathub org.gnome.Platform//51
 
@@ -217,6 +231,16 @@ jobs:
               sudo chown -R "$(id -u):$(id -g)" "$path"
             fi
           done
+
+      - name: Use current phone test tooling
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+
+      - name: Update phone test scripts
+        run: |
+          cp .release-tools/scripts/musl-runtime-test.sh .release-tools/scripts/musl-gui-test.sh .release-tools/scripts/check-window-class.sh .release-tools/scripts/check-webkit-paths.py .release-tools/scripts/test-mpris.py scripts/
 
       - name: Verify the musl installer in a clean Alpine runtime
         run: |

@@ -27,7 +27,11 @@ cleanup() {
     wait "$pulse" 2>/dev/null || true
   fi
   if mountpoint -q "$XDG_RUNTIME_DIR/doc"; then
-    fusermount3 -uz "$XDG_RUNTIME_DIR/doc"
+    fusermount3 -uz "$XDG_RUNTIME_DIR/doc" || true
+    if mountpoint -q "$XDG_RUNTIME_DIR/doc"; then
+      printf 'Could not unmount the document portal at %s\n' "$XDG_RUNTIME_DIR/doc" >&2
+      return
+    fi
   fi
   rm -rf "$work"
 }
@@ -100,8 +104,7 @@ done
 desktop="$(flatpak info --show-location com.wave.app)/files/share/applications/com.wave.app.desktop"
 desktop_class="$(sed -n 's/^StartupWMClass=//p' "$desktop")"
 if [ -n "$desktop_class" ]; then
-  window_class="$(xdotool getwindowclassname "$window")"
-  [ "$window_class" = "$desktop_class" ] || { printf 'Wave window class %s does not match %s\n' "$window_class" "$desktop_class" >&2; exit 1; }
+  sh "$(dirname "$0")/check-window-class.sh" "$window" "$desktop_class"
 fi
 parec --device=wave_flatpak_test.monitor --format=s16le --rate=8000 --channels=1 > "$work/playback.raw" &
 capture=$!

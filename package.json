@@ -9,6 +9,7 @@
     "dev:phone": "vite --port 5199 --strictPort --open /dev/phone/index.html",
     "build": "tsc && vite build",
     "test": "node --test",
+    "test:build-scripts": "node --test tests/build-scripts.test.mjs tests/flatpak.test.mjs tests/linux-phone.test.mjs tests/release-android.test.mjs tests/release-assets.test.mjs tests/release-workflow.test.mjs",
     "test:ui": "node --test scripts/ui-overflow-check.mjs",
     "benchmark:eq": "node scripts/eq-bypass-benchmark.mjs",
     "test:webkit-popup": "node scripts/webkit-popup-check.mjs",

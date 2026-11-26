@@ -50,7 +50,7 @@ for package in yt-dlp ffmpeg deno yt-dlp-ejs-rt-deno glib-networking mesa-dri-ga
   apk info -e "$package" >/dev/null
 done
 
-apk add --no-cache xvfb-run dbus fluxbox xwd imagemagick font-dejavu pulseaudio pulseaudio-utils
+apk add --no-cache xvfb-run dbus fluxbox xwd xprop imagemagick font-dejavu pulseaudio pulseaudio-utils
 chown -R wave-smoke:wave-smoke "$HOME"
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # Docker may block WebKit's nested sandbox; sandboxed testing remains opt-in.

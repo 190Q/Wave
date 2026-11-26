@@ -20,8 +20,23 @@ env:
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
 
 jobs:
+  test-scripts:
+    name: test build and release scripts
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y x11-utils xdotool xvfb xauth
+          npm run test:build-scripts
+          xvfb-run -a sh tests/window-class-x11.test.sh
+
   musl:
     name: recover linux phone musl package
+    needs: test-scripts
     runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v6
@@ -39,7 +54,7 @@ jobs:
 
       - name: Use the current release tooling with the tagged source
         run: |
-          cp .release-tools/scripts/release.mjs .release-tools/scripts/release-assets.mjs .release-tools/scripts/musl-build.sh .release-tools/scripts/musl-launcher.sh .release-tools/scripts/musl-runtime-test.sh .release-tools/scripts/musl-gui-test.sh .release-tools/scripts/test-mpris.py .release-tools/scripts/check-webkit-paths.py .release-tools/scripts/wave-webkit.py scripts/
+          cp .release-tools/scripts/release.mjs .release-tools/scripts/release-assets.mjs .release-tools/scripts/musl-build.sh .release-tools/scripts/musl-launcher.sh .release-tools/scripts/musl-runtime-test.sh .release-tools/scripts/musl-gui-test.sh .release-tools/scripts/check-window-class.sh .release-tools/scripts/test-mpris.py .release-tools/scripts/check-webkit-paths.py .release-tools/scripts/wave-webkit.py scripts/
           cp .release-tools/install.sh install.sh
 
       - name: Check the release

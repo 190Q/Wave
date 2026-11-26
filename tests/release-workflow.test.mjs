@@ -11,8 +11,11 @@ const gui = readFileSync(new URL("../scripts/musl-gui-test.sh", import.meta.url)
 const phoneConfig = JSON.parse(readFileSync(new URL("../src-tauri/tauri.phone.conf.json", import.meta.url), "utf8"));
 const linuxConfig = JSON.parse(readFileSync(new URL("../src-tauri/tauri.linux.conf.json", import.meta.url), "utf8"));
 const slimConfig = JSON.parse(readFileSync(new URL("../src-tauri/tauri.slim.conf.json", import.meta.url), "utf8"));
+const packageScripts = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).scripts;
 
 test("release builds run after signing checks and publish only after every platform succeeds", () => {
+  assert.match(workflow, /name: Use current build test tooling[\s\S]*ref: \$\{\{ github\.sha \}\}[\s\S]*path: \.release-tools/);
+  assert.match(workflow, /name: Test build and release scripts[\s\S]*npm run test:build-scripts[\s\S]*xvfb-run -a sh tests\/window-class-x11\.test\.sh[\s\S]*Check Android signing/);
   assert.match(workflow, /Check Android signing[\s\S]*Create the draft release/);
   for (const job of ["build", "musl", "android"]) {
     assert.match(workflow, new RegExp(`^  ${job}:\\n(?:    [^\\n]*\\n)*?    needs: prepare$`, "m"));
@@ -24,6 +27,7 @@ test("release builds run after signing checks and publish only after every platf
 
 test("the ARM release builds, tests and publishes the phone Flatpak", () => {
   assert.match(workflow, /name: Set up the phone Flatpak runtime\n        if: matrix\.platform == 'ubuntu-22\.04-arm'/);
+  assert.match(workflow, /apt-get install -y flatpak .*x11-utils/);
   assert.match(workflow, /flatpak install --user --noninteractive -y flathub org\.gnome\.Platform\/\/51/);
   assert.match(workflow, /npx tauri build --no-bundle --config src-tauri\/tauri\.phone\.conf\.json/);
   assert.match(workflow, /sh scripts\/flatpak-build\.sh/);
@@ -51,12 +55,15 @@ test("phone tests run only manually on ARM Alpine", () => {
     assert.doesNotMatch(source, /^  (?:push|pull_request):/m);
     assert.match(source, /actions\/cache@v5/);
   }
-  assert.match(phoneTests, /tests\/linux-phone\.test\.mjs/);
-  assert.match(phoneTests, /tests\/flatpak\.test\.mjs/);
+  for (const script of ["build-scripts", "flatpak", "linux-phone", "release-android", "release-assets", "release-workflow"]) {
+    assert.ok(packageScripts["test:build-scripts"].includes(`tests/${script}.test.mjs`));
+  }
+  assert.match(phoneTests, /npm run test:build-scripts/);
+  assert.match(phoneTests, /xvfb-run -a sh tests\/window-class-x11\.test\.sh/);
   assert.match(phoneTests, /tests\/phone-lab\.test\.mjs/);
   assert.match(phoneTests, /tests\/audio-stream-path\.test\.mjs/);
   assert.match(phoneTests, /tests\/startup-diagnostics\.test\.mjs/);
-  assert.match(phoneTests, /run: npm ci[\s\S]*node --test tests\/linux-phone\.test\.mjs/);
+  assert.match(phoneTests, /run: npm ci[\s\S]*npm run test:build-scripts/);
   assert.match(phoneTests, /runs-on: ubuntu-22\.04-arm/);
   assert.match(phoneTests, /alpine:3\.22 sh scripts\/musl-build\.sh/);
   assert.match(phoneTests, /alpine:3\.22 sh scripts\/musl-runtime-test\.sh/);
@@ -66,6 +73,7 @@ test("phone tests run only manually on ARM Alpine", () => {
 });
 
 test("phone recovery uses tagged application source and current build tooling", () => {
+  assert.match(recovery, /test-scripts:[\s\S]*npm run test:build-scripts[\s\S]*xvfb-run -a sh tests\/window-class-x11\.test\.sh[\s\S]*musl:[\s\S]*needs: test-scripts/);
   assert.match(recovery, /ref: \$\{\{ inputs\.tag \}\}/);
   assert.match(recovery, /ref: \$\{\{ github\.sha \}\}/);
   assert.match(recovery, /\.release-tools\/scripts\/musl-build\.sh/);
@@ -73,6 +81,7 @@ test("phone recovery uses tagged application source and current build tooling", 
   assert.match(recovery, /--env WAVE_TEST_MPRIS_QUIT=0/);
   assert.match(recovery, /--env WAVE_TEST_MPRIS_PLAYBACK=0/);
   assert.match(recovery, /\.release-tools\/scripts\/test-mpris\.py/);
+  assert.match(recovery, /\.release-tools\/scripts\/check-window-class\.sh/);
   assert.match(recovery, /node scripts\/release\.mjs upload-musl "\$RELEASE_TAG"/);
   assert.match(recovery, /node scripts\/release\.mjs organize "\$RELEASE_TAG"/);
   assert.match(musl, /CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=-crt-static"/);
@@ -93,11 +102,15 @@ test("phone releases verify installation in a clean Alpine environment", () => {
   assert.match(runtime, /sh install\.sh --version/);
   assert.match(runtime, /ldd "\$HOME\/\.local\/bin\/wave-bin"/);
   assert.match(runtime, /xvfb-run .*musl-gui-test\.sh/);
+  assert.match(runtime, /apk add --no-cache .*xprop/);
+  assert.match(workflow, /name: Use current phone test tooling[\s\S]*\.release-tools\/scripts\/musl-runtime-test\.sh[\s\S]*\.release-tools\/scripts\/check-window-class\.sh[\s\S]*Verify the musl installer/);
   assert.match(runtime, /WEBKIT_FORCE_SANDBOX=1/);
   assert.match(runtime, /WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1/);
   assert.match(runtime, /sh install\.sh --uninstall/);
   assert.equal(phoneConfig.app.windows[0].url, "index.html?device=linuxPhone");
   assert.match(gui, /frontend ready \(linuxPhone\)/);
+  assert.match(gui, /check-window-class\.sh/);
+  assert.doesNotMatch(gui, /getwindowclassname/);
   assert.match(gui, /xdotool .*click 1/);
   assert.match(gui, /Wave did not produce audible audio/);
   assert.match(gui, /phone import panel did not visibly open/);

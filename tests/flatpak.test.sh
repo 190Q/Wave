@@ -124,6 +124,7 @@ set -eu
 test "$1" = -q
 test "$2" = "$XDG_RUNTIME_DIR/doc"
 test "$SMOKE_TEST_MOUNTED" = 1
+test ! -e "$SMOKE_TEST_LOG/unmounted"
 MOCK
 cat > "$work/smoke-bin/fusermount3" <<'MOCK'
 #!/bin/sh
@@ -131,6 +132,9 @@ set -eu
 test "$1" = -uz
 test "$2" = "$XDG_RUNTIME_DIR/doc"
 printf '%s\n' "$2" > "$SMOKE_TEST_LOG/unmount"
+if [ "${SMOKE_TEST_UNMOUNT_STATUS:-0}" -eq 0 ] || [ "${SMOKE_TEST_DISAPPEARED:-0}" -eq 1 ]; then
+  : > "$SMOKE_TEST_LOG/unmounted"
+fi
 exit "${SMOKE_TEST_UNMOUNT_STATUS:-0}"
 MOCK
 chmod +x "$work/smoke-bin/"*
@@ -138,7 +142,7 @@ export SMOKE_TEST_LOG="$work/smoke-log"
 export PATH="$work/smoke-bin:$PATH"
 
 for mounted in 0 1; do
-  rm -f "$SMOKE_TEST_LOG/unmount"
+  rm -f "$SMOKE_TEST_LOG/unmount" "$SMOKE_TEST_LOG/unmounted"
   status=0
   HOME="$work/smoke-home" SMOKE_TEST_MOUNTED="$mounted" \
     sh "$source_root/scripts/flatpak-runtime-test.sh" || status=$?
@@ -153,8 +157,103 @@ for mounted in 0 1; do
 done
 
 status=0
+rm -f "$SMOKE_TEST_LOG/unmounted"
 HOME="$work/smoke-home" SMOKE_TEST_MOUNTED=1 SMOKE_TEST_UNMOUNT_STATUS=19 \
   sh "$source_root/scripts/flatpak-runtime-test.sh" || status=$?
-test "$status" -eq 19
+test "$status" -eq 42
 runtime="$(cat "$SMOKE_TEST_LOG/runtime")"
 test -d "$runtime/doc/by-app/com.wave.app"
+
+status=0
+HOME="$work/smoke-home" SMOKE_TEST_MOUNTED=1 SMOKE_TEST_UNMOUNT_STATUS=19 SMOKE_TEST_DISAPPEARED=1 \
+  sh "$source_root/scripts/flatpak-runtime-test.sh" || status=$?
+test "$status" -eq 42
+runtime="$(cat "$SMOKE_TEST_LOG/runtime")"
+test ! -e "$(dirname "$runtime")"
+
+mkdir -p "$work/flatpak/files/share/applications"
+printf '[Desktop Entry]\nStartupWMClass=Com.wave.app\n' > "$work/flatpak/files/share/applications/com.wave.app.desktop"
+export SMOKE_TEST_FLATPAK="$work/flatpak"
+cat > "$work/smoke-bin/flatpak" <<'MOCK'
+#!/bin/sh
+set -eu
+case "$*" in
+  'info --show-location com.wave.app') printf '%s\n' "$SMOKE_TEST_FLATPAK" ;;
+  'run --command=ffmpeg com.wave.app -v error '*)
+    for argument do :; done
+    printf 'audio' > "$argument"
+    ;;
+  'run --command='*) printf 'test version\n' ;;
+  'run com.wave.app tools --json') printf '{"ytDlp":true,"ffmpeg":true,"deno":true}\n' ;;
+  'run com.wave.app import '*) printf '1 song.\n' ;;
+  'run com.wave.app list --json') printf '[{"title":"WaveFlatpakSmoke"}]\n' ;;
+  'run com.wave.app')
+    printf 'wave: frontend ready (linuxPhone)\n'
+    while [ ! -e "$SMOKE_TEST_LOG/quit" ]; do /bin/sleep 0.05; done
+    ;;
+  *) printf 'Unexpected Flatpak command: %s\n' "$*" >&2; exit 1 ;;
+esac
+MOCK
+cat > "$work/smoke-bin/pulseaudio" <<'MOCK'
+#!/bin/sh
+exec /bin/sleep 60
+MOCK
+cat > "$work/smoke-bin/pactl" <<'MOCK'
+#!/bin/sh
+exit 0
+MOCK
+cat > "$work/smoke-bin/xdotool" <<'MOCK'
+#!/bin/sh
+printf '%s\n' "$*" >> "$SMOKE_TEST_LOG/xdotool"
+case "$1" in
+  search) printf '123\n' ;;
+  windowfocus|key) : ;;
+  *) exit 1 ;;
+esac
+MOCK
+cat > "$work/smoke-bin/xprop" <<'MOCK'
+#!/bin/sh
+test "$*" = '-id 123 WM_CLASS'
+printf 'WM_CLASS(STRING) = "com.wave.app", "%s"\n' "${SMOKE_TEST_CLASS:-Com.wave.app}"
+MOCK
+cat > "$work/smoke-bin/parec" <<'MOCK'
+#!/bin/sh
+printf '\000\002\000\002'
+exec /bin/sleep 60
+MOCK
+cat > "$work/smoke-bin/python3" <<'MOCK'
+#!/bin/sh
+case "$1" in
+  */test-mpris.py) printf 'mpris\n' >> "$SMOKE_TEST_LOG/checks" ;;
+  *) exec /usr/bin/python3 "$@" ;;
+esac
+MOCK
+cat > "$work/smoke-bin/gdbus" <<'MOCK'
+#!/bin/sh
+case "$*" in
+  *org.mpris.MediaPlayer2.Quit*) : > "$SMOKE_TEST_LOG/quit" ;;
+esac
+MOCK
+cat > "$work/smoke-bin/sleep" <<'MOCK'
+#!/bin/sh
+exec /bin/sleep 0.05
+MOCK
+chmod +x "$work/smoke-bin/"*
+rm -f "$SMOKE_TEST_LOG/quit" "$SMOKE_TEST_LOG/xdotool" "$SMOKE_TEST_LOG/checks"
+HOME="$work/smoke-home" SMOKE_TEST_MOUNTED=0 sh "$source_root/scripts/flatpak-runtime-test.sh" > "$work/smoke.log"
+grep -Fq 'opened, imported music, played audio and exposed media controls' "$work/smoke.log"
+grep -Fxq 'search --onlyvisible --name ^Wave$' "$SMOKE_TEST_LOG/xdotool"
+grep -Fxq 'key space' "$SMOKE_TEST_LOG/xdotool"
+grep -Fxq 'mpris' "$SMOKE_TEST_LOG/checks"
+
+rm -f "$SMOKE_TEST_LOG/quit" "$SMOKE_TEST_LOG/xdotool"
+if HOME="$work/smoke-home" SMOKE_TEST_MOUNTED=0 SMOKE_TEST_CLASS=Wrong \
+  sh "$source_root/scripts/flatpak-runtime-test.sh" > "$work/smoke.log" 2>&1; then
+  printf 'A mismatched Flatpak window class unexpectedly passed\n' >&2
+  exit 1
+fi
+grep -Fq 'Wave window class Wrong does not match Com.wave.app' "$work/smoke.log"
+if grep -Fxq 'key space' "$SMOKE_TEST_LOG/xdotool"; then
+  printf 'The Flatpak test continued after a class mismatch\n' >&2
+  exit 1
+fi

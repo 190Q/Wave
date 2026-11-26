@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 const recovery = readFileSync(new URL("../.github/workflows/release-phone.yml", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+const flatpakRecovery = readFileSync(new URL("../.github/workflows/release-flatpak.yml", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 const phoneTests = readFileSync(new URL("../.github/workflows/linux-phone.yml", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 const musl = readFileSync(new URL("../scripts/musl-build.sh", import.meta.url), "utf8");
 const runtime = readFileSync(new URL("../scripts/musl-runtime-test.sh", import.meta.url), "utf8");
@@ -37,6 +38,15 @@ test("the ARM release builds, tests and publishes the phone Flatpak", () => {
   assert.match(workflow, /asset="Wave_\$\{version\}_aarch64_phone\.flatpak"/);
   assert.match(workflow, /node scripts\/release\.mjs upload "\$RELEASE_TAG" "src-tauri\/target\/flatpak\/\$asset"/);
   assert.match(workflow, /cmp "src-tauri\/target\/flatpak\/\$asset" "\$RUNNER_TEMP\/flatpak-download\/\$asset"/);
+  assert.match(workflow, /name: Build the phone Flatpak[\s\S]*name: Save the phone Flatpak[\s\S]*name: Verify the phone Flatpak/);
+});
+
+test("Flatpak recovery builds only the phone package and keeps it if verification fails", () => {
+  assert.match(flatpakRecovery, /runs-on: ubuntu-22\.04-arm/);
+  assert.match(flatpakRecovery, /ref: \$\{\{ inputs\.tag \}\}[\s\S]*ref: \$\{\{ github\.sha \}\}/);
+  assert.match(flatpakRecovery, /Wave_\$\{version\}_arm64\.deb/);
+  assert.match(flatpakRecovery, /name: Build the phone Flatpak[\s\S]*name: Save the phone Flatpak[\s\S]*name: Verify the phone Flatpak[\s\S]*release\.mjs finalize/);
+  assert.doesNotMatch(flatpakRecovery, /tauri-action|release\.mjs slim/);
 });
 
 test("Linux RPMs use fast compression and retain the full and slim package contents", () => {

@@ -163,6 +163,16 @@ jobs:
           npx tauri build --no-bundle --config src-tauri/tauri.phone.conf.json
           sh scripts/flatpak-build.sh
 
+      - name: Save the phone Flatpak
+        if: matrix.platform == 'ubuntu-22.04-arm'
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone-flatpak-${{ github.run_id }}-${{ github.run_attempt }}
+          path: src-tauri/target/flatpak/*.flatpak
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
       - name: Use current Flatpak test tooling
         if: matrix.platform == 'ubuntu-22.04-arm'
         uses: actions/checkout@v6

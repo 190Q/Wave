@@ -1,0 +1,105 @@
+name: recover phone Flatpak
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to repair (e.g. v0.5.0)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag }}
+  CARGO_PROFILE_RELEASE_LTO: thin
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+
+jobs:
+  build:
+    name: recover phone Flatpak
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Use current Flatpak test tooling
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Check the release and reuse its download tools
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(tr -d '\r\n' < VERSION)
+          test "$RELEASE_TAG" = "v$version"
+          gh release view "$RELEASE_TAG" > /dev/null
+          gh release download "$RELEASE_TAG" --pattern "Wave_${version}_arm64.deb" --dir "$RUNNER_TEMP"
+          dpkg-deb -x "$RUNNER_TEMP/Wave_${version}_arm64.deb" "$RUNNER_TEMP/wave-deb"
+          mkdir -p src-tauri/tools
+          for tool in yt-dlp ffmpeg ffprobe deno; do
+            install -m755 "$RUNNER_TEMP/wave-deb/usr/lib/Wave/tools/$tool" "src-tauri/tools/$tool"
+          done
+
+      - name: Install Linux and Flatpak dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential \
+            curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav \
+            flatpak fuse3 xvfb xdotool x11-utils dbus-x11 pulseaudio pulseaudio-utils
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive -y flathub org.gnome.Platform//51
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
+      - run: npm ci
+
+      - name: Build the phone Flatpak
+        run: |
+          npx tauri build --no-bundle --config src-tauri/tauri.phone.conf.json
+          sh scripts/flatpak-build.sh
+
+      - name: Save the phone Flatpak
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone-flatpak-${{ github.run_id }}-${{ github.run_attempt }}
+          path: src-tauri/target/flatpak/*.flatpak
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Verify the phone Flatpak
+        run: |
+          version=$(tr -d '\r\n' < VERSION)
+          flatpak install --user --noninteractive -y "src-tauri/target/flatpak/Wave_${version}_aarch64_phone.flatpak"
+          xvfb-run -a -s "-screen 0 360x720x24" dbus-run-session -- sh .release-tools/scripts/flatpak-runtime-test.sh
+
+      - name: Attach and publish the completed release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(tr -d '\r\n' < VERSION)
+          asset="Wave_${version}_aarch64_phone.flatpak"
+          gh release upload "$RELEASE_TAG" "src-tauri/target/flatpak/$asset"
+          mkdir -p "$RUNNER_TEMP/flatpak-download"
+          gh release download "$RELEASE_TAG" --pattern "$asset" --dir "$RUNNER_TEMP/flatpak-download"
+          cmp "src-tauri/target/flatpak/$asset" "$RUNNER_TEMP/flatpak-download/$asset"
+          node scripts/release.mjs finalize "$RELEASE_TAG"

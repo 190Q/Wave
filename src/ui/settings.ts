@@ -633,7 +633,7 @@ function nowPlayingHtml(settings: Settings, android: boolean): string {
     ${android ? "" : toggleRow(
       "discordPresence",
       "Discord presence",
-      "Show the song on your Discord profile, the way Spotify does, with the title, artist and a progress bar. Off until this is switched on.",
+      "Show the song on your Discord profile, with the title, artist and a progress bar. Off until this is switched on.",
       settings.discordPresence ?? false,
     )}`,
   );

@@ -700,8 +700,8 @@ downloads nothing that is already in the library.
 {exe} export <playlist> <file>
 
 Writes a playlist out as a .wavelist file, which holds the songs' tags rather
-than their audio. Another copy of Wave can import it and download the same songs
-without Spotify. Songs the playlist is waiting on are left out.
+than their audio. Another copy of Wave can import it and download the same songs.
+Songs the playlist is waiting on are left out.
 "
         ),
         "lyrics" | "covers" | "genres" | "level" => {

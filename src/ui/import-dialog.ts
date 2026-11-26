@@ -628,7 +628,7 @@ function localSection(): string {
     : "Playlist downloads use the yt-dlp, ffmpeg and Deno that ship with Wave.";
   return section(
     "Local import",
-    `<p class="import-hint">Bring in music files or a folder, or import a Wave playlist to download its songs without Spotify. ${tools}</p>
+    `<p class="import-hint">Bring in music files or a folder, or import a Wave playlist to download missing songs. ${tools}</p>
     <div class="import-actions">
       <button class="pill" type="button" data-import="folder">Import folder</button>
       <button class="pill" type="button" data-import="files">Import files</button>
@@ -643,8 +643,8 @@ function localSection(): string {
 function linkSection(): string {
   const android = device() === "android";
   const hint = android
-    ? "Paste a YouTube video, playlist or mix link to download its audio to your library. Mixes import up to 50 videos without signing in."
-    : "Paste a Spotify, Deezer or YouTube link: a track, playlist, YouTube mix, or Deezer album. YouTube mixes import up to 50 videos without signing in. YouTube videos are downloaded directly. Spotify needs the credentials below; Deezer and YouTube need nothing else.";
+    ? "Paste a YouTube video, playlist or mix link to download its audio to your library. Mixes import up to 50 videos and may differ from YouTube."
+    : "Paste a Spotify, Deezer or YouTube link: a track, playlist, YouTube mix, or Deezer album. YouTube mixes import up to 50 videos and may differ from YouTube. YouTube videos are downloaded directly. Spotify links require the credentials below.";
   const placeholder = android ? "https://www.youtube.com/..." : "https://open.spotify.com/... or https://www.youtube.com/...";
   const label = android ? "YouTube link" : "Spotify, Deezer or YouTube link";
   return section(
@@ -712,7 +712,7 @@ function setupHtml(status: SpotifyStatus | null): string {
 
   return `
     <div class="import-setup">
-      <p class="import-hint">Spotify needs an app of your own before anything can be downloaded.</p>
+      <p class="import-hint">Spotify links require your own developer app.</p>
       <ol class="import-steps">
         <li>Create an app at <code class="import-uri">developer.spotify.com/dashboard</code>.</li>
         <li>Add this to that app's Redirect URIs, exactly as written:

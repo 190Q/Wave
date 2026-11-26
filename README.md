@@ -36,8 +36,8 @@ an equaliser and a theme that follows the artwork.
   On desktop, Spotify and Deezer links are also supported. Spotify
   and Deezer provide the track information; Wave searches YouTube for matching
   audio. YouTube links are downloaded directly. Mixes are generated
-  continuously, so Wave imports up to 50 videos from the mix. Mixes are read
-  without signing in, so personalised mixes may differ from YouTube.
+  continuously, so Wave imports up to 50 videos from the mix. Personalised
+  mixes may differ from YouTube.
 - **Generated playlists:** Make a mix from your listening or a genre using
   Deezer's catalogue. Songs not already in your library can be downloaded on
   desktop. A mix based on your taste needs enough listening history first.
@@ -289,8 +289,7 @@ using the preamp value in the file.
 
 ### Spotify setup
 
-Spotify link imports need your own developer app. Deezer and YouTube do not
-need an account setup.
+Spotify link imports need your own developer app.
 
 1. Create an app in the [Spotify developer
    dashboard](https://developer.spotify.com/dashboard).

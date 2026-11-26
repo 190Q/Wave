@@ -25,7 +25,7 @@ const mocks = {
     export const refreshDeezerStatus = () => {};
     export const refreshSpotifyStatus = () => {}, refreshYoutubeStatus = () => {};
     export const jobRunning = (progress) => !!progress && progress.phase !== "done" && progress.phase !== "failed";
-    export const serviceOf = () => "youtube";
+    export const serviceOf = () => context().service ?? "youtube";
     export const setNotice = () => {}, subscribe = (handler) => { context().subscribers.push(handler); };
   `,
   "./highlight": "export const highlightHtml = (value) => value;",
@@ -189,6 +189,8 @@ test("desktop import places file selection beside folders and the log in recent 
   const local = sections.find((section) => section.includes("Local import"));
   const recent = sections.find((section) => section.includes("Recent imports"));
   assert.deepEqual(actions(local), ["folder", "files", "wavelist"]);
+  assert.match(local, /Wave playlist to download missing songs/);
+  assert.doesNotMatch(local, /Spotify/);
   assert.deepEqual(actions(recent), ["log"]);
   assert.match(hint.textContent, /D:\\Wave\\import\.log/);
   assert.match(history.innerHTML, /import-history-source">Files<\/span>/);
@@ -212,6 +214,8 @@ test("the full desktop import panel still offers all fetch sections", () => {
   }
   assert.doesNotMatch(elements["import-body"].innerHTML, /playlists import up to 500 videos/i);
   assert.match(elements["import-body"].innerHTML, /YouTube mixes import up to 50 videos/);
+  assert.match(elements["import-body"].innerHTML, /Spotify links require the credentials below/);
+  assert.doesNotMatch(elements["import-body"].innerHTML, /need nothing else|without signing in/);
 });
 
 test("Linux phone import dialog follows folder progress", () => {
@@ -224,10 +228,29 @@ test("Linux phone import dialog follows folder progress", () => {
 
   assert.equal(dialog.open, true);
   assert.match(elements["import-body"].innerHTML, /id="import-folder-state"/);
+  const local = elements["import-body"].innerHTML.match(/<section class="import-section">[\s\S]*?<\/section>/)[0];
+  assert.match(local, /Wave playlist to download missing songs/);
+  assert.doesNotMatch(local, /Spotify/);
   assert.equal(status.textContent, "Importing 1 of 50: Book.m4b");
   context.state.folderImport = "Importing 2 of 50: Book 2.m4b (50%)";
   context.subscribers.forEach((handler) => handler());
   assert.equal(status.textContent, "Importing 2 of 50: Book 2.m4b (50%)");
+});
+
+test("Spotify setup identifies which links need credentials", () => {
+  const { context, elements } = setup("desktop", 800);
+  const status = { innerHTML: "" };
+  context.service = "spotify";
+  context.state.spotify = null;
+  elements["import-body"].querySelector = (selector) =>
+    selector === "#import-link-state" ? status : null;
+  mountImportDialog();
+  elements["import-open"].dispatch("click");
+  clickImport(elements, "setup");
+
+  assert.match(status.innerHTML, /Spotify links require your own developer app/);
+  assert.match(status.innerHTML, /Client ID and Client Secret/);
+  assert.doesNotMatch(status.innerHTML, /before anything can be downloaded/);
 });
 
 test("local imports keep the panel open and display progress, completion, and loudness", () => {
@@ -356,6 +379,7 @@ test("Android full import offers YouTube without Spotify or desktop tools", () =
   assert.match(html, /playlist or mix link/);
   assert.doesNotMatch(html, /playlists import up to 500 videos/i);
   assert.match(html, /Mixes import up to 50 videos/);
+  assert.doesNotMatch(html, /without signing in/);
   assert.doesNotMatch(html, /Spotify|Deezer|yt-dlp|data-import="config"/);
   assert.doesNotMatch(html, /data-import="log"/);
 });

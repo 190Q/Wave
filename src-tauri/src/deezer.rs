@@ -79,9 +79,7 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> DeezerStatus {
     let bundled = tools::bundled_dir(app);
     let found = tools::status(&read_env(app), bundled.as_deref());
     let message = found.problem().unwrap_or_else(|| {
-        "Deezer is ready. No sign-in is needed: a public playlist, album or track is read \
-         straight from Deezer's catalogue."
-            .to_string()
+        "Deezer is ready. Public playlists, albums and tracks can be imported.".to_string()
     });
 
     DeezerStatus {

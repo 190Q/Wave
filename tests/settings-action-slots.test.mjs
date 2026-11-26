@@ -266,6 +266,10 @@ test("Discord presence appears on desktop and Linux phones, not Android", () => 
     mountSettings();
     openSettings();
     assert.equal(body.innerHTML.includes('data-toggle="discordPresence"'), visible);
+    if (visible) {
+      assert.match(body.innerHTML, /Show the song on your Discord profile/);
+      assert.doesNotMatch(body.innerHTML, /the way Spotify does/);
+    }
     assert.match(body.innerHTML, /data-toggle="systemMediaControls"/);
     assert.match(body.innerHTML, /data-toggle="normalizeVolume"/);
   }

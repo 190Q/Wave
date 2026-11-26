@@ -362,7 +362,7 @@ pub(crate) fn run(
     let staging = staging_dir(app)?;
 
     let result = (|| {
-        report.phase("downloading", "Downloading the audio. Spotify is not needed.");
+        report.phase("downloading", "Downloading missing songs.");
         report.count(list.tracks.len());
 
         let mut ids: Vec<Option<String>> = vec![None; list.tracks.len()];

@@ -74,22 +74,35 @@ test("phone search and equaliser overlays respect the safe area", async () => {
   }
 });
 
-test("phone equaliser content stays padded while scrolling reaches the safe area edges", async () => {
+test("phone equalisers show the scrollable side panel instead of the graph and bands", async () => {
   const css = parse(await readFile(new URL("../src/styles/android.css", import.meta.url), "utf8"));
-  const androidBody = css.nodes.find((node) =>
-    node.type === "rule" && node.selectors.includes('[data-device="android"] .eq-body'),
+  const prefix = ':is([data-device="android"], [data-device="linuxPhone"])';
+  const hidden = css.nodes.find((node) =>
+    node.type === "rule" && node.selectors.includes(`${prefix} .eq-graph`),
   );
-  assert.ok(androidBody);
-  assert.equal(androidBody.nodes.find((node) => node.prop === "padding")?.value, "1rem 0 1.25rem");
-  const androidSide = css.nodes.find((node) =>
-    node.type === "rule" && node.selectors.includes('[data-device="android"] .eq-side'),
+  assert.ok(hidden?.selectors.includes(`${prefix} .eq-bands-wrap`));
+  assert.equal(hidden.nodes.find((node) => node.prop === "display")?.value, "none");
+
+  const phoneBody = css.nodes.find((node) =>
+    node.type === "rule" && node.selectors.includes(`${prefix} .eq-body`),
   );
-  assert.equal(androidSide?.nodes.find((node) => node.prop === "padding")?.value, "0 1.25rem");
-  assert.equal(androidSide?.nodes.find((node) => node.prop === "overflow-y")?.value, "auto");
+  assert.ok(phoneBody);
+  assert.equal(phoneBody.nodes.find((node) => node.prop === "grid-template-columns")?.value, "minmax(0, 1fr)");
+  assert.equal(phoneBody.nodes.find((node) => node.prop === "grid-template-rows")?.value, "minmax(0, 1fr)");
+  assert.equal(phoneBody.nodes.find((node) => node.prop === "grid-template-areas")?.value, '"side"');
+  assert.equal(phoneBody.nodes.find((node) => node.prop === "padding")?.value, "1rem 0 1.25rem");
+  assert.equal(phoneBody.nodes.find((node) => node.prop === "overflow")?.value, "hidden");
+  const phoneSide = css.nodes.find((node) =>
+    node.type === "rule" && node.selectors.includes(`${prefix} .eq-side`),
+  );
+  assert.equal(phoneSide?.nodes.find((node) => node.prop === "padding")?.value, "0 1.25rem");
+  assert.equal(phoneSide?.nodes.find((node) => node.prop === "border")?.value, "0");
+  assert.equal(phoneSide?.nodes.find((node) => node.prop === "overflow-y")?.value, "auto");
 
   const eqCss = parse(await readFile(new URL("../src/styles/eq.css", import.meta.url), "utf8"));
   const body = eqCss.nodes.find((node) => node.type === "rule" && node.selectors.includes(".eq-body"));
   assert.equal(body?.nodes.find((node) => node.prop === "padding")?.value, "1rem 1.5rem 1.25rem");
+  assert.match(body?.nodes.find((node) => node.prop === "grid-template-areas")?.value, /"graph side"\s+"bands side"/);
   const narrow = eqCss.nodes.find((node) => node.type === "atrule" && node.params === "(max-width: 56rem)");
   const narrowBody = narrow?.nodes.find((node) => node.type === "rule" && node.selectors.includes(".eq-body"));
   assert.equal(narrowBody?.nodes.find((node) => node.prop === "overflow-y")?.value, "auto");

@@ -10,8 +10,23 @@ internal fun notificationPermissionNeeded(
 internal fun playbackWakeLockNeeded(foreground: Boolean, playing: Boolean): Boolean =
   foreground && playing
 
-internal fun playbackServiceCanStop(taskRemoved: Boolean, playing: Boolean, pending: Boolean): Boolean =
-  taskRemoved && !playing && !pending
+internal fun playbackServiceCanStop(uiConnected: Boolean, playing: Boolean, pending: Boolean): Boolean =
+  !uiConnected && !playing && !pending
+
+internal const val PLAYBACK_IDLE_TIMEOUT_MS = 10 * 60_000L
+
+internal class PlaybackIdleTimeout(private val delayMs: Long = PLAYBACK_IDLE_TIMEOUT_MS) {
+  private var pausedAt: Long? = null
+
+  fun remaining(eligible: Boolean, now: Long): Long? {
+    if (!eligible) {
+      pausedAt = null
+      return null
+    }
+    val started = pausedAt ?: now.also { pausedAt = it }
+    return (delayMs - (now - started).coerceAtLeast(0)).coerceAtLeast(0)
+  }
+}
 
 internal fun artworkSampleSize(width: Int, height: Int, maxEdge: Int): Int {
   if (width <= 0 || height <= 0 || maxEdge <= 0) return 1

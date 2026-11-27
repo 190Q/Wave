@@ -19,11 +19,21 @@ class PlaybackPolicyTest {
   }
 
   @Test
-  fun aRemovedTaskStopsAfterPauseButNotDuringPlaybackOrStartup() {
-    assertFalse(playbackServiceCanStop(false, false, false))
-    assertFalse(playbackServiceCanStop(true, true, false))
-    assertFalse(playbackServiceCanStop(true, false, true))
-    assertTrue(playbackServiceCanStop(true, false, false))
+  fun idlePlaybackStopsOnlyWithoutAnAppOrPlayback() {
+    assertFalse(playbackServiceCanStop(true, false, false))
+    assertFalse(playbackServiceCanStop(false, true, false))
+    assertFalse(playbackServiceCanStop(false, false, true))
+    assertTrue(playbackServiceCanStop(false, false, false))
+  }
+
+  @Test
+  fun idleTimeoutKeepsItsDeadlineAndResetsWhenPlaybackResumes() {
+    val timeout = PlaybackIdleTimeout(600_000)
+    assertEquals(600_000L, timeout.remaining(true, 1_000))
+    assertEquals(300_000L, timeout.remaining(true, 301_000))
+    assertEquals(0L, timeout.remaining(true, 601_000))
+    assertNull(timeout.remaining(false, 601_000))
+    assertEquals(600_000L, timeout.remaining(true, 602_000))
   }
 
   @Test

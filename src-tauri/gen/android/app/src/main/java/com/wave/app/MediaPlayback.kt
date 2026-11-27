@@ -102,7 +102,7 @@ object MediaPlayback {
     val session = session(context)
     lastSong = song
     playing = song.playing
-    val stopping = MediaPlaybackService.syncPlayback()
+    MediaPlaybackService.syncPlayback()
     session.setPlaybackState(state(song))
 
     val wanted = Shown.of(song)
@@ -127,7 +127,7 @@ object MediaPlayback {
       shown = wanted
     }
 
-    if (!stopping) keepAlive(context, true)
+    keepAlive(context, true)
     keptAt = SystemClock.elapsedRealtime()
   }
 

@@ -1,11 +1,16 @@
 package com.wave.app
 
+import android.Manifest
 import android.app.ActivityManager
+import android.app.Notification
+import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
+import android.os.Build
 import android.os.Bundle
 import android.support.v4.media.MediaBrowserCompat
 import android.support.v4.media.session.MediaControllerCompat
+import android.support.v4.media.session.PlaybackStateCompat
 import androidx.media.MediaBrowserServiceCompat
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
@@ -64,6 +69,52 @@ class NativePlaybackResumptionTest {
       .put("playback", JSONObject().put("order", JSONArray().put("test").put("next")).put("cursor", 0)))
     send(JSONObject().put("type", "load").put("path", audio.absolutePath).put("positionMs", 1_500))
     assertTrue(waitFor { it.optBoolean("live") && it.optString("currentId") == "test" })
+  }
+
+  @Test
+  fun pausedControlsRemainForegroundAfterTheAppTaskIsRemoved() {
+    allowNotifications()
+    val scenario = ActivityScenario.launch(PlaybackTestActivity::class.java)
+    val browser = connectBrowser()
+    try {
+      send(JSONObject().put("type", "play"))
+      assertTrue(waitFor { it.optBoolean("playing") })
+      instrumentation.runOnMainSync {
+        client.setVisible(false)
+        client.close()
+      }
+      scenario.onActivity { it.finishAndRemoveTask() }
+      Thread.sleep(1_000)
+      val controller = MediaControllerCompat(context, browser.sessionToken)
+      instrumentation.runOnMainSync { browser.disconnect() }
+      instrumentation.runOnMainSync { controller.transportControls.pause() }
+      Thread.sleep(1_500)
+      assertTrue(waitForPausedControls(controller))
+    } finally {
+      instrumentation.runOnMainSync { browser.disconnect() }
+      scenario.close()
+    }
+  }
+
+  @Test
+  fun mediaOnlyPlaybackKeepsPausedControlsAvailable() {
+    allowNotifications()
+    instrumentation.runOnMainSync {
+      client.setVisible(false)
+      client.close()
+    }
+    val browser = connectBrowser()
+    try {
+      val controller = MediaControllerCompat(context, browser.sessionToken)
+      instrumentation.runOnMainSync { controller.transportControls.play() }
+      assertTrue(waitForController { controller.playbackState?.state == PlaybackStateCompat.STATE_PLAYING })
+      instrumentation.runOnMainSync { browser.disconnect() }
+      instrumentation.runOnMainSync { controller.transportControls.pause() }
+      Thread.sleep(1_500)
+      assertTrue(waitForPausedControls(controller))
+    } finally {
+      instrumentation.runOnMainSync { browser.disconnect() }
+    }
   }
 
   private fun writeSilentAudio(file: File) {
@@ -327,6 +378,48 @@ class NativePlaybackResumptionTest {
 
   private fun send(message: JSONObject) {
     instrumentation.runOnMainSync { client.send(message) }
+  }
+
+  private fun allowNotifications() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      instrumentation.uiAutomation.grantRuntimePermission(context.packageName, Manifest.permission.POST_NOTIFICATIONS)
+    }
+  }
+
+  private fun connectBrowser(): MediaBrowserCompat {
+    val connected = CountDownLatch(1)
+    lateinit var browser: MediaBrowserCompat
+    instrumentation.runOnMainSync {
+      browser = MediaBrowserCompat(context, ComponentName(context, MediaPlaybackService::class.java),
+        object : MediaBrowserCompat.ConnectionCallback() {
+          override fun onConnected() { connected.countDown() }
+        }, Bundle().apply { putBoolean(MediaBrowserServiceCompat.BrowserRoot.EXTRA_RECENT, true) })
+      browser.connect()
+    }
+    assertTrue(connected.await(10, TimeUnit.SECONDS))
+    return browser
+  }
+
+  private fun waitForPausedControls(controller: MediaControllerCompat): Boolean {
+    val manager = context.getSystemService(NotificationManager::class.java)
+    return waitForController {
+      val notification = manager.activeNotifications.firstOrNull {
+        it.id == MediaPlayback.NOTIFICATION_ID
+      }?.notification
+      controller.playbackState?.state == PlaybackStateCompat.STATE_PAUSED &&
+        notification != null &&
+        notification.flags and Notification.FLAG_FOREGROUND_SERVICE != 0 &&
+        notification.extras.containsKey(Notification.EXTRA_MEDIA_SESSION)
+    }
+  }
+
+  private fun waitForController(condition: () -> Boolean): Boolean {
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
+    while (System.nanoTime() < deadline) {
+      if (condition()) return true
+      Thread.sleep(50)
+    }
+    return false
   }
 
   private fun receive(next: JSONObject, connected: CountDownLatch? = null) {

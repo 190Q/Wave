@@ -1,11 +1,15 @@
 package com.wave.app
 
+import android.app.AlarmManager
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import android.support.v4.media.MediaBrowserCompat
 import android.support.v4.media.MediaDescriptionCompat
@@ -19,14 +23,17 @@ class MediaPlaybackService : MediaBrowserServiceCompat() {
     @Volatile
     private var instance: MediaPlaybackService? = null
 
-    fun syncPlayback(): Boolean = instance?.syncWakeLock() ?: false
+    fun syncPlayback() { instance?.syncWakeLock() }
 
     fun isForeground(): Boolean = instance?.foregroundActive == true
   }
 
   private var wakeLock: PowerManager.WakeLock? = null
   private val wakeLockController = PlaybackWakeLock(::hold, ::release)
-  private var taskRemoved = false
+  private val handler = Handler(Looper.getMainLooper())
+  private val idleTimeout = PlaybackIdleTimeout()
+  private val alarms by lazy { getSystemService(ALARM_SERVICE) as AlarmManager }
+  private val idleAlarm = AlarmManager.OnAlarmListener { stopIfIdle() }
   @Volatile
   private var foregroundActive = false
 
@@ -39,6 +46,7 @@ class MediaPlaybackService : MediaBrowserServiceCompat() {
     if (NativePlayback.backgroundEnabled(this) && !NativePlayback.snapshot(this).optBoolean("live")) {
       NativePlayback.recentTrack(this)?.let { MediaPlayback.prepareResume(this, it) }
     }
+    syncWakeLock()
   }
 
   override fun onGetRoot(clientPackageName: String, clientUid: Int, rootHints: Bundle?): BrowserRoot? {
@@ -85,9 +93,7 @@ class MediaPlaybackService : MediaBrowserServiceCompat() {
   }
 
   override fun onTaskRemoved(rootIntent: Intent?) {
-    taskRemoved = true
     NativePlayback.setUiVisible(this, false)
-    syncWakeLock()
     super.onTaskRemoved(rootIntent)
   }
 
@@ -98,17 +104,43 @@ class MediaPlaybackService : MediaBrowserServiceCompat() {
   }
 
   @Synchronized
-  private fun syncWakeLock(): Boolean {
+  private fun syncWakeLock() {
     wakeLockController.sync(foregroundActive, MediaPlayback.playing)
-    val stop = playbackServiceCanStop(taskRemoved, MediaPlayback.playing, NativePlayback.wantsPlayback)
-    if (stop) stopSelf()
-    return stop
+    val now = SystemClock.elapsedRealtime()
+    val remaining = idleTimeout.remaining(
+      playbackServiceCanStop(NativePlayback.uiConnected, MediaPlayback.playing, NativePlayback.wantsPlayback),
+      now
+    )
+    alarms.cancel(idleAlarm)
+    if (remaining != null) {
+      alarms.set(AlarmManager.ELAPSED_REALTIME, now + remaining, "wave:playback-idle", idleAlarm, handler)
+    }
+  }
+
+  @Synchronized
+  private fun stopIfIdle() {
+    val remaining = idleTimeout.remaining(
+      playbackServiceCanStop(NativePlayback.uiConnected, MediaPlayback.playing, NativePlayback.wantsPlayback),
+      SystemClock.elapsedRealtime()
+    )
+    if (remaining != 0L) {
+      syncWakeLock()
+      return
+    }
+    idleTimeout.remaining(false, 0)
+    foregroundActive = false
+    wakeLockController.sync(false, false)
+    ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+    NativePlayback.release()
+    stopSelf()
   }
 
   override fun onDestroy() {
     Log.i("Wave", "the playback service stopped")
     if (instance === this) instance = null
-    setForegroundActive(false)
+    alarms.cancel(idleAlarm)
+    foregroundActive = false
+    wakeLockController.sync(false, false)
     NativePlayback.release()
     MediaPlayback.releaseSession(this)
     ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)

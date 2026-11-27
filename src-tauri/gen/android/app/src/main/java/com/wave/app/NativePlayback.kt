@@ -50,6 +50,7 @@ internal object NativePlayback {
   private var pendingSystemPlay = false
   private var backgroundEnabled = true
   private var uiVisible = false
+  val uiConnected: Boolean get() = uiVisible || listenerOwner != null
   val wantsPlayback: Boolean get() = pendingPlay || player?.let {
     it.playWhenReady && it.playbackState != Player.STATE_ENDED && it.playerError == null
   } == true
@@ -77,6 +78,7 @@ internal object NativePlayback {
     initialise(context)
     uiVisible = visible
     if (!visible && !backgroundEnabled) pauseInBackground()
+    MediaPlaybackService.syncPlayback()
   }
 
   private fun pauseInBackground() {
@@ -172,12 +174,14 @@ internal object NativePlayback {
     initialise(context)
     listenerOwner = owner
     listener = callback
+    MediaPlaybackService.syncPlayback()
   }
 
   fun unlisten(owner: Any) {
     if (listenerOwner === owner) {
       listenerOwner = null
       listener = null
+      MediaPlaybackService.syncPlayback()
     }
   }
 

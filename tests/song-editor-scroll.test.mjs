@@ -824,6 +824,48 @@ test("song editor timeline navigation and lyric selection", async (t) => {
     assert.equal(dialog.open, false);
   });
 
+  await t.test("Space controls the preview after clicking editor buttons", async () => {
+    globalThis.__songEditorTest.lyrics = "[00:01.000]Words";
+    openSongEditor(track.id);
+    await settle();
+    const audio = globalThis.__songEditorTest.audio;
+    const pressSpace = (target, options = {}) => {
+      let prevented = false;
+      windowEvents.dispatch("keydown", {
+        target, key: " ", code: "Space", preventDefault() { prevented = true; }, ...options,
+      });
+      return prevented;
+    };
+
+    for (const shiftButton of [false, true]) {
+      const button = new HTMLButtonElement();
+      button.hasAttribute = (name) => shiftButton && name === "data-lyric-shift";
+      let clicks = 0;
+      button.addEventListener("click", () => { clicks += 1; });
+      button.click();
+      assert.equal(clicks, 1);
+      assert.equal(audio.paused, true);
+      assert.equal(pressSpace(button), true);
+      assert.equal(audio.paused, false);
+      assert.equal(clicks, 1);
+      assert.equal(pressSpace(button, { repeat: true }), true);
+      assert.equal(audio.paused, false);
+      assert.equal(clicks, 1);
+      assert.equal(pressSpace(button), true);
+      assert.equal(audio.paused, true);
+      assert.equal(clicks, 1);
+    }
+
+    for (const field of [
+      new HTMLInputElement(), new HTMLTextAreaElement(), new HTMLSelectElement(),
+      Object.assign(new Element(), { isContentEditable: true }),
+    ]) {
+      assert.equal(pressSpace(field), false);
+      assert.equal(audio.paused, true);
+    }
+    element("close").dispatch("click");
+  });
+
   await t.test("shift from the selected line leaves earlier lyrics unchanged", async () => {
     globalThis.__songEditorTest.lyrics = "[00:01.000]Before\n[00:02.000]Selected\nUntimed\n[00:03.000]After\n[00:00.050]Low";
     openSongEditor(track.id);
@@ -874,12 +916,18 @@ test("song editor timeline navigation and lyric selection", async (t) => {
     });
     assert.equal(prevented, true);
     assert.deepEqual(times(), ["00:01.000", "00:01.900", "", "00:02.900", "00:00.000"]);
-    windowEvents.dispatch("keydown", { target: forward, key: " ", code: "Space", shiftKey: true });
+    windowEvents.dispatch("keydown", { target: forward, key: "Enter", code: "Enter", shiftKey: true });
     assert.deepEqual(times(), ["00:01.000", "00:02.400", "", "00:03.400", "00:00.500"]);
+    windowEvents.dispatch("keydown", { target: back, key: "Enter", code: "Enter", shiftKey: true });
+    assert.deepEqual(times(), ["00:01.000", "00:01.900", "", "00:02.900", "00:00.000"]);
     windowEvents.dispatch("keydown", { target: back, key: " ", code: "Space", shiftKey: true });
+    assert.equal(globalThis.__songEditorTest.audio.paused, false);
     assert.deepEqual(times(), ["00:01.000", "00:01.900", "", "00:02.900", "00:00.000"]);
     windowEvents.dispatch("keydown", { target: back, key: " ", code: "Space", shiftKey: true, repeat: true });
+    assert.equal(globalThis.__songEditorTest.audio.paused, false);
     assert.deepEqual(times(), ["00:01.000", "00:01.900", "", "00:02.900", "00:00.000"]);
+    windowEvents.dispatch("keydown", { target: back, key: " ", code: "Space", shiftKey: true });
+    assert.equal(globalThis.__songEditorTest.audio.paused, true);
     forward.dispatch("click");
     assert.deepEqual(times(), ["00:01.000", "00:02.000", "", "00:03.000", "00:00.100"]);
 

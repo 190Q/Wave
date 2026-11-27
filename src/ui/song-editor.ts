@@ -729,9 +729,9 @@ function mountSongEditor(): void {
     }
     if (!textInput && !event.ctrlKey && !event.altKey && !event.metaKey) {
       const shiftButton = target instanceof HTMLButtonElement && target.hasAttribute("data-lyric-shift");
-      if ((event.code === "Space" && shiftButton) || (event.code === "Enter" && target instanceof HTMLButtonElement)) {
+      if (event.code === "Enter" && target instanceof HTMLButtonElement) {
         event.preventDefault();
-        if (!target.disabled && !(event.repeat && (event.code === "Space" || target === play))) {
+        if (!target.disabled && !(event.repeat && target === play)) {
           if (shiftButton && event.shiftKey) {
             target.dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true }));
           } else target.click();

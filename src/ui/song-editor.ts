@@ -92,6 +92,7 @@ function mountSongEditor(): void {
   let disconnectPreview: (() => void) | null = null;
   let cancelPreviewReplacement: (() => void) | null = null;
   let wantsPlayback = false;
+  let playRequest = 0;
   let pendingSeek: number | null = null;
 
   let track: Track | null = null;
@@ -334,7 +335,7 @@ function mountSongEditor(): void {
     lyricTrack.innerHTML = timed.map(({ line, index }, at) => {
       const ms = line.timeMs;
       const next = timed[at + 1]?.line.timeMs ?? timelineDuration;
-      return `<button type="button" class="song-editor-chip${index === selectedLine ? " is-selected" : ""}"
+      return `<button type="button" class="song-editor-chip${index === selectedLine ? " is-selected" : ""}${index === activeLine ? " is-active" : ""}"
         data-chip="${index}" style="left:${xAt(ms)}px;width:${Math.max(32, xAt(next - ms) - 2)}px"
         title="${escapeHtml(line.text)}">${escapeHtml(line.text || "(empty)")}</button>`;
     }).join("");
@@ -342,6 +343,7 @@ function mountSongEditor(): void {
 
   const paintLines = (): void => {
     activeLine = null;
+    activeRow = null;
     linesContent.innerHTML = lyrics.lines.length ? lyrics.lines.map((line, index) => `
       <div class="song-editor-line${index === selectedLine ? " is-selected" : ""}" data-line="${index}">
         <input data-lyric-time="${index}" aria-label="Time for line ${index + 1}" placeholder="mm:ss.ms" value="${line.timeMs === null ? "" : formatEditTime(line.timeMs)}" />
@@ -371,9 +373,11 @@ function mountSongEditor(): void {
   const paintClock = (): void => {
     const ms = current();
     position.textContent = formatEditTime(ms);
-    durationLabel.textContent = formatEditTime(duration());
-    play.textContent = audio.paused ? "Play" : "Pause";
-    playhead.style.left = `${xAt(ms)}px`;
+    const total = formatEditTime(duration());
+    const label = audio.paused ? "Play" : "Pause";
+    if (durationLabel.textContent !== total) durationLabel.textContent = total;
+    if (play.textContent !== label) play.textContent = label;
+    playhead.style.transform = `translateX(${xAt(ms)}px)`;
     let active = -1;
     let latest = -1;
     lyrics.lines.forEach((line, index) => {
@@ -382,15 +386,17 @@ function mountSongEditor(): void {
         latest = line.timeMs;
       }
     });
-    let nextRow: HTMLElement | null = null;
-    for (const row of lines.querySelectorAll<HTMLElement>("[data-line]")) {
-      const on = Number(row.dataset.line) === active;
-      row.classList.toggle("is-active", on);
-      if (on) nextRow = row;
-    }
     if (active !== activeLine) {
       activeLine = active;
-      activeRow = nextRow;
+      activeRow = null;
+      for (const row of lines.querySelectorAll<HTMLElement>("[data-line]")) {
+        const on = Number(row.dataset.line) === active;
+        row.classList.toggle("is-active", on);
+        if (on) activeRow = row;
+      }
+      for (const chip of lyricTrack.querySelectorAll<HTMLElement>("[data-chip]")) {
+        chip.classList.toggle("is-active", Number(chip.dataset.chip) === active);
+      }
       paintHighlight(activeRow);
       if (activeRow) {
         const bounds = lines.getBoundingClientRect();
@@ -405,9 +411,6 @@ function mountSongEditor(): void {
       } else {
         lines.scrollTo({ top: lines.scrollTop, behavior: "instant" });
       }
-    }
-    for (const chip of lyricTrack.querySelectorAll<HTMLElement>("[data-chip]")) {
-      chip.classList.toggle("is-active", Number(chip.dataset.chip) === active);
     }
   };
 
@@ -449,9 +452,10 @@ function mountSongEditor(): void {
 
   const playAudio = (): void => {
     const element = audio;
+    const request = ++playRequest;
     wantsPlayback = true;
     void element.play().catch((reason: unknown) => {
-      if (audio === element && wantsPlayback && !element.error) showError(describe(reason));
+      if (audio === element && request === playRequest && wantsPlayback && !element.error) showError(describe(reason));
     });
   };
 
@@ -459,7 +463,7 @@ function mountSongEditor(): void {
     clearAudio();
     const element = replacement ?? new Audio();
     audio = element;
-    element.preload = "metadata";
+    element.preload = "auto";
     if (!replacement) element.crossOrigin = cors ? "anonymous" : null;
     disconnectPreview = connectPreviewAudio(
       element, track!.id, () => stagedAudio === null && cutAudio === null,
@@ -727,7 +731,7 @@ function mountSongEditor(): void {
       const shiftButton = target instanceof HTMLButtonElement && target.hasAttribute("data-lyric-shift");
       if ((event.code === "Space" && shiftButton) || (event.code === "Enter" && target instanceof HTMLButtonElement)) {
         event.preventDefault();
-        if (!target.disabled && !(event.code === "Space" && event.repeat)) {
+        if (!target.disabled && !(event.repeat && (event.code === "Space" || target === play))) {
           if (shiftButton && event.shiftKey) {
             target.dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true }));
           } else target.click();
@@ -735,7 +739,7 @@ function mountSongEditor(): void {
       }
       else if (event.code === "Space") {
         event.preventDefault();
-        if (!busy && loaded) togglePlay();
+        if (!event.repeat && !busy && loaded) togglePlay();
       }
       else if (!event.shiftKey && !event.repeat && (event.key.toLowerCase() === "x" || event.key === "Delete" || event.key === "Backspace")) {
         if (selectedRange) { event.preventDefault(); cutSelection(); }
@@ -834,20 +838,27 @@ function mountSongEditor(): void {
     paintChips();
     paintClock();
     let moved = false;
+    let dragFrame: number | null = null;
     const move = (next: PointerEvent): void => {
       if (next.pointerId !== event.pointerId) return;
       if (Math.abs(next.clientX - x) >= 3) moved = true;
       if (!moved) return;
       line.timeMs = Math.round(Math.min(timelineDuration, Math.max(0, at + (next.clientX - x) * scale)));
-      paintChips();
-      paintClock();
+      if (dragFrame === null) {
+        dragFrame = requestAnimationFrame(() => {
+          dragFrame = null;
+          paintChips();
+          paintClock();
+        });
+      }
     };
     const up = (next: PointerEvent): void => {
       if (next.pointerId !== event.pointerId) return;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", up);
-      if (moved) { paintLines(); record(); }
+      if (dragFrame !== null) cancelAnimationFrame(dragFrame);
+      if (moved) { paintLines(); paintChips(); record(); }
       paintClock();
     };
     window.addEventListener("pointermove", move);

@@ -488,6 +488,158 @@ test("song editor timeline navigation and lyric selection", async (t) => {
     lines.querySelectorAll = () => [];
   });
 
+  await t.test("playback updates lyric elements only when the active line changes", async () => {
+    const state = globalThis.__songEditorTest;
+    state.lyrics = "[00:01.000]First\n[00:02.000]Second";
+    openSongEditor(track.id);
+    await settle();
+
+    const lines = element("lines");
+    const lyricTrack = element("lyric-track");
+    const rows = [0, 1].map((index) => {
+      const row = new Element();
+      row.dataset.line = String(index);
+      row.getBoundingClientRect = () => ({ top: 0, bottom: 40 });
+      return row;
+    });
+    const chips = [0, 1].map((index) => {
+      const chip = new Element();
+      chip.dataset.chip = String(index);
+      return chip;
+    });
+    let rowQueries = 0;
+    let chipQueries = 0;
+    lines.querySelectorAll = (selector) => {
+      if (selector !== "[data-line]") return [];
+      rowQueries += 1;
+      return rows;
+    };
+    lyricTrack.querySelectorAll = (selector) => {
+      if (selector !== "[data-chip]") return [];
+      chipQueries += 1;
+      return chips;
+    };
+    const audio = state.audio;
+    audio.currentTime = 1;
+    audio.dispatch("timeupdate");
+    assert.equal(rows[0].classList.contains("is-active"), true);
+    assert.equal(chips[0].classList.contains("is-active"), true);
+
+    rowQueries = 0;
+    chipQueries = 0;
+    element("play").dispatch("click");
+    for (let i = 0; i < 5; i += 1) {
+      audio.currentTime += 0.1;
+      advance();
+      audio.dispatch("timeupdate");
+    }
+    assert.equal(rowQueries, 0);
+    assert.equal(chipQueries, 0);
+    assert.equal(element("position").textContent, "00:01.500");
+    assert.equal(element("playhead").style.transform, "translateX(15px)");
+
+    audio.currentTime = 2;
+    advance();
+    assert.equal(rows[0].classList.contains("is-active"), false);
+    assert.equal(rows[1].classList.contains("is-active"), true);
+    assert.equal(chips[0].classList.contains("is-active"), false);
+    assert.equal(chips[1].classList.contains("is-active"), true);
+    const input = new HTMLInputElement();
+    input.dataset.lyricText = "1";
+    lines.dispatch("focusin", { target: input });
+    assert.match(lyricTrack.innerHTML, /song-editor-chip[^"]*is-active[^"]*"[\s\n]+data-chip="1"/);
+
+    lines.querySelectorAll = () => [];
+    lyricTrack.querySelectorAll = () => [];
+  });
+
+  await t.test("rapid lyric dragging paints once per frame and commits the final position", async () => {
+    const state = globalThis.__songEditorTest;
+    state.lyrics = "[00:01.000]First\n[00:02.000]Second";
+    openSongEditor(track.id);
+    await settle();
+    const lyricTrack = element("lyric-track");
+    const chip = new Element();
+    chip.dataset.chip = "0";
+    chip.closest = (selector) => selector === "[data-chip]" ? chip : null;
+    let html = lyricTrack.innerHTML;
+    let paints = 0;
+    Object.defineProperty(lyricTrack, "innerHTML", {
+      configurable: true,
+      get: () => html,
+      set(value) { html = value; paints += 1; },
+    });
+
+    lyricTrack.dispatch("pointerdown", { target: chip, clientX: 10, pointerId: 1 });
+    paints = 0;
+    for (const clientX of [20, 30, 40, 50]) {
+      windowEvents.dispatch("pointermove", { clientX, pointerId: 1 });
+    }
+    assert.equal(paints, 0);
+    advance();
+    assert.equal(paints, 1);
+    windowEvents.dispatch("pointermove", { clientX: 60, pointerId: 1 });
+    windowEvents.dispatch("pointerup", { clientX: 60, pointerId: 1 });
+    assert.match(element("lines-content").innerHTML, /data-lyric-time="0"[^>]*value="00:06.000"/);
+    assert.match(lyricTrack.innerHTML, /data-chip="0" style="left:60px/);
+    const committedPaints = paints;
+    advance();
+    assert.equal(paints, committedPaints);
+    element("undo").dispatch("click");
+    assert.match(element("lines-content").innerHTML, /data-lyric-time="0"[^>]*value="00:01.000"/);
+    delete lyricTrack.innerHTML;
+    lyricTrack.innerHTML = html;
+  });
+
+  await t.test("holding Space does not repeatedly interrupt preview playback", async () => {
+    const state = globalThis.__songEditorTest;
+    openSongEditor(track.id);
+    await settle();
+    const audio = state.audio;
+    assert.equal(audio.preload, "auto");
+    const press = (repeat) => windowEvents.dispatch("keydown", {
+      target: viewport, key: " ", code: "Space", repeat,
+    });
+    press(false);
+    assert.equal(audio.paused, false);
+    press(true);
+    press(true);
+    assert.equal(audio.paused, false);
+    press(false);
+    assert.equal(audio.paused, true);
+  });
+
+  await t.test("an interrupted play request cannot report an error after playback resumes", async () => {
+    const state = globalThis.__songEditorTest;
+    openSongEditor(track.id);
+    await settle();
+    const audio = state.audio;
+    const play = audio.play.bind(audio);
+    let rejectFirst;
+    let requests = 0;
+    audio.play = () => {
+      const result = play();
+      return ++requests === 1 ? new Promise((_, reject) => { rejectFirst = reject; }) : result;
+    };
+
+    element("play").dispatch("click");
+    element("play").dispatch("click");
+    element("play").dispatch("click");
+    rejectFirst(new Error("Interrupted"));
+    await settle();
+    assert.equal(audio.paused, false);
+    assert.equal(element("error").textContent, "");
+
+    element("play").dispatch("click");
+    audio.play = () => {
+      play();
+      return Promise.reject(new Error("Preview failed"));
+    };
+    element("play").dispatch("click");
+    await settle();
+    assert.equal(element("error").textContent, "Preview failed");
+  });
+
   await t.test("lyric selection clears outside its fields and timeline chip", async () => {
     globalThis.__songEditorTest.lyrics = "[00:01.000]First\n[00:02.000]Second";
     openSongEditor(track.id);

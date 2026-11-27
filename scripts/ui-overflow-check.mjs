@@ -212,6 +212,58 @@ async function firstTrack(page) {
   return page.evaluate(async () => (await import("/src/lib/state.ts")).getState().tracks[0].id);
 }
 
+test("song editor playback continues while seeking and dragging lyrics", async () => {
+  const { context, page } = await openApp(viewports[0]);
+  try {
+    await page.evaluate(() => {
+      window.__WAVE_SIM__.setLyricsAvailable(true);
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      window.__TAURI_INTERNALS__.invoke = (command, ...args) => command === "editor_waveform"
+        ? Promise.resolve(Array(1000).fill(0.5)) : invoke(command, ...args);
+      const play = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function () {
+        window.__editorPreview = this;
+        return play.call(this);
+      };
+    });
+    await invoke(page, "song-editor", "openSongEditor", await firstTrack(page));
+    await page.locator("#song-editor-play").click();
+    await page.waitForFunction(() => window.__editorPreview?.currentTime > 0.1 && !window.__editorPreview.paused);
+    await page.locator("#song-editor-ruler").click({ position: { x: 80, y: 8 } });
+    await page.waitForFunction(() => window.__editorPreview.currentTime > 2 && !window.__editorPreview.seeking);
+    const afterSeek = await page.evaluate(() => window.__editorPreview.currentTime);
+    await page.waitForFunction((time) => window.__editorPreview.currentTime > time + 0.1, afterSeek);
+
+    const chip = await page.locator("#song-editor-lyric-track [data-chip]").first().boundingBox();
+    assert.ok(chip);
+    await page.mouse.move(chip.x + 10, chip.y + chip.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(chip.x + 50, chip.y + chip.height / 2, { steps: 20 });
+    await page.mouse.up();
+    const afterDrag = await page.evaluate(() => window.__editorPreview.currentTime);
+    await page.waitForFunction((time) => !window.__editorPreview.paused
+      && window.__editorPreview.currentTime > time + 0.1, afterDrag);
+    const alignment = await page.evaluate(() => {
+      const audio = window.__editorPreview;
+      const inner = document.querySelector("#song-editor-timeline-inner");
+      const playhead = document.querySelector("#song-editor-playhead");
+      return Math.abs(playhead.getBoundingClientRect().left - inner.getBoundingClientRect().left
+        - audio.currentTime / audio.duration * inner.clientWidth);
+    });
+    assert.ok(alignment < 3);
+
+    await page.locator("#song-editor-play").click();
+    assert.equal(await page.evaluate(() => window.__editorPreview.paused), true);
+    await page.locator("#song-editor-ruler").click({ position: { x: 150, y: 8 } });
+    await page.locator("#song-editor-play").click();
+    const resumedAt = await page.evaluate(() => window.__editorPreview.currentTime);
+    await page.waitForFunction((time) => !window.__editorPreview.paused
+      && window.__editorPreview.currentTime > time + 0.1, resumedAt);
+  } finally {
+    await context.close();
+  }
+});
+
 async function openPanel(page, button, dialog, toggle) {
   await page.locator(button).click();
   await page.waitForFunction(({ dialog, toggle }) =>

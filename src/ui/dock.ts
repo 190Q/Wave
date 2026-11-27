@@ -29,6 +29,14 @@ export function stepVolumeFromKey(direction: number): void {
   stepVolume(direction);
 }
 
+export function toggleCurrentLike(): void {
+  const track = currentTrack();
+  if (track) {
+    bounce(element("like"));
+    void toggleLikeTrack(track.id);
+  }
+}
+
 export function mountDock(visibility?: SheetVisibility): void {
   const dock = element("dock");
   const controls = dock?.querySelector<HTMLElement>(".dock-row");
@@ -332,13 +340,7 @@ export function mountDock(visibility?: SheetVisibility): void {
     }
   });
 
-  like.addEventListener("click", () => {
-    const track = currentTrack();
-    if (track) {
-      bounce(like);
-      void toggleLikeTrack(track.id);
-    }
-  });
+  like.addEventListener("click", toggleCurrentLike);
 
   const paintProgress = (positionMs: number, durationMs: number): void => {
     if ((visibility && !visibility.visible("stack")) ||

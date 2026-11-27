@@ -7,7 +7,6 @@ import { mountMotion } from "./lib/motion";
 import { mountPresence } from "./lib/presence";
 import { reportInitialization } from "./lib/startup-health";
 import {
-  currentTrack,
   getState,
   init,
   player,
@@ -15,7 +14,6 @@ import {
   stepTrack,
   subscribe,
   toggleAlwaysOnTop,
-  toggleLikeTrack,
   toggleMiniPlayer,
   toggleQueue,
   whenArtworkReady,
@@ -23,7 +21,7 @@ import {
 import { stepLater } from "./lib/steps";
 import { runSlotAction } from "./ui/actions";
 import { mountConfirm } from "./ui/confirm";
-import { mountDock, stepVolumeFromKey } from "./ui/dock";
+import { mountDock, stepVolumeFromKey, toggleCurrentLike } from "./ui/dock";
 import { mountDockTitle } from "./ui/dock-title";
 import { mountEq } from "./ui/eq";
 import { mountHero } from "./ui/hero";
@@ -260,12 +258,10 @@ function mountShortcuts(): void {
         if (!event.repeat) openSeekTime();
         break;
       case "l":
-      case "L": {
+      case "L":
         event.preventDefault();
-        const track = currentTrack();
-        if (!event.repeat && track) void toggleLikeTrack(track.id);
+        if (!event.repeat) toggleCurrentLike();
         break;
-      }
       case "s":
       case "S":
         event.preventDefault();

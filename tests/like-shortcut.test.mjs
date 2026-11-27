@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 
-test("l toggles the current song's like in normal and mini mode", async () => {
+test("l activates the current song's like control in normal and mini mode", async () => {
   const source = await readFile(new URL("../src/main.ts", import.meta.url), "utf8");
   const start = source.indexOf("function mountShortcuts()");
   const end = source.indexOf("\nif (document.readyState", start);
@@ -16,6 +16,7 @@ test("l toggles the current song's like in normal and mini mode", async () => {
   const handlers = new Map();
   const likes = new Set();
   const calls = [];
+  const animations = [];
   let track = { id: "first" };
   let mini = false;
   const root = { classList: { contains: () => mini, add() {}, remove() {} } };
@@ -30,11 +31,12 @@ test("l toggles the current song's like in normal and mini mode", async () => {
     HTMLSelectElement: Select,
     HTMLTextAreaElement: TextArea,
     isTouch: () => false,
-    currentTrack: () => track,
-    toggleLikeTrack: (id) => {
-      calls.push(id);
-      if (likes.has(id)) likes.delete(id);
-      else likes.add(id);
+    toggleCurrentLike: () => {
+      if (!track) return;
+      calls.push(track.id);
+      animations.push(track.id);
+      if (likes.has(track.id)) likes.delete(track.id);
+      else likes.add(track.id);
     },
   });
   const press = (key, options = {}) => {
@@ -50,8 +52,10 @@ test("l toggles the current song's like in normal and mini mode", async () => {
 
   assert.equal(press("l"), true);
   assert.equal(likes.has("first"), true);
+  assert.deepEqual(animations, ["first"]);
   assert.equal(press("l", { repeat: true }), true);
   assert.equal(likes.has("first"), true);
+  assert.deepEqual(animations, ["first"]);
   mini = true;
   assert.equal(press("L", { shiftKey: true }), true);
   assert.equal(likes.has("first"), false);
@@ -68,4 +72,5 @@ test("l toggles the current song's like in normal and mini mode", async () => {
   track = undefined;
   assert.equal(press("l"), true);
   assert.deepEqual(calls, ["first", "first", "second"]);
+  assert.deepEqual(animations, ["first", "first", "second"]);
 });

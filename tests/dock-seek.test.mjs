@@ -15,16 +15,16 @@ const mocks = {
     export const insets = () => ({ bottom: 0 });
   `,
   "../lib/format": "export const formatDuration = (ms) => String(ms);",
-  "../lib/motion": "export const bounce = () => {}; export const reduceMotionActive = () => true; export const subscribeMotion = () => {};",
+  "../lib/motion": "export const bounce = (element) => globalThis.__dockTest.bounces.push(element); export const reduceMotionActive = () => true; export const subscribeMotion = () => {};",
   "../lib/player": "export const MIN_VOLUME = 0; export const MAX_VOLUME = 100;",
   "../lib/state": `
     export const player = globalThis.__dockTest.player;
     export const getState = () => globalThis.__dockTest.state;
-    export const currentTrack = () => ({ id: "track" });
+    export const currentTrack = () => globalThis.__dockTest.track;
     export const subscribe = () => {};
     export const setVolume = () => {};
     export const stepVolume = () => {};
-    export const toggleLikeTrack = () => {};
+    export const toggleLikeTrack = (id) => globalThis.__dockTest.likedTracks.push(id);
     export const toggleQueue = () => {};
   `,
   "./touch": "export const mountTouch = () => {};",
@@ -37,6 +37,9 @@ const context = {
   seeks: [],
   toggles: 0,
   opens: 0,
+  track: { id: "track" },
+  bounces: [],
+  likedTracks: [],
   position: 10000,
   playing: false,
   state: { lyrics: [{}], likes: new Set(), queueOpen: false },
@@ -113,6 +116,9 @@ function setup(kind = "android") {
   context.seeks.length = 0;
   context.toggles = 0;
   context.opens = 0;
+  context.track = { id: "track" };
+  context.bounces.length = 0;
+  context.likedTracks.length = 0;
   context.position = 10000;
   context.playing = false;
   context.state.lyrics = [{}];
@@ -187,7 +193,7 @@ const vite = await createServer({
   }],
 });
 after(() => vite.close());
-const { mountDock } = await vite.ssrLoadModule("/src/ui/dock.ts");
+const { mountDock, toggleCurrentLike } = await vite.ssrLoadModule("/src/ui/dock.ts");
 const { createSheetVisibility } = await vite.ssrLoadModule("/src/ui/sheet-visibility.ts");
 
 function pointer(target, x, y) {
@@ -197,6 +203,22 @@ function pointer(target, x, y) {
 function sheetTravel(elements) {
   return Number(elements["lyrics-panel"].style.transform.match(/-\s*([\d.]+)px/)[1]);
 }
+
+test("like button and shortcut share the same bounce and toggle", () => {
+  const { elements } = setup("desktop");
+  mountDock();
+
+  elements.like.dispatch("click");
+  toggleCurrentLike();
+  assert.deepEqual(context.bounces, [elements.like, elements.like]);
+  assert.deepEqual(context.likedTracks, ["track", "track"]);
+
+  context.track = undefined;
+  elements.like.dispatch("click");
+  toggleCurrentLike();
+  assert.equal(context.bounces.length, 2);
+  assert.equal(context.likedTracks.length, 2);
+});
 
 test("hidden dock catches up to playback and controls before the stack returns", () => {
   const visibility = createSheetVisibility();

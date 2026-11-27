@@ -22,6 +22,8 @@ globalThis.Audio = class {
 globalThis.document = { addEventListener() {}, hidden: false };
 const timers = new Map();
 let nextTimer = 0;
+const intervals = new Map();
+let nextInterval = 0;
 globalThis.window = {
   setTimeout(callback, delay) {
     const id = ++nextTimer;
@@ -29,8 +31,12 @@ globalThis.window = {
     return id;
   },
   clearTimeout(id) { timers.delete(id); },
-  setInterval() { return ++nextTimer; },
-  clearInterval() {},
+  setInterval(callback, delay) {
+    const id = ++nextInterval;
+    intervals.set(id, { callback, delay });
+    return id;
+  },
+  clearInterval(id) { intervals.delete(id); },
   addEventListener() {},
   cancelAnimationFrame() {},
 };
@@ -39,6 +45,12 @@ function runTimer(delay) {
   const found = [...timers].find(([, timer]) => timer.delay === delay);
   assert.ok(found, `No timer for ${delay}ms`);
   timers.delete(found[0]);
+  found[1].callback();
+}
+
+function runInterval(delay) {
+  const found = [...intervals].find(([, interval]) => interval.delay === delay);
+  assert.ok(found, `No interval for ${delay}ms`);
   found[1].callback();
 }
 
@@ -106,6 +118,7 @@ const linkCalls = [];
 const audioPickerCalls = [];
 const playlistDownloads = [];
 const waveImports = [];
+let geometrySaves = 0;
 let holdReads = null;
 let deleteError = null;
 let importErrors = ["Cannot copy this file"];
@@ -127,6 +140,10 @@ globalThis.__testIpc = new Proxy({
     const request = deferred();
     writes.push({ patch: clone(patch), ...request });
     return request.promise;
+  },
+  saveWindowGeometry() {
+    geometrySaves += 1;
+    return Promise.resolve();
   },
   toggleLike(id) {
     const request = deferred();
@@ -187,6 +204,38 @@ await tick();
 test("Android settings do not include Discord presence or the local API", () => {
   assert.equal("discordPresence" in app.getState().settings, false);
   assert.equal("localApiEnabled" in app.getState().settings, false);
+});
+
+test("idle autosave leaves already-settled state and window geometry alone", async () => {
+  const startSessions = sessions.length;
+  const startWrites = writes.length;
+  const startGeometrySaves = geometrySaves;
+  runInterval(15_000);
+  await tick();
+  assert.equal(sessions.length, startSessions);
+  assert.equal(writes.length, startWrites);
+  assert.equal(geometrySaves, startGeometrySaves);
+});
+
+test("paused autosave retries a failed session write without a geometry save", async () => {
+  const startSessions = sessions.length;
+  const startGeometrySaves = geometrySaves;
+  app.toggleQueue(true);
+  runTimer(350);
+  await tick();
+  assert.equal(sessions.length, startSessions + 1);
+  sessions[startSessions].reject(new Error("Session unavailable"));
+  await tick();
+  await tick();
+
+  runInterval(15_000);
+  await tick();
+  await tick();
+  assert.equal(sessions.length, startSessions + 2);
+  assert.equal(sessions.at(-1).session.queueOpen, true);
+  assert.equal(geometrySaves, startGeometrySaves);
+  sessions.at(-1).resolve(clone(backend));
+  await tick();
 });
 
 test("Android update installation clears progress after handoff and remains retryable", async () => {

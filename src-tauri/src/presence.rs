@@ -1,16 +1,10 @@
-//! What the system and Discord are told about the song that is playing.
-//!
-//! Playback lives in the webview, so the front end pushes the current song
-//! here whenever it changes. Two threads do the talking, one to the system's
-//! own media controls (the Windows media flyout and the media keys, or MPRIS
-//! on Linux) and one to Discord. They are kept apart so that a Discord that is
-//! not answering can never hold up the media keys.
+//! Media state and controls for the system and Discord.
 
 #[cfg(desktop)]
 use std::path::Path;
-use std::sync::mpsc::{self, Receiver, Sender};
 #[cfg(desktop)]
 use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 #[cfg(desktop)]
@@ -240,7 +234,12 @@ impl Presence {
         let wanted = discord_client_id(&self.app);
         let mut workers = self.guard();
 
-        if !self.app.state::<Store>().snapshot().settings.discord_presence
+        if !self
+            .app
+            .state::<Store>()
+            .snapshot()
+            .settings
+            .discord_presence
             || workers.discord_id == wanted
         {
             return;
@@ -274,7 +273,9 @@ impl Presence {
     }
 
     fn guard(&self) -> MutexGuard<'_, Workers> {
-        self.workers.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.workers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -393,6 +394,24 @@ fn run_system(app: AppHandle, mut controls: MediaControls, receiver: Receiver<Sy
                 }
 
                 if let Some(control) = control_of(&event) {
+                    #[cfg(target_os = "linux")]
+                    if let Some(player) = app.try_state::<crate::linux_playback::NativePlayback>() {
+                        if player.active() && control.action != "raise" {
+                            let action = if control.action == "seekTo" {
+                                "seek"
+                            } else {
+                                control.action.as_str()
+                            };
+                            let mut command = crate::api::player::Command::new(action);
+                            command.value = control.value;
+                            if let Err(error) = player.command(&app, command) {
+                                eprintln!(
+                                    "the native player could not apply a media control: {error}"
+                                );
+                            }
+                            continue;
+                        }
+                    }
                     let _ = app.emit(CONTROL_EVENT, control);
                 }
             }
@@ -423,7 +442,10 @@ fn run_system(app: AppHandle, mut controls: MediaControls, receiver: Receiver<Sy
 
 #[cfg(target_os = "android")]
 fn start_system(app: &AppHandle) -> Option<(Sender<SystemMessage>, JoinHandle<()>)> {
-    let session = app.try_state::<crate::media_session::Session>()?.inner().clone();
+    let session = app
+        .try_state::<crate::media_session::Session>()?
+        .inner()
+        .clone();
     let (sender, receiver) = mpsc::channel();
     let thread = thread::spawn(move || run_session(session, receiver));
     Some((sender, thread))
@@ -545,9 +567,7 @@ fn control_of(event: &MediaControlEvent) -> Option<Control> {
         MediaControlEvent::SeekBy(direction, by) => {
             ("seekBy", Some(step(direction, by.as_millis() as u64)))
         }
-        MediaControlEvent::SetPosition(position) => {
-            ("seekTo", Some(position.0.as_millis() as f64))
-        }
+        MediaControlEvent::SetPosition(position) => ("seekTo", Some(position.0.as_millis() as f64)),
         MediaControlEvent::SetVolume(level) => ("volume", Some((level * 100.0).clamp(0.0, 100.0))),
         MediaControlEvent::Raise => ("raise", None),
         _ => return None,
@@ -792,7 +812,11 @@ fn run_discord(client_id: Option<String>, receiver: Receiver<DiscordMessage>) {
     let mut discord = Discord::new(client_id);
 
     loop {
-        let wait = if discord.waiting() { DISCORD_RETRY } else { IDLE };
+        let wait = if discord.waiting() {
+            DISCORD_RETRY
+        } else {
+            IDLE
+        };
 
         match receiver.recv_timeout(wait) {
             Ok(DiscordMessage::Show(song)) => discord.show(song),
@@ -815,7 +839,9 @@ fn run_discord(client_id: Option<String>, receiver: Receiver<DiscordMessage>) {
 /// otherwise the id the build carries.
 #[cfg(desktop)]
 fn discord_client_id(app: &AppHandle) -> Option<String> {
-    let from_env = read_env(app).discord_client_id.filter(|id| !id.trim().is_empty());
+    let from_env = read_env(app)
+        .discord_client_id
+        .filter(|id| !id.trim().is_empty());
 
     from_env.or_else(|| {
         (!DEFAULT_DISCORD_CLIENT_ID.is_empty()).then(|| DEFAULT_DISCORD_CLIENT_ID.to_string())
@@ -831,7 +857,7 @@ struct Apartment;
 #[cfg(all(desktop, windows))]
 impl Apartment {
     fn join() -> Self {
-        use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 
         // A thread that is already in an apartment reports a mode change,
         // which is not a failure here.
@@ -934,9 +960,11 @@ mod tests {
             assert_eq!(control.action, "seekBy");
             assert_eq!(control.value, Some(expected));
 
-            let control =
-                control_of(&MediaControlEvent::SeekBy(direction, Duration::from_micros(10_000_000)))
-                    .unwrap();
+            let control = control_of(&MediaControlEvent::SeekBy(
+                direction,
+                Duration::from_micros(10_000_000),
+            ))
+            .unwrap();
             assert_eq!(control.action, "seekBy");
             assert_eq!(control.value, Some(expected));
         }
@@ -953,9 +981,9 @@ mod tests {
         assert_eq!(control.action, "volume");
         assert_eq!(control.value, Some(50.0));
 
-        let control = control_of(&MediaControlEvent::SetPosition(MediaPosition(Duration::from_millis(
-            1_500,
-        ))))
+        let control = control_of(&MediaControlEvent::SetPosition(MediaPosition(
+            Duration::from_millis(1_500),
+        )))
         .unwrap();
         assert_eq!(control.action, "seekTo");
         assert_eq!(control.value, Some(1_500.0));
@@ -972,7 +1000,10 @@ mod tests {
 
         // A second later, where the song was always going to be.
         discord.show(Some(song("When The Sun Hits", 1_000, true)));
-        assert_eq!(stamps(discord.anchor.as_ref(), discord.song.as_ref().unwrap()), first);
+        assert_eq!(
+            stamps(discord.anchor.as_ref(), discord.song.as_ref().unwrap()),
+            first
+        );
 
         // A jump forwards is a seek, so the bar starts again from there: the
         // song began two minutes later, so its start time is earlier.
@@ -988,7 +1019,10 @@ mod tests {
         let mut discord = Discord::new("id".to_string());
         discord.show(Some(song("Alison", 30_000, false)));
 
-        assert_eq!(stamps(discord.anchor.as_ref(), discord.song.as_ref().unwrap()), (0, 0));
+        assert_eq!(
+            stamps(discord.anchor.as_ref(), discord.song.as_ref().unwrap()),
+            (0, 0)
+        );
     }
 
     #[cfg(desktop)]

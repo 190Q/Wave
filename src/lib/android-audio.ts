@@ -10,9 +10,10 @@ export interface NativeSnapshot {
   positionMs: number;
   durationMs: number;
   playing: boolean;
-  playback: Playback;
+  playback?: Playback;
   eqActive?: boolean;
   eqPreampDb?: number;
+  commandId?: number;
 }
 
 declare global {
@@ -31,6 +32,8 @@ export class AndroidAudioEngine extends AudioEngine {
   private readonly nativeReleaseListeners = new Set<() => void>();
   private readonly stateListeners = new Set<(state: NativeSnapshot) => void>();
   private connected: Promise<NativeSnapshot | null> | null = null;
+  private commandId = 0;
+  private pending: { id: number; positionMs: number; durationMs: number; playing: boolean; at: number } | null = null;
 
   constructor(
     private readonly nativeHandlers: AudioEngineHandlers,
@@ -58,6 +61,7 @@ export class AndroidAudioEngine extends AudioEngine {
         try {
           const message = JSON.parse(event.data) as NativeSnapshot;
           if (message.type === "error") {
+            this.pending = null;
             this.nativeHandlers.onError?.();
             return;
           }
@@ -66,13 +70,19 @@ export class AndroidAudioEngine extends AudioEngine {
             return;
           }
           if (message.type !== "snapshot" && message.type !== "state") return;
-          this.current = message;
-          this.receivedAt = performance.now();
           if (message.type === "snapshot" && !settled) {
             settled = true;
             window.clearTimeout(timeout);
             resolve(message);
           }
+          if (this.pending) {
+            if (message.commandId !== this.pending.id) return;
+            this.pending = null;
+          } else if (message.commandId !== undefined) {
+            return;
+          }
+          this.current = message;
+          this.receivedAt = performance.now();
           for (const listener of this.nativeTimeListeners) listener();
           if (message.type === "state") {
             for (const listener of this.stateListeners) listener(message);
@@ -104,6 +114,11 @@ export class AndroidAudioEngine extends AudioEngine {
   }
 
   override get positionMs(): number {
+    if (this.pending) {
+      const elapsed = this.pending.playing ? Math.max(0, performance.now() - this.pending.at) : 0;
+      const position = this.pending.positionMs + elapsed;
+      return this.pending.durationMs > 0 ? Math.min(position, this.pending.durationMs) : position;
+    }
     if (!this.current) return 0;
     const elapsed = this.current.playing ? Math.max(0, performance.now() - this.receivedAt) : 0;
     const position = this.current.positionMs + elapsed;
@@ -111,11 +126,11 @@ export class AndroidAudioEngine extends AudioEngine {
   }
 
   override get durationMs(): number {
-    return this.current?.durationMs ?? 0;
+    return this.pending?.durationMs ?? this.current?.durationMs ?? 0;
   }
 
   override get isPlaying(): boolean {
-    return this.current?.playing ?? false;
+    return this.pending?.playing ?? this.current?.playing ?? false;
   }
 
   override onTimeUpdate(listener: () => void): () => void {
@@ -126,11 +141,15 @@ export class AndroidAudioEngine extends AudioEngine {
   override load(path: string, options: LoadOptions = {}): void {
     this.nativeHandlers.onBeforeLoad?.();
     if (options.autoplay) this.send({ type: "volume", volume: 0 });
+    const positionMs = Math.round(Math.max(0, options.positionMs ?? 0));
+    const commandId = ++this.commandId;
+    this.pending = { id: commandId, positionMs, durationMs: 0, playing: options.autoplay ?? false, at: performance.now() };
     this.send({
       type: "load",
       path,
-      positionMs: Math.round(options.positionMs ?? 0),
+      positionMs,
       autoplay: options.autoplay ?? false,
+      commandId,
     });
     for (const listener of this.nativeReleaseListeners) listener();
   }
@@ -145,22 +164,37 @@ export class AndroidAudioEngine extends AudioEngine {
   }
 
   override unload(): void {
+    this.pending = null;
     this.send({ type: "clear" });
     this.current = null;
     for (const listener of this.nativeReleaseListeners) listener();
   }
 
   override play(): Promise<void> {
+    this.setPendingPlaying(true);
     this.send({ type: "play" });
     return Promise.resolve();
   }
 
   override pause(): void {
+    this.setPendingPlaying(false);
     this.send({ type: "pause" });
   }
 
   override seek(positionMs: number): void {
-    this.send({ type: "seek", positionMs: Math.round(Math.max(0, positionMs)) });
+    const durationMs = this.durationMs;
+    const playing = this.isPlaying;
+    const commandId = ++this.commandId;
+    const position = Math.round(Math.max(0, positionMs));
+    this.pending = { id: commandId, positionMs: position, durationMs, playing, at: performance.now() };
+    this.send({ type: "seek", positionMs: position, commandId });
+  }
+
+  private setPendingPlaying(playing: boolean): void {
+    if (!this.pending) return;
+    this.pending.positionMs = this.positionMs;
+    this.pending.playing = playing;
+    this.pending.at = performance.now();
   }
 
   override setVolume(level: number): void {

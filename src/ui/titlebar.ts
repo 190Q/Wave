@@ -5,6 +5,8 @@ import { isAndroidPlatform } from "../lib/device";
 import { resetWindowGeometry, saveWindowGeometry } from "../lib/ipc";
 import { flushSession, getState, subscribe } from "../lib/state";
 
+const GEOMETRY_SAVE_DELAY_MS = 500;
+
 export function mountTitlebar(): void {
   const updateVisibility = (): void => {
     const preference = getState().settings.showTitlebar;
@@ -39,6 +41,7 @@ export function mountTitlebar(): void {
 
     // Shift-clicking the close button forgets the remembered window geometry.
     let resetGeometry = false;
+    let geometryTimer: number | null = null;
     close.addEventListener("click", (event) => {
       resetGeometry = event.shiftKey;
       void appWindow.close();
@@ -52,6 +55,10 @@ export function mountTitlebar(): void {
       }
       closing = true;
       event.preventDefault();
+      if (geometryTimer !== null) {
+        window.clearTimeout(geometryTimer);
+        geometryTimer = null;
+      }
 
       try {
         await flushSession();
@@ -74,10 +81,24 @@ export function mountTitlebar(): void {
     }).catch(() => {});
 
     if (!isAndroidPlatform) {
+      const saveGeometryLater = (): void => {
+        if (closing) {
+          return;
+        }
+        if (geometryTimer !== null) {
+          window.clearTimeout(geometryTimer);
+        }
+        geometryTimer = window.setTimeout(() => {
+          geometryTimer = null;
+          void saveWindowGeometry().catch(() => {});
+        }, GEOMETRY_SAVE_DELAY_MS);
+      };
       void appWindow.isMaximized().then(paintMaximise).catch(() => {});
       void appWindow.onResized(() => {
         void appWindow.isMaximized().then(paintMaximise).catch(() => {});
+        saveGeometryLater();
       }).catch(() => {});
+      void appWindow.onMoved(saveGeometryLater).catch(() => {});
     }
   } catch {
     // Not running inside Tauri, for example `npm run dev` in a browser.

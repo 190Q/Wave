@@ -20,6 +20,7 @@ internal class WaveEqEngine {
   private var targetPreamp = 1.0
   private var mix = 0.0
   private var smoothing = 0.0
+  private var settlingFrames = 0
   @Volatile var preampDb: Double = 0.0
     private set
   @Volatile var enabled: Boolean = false
@@ -55,6 +56,7 @@ internal class WaveEqEngine {
     limiterActive = false
     hasCompressedInput = false
     smoothing = exp(-1.0 / (0.015 * rate))
+    settlingFrames = 0
     applied = null
     val snapshot = target
     applySettings(if (snapshot.rate == rate) snapshot else prepare(snapshot.settings, rate), snap = true)
@@ -73,6 +75,10 @@ internal class WaveEqEngine {
   data class Transition(val startedLimiter: Boolean, val tail: FloatArray)
 
   val delayFrames: Int get() = compressor.delayFrames
+
+  fun canBypass(): Boolean =
+    !enabled && filters.isEmpty() && !limiterActive && !hasCompressedInput &&
+      settlingFrames == 0 && mix == 0.0 && preamp == 1.0
 
   fun updateSettings(): Transition? {
     val snapshot = target
@@ -109,6 +115,13 @@ internal class WaveEqEngine {
         samples[offset + channel] = (bypass + mix * (samples[offset + channel] - bypass)).toFloat()
       }
       if (limiterActive) dryIndex = (dryIndex + 1) % compressor.delayFrames
+      if (!enabled && settlingFrames > 0) {
+        settlingFrames--
+        if (settlingFrames == 0) {
+          mix = 0.0
+          preamp = 1.0
+        }
+      }
     }
     if (filters.any { it.retiring && it.rampFinished }) {
       filters = filters.filterNot { it.retiring && it.rampFinished }
@@ -134,10 +147,14 @@ internal class WaveEqEngine {
 
   private fun applySettings(prepared: Prepared, snap: Boolean) {
     val settings = prepared.settings
+    val wasEnabled = enabled
+    val hadFilters = filters.isNotEmpty()
+    val hadLimiter = limiterActive
     enabled = settings.enabled
     val old = filters
     val retained = mutableSetOf<Filter>()
-    val updated = settings.bands.mapIndexed { index, band ->
+    val bands = if (settings.enabled) settings.bands else emptyList()
+    val updated = bands.mapIndexed { index, band ->
       val existing = old.firstOrNull { it.id == band.id && it.kind == band.kind && it !in retained }
       val filter = existing ?: Filter(band.id, band.kind, channels)
       retained.add(filter)
@@ -164,6 +181,9 @@ internal class WaveEqEngine {
     if (snap) {
       preamp = targetPreamp
       mix = if (settings.enabled) 1.0 else 0.0
+      settlingFrames = 0
+    } else if (!settings.enabled && (wasEnabled || hadFilters || hadLimiter)) {
+      settlingFrames = maxOf(settlingFrames, (0.18 * sampleRate).toInt())
     }
   }
 

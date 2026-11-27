@@ -307,6 +307,46 @@ export interface PlayerReport {
   muted: boolean;
 }
 
+/** One full queue entry the Linux native player needs to run without WebKit. */
+export interface NativePlaybackTrack {
+  id: string;
+  path: string;
+  title: string;
+  artist: string;
+  album: string;
+  albumArtist: string;
+  genre: string;
+  year: number | null;
+  durationMs: number;
+  codec: string;
+  mediaType: MediaType;
+  artwork: string;
+  colour: string;
+  gain: number;
+}
+
+/** Linux native playback's authoritative state. */
+export interface LinuxNativePlaybackStatus {
+  active: boolean;
+  reason: string | null;
+  report: PlayerReport;
+  revision: number;
+  transition?: {
+    kind: string;
+    previousTrackId: string | null;
+    currentTrackId: string | null;
+  } | null;
+}
+
+/** Reconciles the frontend player with Linux native playback. */
+export interface LinuxNativePlaybackSync {
+  report: PlayerReport;
+  tracks: NativePlaybackTrack[];
+  equaliserEnabled: boolean;
+  outputId: string;
+  replace: boolean;
+}
+
 /** How far a listen got, and how it ended. */
 export type PlayReason = "open" | "ended" | "skipped" | "stopped" | "error";
 

@@ -1,4 +1,4 @@
-import { device, isWebKitGtk } from "../lib/device";
+import { device } from "../lib/device";
 import { escapeHtml } from "../lib/format";
 import {
   artworkUrlFor,
@@ -7,7 +7,6 @@ import {
   getState,
   mayRevealArtwork,
   player,
-  prefetchArtwork,
   prioritizeNearbyArtwork,
   pruneArtworkQueue,
   stepTrack,
@@ -892,10 +891,6 @@ export function mountQueue(visibility?: SheetVisibility): void {
       renderedOrder = signature;
       renderedLooping = looping;
       renderedSourceId = snapshot.sourceId;
-      if (device() === "desktop" && !isWebKitGtk) {
-        prefetchArtwork(snapshot.order);
-      }
-
       if (!reused) {
         const awaitingArtwork = device() !== "desktop" &&
           snapshot.currentId !== null && !mayRevealArtwork(snapshot.currentId);

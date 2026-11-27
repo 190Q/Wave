@@ -140,10 +140,16 @@ class NativePlaybackConnectionService : Service() {
         "controls" -> MediaPlayback.setControls(this, json.optBoolean("enabled", true))
         "queue" -> NativePlayback.updateQueue(this, json)
         "equaliser" -> NativePlayback.updateEqualiser(this, json)
-        "load" -> NativePlayback.load(this, json.getString("path"), json.optLong("positionMs"), json.optBoolean("autoplay"))
+        "load" -> {
+          NativePlayback.load(this, json.getString("path"), json.optLong("positionMs"), json.optBoolean("autoplay"))
+          acknowledge(message, json)
+        }
         "play" -> NativePlayback.play(this)
         "pause" -> NativePlayback.pause()
-        "seek" -> NativePlayback.seek(json.optLong("positionMs"))
+        "seek" -> {
+          NativePlayback.seek(json.optLong("positionMs"))
+          acknowledge(message, json)
+        }
         "volume" -> NativePlayback.setVolume(json.optDouble("volume", 1.0))
         "clear" -> NativePlayback.clear()
       }
@@ -152,6 +158,12 @@ class NativePlaybackConnectionService : Service() {
     }
     true
   })
+
+  private fun acknowledge(message: Message, command: JSONObject) {
+    if (!command.has("commandId")) return
+    message.replyTo?.sendState(NativePlayback.snapshot(this, includePlayback = false)
+      .put("type", "state").put("commandId", command.optLong("commandId")))
+  }
 
   private fun Messenger.sendState(state: JSONObject) {
     try {

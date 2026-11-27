@@ -181,13 +181,13 @@ internal object NativePlayback {
     }
   }
 
-  fun snapshot(context: Context): JSONObject {
+  fun snapshot(context: Context, includePlayback: Boolean = true): JSONObject {
     initialise(context)
     val track = currentTrack()
     val playback = player
     val currentPosition = playback?.currentPosition?.coerceAtLeast(0) ?: position
     val duration = playback?.duration?.takeIf { it > 0 } ?: track?.optLong("durationMs", 0) ?: 0
-    return JSONObject()
+    val state = JSONObject()
       .put("available", track != null)
       .put("live", playback?.currentMediaItem != null)
       .put("currentId", track?.optString("id") ?: JSONObject.NULL)
@@ -197,7 +197,10 @@ internal object NativePlayback {
       .put("playing", playback?.playWhenReady == true &&
         playback.playbackState != Player.STATE_ENDED && playback.playerError == null &&
         playback.playbackSuppressionReason == Player.PLAYBACK_SUPPRESSION_REASON_NONE)
-      .put("playback", saved.optJSONObject("playback") ?: JSONObject())
+    if (includePlayback) {
+      state.put("playback", saved.optJSONObject("playback") ?: JSONObject())
+    }
+    return state
       .put("eqActive", playback?.currentMediaItem != null && equaliser.active && equaliser.enabled)
       .put("eqPreampDb", equaliser.preampDb)
   }
@@ -440,7 +443,7 @@ internal object NativePlayback {
 
   private fun publish() {
     val app = context ?: return
-    val state = snapshot(app)
+    val state = snapshot(app, includePlayback = false)
     position = state.optLong("positionMs", 0)
     saved.put("positionMs", position)
     currentTrack()?.let { track ->

@@ -455,6 +455,65 @@ impl Analytics {
         tx.commit().map_err(db_error)
     }
 
+    /// Adds metadata native playback knows without replacing an established snapshot.
+    pub fn remember_tracks_preserving_existing(
+        &self,
+        tracks: &[TrackSnapshot],
+    ) -> Result<(), String> {
+        if tracks.is_empty() {
+            return Ok(());
+        }
+        let now = now_ms();
+        let mut conn = self.guard();
+        let tx = conn.transaction().map_err(db_error)?;
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO tracks (track_id, title, artist, album, album_artist, genre, \
+                     year, duration_ms, media_type, codec, first_seen_at, last_seen_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11) \
+                     ON CONFLICT(track_id) DO UPDATE SET \
+                       title = CASE WHEN TRIM(COALESCE(title, '')) = '' \
+                         THEN excluded.title ELSE title END, \
+                       artist = CASE WHEN TRIM(COALESCE(artist, '')) = '' \
+                         THEN excluded.artist ELSE artist END, \
+                       album = CASE WHEN TRIM(COALESCE(album, '')) = '' \
+                         THEN excluded.album ELSE album END, \
+                       album_artist = CASE WHEN TRIM(COALESCE(album_artist, '')) = '' \
+                         THEN excluded.album_artist ELSE album_artist END, \
+                       genre = CASE WHEN TRIM(COALESCE(genre, '')) = '' \
+                         THEN excluded.genre ELSE genre END, \
+                       year = COALESCE(year, excluded.year), \
+                       duration_ms = CASE WHEN duration_ms <= 0 \
+                         THEN excluded.duration_ms ELSE duration_ms END, \
+                       media_type = CASE WHEN media_type IN ('audiobook', 'podcast') \
+                         OR excluded.media_type = 'music' THEN media_type ELSE excluded.media_type END, \
+                       codec = CASE WHEN TRIM(COALESCE(codec, '')) = '' \
+                         THEN excluded.codec ELSE codec END, \
+                       last_seen_at = excluded.last_seen_at",
+                )
+                .map_err(db_error)?;
+
+            for track in tracks {
+                stmt.execute(params![
+                    track.id,
+                    track.title,
+                    track.artist,
+                    track.album,
+                    track.album_artist,
+                    track.genre,
+                    track.year.map(i64::from),
+                    track.duration_ms as i64,
+                    media_type(&track.media_type),
+                    track.codec,
+                    now,
+                ])
+                .map_err(db_error)?;
+            }
+        }
+        tx.commit().map_err(db_error)
+    }
+
     /// Writes a listen, or updates the row the same listen already has.
     pub fn record_play(&self, play: &PlayRecord) -> Result<(), String> {
         let mut conn = self.guard();
@@ -1230,6 +1289,69 @@ mod tests {
     fn session_count(store: &Analytics) -> i64 {
         let conn = store.guard();
         count(&conn, "SELECT COUNT(*) FROM sessions").unwrap()
+    }
+
+    #[test]
+    fn native_snapshots_do_not_replace_richer_track_metadata() {
+        let store = store();
+        store
+            .remember_tracks(&[track("a", "Artist", "Album", "Pop", "podcast")])
+            .unwrap();
+        store
+            .remember_tracks_preserving_existing(&[TrackSnapshot {
+                id: "a".to_string(),
+                title: String::new(),
+                artist: None,
+                album: None,
+                album_artist: None,
+                genre: None,
+                year: None,
+                duration_ms: 0,
+                media_type: "music".to_string(),
+                codec: String::new(),
+            }])
+            .unwrap();
+
+        let conn = store.guard();
+        let snapshot: (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            i64,
+            String,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT title, artist, album, album_artist, genre, year, duration_ms, media_type, codec \
+                 FROM tracks WHERE track_id = 'a'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(snapshot.0, "Song a");
+        assert_eq!(snapshot.1.as_deref(), Some("Artist"));
+        assert_eq!(snapshot.2.as_deref(), Some("Album"));
+        assert_eq!(snapshot.3.as_deref(), Some("Artist"));
+        assert_eq!(snapshot.4.as_deref(), Some("Pop"));
+        assert_eq!(snapshot.5, Some(2024));
+        assert_eq!(snapshot.6, 180_000);
+        assert_eq!(snapshot.7, "podcast");
+        assert_eq!(snapshot.8, "MP3");
     }
 
     #[cfg(desktop)]

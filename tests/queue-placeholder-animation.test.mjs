@@ -27,7 +27,7 @@ const context = {
 globalThis.__queueAnimationTest = context;
 
 const mocks = {
-  "../lib/device": "export const device = () => globalThis.__queueAnimationTest.kind; export const isWebKitGtk = true;",
+  "../lib/device": "export const device = () => globalThis.__queueAnimationTest.kind; export const isWebKitGtk = false;",
   "../lib/format": "export const escapeHtml = (value) => value;",
   "../lib/motion": `
     export const reduceMotionActive = () => globalThis.__queueAnimationTest.reducedMotion;
@@ -435,7 +435,7 @@ test("artwork still loading at reveal appears later without an old wipe", () => 
   assert.deepEqual(context.swaps.at(-1), []);
 });
 
-test("WebKitGTK desktop requests visible artwork without prefetching the entire queue", () => {
+test("desktop requests visible artwork without prefetching the entire queue", () => {
   const { live } = setup("desktop");
   context.snapshot = snapshot("large", 5000);
   context.change();

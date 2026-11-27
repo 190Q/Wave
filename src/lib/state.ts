@@ -3,6 +3,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import type {
+  ApiCommand,
   Collection,
   CollectionFilter,
   CollectionSort,
@@ -21,12 +22,15 @@ import type {
   ImportProgress,
   ImportRecord,
   LibraryInfo,
+  LinuxNativePlaybackStatus,
   LyricLine,
+  NativePlaybackTrack,
   LoudnessUpdate,
   LyricsOutcome,
   PendingTrack,
   PersistedState,
   Playback,
+  PlayerReport,
   Playlist,
   PlaylistMode,
   RecommendStatus,
@@ -41,7 +45,17 @@ import type {
   WindowSlot,
   YoutubeStatus,
 } from "../types";
-import { flushAnalytics, mountAnalytics, notePlaybackError, noteTrackEnded, recordEvent, rememberTracks } from "./analytics";
+import {
+  flushAnalytics,
+  handoffPlaybackToNative,
+  mediaTypeOf,
+  mountAnalytics,
+  notePlaybackError,
+  noteTrackEnded,
+  reclaimPlaybackOwnership,
+  recordEvent,
+  rememberTracks,
+} from "./analytics";
 import { nearbyArtwork } from "./artwork-priority";
 import { AndroidAudioEngine, type NativeSnapshot } from "./android-audio";
 import { AudioEngine, trackAudioPath } from "./audio";
@@ -54,6 +68,7 @@ import { DEFAULT_EQ_BANDS, EqChain } from "./eq";
 import * as ipc from "./ipc";
 import { plural } from "./format";
 import { gainFor } from "./loudness";
+import { LinuxNativeAudioEngine } from "./linux-native-audio";
 import { parseLrc } from "./lrc";
 import { MAX_VOLUME, MIN_VOLUME, Player, easeOutCubic } from "./player";
 import { newestSession, readSessionRecovery, SESSION_RECOVERY_KEY } from "./session-recovery";
@@ -564,8 +579,13 @@ const audioHandlers = {
 const nativeAudio = isAndroidPlatform && window.waveNativePlayback
   ? new AndroidAudioEngine(audioHandlers, noteTrackEnded)
   : null;
-const engine = nativeAudio ?? new AudioEngine(audioHandlers);
+const linuxNativeAudio = isWebKitGtk && !isAndroidPlatform && isTauri()
+  ? new LinuxNativeAudioEngine(audioHandlers)
+  : null;
+const engine = nativeAudio ?? linuxNativeAudio ?? new AudioEngine(audioHandlers);
 let nativeSnapshot: NativeSnapshot | null = null;
+let linuxNativeStatus: LinuxNativePlaybackStatus | null = null;
+let applyingLinuxNativeStatus = false;
 
 let nativeBackgroundPlaybackSent: boolean | undefined;
 
@@ -581,6 +601,9 @@ let nativeEqualiserSent = "";
 
 function applyEqualiser(): void {
   eq.apply(nativeAudio ? { ...state.settings, eqOutputId: "" } : state.settings);
+  if (linuxNativeAudio && state.ready) {
+    syncLinuxNativePlayback();
+  }
   if (!nativeAudio || !state.ready) return;
   const settings = {
     enabled: state.settings.eqEnabled,
@@ -643,7 +666,11 @@ function handleCorsRefused(): void {
 export const player = new Player(engine, (trackId) => {
   const track = state.tracksById.get(trackId);
   return track
-    ? { path: nativeAudio ? track.path : audioPath(track), durationMs: track.durationMs, gain: trackGain(track) }
+    ? {
+      path: nativeAudio || linuxNativeAudio?.active ? track.path : audioPath(track),
+      durationMs: track.durationMs,
+      gain: trackGain(track),
+    }
     : undefined;
 });
 
@@ -652,6 +679,9 @@ eq.onRoutingChange(() => {
     engine.bypass();
   } else {
     engine.cancelBypass();
+  }
+  if (linuxNativeAudio && state.ready) {
+    syncLinuxNativePlayback();
   }
 });
 
@@ -666,6 +696,13 @@ if (nativeAudio) {
     }
     if (state.ready && eqChanged) emit();
   });
+} else if (linuxNativeAudio) {
+  linuxNativeAudio.onState((status) => {
+    linuxNativeStatus = status;
+    if (state.ready) {
+      applyLinuxNativeStatus(status);
+    }
+  });
 } else {
   mountAudioWatchdog(engine, player, (message) => {
     console.warn(message);
@@ -678,12 +715,102 @@ function trackGain(track: Track): number {
 }
 
 export function usesNativePlayback(): boolean {
-  return nativeAudio !== null;
+  return nativeAudio !== null || linuxNativeAudio?.active === true;
 }
 
-let nativeQueueSent = "";
+type NativeQueueTrack = NativePlaybackTrack;
+
+let nativeQueueTracks: NativeQueueTrack[] = [];
+let nativeQueueTracksKey = "";
+let nativeQueueTracksRevision = -1;
+let nativeQueueTracksById: Map<string, Track> | null = null;
+let nativeQueueColours: Map<string, string> | null = null;
+let nativeQueueNormalise: boolean | null = null;
+let nativeQueueTrackVersion = 0;
+let nativeQueueTracksVersion = -1;
+let nativeQueuePlaybackSent = "";
+let nativeQueueTracksSent = "";
+let linuxNativeQueueSent = "";
+let linuxNativeReportSent: PlayerReport | null = null;
+let linuxNativePending = "";
+let linuxNativeCommandId = 0;
+let linuxNativeWired = false;
+let linuxNativeWasActive = false;
+let linuxNativeFallback: { playback: Playback; playing: boolean; volume: number } | null = null;
+let linuxNativeIntent: PlayerReport | null = null;
+let linuxNativeDeferredSeek: number | null = null;
+let linuxNativeOperation = 0;
+let linuxNativeActivationBlocked = false;
+let linuxNativeActivationBlockedKey = "";
+let linuxNativeReportQueueRevision = -1;
+let linuxNativeReportOrder: string[] = [];
+let linuxNativeReportSourceOrder: string[] = [];
+
+function invalidateNativeQueueTracks(): void {
+  nativeQueueTrackVersion += 1;
+}
+
+function nativeTracksFor(order: readonly string[], revision: number): NativeQueueTrack[] {
+  if (
+    revision === nativeQueueTracksRevision &&
+    state.tracksById === nativeQueueTracksById &&
+    state.colours === nativeQueueColours &&
+    state.settings.normalizeVolume === nativeQueueNormalise &&
+    nativeQueueTrackVersion === nativeQueueTracksVersion
+  ) {
+    return nativeQueueTracks;
+  }
+
+  nativeQueueTracks = order.flatMap((id) => {
+    const track = state.tracksById.get(id);
+    return track ? [{
+      id,
+      path: track.path,
+      title: track.title,
+      artist: track.artist ?? "",
+      album: track.album ?? "",
+      albumArtist: track.albumArtist ?? "",
+      genre: track.genre ?? "",
+      year: nativeTrackYear(track.year),
+      durationMs: track.durationMs,
+      codec: track.codec,
+      mediaType: mediaTypeOf(track),
+      artwork: track.artworkPath ?? "",
+      colour: colourFor(track),
+      gain: trackGain(track),
+    }] : [];
+  });
+  nativeQueueTracksKey = JSON.stringify(nativeQueueTracks);
+  nativeQueueTracksRevision = revision;
+  nativeQueueTracksById = state.tracksById;
+  nativeQueueColours = state.colours;
+  nativeQueueNormalise = state.settings.normalizeVolume;
+  nativeQueueTracksVersion = nativeQueueTrackVersion;
+  return nativeQueueTracks;
+}
+
+function nativeTrackYear(year: number | null): number | null {
+  return year !== null && Number.isSafeInteger(year) && year >= 0 && year <= 65535 ? year : null;
+}
+
+function linuxActivationKey(snapshot: ReturnType<Player["snapshot"]>): string {
+  return `${snapshot.queueRevision}|${snapshot.currentId ?? ""}|${snapshot.cursor}|${snapshot.order.length}`;
+}
+
+function blockLinuxNativeActivation(): void {
+  linuxNativeActivationBlocked = true;
+  linuxNativeActivationBlockedKey = linuxActivationKey(player.snapshot());
+}
 
 export function syncNativeQueue(): void {
+  if (nativeAudio) {
+    syncAndroidNativeQueue();
+  } else {
+    syncLinuxNativePlayback();
+  }
+}
+
+function syncAndroidNativeQueue(): void {
   if (!nativeAudio || !state.ready) return;
   const snapshot = player.snapshot();
   if (!snapshot.currentId && nativeSnapshot?.available) return;
@@ -698,24 +825,414 @@ export function syncNativeQueue(): void {
     repeat: snapshot.repeat,
     muted: snapshot.muted,
   };
-  const tracks = snapshot.order.flatMap((id) => {
-    const track = state.tracksById.get(id);
-    return track ? [{
-      id,
-      path: track.path,
-      title: track.title,
-      artist: track.artist ?? "",
-      album: track.album ?? "",
-      durationMs: track.durationMs,
-      artwork: track.artworkPath ?? "",
-      colour: colourFor(track),
-      gain: trackGain(track),
-    }] : [];
+  const tracks = nativeTracksFor(snapshot.order, snapshot.queueRevision);
+  // Native track loads and seeks update the cursor directly, so queue entries stay cached.
+  const playbackKey = JSON.stringify({
+    sourceId: playback.sourceId,
+    sourceName: playback.sourceName,
+    queueRevision: snapshot.queueRevision,
+    shuffle: playback.shuffle,
+    repeat: playback.repeat,
+    muted: playback.muted,
   });
-  const key = JSON.stringify({ playback: { ...playback, positionMs: 0 }, tracks });
-  if (key === nativeQueueSent) return;
-  nativeQueueSent = key;
+  if (playbackKey === nativeQueuePlaybackSent && nativeQueueTracksKey === nativeQueueTracksSent) return;
+  nativeQueuePlaybackSent = playbackKey;
+  nativeQueueTracksSent = nativeQueueTracksKey;
   nativeAudio.send({ type: "queue", playback, tracks });
+}
+
+function reportForNative(snapshot: ReturnType<Player["snapshot"]>): PlayerReport {
+  if (linuxNativeReportQueueRevision !== snapshot.queueRevision) {
+    linuxNativeReportQueueRevision = snapshot.queueRevision;
+    linuxNativeReportOrder = [...snapshot.order];
+    linuxNativeReportSourceOrder = [...snapshot.sourceOrder];
+  }
+  return {
+    command: null,
+    currentId: snapshot.currentId,
+    sourceId: snapshot.sourceId,
+    sourceName: snapshot.sourceName,
+    order: linuxNativeReportOrder,
+    sourceOrder: linuxNativeReportSourceOrder,
+    cursor: snapshot.cursor,
+    positionMs: Math.round(snapshot.positionMs),
+    durationMs: Math.round(snapshot.durationMs),
+    playing: snapshot.playing,
+    shuffle: snapshot.shuffle,
+    repeat: snapshot.repeat,
+    volume: snapshot.volume,
+    muted: snapshot.muted,
+  };
+}
+
+function linuxQueueKey(snapshot: ReturnType<Player["snapshot"]>): string {
+  return JSON.stringify({
+    queueRevision: snapshot.queueRevision,
+    trackVersion: nativeQueueTrackVersion,
+    tracksCurrent: state.tracksById === nativeQueueTracksById,
+    coloursCurrent: state.colours === nativeQueueColours,
+    normaliseCurrent: state.settings.normalizeVolume === nativeQueueNormalise,
+    equaliserEnabled: state.settings.eqEnabled,
+    outputId: state.settings.eqOutputId,
+  });
+}
+
+function sameLinuxControls(left: PlayerReport, right: PlayerReport): boolean {
+  return left.currentId === right.currentId &&
+    left.sourceId === right.sourceId &&
+    left.sourceName === right.sourceName &&
+    left.cursor === right.cursor &&
+    left.playing === right.playing &&
+    left.shuffle === right.shuffle &&
+    left.repeat === right.repeat &&
+    left.volume === right.volume &&
+    left.muted === right.muted;
+}
+
+function linuxControlKey(report: PlayerReport): string {
+  return JSON.stringify({
+    currentId: report.currentId,
+    sourceId: report.sourceId,
+    sourceName: report.sourceName,
+    cursor: report.cursor,
+    playing: report.playing,
+    shuffle: report.shuffle,
+    repeat: report.repeat,
+    volume: report.volume,
+    muted: report.muted,
+  });
+}
+
+function captureLinuxFallback(snapshot: ReturnType<Player["snapshot"]>): void {
+  linuxNativeFallback = {
+    playback: {
+      sourceId: snapshot.sourceId,
+      sourceName: snapshot.sourceName,
+      sourceOrder: [...snapshot.sourceOrder],
+      order: [...snapshot.order],
+      cursor: snapshot.cursor,
+      positionMs: Math.round(snapshot.positionMs),
+      shuffle: snapshot.shuffle,
+      repeat: snapshot.repeat,
+      muted: snapshot.muted,
+    },
+    playing: snapshot.playing,
+    volume: snapshot.volume,
+  };
+}
+
+function linuxCommand(action: ApiCommand["action"], patch: Partial<ApiCommand> = {}): ApiCommand {
+  return {
+    id: `linux-native-${++linuxNativeCommandId}`,
+    action,
+    value: null,
+    trackId: null,
+    trackIds: [],
+    sourceId: null,
+    sourceName: null,
+    startTrackId: null,
+    text: null,
+    flag: null,
+    ...patch,
+  };
+}
+
+function commandForLinux(previous: PlayerReport, next: PlayerReport): ApiCommand | null {
+  const queueChanged = previous.currentId !== next.currentId ||
+    previous.sourceId !== next.sourceId ||
+    previous.sourceName !== next.sourceName ||
+    previous.cursor !== next.cursor;
+  if (queueChanged) {
+    return null;
+  }
+  const changes = [
+    previous.playing !== next.playing ? "playing" : null,
+    previous.shuffle !== next.shuffle ? "shuffle" : null,
+    previous.repeat !== next.repeat ? "repeat" : null,
+    previous.volume !== next.volume ? "volume" : null,
+    previous.muted !== next.muted ? "muted" : null,
+  ].filter(Boolean);
+  if (changes.length === 0) {
+    return null;
+  }
+  if (changes.length === 1) {
+    switch (changes[0]) {
+      case "playing":
+        return linuxCommand(next.playing ? "play" : "pause");
+      case "shuffle":
+        return linuxCommand("shuffle", { flag: next.shuffle });
+      case "repeat":
+        return linuxCommand("repeat", { text: next.repeat });
+      case "volume":
+        return linuxCommand("volume", { value: next.volume });
+      case "muted":
+        return linuxCommand("mute", { flag: next.muted });
+    }
+  }
+  if (changes.length === 2 && changes.includes("volume") && changes.includes("muted") && !next.muted) {
+    return linuxCommand("volume", { value: next.volume });
+  }
+  return null;
+}
+
+function syncLinuxNativePlayback(): void {
+  if (!linuxNativeAudio || !state.ready || applyingLinuxNativeStatus) {
+    return;
+  }
+  const snapshot = player.snapshot();
+  const report = reportForNative(snapshot);
+  const queueKey = linuxQueueKey(snapshot);
+  const controlKey = linuxControlKey(report);
+  const pendingKey = `${queueKey}|${controlKey}`;
+  if (linuxNativeAudio.pending) {
+    captureLinuxFallback(snapshot);
+  }
+  if (pendingKey === linuxNativePending) {
+    return;
+  }
+  if (linuxNativeAudio.active && linuxNativeDeferredSeek !== null &&
+      linuxNativeReportSent?.currentId === report.currentId) {
+    const positionMs = linuxNativeDeferredSeek;
+    linuxNativeDeferredSeek = null;
+    linuxNativePending = `${pendingKey}|seek:${positionMs}`;
+    void linuxNativeAudio.command(linuxCommand("seek", { value: positionMs })).catch(() => {
+      if (linuxNativePending === `${pendingKey}|seek:${positionMs}`) {
+        linuxNativePending = "";
+      }
+    });
+    return;
+  }
+  if (queueKey === linuxNativeQueueSent && linuxNativeReportSent !== null &&
+      sameLinuxControls(report, linuxNativeReportSent)) {
+    if (linuxNativePending !== "") {
+      linuxNativeIntent = report;
+    }
+    return;
+  }
+  linuxNativeIntent = report;
+
+  const command = linuxNativeAudio.active && linuxNativeReportSent && queueKey === linuxNativeQueueSent
+    ? commandForLinux(linuxNativeReportSent, report)
+    : null;
+  if (command) {
+    linuxNativePending = pendingKey;
+    void linuxNativeAudio.command(command).catch(() => {
+      linuxNativePending = "";
+    });
+    return;
+  }
+
+  const compatible = !state.settings.eqEnabled && !state.settings.eqOutputId;
+  if (!compatible) {
+    linuxNativeActivationBlocked = false;
+    linuxNativeActivationBlockedKey = "";
+  } else if (linuxNativeActivationBlocked && linuxActivationKey(snapshot) !== linuxNativeActivationBlockedKey) {
+    linuxNativeActivationBlocked = false;
+    linuxNativeActivationBlockedKey = "";
+  }
+  if (compatible && !linuxNativeAudio.active && linuxNativeActivationBlocked) {
+    return;
+  }
+  if (compatible && !linuxNativeAudio.active) {
+    captureLinuxFallback(snapshot);
+    handoffPlaybackToNative();
+    linuxNativeAudio.prepareNative();
+  }
+  const replace = linuxNativeAudio.active || linuxNativePending !== "";
+  linuxNativePending = pendingKey;
+  const operation = ++linuxNativeOperation;
+  const tracks = nativeTracksFor(snapshot.order, snapshot.queueRevision);
+  linuxNativeQueueSent = queueKey;
+  linuxNativeReportSent = report;
+  void linuxNativeAudio.sync({
+    report,
+    tracks,
+    equaliserEnabled: state.settings.eqEnabled,
+    outputId: state.settings.eqOutputId,
+    replace,
+  }).catch((error) => {
+    if (operation !== linuxNativeOperation) {
+      return;
+    }
+    linuxNativePending = "";
+    linuxNativeAudio.abortNative();
+    const wasApplying = applyingLinuxNativeStatus;
+    applyingLinuxNativeStatus = true;
+    try {
+      restoreLinuxFallback();
+    } finally {
+      applyingLinuxNativeStatus = wasApplying;
+    }
+    if (compatible) {
+      blockLinuxNativeActivation();
+      setNotice(`Native playback returned to WebKit: ${describe(error)}`);
+    }
+  });
+}
+
+function playbackFromNativeReport(report: PlayerReport): Playback | null {
+  const order = report.order ?? [];
+  const sourceOrder = report.sourceOrder ?? order;
+  if (order.length === 0) {
+    return null;
+  }
+  return {
+    sourceId: report.sourceId,
+    sourceName: report.sourceName,
+    sourceOrder,
+    order,
+    cursor: report.cursor,
+    positionMs: Math.round(report.positionMs),
+    shuffle: report.shuffle,
+    repeat: report.repeat === "all" ? "all" : "off",
+    muted: report.muted,
+  };
+}
+
+function restoreLinuxFallback(report?: PlayerReport): void {
+  const saved = linuxNativeFallback;
+  const playback = report ? playbackFromNativeReport(report) : null;
+  const fallback = playback ?? saved?.playback;
+  const playing = report?.playing ?? saved?.playing ?? false;
+  const volume = report?.volume ?? saved?.volume;
+  linuxNativeFallback = null;
+  linuxNativeIntent = null;
+  linuxNativeDeferredSeek = null;
+  reclaimPlaybackOwnership();
+  if (!fallback || !restorePlayback(fallback)) {
+    return;
+  }
+  if (volume !== undefined && player.snapshot().volume !== Math.round(volume)) {
+    player.setVolume(volume);
+    scheduleVolumeSave();
+  }
+  if (playing) {
+    player.play();
+  }
+}
+
+function hasLinuxQueueTransition(status: LinuxNativePlaybackStatus): boolean {
+  switch (status.transition?.kind) {
+    case "sync":
+    case "queue":
+    case "shuffle":
+    case "playTrack":
+    case "queueAppend":
+    case "queueNext":
+    case "queueRemove":
+    case "playCollection":
+    case "openCollection":
+    case "next":
+    case "previous":
+    case "ended":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function sameNativeOrder(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+function needsLinuxRestore(
+  snapshot: ReturnType<Player["snapshot"]>, report: PlayerReport, structural = false,
+): boolean {
+  return snapshot.currentId !== report.currentId ||
+    snapshot.sourceId !== report.sourceId ||
+    snapshot.sourceName !== report.sourceName ||
+    snapshot.cursor !== report.cursor ||
+    snapshot.order.length !== (report.order?.length ?? 0) ||
+    snapshot.sourceOrder.length !== (report.sourceOrder?.length ?? 0) ||
+    snapshot.shuffle !== report.shuffle ||
+    snapshot.repeat !== report.repeat ||
+    snapshot.muted !== report.muted ||
+    (structural && (!sameNativeOrder(snapshot.order, report.order ?? []) ||
+      !sameNativeOrder(snapshot.sourceOrder, report.sourceOrder ?? [])));
+}
+
+function applyLinuxNativeStatus(status: LinuxNativePlaybackStatus): void {
+  const wasActive = linuxNativeWasActive;
+  linuxNativeWasActive = status.active;
+  linuxNativePending = "";
+  if (!state.ready || !linuxNativeAudio) {
+    return;
+  }
+
+  applyingLinuxNativeStatus = true;
+  try {
+    if (status.active) {
+      linuxNativeActivationBlocked = false;
+      linuxNativeActivationBlockedKey = "";
+      handoffPlaybackToNative();
+      const playback = playbackFromNativeReport(status.report);
+      const before = player.snapshot();
+      const fallback = linuxNativeFallback;
+      const fallbackCurrentId = fallback?.playback.order[fallback.playback.cursor] ?? null;
+      if (fallback && fallbackCurrentId === status.report.currentId &&
+          Math.abs(fallback.playback.positionMs - status.report.positionMs) > 250) {
+        linuxNativeDeferredSeek = fallback.playback.positionMs;
+      }
+      if (linuxNativeIntent && sameLinuxControls(status.report, linuxNativeIntent)) {
+        linuxNativeIntent = null;
+      }
+      const preserveIntent = linuxNativeIntent !== null;
+      if (!preserveIntent && status.report.order?.length === 0 &&
+          needsLinuxRestore(before, status.report, true)) {
+        player.setQueue(status.report.sourceId, status.report.sourceName, []);
+        player.setShuffle(status.report.shuffle);
+        player.setRepeat(status.report.repeat === "all" ? "all" : "off");
+        if (player.snapshot().muted !== status.report.muted) player.toggleMute();
+      } else if (playback && playback.order.every((id) => state.tracksById.has(id)) &&
+          needsLinuxRestore(before, status.report, hasLinuxQueueTransition(status)) && !preserveIntent) {
+        player.restore(playback, { playing: status.report.playing });
+      } else if (!preserveIntent && status.report.currentId) {
+        player.followNative(status.report.currentId, status.report.playing);
+      }
+      if (!preserveIntent && player.snapshot().volume !== Math.round(status.report.volume)) {
+        player.setVolume(status.report.volume);
+        scheduleVolumeSave();
+      }
+      if (!preserveIntent) {
+        linuxNativeFallback = null;
+      }
+      const snapshot = player.snapshot();
+      nativeTracksFor(snapshot.order, snapshot.queueRevision);
+      linuxNativeQueueSent = linuxQueueKey(snapshot);
+      linuxNativeReportSent = status.report;
+    } else if (wasActive || linuxNativeFallback) {
+      const compatible = !state.settings.eqEnabled && !state.settings.eqOutputId;
+      restoreLinuxFallback(status.report);
+      if (compatible) {
+        blockLinuxNativeActivation();
+        if (status.reason) {
+          setNotice(`Native playback returned to WebKit: ${status.reason}`);
+        }
+      }
+      const snapshot = player.snapshot();
+      nativeTracksFor(snapshot.order, snapshot.queueRevision);
+      linuxNativeQueueSent = linuxQueueKey(snapshot);
+      linuxNativeReportSent = reportForNative(snapshot);
+    } else {
+      const snapshot = player.snapshot();
+      nativeTracksFor(snapshot.order, snapshot.queueRevision);
+      linuxNativeQueueSent = linuxQueueKey(snapshot);
+      linuxNativeReportSent = reportForNative(snapshot);
+    }
+  } finally {
+    applyingLinuxNativeStatus = false;
+  }
+  emit();
+}
+
+function wireLinuxNativePlayback(): void {
+  if (!linuxNativeAudio || linuxNativeWired) {
+    return;
+  }
+  linuxNativeWired = true;
+  player.onChange(syncLinuxNativePlayback);
+  player.onSeek(syncLinuxNativePlayback);
+  subscribe(syncLinuxNativePlayback);
 }
 
 /** One queue step, shared by the arrow keys and the wheel. */
@@ -1205,12 +1722,18 @@ async function drainColours(): Promise<void> {
     try {
       const hex = await ipc.artworkColour(id, track.artworkPath);
       if (state.tracksById.get(id)?.artworkPath === track.artworkPath) {
-        state.colours.set(id, hex);
+        if (state.colours.get(id) !== hex) {
+          state.colours.set(id, hex);
+          invalidateNativeQueueTracks();
+        }
       }
     } catch {
       // Session-only fallback; the failure is not persisted, so a later launch retries.
       if (state.tracksById.get(id)?.artworkPath === track.artworkPath) {
-        state.colours.set(id, FALLBACK_COLOUR);
+        if (state.colours.get(id) !== FALLBACK_COLOUR) {
+          state.colours.set(id, FALLBACK_COLOUR);
+          invalidateNativeQueueTracks();
+        }
       }
     }
     coloursInFlight.delete(id);
@@ -1253,9 +1776,11 @@ export async function init(): Promise<string | null> {
     trackById,
     collectionById,
     enabled: () => state.settings.analyticsEnabled,
+    ownsPlayback: () => linuxNativeAudio?.active !== true,
   });
   await readAppVersion();
   if (nativeAudio) nativeSnapshot = await nativeAudio.connect();
+  if (linuxNativeAudio) linuxNativeStatus = await linuxNativeAudio.connect();
   let startupError: string | null = null;
   try {
     if (isAndroidPlatform || isWebKitGtk) {
@@ -1272,30 +1797,43 @@ export async function init(): Promise<string | null> {
     applyPersisted(persisted, true, true, true);
     seedEqOrigin();
     applySession(session);
-    if (!nativeSnapshot?.live) player.setVolume(state.settings.volume);
-    const resumable = nativeSnapshot?.available && nativeSnapshot.playback?.order?.length
+    if (!nativeSnapshot?.live && !linuxNativeStatus?.active) player.setVolume(state.settings.volume);
+    const linuxPlayback = linuxNativeStatus?.active
+      ? playbackFromNativeReport(linuxNativeStatus.report)
+      : null;
+    const resumable = linuxPlayback ?? (nativeSnapshot?.available && nativeSnapshot.playback?.order?.length
       ? nativeSnapshot.playback
-      : session?.playback;
-    const deferQueueRepair = (state.settings.resumeOnLaunch || nativeSnapshot?.live === true) &&
+      : session?.playback);
+    const nativeLive = nativeSnapshot?.live === true || linuxNativeStatus?.active === true;
+    const deferQueueRepair = (state.settings.resumeOnLaunch || nativeLive) &&
       (resumable?.order.length ?? 0) > 0;
     await rescan(false, deferQueueRepair);
-    if (state.settings.resumeOnLaunch || nativeSnapshot?.live) {
+    if (state.settings.resumeOnLaunch || nativeLive) {
       const native = nativeSnapshot?.available ? nativeSnapshot : null;
-      const index = native?.currentId ? resumable?.order.indexOf(native.currentId) ?? -1 : -1;
+      const nativeCurrentId = linuxNativeStatus?.active
+        ? linuxNativeStatus.report.currentId
+        : native?.currentId;
+      const nativePositionMs = linuxNativeStatus?.active
+        ? linuxNativeStatus.report.positionMs
+        : native?.positionMs ?? 0;
+      const nativePlaying = linuxNativeStatus?.active
+        ? { playing: linuxNativeStatus.report.playing }
+        : native?.live ? native : null;
+      const index = nativeCurrentId ? resumable?.order.indexOf(nativeCurrentId) ?? -1 : -1;
       const playback = resumable && native && index >= 0
-        ? { ...resumable, cursor: index, positionMs: native.positionMs }
+        ? { ...resumable, cursor: index, positionMs: nativePositionMs }
         : resumable;
       const currentId = playback?.order[playback.cursor];
       const incomplete = playback && state.scanErrors.length > 0 &&
         [...playback.order, ...playback.sourceOrder].some((id) => !state.tracksById.has(id));
       if (incomplete) {
         if (currentId && state.tracksById.has(currentId)) {
-          restorePlayback(playback, native?.live ? native : null);
+          restorePlayback(playback, nativePlaying);
         }
         pendingPlayback = playback;
         pendingQueueRevision = player.snapshot().queueRevision;
       } else {
-        restorePlayback(playback, native?.live ? native : null);
+        restorePlayback(playback, nativePlaying);
       }
     }
     if (deferQueueRepair && !player.currentId && !pendingPlayback) {
@@ -1304,6 +1842,17 @@ export async function init(): Promise<string | null> {
     if (nativeSnapshot?.live) player.setVolume(state.settings.volume);
     wirePersistence();
     state.ready = true;
+    wireLinuxNativePlayback();
+    if (linuxNativeStatus) {
+      applyLinuxNativeStatus(linuxNativeStatus);
+      if (!linuxNativeStatus.active) {
+        linuxNativeQueueSent = "";
+        linuxNativeReportSent = null;
+        syncLinuxNativePlayback();
+      }
+    } else {
+      syncLinuxNativePlayback();
+    }
     applyEqualiser();
   } catch (error) {
     startupError = describe(error);
@@ -2571,7 +3120,9 @@ export async function replaceTrackCover(trackId: string): Promise<void> {
       artworkUrls.delete(track.id);
     }
     artworkFailed.delete(track.id);
-    state.colours.delete(track.id);
+    if (state.colours.delete(track.id)) {
+      invalidateNativeQueueTracks();
+    }
     refreshCollections();
     ensureColour(track);
     emit();
@@ -2883,6 +3434,7 @@ function mergeLanded(landed: Track[]): void {
     state.tracksById.set(track.id, track);
     landedDuringScan?.set(track.id, track);
   }
+  invalidateNativeQueueTracks();
 
   // Kept in the order a scan leaves the library in.
   state.tracks = [...state.tracks.filter((track) => !arrived.has(track.id)), ...landed].sort(
@@ -2904,6 +3456,7 @@ function watchLoudness(): void {
     if (track) {
       track.lufs = lufs;
       track.peak = peak;
+      invalidateNativeQueueTracks();
     }
     state.analysing = { done, total };
 
@@ -3332,7 +3885,7 @@ let pendingPlayback: Playback | undefined;
 let pendingQueueRevision: number | null = null;
 let collectionPlayback: Record<string, Playback> = {};
 
-function restorePlayback(playback: Playback | undefined, native: NativeSnapshot | null = null): boolean {
+function restorePlayback(playback: Playback | undefined, native: { playing: boolean } | null = null): boolean {
   if (!playback || playback.order.length === 0) {
     return false;
   }
@@ -3374,6 +3927,8 @@ let lastSessionSavedAt = 0;
 /** The session as it was last written, so an unchanged one is not rewritten. */
 let savedSession: string | null = null;
 let sessionWrites: Promise<void> = Promise.resolve();
+let sessionRevision = 0;
+let failedSession: { session: Session; encoded: string; revision: number } | null = null;
 
 /** Persists the session on every playback change, and on a slow timer. */
 function wirePersistence(): void {
@@ -3388,13 +3943,13 @@ function wirePersistence(): void {
   if (isAndroidPlatform || device() !== "desktop") {
     checkpointTimer = window.setInterval(() => {
       if (state.ready && player.snapshot().playing && !checkpointSession().stored) {
-        void persistSession();
+        void persistSession(true);
       }
     }, PHONE_CHECKPOINT_MS);
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden) void persistSession();
+      if (document.hidden) void persistSession(true);
     });
-    window.addEventListener("pagehide", () => void persistSession());
+    window.addEventListener("pagehide", () => void persistSession(true));
   }
 }
 
@@ -3403,6 +3958,8 @@ function schedulePersist(): void {
   if (!state.ready) {
     return;
   }
+  sessionRevision += 1;
+  failedSession = null;
   if (pendingPlayback && player.snapshot().queueRevision !== pendingQueueRevision) {
     pendingPlayback = undefined;
     pendingQueueRevision = null;
@@ -3415,7 +3972,7 @@ function schedulePersist(): void {
   }
   persistTimer = window.setTimeout(() => {
     persistTimer = null;
-    void persistSession();
+    void persistSession(true);
   }, PERSIST_DELAY_MS);
 }
 
@@ -3423,11 +3980,22 @@ async function autosave(): Promise<void> {
   if (!state.ready || autosaving) {
     return;
   }
+  const playing = player.snapshot().playing;
+  const retryingSession = failedSession !== null;
+  if (!playing && !volumeUnsaved && !retryingSession) {
+    return;
+  }
   autosaving = true;
   try {
     await saveVolume();
-    await persistSession();
-    await ipc.saveWindowGeometry();
+    if (playing || retryingSession) {
+      await persistSession(playing);
+    }
+    if (playing) {
+      if (device() === "desktop" && !document.hidden) {
+        await ipc.saveWindowGeometry();
+      }
+    }
   } catch {
     // Best effort; the next tick tries again.
   } finally {
@@ -3516,20 +4084,31 @@ function checkpointSession(): { session: Session; encoded: string; stored: boole
   return { session, encoded, stored };
 }
 
-async function persistSession(): Promise<void> {
+async function persistSession(current = false): Promise<void> {
   if (!state.ready) {
     return;
   }
-  const { session, encoded } = checkpointSession();
+  const retry = current ? null : failedSession;
+  const { session, encoded } = retry ?? checkpointSession();
+  const revision = retry?.revision ?? sessionRevision;
   const operation = sessionWrites.then(async () => {
     if (encoded === savedSession) {
+      if (revision === sessionRevision) {
+        failedSession = null;
+      }
       return;
     }
     try {
       await ipc.saveSession(session);
       savedSession = encoded;
+      if (revision === sessionRevision) {
+        failedSession = null;
+      }
     } catch {
       // Persistence is best-effort; a failed write must not disturb playback.
+      if (revision === sessionRevision) {
+        failedSession = { session, encoded, revision };
+      }
     }
   });
   sessionWrites = operation;
@@ -3563,7 +4142,7 @@ export async function flushSession(): Promise<void> {
     }
   }
   await settingsWrites;
-  await persistSession();
+  await persistSession(true);
   await flushEq();
   // The listen still running is written down before the window goes.
   await flushAnalytics();

@@ -1,11 +1,4 @@
-//! The bridge between the API and the player.
-//!
-//! Playback lives in the webview, so a command is emitted to the window as
-//! `api-command`, carrying an id of its own. The window answers by calling the
-//! `api_report` command with that id in the report it sends, which is what lets
-//! a playback call answer with what is playing now rather than "accepted". The
-//! wait is short, and a window that does not answer is an error rather than a
-//! hang.
+//! The API bridge for the WebView playback fallback.
 
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -53,7 +46,7 @@ pub struct Report {
 /// One command for the window, in the shape the two sides agreed on. Every
 /// field is written, null or not, so the front end never has to tell a missing
 /// field from one it was not meant to use.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Command {
     pub id: String,
@@ -396,7 +389,10 @@ mod tests {
         assert_eq!(report.current_id.as_deref(), Some("abc"));
         assert_eq!(report.source_id.as_deref(), Some("liked"));
         assert_eq!(report.source_name, "Liked Songs");
-        assert_eq!(report.order, Some(vec!["abc".to_string(), "def".to_string()]));
+        assert_eq!(
+            report.order,
+            Some(vec!["abc".to_string(), "def".to_string()])
+        );
         assert_eq!(report.cursor, 1);
         assert_eq!(report.position_ms, 1000.0);
         assert_eq!(report.duration_ms, 290_000.0);

@@ -2,15 +2,15 @@
 
 mod analytics;
 mod analytics_transfer;
-#[cfg(any(windows, target_os = "android"))]
-mod audio_outputs;
 #[cfg(not(target_os = "android"))]
 mod api;
-#[cfg(any(target_os = "android", target_os = "linux", test))]
-mod audio_stream;
 #[cfg(target_os = "android")]
 mod apk;
 mod artwork;
+#[cfg(any(windows, target_os = "android"))]
+mod audio_outputs;
+#[cfg(any(target_os = "android", target_os = "linux", test))]
+mod audio_stream;
 mod catalog;
 #[cfg(desktop)]
 mod cli;
@@ -28,12 +28,14 @@ mod import_source;
 mod library;
 #[cfg(target_os = "android")]
 mod library_work;
+#[cfg(any(target_os = "linux", test))]
+mod linux_playback;
 mod loudness;
 mod lyrics;
 mod lyrics_fetch;
-mod migrate;
 #[cfg(target_os = "android")]
 mod media_session;
+mod migrate;
 #[cfg(target_os = "android")]
 mod music_library;
 mod playlist_download;
@@ -41,17 +43,13 @@ mod playlists;
 mod presence;
 mod progress;
 mod recommend;
-mod search;
 #[cfg(target_os = "linux")]
 mod screen;
-mod source;
+mod search;
 #[cfg(desktop)]
 mod song_editor;
+mod source;
 mod spotify;
-mod youtube;
-mod youtube_mix;
-#[cfg(any(target_os = "android", test))]
-mod youtube_phone;
 mod spotify_import;
 mod state;
 mod tools;
@@ -59,13 +57,18 @@ mod transfer;
 mod update;
 #[cfg(desktop)]
 mod window_frame;
+mod youtube;
+mod youtube_mix;
+#[cfg(any(target_os = "android", test))]
+mod youtube_phone;
 
 use tauri::Manager;
 
 struct FrontendHealth(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
 #[cfg(desktop)]
-static MAIN_WINDOW_REVEALED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static MAIN_WINDOW_REVEALED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 #[tauri::command]
 fn report_frontend_startup(ready: bool, detail: String, health: tauri::State<'_, FrontendHealth>) {
@@ -118,7 +121,10 @@ fn name_the_process(identifier: &str) {
     use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
     use windows::core::PCWSTR;
 
-    let wide: Vec<u16> = identifier.encode_utf16().chain(std::iter::once(0)).collect();
+    let wide: Vec<u16> = identifier
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
     let _ = unsafe { SetCurrentProcessExplicitAppUserModelID(PCWSTR(wide.as_ptr())) };
 }
 
@@ -220,9 +226,18 @@ fn configure_desktop_identity(
         return;
     }
 
-    config.identifier.push_str(if shared { ".dev.shared" } else { ".dev" });
-    if let Some(window) = config.app.windows.iter_mut().find(|window| window.label == "main") {
-        window.title.push_str(if shared { " Dev (Shared)" } else { " Dev" });
+    config
+        .identifier
+        .push_str(if shared { ".dev.shared" } else { ".dev" });
+    if let Some(window) = config
+        .app
+        .windows
+        .iter_mut()
+        .find(|window| window.label == "main")
+    {
+        window
+            .title
+            .push_str(if shared { " Dev (Shared)" } else { " Dev" });
     }
 }
 
@@ -257,7 +272,11 @@ mod desktop_identity_tests {
         let mut config = config();
         configure_desktop_identity(&mut config, cfg!(dev), false);
 
-        let expected = if cfg!(dev) { "com.wave.app.dev" } else { "com.wave.app" };
+        let expected = if cfg!(dev) {
+            "com.wave.app.dev"
+        } else {
+            "com.wave.app"
+        };
         assert_eq!(config.identifier, expected);
     }
 
@@ -345,6 +364,9 @@ pub fn run() {
                 Err(error) => eprintln!("the audio stream could not start: {error}"),
             }
 
+            #[cfg(target_os = "linux")]
+            app.manage(linux_playback::NativePlayback::start(app.handle()));
+
             #[cfg(target_os = "android")]
             app.manage(loudness::PlaybackActivity::default());
 
@@ -371,6 +393,12 @@ pub fn run() {
             app.manage(presence::Presence::start(app.handle()));
             #[cfg(desktop)]
             presence::watch_config(app.handle());
+            #[cfg(target_os = "linux")]
+            {
+                let player = app.state::<linux_playback::NativePlayback>().inner().clone();
+                let handle = app.handle().clone();
+                std::thread::spawn(move || player.restore_session(&handle));
+            }
 
             #[cfg(windows)]
             disable_browser_shortcuts(app.handle());
@@ -409,6 +437,12 @@ pub fn run() {
             presence::set_queue,
             #[cfg(any(target_os = "android", target_os = "linux"))]
             audio_stream::audio_stream_base,
+            #[cfg(target_os = "linux")]
+            linux_playback::runtime::linux_native_playback_sync,
+            #[cfg(target_os = "linux")]
+            linux_playback::runtime::linux_native_playback_command,
+            #[cfg(target_os = "linux")]
+            linux_playback::runtime::linux_native_playback_state,
             #[cfg(not(target_os = "android"))]
             api::player::api_report,
             #[cfg(target_os = "android")]
@@ -497,6 +531,10 @@ pub fn run() {
             #[cfg(any(target_os = "android", target_os = "linux"))]
             if let Some(stream) = handle.try_state::<audio_stream::AudioStream>() {
                 stream.shutdown();
+            }
+            #[cfg(target_os = "linux")]
+            if let Some(player) = handle.try_state::<linux_playback::NativePlayback>() {
+                player.shutdown();
             }
             if let Some(presence) = handle.try_state::<presence::Presence>() {
                 presence.shutdown();

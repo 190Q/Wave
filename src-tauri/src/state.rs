@@ -460,6 +460,10 @@ impl Store {
         self.guard().clone()
     }
 
+    pub fn analytics_enabled(&self) -> bool {
+        self.guard().settings.analytics_enabled
+    }
+
     fn guard(&self) -> MutexGuard<'_, PersistedState> {
         // A poisoned lock only means another command panicked mid-write.
         self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1383,6 +1387,10 @@ pub fn set_session(
     store: State<'_, Store>,
     session: Session,
 ) -> Result<PersistedState, String> {
+    #[cfg(target_os = "linux")]
+    if let Some(player) = app.try_state::<crate::linux_playback::NativePlayback>() {
+        return player.save_frontend_session(&app, session);
+    }
     store.update_saved(&app, |state| state.session = session)
 }
 

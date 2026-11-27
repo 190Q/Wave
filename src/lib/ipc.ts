@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 import type {
+  ApiCommand,
   AnalyticsEvent,
   AnalyticsStats,
   AudioCut,
@@ -13,6 +14,8 @@ import type {
   ImportOutcome,
   ImportPlan,
   LibraryInfo,
+  LinuxNativePlaybackStatus,
+  LinuxNativePlaybackSync,
   LoudnessOutcome,
   LyricsOutcome,
   NowPlaying,
@@ -71,6 +74,18 @@ export function setQueue(tracks: QueueTrack[]): Promise<void> {
  */
 export function reportApiState(report: PlayerReport): Promise<void> {
   return invoke("api_report", { report });
+}
+
+export function linuxNativePlaybackSync(sync: LinuxNativePlaybackSync): Promise<LinuxNativePlaybackStatus> {
+  return invoke("linux_native_playback_sync", { sync });
+}
+
+export function linuxNativePlaybackCommand(command: ApiCommand): Promise<LinuxNativePlaybackStatus> {
+  return invoke("linux_native_playback_command", { command });
+}
+
+export function linuxNativePlaybackState(): Promise<LinuxNativePlaybackStatus> {
+  return invoke("linux_native_playback_state");
 }
 
 export function saveSettings(settings: Settings): Promise<PersistedState> {

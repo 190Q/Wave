@@ -100,7 +100,7 @@ export class Player {
     document.addEventListener("visibilitychange", this.settleLevelIfHidden);
     subscribeActivity(this.settleLevelIfHidden);
     this.engine.onTimeUpdate(() => {
-      if (this.playing && uiActive()) {
+      if (uiActive()) {
         this.emitProgress();
       }
     });
@@ -205,7 +205,7 @@ export class Player {
   }
 
   /** Replaces the queue. Keeps playing if something was already playing. */
-  setQueue(sourceId: string, sourceName: string, trackIds: string[], startTrackId?: string): void {
+  setQueue(sourceId: string | null, sourceName: string, trackIds: string[], startTrackId?: string): void {
     for (const listener of this.queueListeners) listener();
     this.sourceId = sourceId;
     this.sourceName = sourceName;

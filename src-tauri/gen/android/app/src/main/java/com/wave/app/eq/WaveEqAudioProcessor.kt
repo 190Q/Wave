@@ -42,6 +42,12 @@ class WaveEqAudioProcessor : BaseAudioProcessor() {
     val skippedTailFrames = minOf(primeFrames, tail.size / format.channelCount)
     if (tail.isNotEmpty()) primeFrames = 0
     if (transition?.startedLimiter == true && audioStarted) primeFrames = engine.delayFrames
+    val bytes = frames * bytesPerSample * format.channelCount
+    if (transition == null && tailFrames == 0 && primeFrames == 0 && engine.canBypass()) {
+      passthrough(inputBuffer, bytes)
+      audioStarted = true
+      return
+    }
     val samples = frames * format.channelCount
     if (scratch.size < samples) scratch = FloatArray(samples)
     if (format.encoding == C.ENCODING_PCM_FLOAT) {
@@ -107,6 +113,15 @@ class WaveEqAudioProcessor : BaseAudioProcessor() {
     write(first, firstStart, firstEnd)
     write(second, secondStart, secondEnd)
     output.flip()
+  }
+
+  private fun passthrough(input: ByteBuffer, bytes: Int) {
+    val source = input.duplicate()
+    source.limit(input.position() + bytes)
+    val output = replaceOutputBuffer(bytes)
+    output.put(source)
+    output.flip()
+    input.position(input.position() + bytes)
   }
 
   private companion object {

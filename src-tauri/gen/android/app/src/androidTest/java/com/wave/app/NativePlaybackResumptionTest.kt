@@ -32,15 +32,43 @@ class NativePlaybackResumptionTest {
   private val context = ApplicationProvider.getApplicationContext<Context>()
   private lateinit var client: NativePlaybackClient
   private lateinit var audio: File
+  private lateinit var nextAudio: File
   @Volatile private var state = JSONObject()
+  @Volatile private var snapshotState = JSONObject()
+  @Volatile private var checkpointState = JSONObject()
   @Volatile private var snapshots = 0
 
   @Before
   fun prepare() {
     assumeTrue(context.packageName.endsWith(".resumptiontest"))
     audio = File(context.cacheDir, "resumption-test.wav")
+    nextAudio = File(context.cacheDir, "resumption-next-test.wav")
+    writeSilentAudio(audio)
+    writeSilentAudio(nextAudio)
+    val connected = CountDownLatch(1)
+    instrumentation.runOnMainSync {
+      client = NativePlaybackClient(context)
+      client.connect { receive(JSONObject(it), connected) }
+    }
+    assertTrue(connected.await(10, TimeUnit.SECONDS))
+    instrumentation.runOnMainSync { client.setVisible(true) }
+    send(JSONObject().put("type", "background").put("enabled", true))
+    send(JSONObject().put("type", "clear"))
+    send(JSONObject().put("type", "controls").put("enabled", true))
+    send(JSONObject().put("type", "queue")
+      .put("tracks", JSONArray()
+        .put(JSONObject().put("id", "test").put("path", audio.absolutePath)
+          .put("title", "Resumption test").put("artist", "Wave").put("durationMs", 30_000))
+        .put(JSONObject().put("id", "next").put("path", nextAudio.absolutePath)
+          .put("title", "Next test").put("artist", "Wave").put("durationMs", 30_000)))
+      .put("playback", JSONObject().put("order", JSONArray().put("test").put("next")).put("cursor", 0)))
+    send(JSONObject().put("type", "load").put("path", audio.absolutePath).put("positionMs", 1_500))
+    assertTrue(waitFor { it.optBoolean("live") && it.optString("currentId") == "test" })
+  }
+
+  private fun writeSilentAudio(file: File) {
     val samples = 240_000
-    audio.writeBytes(ByteBuffer.allocate(44 + samples).order(ByteOrder.LITTLE_ENDIAN).apply {
+    file.writeBytes(ByteBuffer.allocate(44 + samples).order(ByteOrder.LITTLE_ENDIAN).apply {
       put("RIFF".toByteArray())
       putInt(36 + samples)
       put("WAVEfmt ".toByteArray())
@@ -55,29 +83,49 @@ class NativePlaybackResumptionTest {
       putInt(samples)
       repeat(samples) { put(128.toByte()) }
     }.array())
+  }
+
+  @Test
+  fun checkpointsOmitTheQueueButReconnectionSnapshotsRetainIt() {
     val connected = CountDownLatch(1)
     instrumentation.runOnMainSync {
-      client = NativePlaybackClient(context)
-      client.connect {
-        val next = JSONObject(it)
-        if (next.optString("type") in listOf("snapshot", "state")) state = next
-        if (next.optString("type") == "snapshot") {
-          snapshots++
-          connected.countDown()
-        }
-      }
+      client.connect { receive(JSONObject(it), connected) }
     }
     assertTrue(connected.await(10, TimeUnit.SECONDS))
-    instrumentation.runOnMainSync { client.setVisible(true) }
-    send(JSONObject().put("type", "background").put("enabled", true))
-    send(JSONObject().put("type", "clear"))
-    send(JSONObject().put("type", "controls").put("enabled", true))
-    send(JSONObject().put("type", "queue")
-      .put("tracks", JSONArray().put(JSONObject().put("id", "test").put("path", audio.absolutePath)
-        .put("title", "Resumption test").put("artist", "Wave").put("durationMs", 30_000)))
-      .put("playback", JSONObject().put("order", JSONArray().put("test")).put("cursor", 0)))
-    send(JSONObject().put("type", "load").put("path", audio.absolutePath).put("positionMs", 1_500))
-    assertTrue(waitFor { it.optBoolean("live") && it.optString("currentId") == "test" })
+    assertEquals(2, snapshotState.optJSONObject("playback")?.optJSONArray("order")?.length())
+    assertEquals(0, snapshotState.optJSONObject("playback")?.optInt("cursor"))
+
+    val browserConnected = CountDownLatch(1)
+    lateinit var browser: MediaBrowserCompat
+    instrumentation.runOnMainSync {
+      browser = MediaBrowserCompat(context, ComponentName(context, MediaPlaybackService::class.java),
+        object : MediaBrowserCompat.ConnectionCallback() {
+          override fun onConnected() { browserConnected.countDown() }
+        }, Bundle().apply { putBoolean(MediaBrowserServiceCompat.BrowserRoot.EXTRA_RECENT, true) })
+      browser.connect()
+    }
+    try {
+      assertTrue(browserConnected.await(10, TimeUnit.SECONDS))
+      instrumentation.runOnMainSync {
+        MediaControllerCompat(context, browser.sessionToken).transportControls.skipToNext()
+      }
+      assertTrue(waitFor { it.optString("currentId") == "next" })
+      val reconnected = CountDownLatch(1)
+      instrumentation.runOnMainSync {
+        client.connect { receive(JSONObject(it), reconnected) }
+      }
+      assertTrue(reconnected.await(10, TimeUnit.SECONDS))
+      assertEquals("next", snapshotState.optString("currentId"))
+      assertEquals(1, snapshotState.optJSONObject("playback")?.optInt("cursor"))
+    } finally {
+      instrumentation.runOnMainSync { browser.disconnect() }
+    }
+
+    send(JSONObject().put("type", "seek").put("positionMs", 2_500))
+    assertTrue(waitFor {
+      checkpointState.optString("currentId") == "next" && checkpointState.optLong("positionMs") >= 2_500
+    })
+    assertTrue(!checkpointState.has("playback"))
   }
 
   @Test
@@ -165,6 +213,7 @@ class NativePlaybackResumptionTest {
     send(JSONObject().put("type", "clear"))
     instrumentation.runOnMainSync { client.close() }
     audio.delete()
+    nextAudio.delete()
   }
 
   @Test
@@ -278,6 +327,21 @@ class NativePlaybackResumptionTest {
 
   private fun send(message: JSONObject) {
     instrumentation.runOnMainSync { client.send(message) }
+  }
+
+  private fun receive(next: JSONObject, connected: CountDownLatch? = null) {
+    when (next.optString("type")) {
+      "snapshot" -> {
+        state = next
+        snapshotState = next
+        snapshots++
+        connected?.countDown()
+      }
+      "state" -> {
+        state = next
+        checkpointState = next
+      }
+    }
   }
 
   private fun waitFor(condition: (JSONObject) -> Boolean): Boolean {

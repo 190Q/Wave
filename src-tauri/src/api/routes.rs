@@ -4,7 +4,7 @@
 //! function the window's own command calls, so the API cannot drift from the
 //! app: the scan, the playlist edits, the settings write, the delete, the likes
 //! write, the tool report and the listening record are all the ones the front
-//! end uses. Only playback is relayed to the webview, where the player lives.
+//! end uses. Playback uses the native Linux player when available.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -82,6 +82,23 @@ pub fn dispatch(call: &Call, route: Route) -> Outcome {
     }
 }
 
+/// The authoritative player report. Linux only uses the WebView bridge while
+/// the native player is inactive, so an unavailable renderer cannot make the
+/// local API look unavailable after native playback has started.
+fn playback_report(call: &Call) -> Option<Report> {
+    #[cfg(target_os = "linux")]
+    if let Some(player) = call
+        .app
+        .try_state::<crate::linux_playback::NativePlayback>()
+    {
+        if player.active() {
+            return Some(player.status().report);
+        }
+    }
+
+    call.app.state::<Bridge>().snapshot()
+}
+
 /// The endpoint list itself, which is what makes the API document itself.
 fn index() -> Value {
     Value::Array(
@@ -110,7 +127,7 @@ fn health(call: &Call) -> Value {
 
 /// What the window is playing, as the last report describes it.
 fn player(call: &Call) -> Outcome {
-    let report = call.app.state::<Bridge>().snapshot();
+    let report = playback_report(call);
     Ok(player_json(call, report.as_ref()))
 }
 
@@ -154,7 +171,7 @@ fn player_json(call: &Call, report: Option<&Report>) -> Value {
 /// The queue in play order, each entry resolved to a song, with the one that is
 /// playing marked.
 fn player_queue(call: &Call) -> Outcome {
-    let report = call.app.state::<Bridge>().snapshot();
+    let report = playback_report(call);
     let Some(report) = report else {
         return Ok(json!([]));
     };
@@ -182,6 +199,19 @@ fn player_queue(call: &Call) -> Outcome {
 /// that the command was taken. A window that does not answer is a 503 rather
 /// than a hang.
 fn send(call: &Call, command: Command) -> Outcome {
+    #[cfg(target_os = "linux")]
+    if let Some(player) = call
+        .app
+        .try_state::<crate::linux_playback::NativePlayback>()
+    {
+        if player.active() {
+            let report = player
+                .command(call.app, command)
+                .map_err(Failure::unavailable)?;
+            return Ok(player_json(call, Some(&report)));
+        }
+    }
+
     let bridge = call.app.state::<Bridge>();
     match bridge.send(call.app, command) {
         Ok(report) => Ok(player_json(call, Some(&report))),
@@ -219,7 +249,7 @@ fn seek(call: &Call) -> Outcome {
     if let Some(fraction) = call.body.number("fraction")? {
         // A fraction is a fraction of the song, and only the window has said
         // how long that is.
-        let report = call.app.state::<Bridge>().snapshot();
+        let report = playback_report(call);
         let Some(report) = report else {
             return Err(Failure::conflict(
                 "the window has not said how long the song is yet, so a fraction means nothing",
@@ -244,10 +274,7 @@ fn volume(call: &Call) -> Outcome {
     } else if let Some(by) = call.body.number("by")? {
         // A step is a step from where the player is, which the window has said
         // unless it has not reported yet; the saved setting is the next best.
-        let current = call
-            .app
-            .state::<Bridge>()
-            .snapshot()
+        let current = playback_report(call)
             .map(|report| report.volume)
             .unwrap_or_else(|| f64::from(call.app.state::<Store>().snapshot().settings.volume));
         current + by
@@ -342,7 +369,10 @@ fn tracks(call: &Call) -> Outcome {
         let total = catalog.present_count()?;
         let rows = catalog.tracks_page(offset, limit)?;
         let root = library::library_root(call.app)?;
-        let page: Vec<Track> = rows.iter().map(|row| library::to_track(row, &root)).collect();
+        let page: Vec<Track> = rows
+            .iter()
+            .map(|row| library::to_track(row, &root))
+            .collect();
         return Ok(json!({ "total": total, "tracks": page }));
     }
 
@@ -623,15 +653,11 @@ fn settings(call: &Call) -> Outcome {
 
 fn patch_settings(call: &Call) -> Outcome {
     let patch = call.body.patch()?;
-    let next = state::patch_settings_with(
-        call.app,
-        &call.app.state::<Store>(),
-        patch,
-        |next| {
-            let _ = call.app.emit(state::SETTINGS_EVENT, &next.settings);
-            announce_state(call, next);
-        },
-    ).map_err(settings_patch_failure)?;
+    let next = state::patch_settings_with(call.app, &call.app.state::<Store>(), patch, |next| {
+        let _ = call.app.emit(state::SETTINGS_EVENT, &next.settings);
+        announce_state(call, next);
+    })
+    .map_err(settings_patch_failure)?;
     Ok(serde_json::to_value(next)?)
 }
 

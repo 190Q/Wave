@@ -18,6 +18,8 @@ export interface AnalyticsContext {
   collectionById(id: string): Collection | undefined;
   /** Whether the user has the record switched on. */
   enabled(): boolean;
+  /** False while another playback backend writes listening history. */
+  ownsPlayback?(): boolean;
 }
 
 /** A listen that is still running. */
@@ -63,6 +65,7 @@ let lastId: string | null = null;
 let flushTimer: number | null = null;
 let checkpointTimer: number | null = null;
 let counter = 0;
+let playbackOwned = true;
 const pendingWrites = new Set<Promise<void>>();
 
 function trackWrite(write: Promise<void>): Promise<void> {
@@ -77,6 +80,7 @@ export function mountAnalytics(next: AnalyticsContext): void {
     return;
   }
   context = next;
+  playbackOwned = next.ownsPlayback?.() !== false;
   next.player.onChange(handleChange);
   next.player.onListening(handleProgress);
   lastId = next.player.currentId;
@@ -116,6 +120,9 @@ export function recordEvent(kind: AnalyticsEventKind, options: EventOptions = {}
 
 /** The current song ran to its end, so its listen is finished. */
 export function noteTrackEnded(): void {
+  if (!ownsPlayback()) {
+    return;
+  }
   context?.player.sampleListening();
   if (!draft) {
     return;
@@ -126,6 +133,9 @@ export function noteTrackEnded(): void {
 
 /** The current song could not be played. */
 export function notePlaybackError(): void {
+  if (!ownsPlayback()) {
+    return;
+  }
   context?.player.sampleListening();
   close("error");
 }
@@ -138,6 +148,26 @@ export function forgetCaptured(): void {
     window.clearTimeout(flushTimer);
     flushTimer = null;
   }
+}
+
+/** Stops WebKit listen capture before native playback starts its own records. */
+export function handoffPlaybackToNative(): void {
+  if (!playbackOwned) {
+    return;
+  }
+  context?.player.sampleListening();
+  close("stopped");
+  playbackOwned = false;
+  lastId = context?.player.currentId ?? null;
+}
+
+/** Starts a new WebKit listen after native playback releases the queue. */
+export function reclaimPlaybackOwnership(): void {
+  if (playbackOwned) {
+    return;
+  }
+  playbackOwned = true;
+  lastId = null;
 }
 
 export async function prepareAnalyticsTransfer(): Promise<void> {
@@ -163,7 +193,7 @@ export async function prepareAnalyticsTransfer(): Promise<void> {
 
 /** Writes everything outstanding. Awaited before the window is allowed to go. */
 export async function flushAnalytics(): Promise<void> {
-  if (context?.enabled()) {
+  if (context?.enabled() && ownsPlayback()) {
     context.player.sampleListening();
     // Whatever was still running is written as it stands.
     close("stopped");
@@ -183,6 +213,10 @@ export async function flushAnalytics(): Promise<void> {
 }
 
 function handleChange(snapshot: PlayerSnapshot): void {
+  if (!ownsPlayback()) {
+    lastId = snapshot.currentId;
+    return;
+  }
   if (snapshot.currentId !== lastId) {
     close("skipped");
     lastId = snapshot.currentId;
@@ -197,6 +231,9 @@ function handleProgress(elapsedMs: number): void {
   if (!draft) {
     return;
   }
+  if (!ownsPlayback()) {
+    return;
+  }
   if (!context?.enabled()) {
     // Switched off mid-song: the open listen is dropped, not written.
     draft = null;
@@ -208,6 +245,9 @@ function handleProgress(elapsedMs: number): void {
 }
 
 function open(snapshot: PlayerSnapshot): void {
+  if (!ownsPlayback()) {
+    return;
+  }
   const track = context?.trackById(snapshot.currentId);
   if (!track) {
     return;
@@ -281,6 +321,9 @@ function stopCheckpoint(): void {
 
 /** Writes the listen in progress as it stands, so a crash loses little of it. */
 async function checkpoint(strict = false): Promise<void> {
+  if (!ownsPlayback()) {
+    return;
+  }
   context?.player.sampleListening();
   const current = draft;
   if (!current || !context?.enabled()) {
@@ -327,6 +370,10 @@ function durationOf(trackId: string): number {
   return context?.trackById(trackId)?.durationMs ?? 0;
 }
 
+function ownsPlayback(): boolean {
+  return playbackOwned && context?.ownsPlayback?.() !== false;
+}
+
 function snapshotOf(track: Track): TrackSnapshot {
   return {
     id: track.id,
@@ -342,7 +389,7 @@ function snapshotOf(track: Track): TrackSnapshot {
   };
 }
 
-function mediaTypeOf(track: Track): MediaType {
+export function mediaTypeOf(track: Track): MediaType {
   if (extensionOf(track.relativePath || track.path) === "m4b") {
     return "audiobook";
   }

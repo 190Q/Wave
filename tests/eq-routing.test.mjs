@@ -295,7 +295,27 @@ test("new elements bypass the graph while the equalizer is off on the default ou
   assert.equal(eq.live, false);
 });
 
-test("the audio graph sleeps only after every source pauses and resumes after a pause/play race", async () => {
+test("the audio graph drains paused audio and stays awake if playback resumes", async (t) => {
+  const setTimer = globalThis.setTimeout;
+  const clearTimer = globalThis.clearTimeout;
+  const timers = new Map();
+  let nextTimer = 0;
+  globalThis.setTimeout = (callback, delay) => {
+    assert.equal(delay, 300);
+    timers.set(++nextTimer, callback);
+    return nextTimer;
+  };
+  globalThis.clearTimeout = (id) => timers.delete(id);
+  t.after(() => {
+    globalThis.setTimeout = setTimer;
+    globalThis.clearTimeout = clearTimer;
+  });
+  const drain = async () => {
+    const callbacks = [...timers.values()];
+    timers.clear();
+    callbacks.forEach((callback) => callback());
+    await new Promise((resolve) => setImmediate(resolve));
+  };
   class Element extends EventTarget {
     paused = true;
     crossOrigin = "anonymous";
@@ -311,6 +331,8 @@ test("the audio graph sleeps only after every source pauses and resumes after a 
   const context = FakeContext.instances.at(-1);
   context.finishResume();
   await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.state, "running");
+  await drain();
   assert.equal(context.state, "suspended");
 
   main.play();
@@ -324,16 +346,38 @@ test("the audio graph sleeps only after every source pauses and resumes after a 
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(context.state, "running");
   preview.pause();
+  eq.detach(preview);
+  assert.equal(context.state, "running");
+  main.play();
+  await drain();
+  assert.equal(context.state, "running");
+
+  main.pause();
+  assert.equal(context.state, "running");
+  await drain();
+  assert.equal(context.state, "suspended");
+  main.play();
+  context.finishResume();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.state, "running");
+
+  main.pause();
+  await drain();
+  assert.equal(context.state, "suspended");
+
+  main.play();
+  context.finishResume();
+  await new Promise((resolve) => setImmediate(resolve));
+  main.pause();
+  const suspend = [...timers.values()];
+  timers.clear();
+  suspend.forEach((callback) => callback());
   main.play();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(context.state, "suspended");
   context.finishResume();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(context.state, "running");
-
-  main.pause();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(context.state, "suspended");
 });
 
 test("output changes are confirmed, serialized, and still work with a disabled graph", async () => {

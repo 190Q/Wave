@@ -33,6 +33,7 @@ const PREAMP_HEADROOM_DB = 0.5;
 
 /** A magnitude this small counts as silence, so its logarithm stays finite. */
 const MIN_MAGNITUDE = 0.0001;
+const IDLE_DRAIN_MS = 300;
 
 const WEB_KIND: Record<EqBandKind, BiquadFilterType> = {
   peaking: "peaking",
@@ -74,6 +75,7 @@ export class EqChain {
   private readonly outputListeners = new Set<() => void>();
   private readonly routingListeners = new Set<() => void>();
   private lastLive = false;
+  private suspendTimer: ReturnType<typeof setTimeout> | null = null;
 
   private settings: Settings | null = null;
   private blocked: EqBlocked = null;
@@ -255,17 +257,30 @@ export class EqChain {
       this.close();
       return;
     }
-    if (context.state !== "running" || [...this.sources.keys()].some((element) => !element.paused)) {
+    if ([...this.sources.keys()].some((element) => !element.paused)) {
+      this.cancelSuspend();
       return;
     }
-    void context.suspend().then(() => {
-      if (this.context === context && [...this.sources.keys()].some((element) => !element.paused)) this.resume();
-    }).catch(() => {});
+    if (context.state !== "running" || this.suspendTimer !== null) return;
+    this.suspendTimer = setTimeout(() => {
+      this.suspendTimer = null;
+      if (this.context !== context || [...this.sources.keys()].some((element) => !element.paused)) return;
+      void context.suspend().then(() => {
+        if (this.context === context && [...this.sources.keys()].some((element) => !element.paused)) this.resume();
+      }).catch(() => {});
+    }, IDLE_DRAIN_MS);
   };
+
+  private cancelSuspend(): void {
+    if (this.suspendTimer === null) return;
+    clearTimeout(this.suspendTimer);
+    this.suspendTimer = null;
+  }
 
   private close(): void {
     const context = this.context;
     if (!context) return;
+    this.cancelSuspend();
     context.onstatechange = null;
     this.context = null;
     this.input = null;

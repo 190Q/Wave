@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import array
+import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 
 
 DEST = "org.mpris.MediaPlayer2.wave"
@@ -49,6 +51,32 @@ def status(expected):
     until(expected, lambda: property_value("PlaybackStatus"), lambda value: f"'{expected}'" in value)
 
 
+def title(expected):
+    until(f"track {expected}", lambda: property_value("Metadata"),
+          lambda value: f"'{expected}'" in value)
+
+
+def reenable_controls(expected):
+    api = os.environ.get("WAVE_TEST_MPRIS_API")
+    if not api:
+        return
+    names = lambda: call("org.freedesktop.DBus.ListNames", dest="org.freedesktop.DBus",
+                         path="/org/freedesktop/DBus")
+    for enabled in (False, True):
+        request = urllib.request.Request(
+            f"{api}/api/settings", data=json.dumps({"systemMediaControls": enabled}).encode(),
+            headers={"Content-Type": "application/json"}, method="PATCH",
+        )
+        with urllib.request.urlopen(request, timeout=20):
+            pass
+        if not enabled:
+            assert DEST not in names()
+    until("restarted media controls", names, lambda value: DEST in value)
+    status(expected)
+    if len(sys.argv) > 2:
+        title(sys.argv[2])
+
+
 def at(expected):
     until(f"position near {expected}", position, lambda value: abs(value - expected) <= 500_000)
 
@@ -89,8 +117,10 @@ def audible(monitor):
 
 
 status("Playing")
+reenable_controls("Playing")
 call(f"{PLAYER}.Pause")
 status("Paused")
+reenable_controls("Paused")
 call(f"{PLAYER}.SetPosition", "/", 70_000_000)
 at(70_000_000)
 call(f"{PLAYER}.Seek", -10_000_000)

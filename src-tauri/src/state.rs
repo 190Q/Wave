@@ -814,6 +814,14 @@ fn apply_settings_changes(app: &AppHandle, store: &Store, before: &Settings, aft
                 #[cfg(desktop)]
                 after.discord_presence,
             );
+            #[cfg(target_os = "linux")]
+            if (!before.system_media_controls && after.system_media_controls)
+                || (!before.discord_presence && after.discord_presence)
+            {
+                if let Some(player) = app.try_state::<crate::linux_playback::NativePlayback>() {
+                    player.refresh_presence(&presence);
+                }
+            }
         }
     }
 

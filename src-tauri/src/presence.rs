@@ -130,6 +130,7 @@ enum DiscordMessage {
 /// The handle the app keeps: a way to reach each worker.
 pub struct Presence {
     workers: Mutex<Workers>,
+    lifecycle: Mutex<()>,
     app: AppHandle,
 }
 
@@ -155,6 +156,7 @@ impl Presence {
         let settings = app.state::<Store>().snapshot().settings;
         let presence = Self {
             workers: Mutex::new(Workers::default()),
+            lifecycle: Mutex::new(()),
             app: app.clone(),
         };
         presence.set_enabled(
@@ -193,7 +195,9 @@ impl Presence {
 
     /// Starts or stops each surface, without a restart.
     pub fn set_enabled(&self, system: bool, #[cfg(desktop)] discord: bool) {
+        let _lifecycle = self.lifecycle.lock().unwrap_or_else(|error| error.into_inner());
         let mut workers = self.guard();
+        let mut stopped_thread = None;
 
         if system_worker_needed(cfg!(target_os = "android"), system) {
             if workers.system.is_none() {
@@ -207,12 +211,8 @@ impl Presence {
                 let _ = sender.send(SystemMessage::Controls(system));
             }
         } else if let Some(sender) = workers.system.take() {
-            // The worker lets go of the controls on its way out, and waiting for
-            // it means the entry is gone by the time the switch is off.
             let _ = sender.send(SystemMessage::Stop);
-            if let Some(thread) = workers.system_thread.take() {
-                let _ = thread.join();
-            }
+            stopped_thread = workers.system_thread.take();
         }
 
         #[cfg(desktop)]
@@ -224,6 +224,10 @@ impl Presence {
             }
         } else if let Some(sender) = workers.discord.take() {
             let _ = sender.send(DiscordMessage::Stop);
+        }
+        drop(workers);
+        if let Some(thread) = stopped_thread {
+            let _ = thread.join();
         }
     }
 
@@ -256,6 +260,7 @@ impl Presence {
     /// of the session, so nothing is left in the media flyout once the app has
     /// gone. Windows keeps showing the last song until it is told to stop.
     pub fn shutdown(&self) {
+        let _lifecycle = self.lifecycle.lock().unwrap_or_else(|error| error.into_inner());
         let mut workers = self.guard();
 
         if let Some(sender) = workers.system.take() {
@@ -267,7 +272,9 @@ impl Presence {
             // exit does not wait for it.
             let _ = sender.send(DiscordMessage::Stop);
         }
-        if let Some(thread) = workers.system_thread.take() {
+        let stopped_thread = workers.system_thread.take();
+        drop(workers);
+        if let Some(thread) = stopped_thread {
             let _ = thread.join();
         }
     }

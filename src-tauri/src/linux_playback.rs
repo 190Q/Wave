@@ -1069,6 +1069,22 @@ pub(crate) mod runtime {
             self.guard().queue.active
         }
 
+        pub fn refresh_presence(&self, presence: &Presence) {
+            let _operation = self.operation();
+            let song = {
+                let mut inner = self.guard();
+                let Inner { queue, engine, .. } = &mut *inner;
+                if !queue.active {
+                    return;
+                }
+                if let Some(engine) = engine.as_ref() {
+                    engine.sample(queue);
+                }
+                queue.now_playing()
+            };
+            presence.show(song);
+        }
+
         pub fn restore_session(&self, app: &AppHandle) {
             let _operation = self.operation();
             let saved = app.state::<Store>().snapshot();

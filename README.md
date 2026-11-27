@@ -126,6 +126,14 @@ therefore needs network access, unless the runtime is already installed. The
 phone still needs a working graphical session, audio service and desktop
 portals. The app can access files in your home directory for music imports.
 
+Headset buttons and media keys reach Wave through the phone's media-control
+service. Make sure **System media controls** is enabled in Wave. To check Wave's
+MPRIS connection, play a song and run `playerctl --player=wave play-pause`;
+install `playerctl` if it is not already available. If that works but Bluetooth
+buttons do not, the phone may need its BlueZ `mpris-proxy` service running, or
+its desktop may need media-key bindings. Check whether the same buttons work
+with another player before changing system services.
+
 The Flatpak keeps its own library and settings under `~/.var/app/com.wave.app/`,
 separate from other Wave installations. A downloaded bundle does not receive
 automatic Wave updates. To update, close Wave, download the new bundle, then

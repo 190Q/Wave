@@ -97,7 +97,7 @@ test ! -e "$(cat "$work/log/stage")"
 for option in --command=com.wave.app --sdk=org.gnome.Sdk --share=ipc --share=network \
   --socket=wayland --socket=fallback-x11 --socket=pulseaudio --device=dri \
   --filesystem=home --own-name=org.mpris.MediaPlayer2.wave \
-  --talk-name=org.freedesktop.Notifications --env=GTK_USE_PORTAL=1; do
+  --talk-name=org.freedesktop.Flatpak --talk-name=org.freedesktop.Notifications --env=GTK_USE_PORTAL=1; do
   grep -Fx -- "$option" "$work/log/finish" >/dev/null
 done
 

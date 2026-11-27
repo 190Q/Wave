@@ -54,11 +54,11 @@ an equaliser and a theme that follows the artwork.
   setting.
 - **Phone layout:** Use touch-friendly controls on Android and Linux phones.
   Android also provides notification and lock-screen playback controls.
-- **Updates:** Check for new releases from settings. Windows, AppImage and
-  Android installations can launch the update from Wave; other Linux packages
-  are updated manually. On Android, allow installs from Wave if prompted and
-  confirm the update in the system installer. APK updates must be signed with
-  the same key as the installed app.
+- **Updates:** Check for new releases from settings and install them from Wave.
+  Linux updates use the matching package for the running installation; system
+  packages require graphical administrator authorisation. On Android, allow
+  installs from Wave if prompted and confirm the update in the system
+  installer. APK updates must be signed with the same key as the installed app.
 
 ### For developers
 
@@ -135,16 +135,22 @@ its desktop may need media-key bindings. Check whether the same buttons work
 with another player before changing system services.
 
 The Flatpak keeps its own library and settings under `~/.var/app/com.wave.app/`,
-separate from other Wave installations. A downloaded bundle does not receive
-automatic Wave updates. To update, close Wave, download the new bundle, then
-uninstall the old application and install the new bundle with the command above:
+separate from other Wave installations. New bundles can install updates from
+Wave, in the same user or system installation. System-wide updates require
+graphical administrator authorisation. An older bundle without this updater must
+be updated manually once: close Wave, uninstall the old application and install
+the new bundle with the command above. For a user installation, run:
 
 ```sh
 flatpak uninstall --user com.wave.app
 ```
 
-This leaves the app data in place; do not use `--delete-data` when updating.
-Back up important data before replacing an installation.
+For a system installation, use `--system` instead of `--user` in both the
+uninstall and install commands. This leaves the app data in place; do not use
+`--delete-data` when updating.
+Back up important data before replacing an installation. To update its bundle,
+Wave can run commands on the host through Flatpak's `org.freedesktop.Flatpak`
+interface. This effectively removes the Flatpak sandbox's security boundary.
 
 #### Alpine and postmarketOS musl tarball
 

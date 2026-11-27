@@ -113,7 +113,8 @@ asset() { # $1: suffix to match, $2: architecture token
 }
 
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT INT TERM
+BIN_STAGE=""
+trap 'rm -rf "$TMP"; [ -z "$BIN_STAGE" ] || rm -rf "$BIN_STAGE"' EXIT INT TERM
 
 fetch() { # $1: url, $2: destination
   say "Downloading $(basename "$1")"
@@ -264,19 +265,27 @@ if [ "$MUSL" -eq 1 ]; then
 
   mkdir -p "$PREFIX/bin" "$PREFIX/share/wave"
   PREFIX="$(cd "$PREFIX" && pwd -P)"
-  cp "$TMP/wave" "$PREFIX/bin/wave"
+  BIN_STAGE="$(mktemp -d "$PREFIX/bin/.wave-update.XXXXXXXX")"
+  cp "$TMP/wave" "$BIN_STAGE/wave"
+  chmod +x "$BIN_STAGE/wave"
   if [ -f "$TMP/wave-bin" ]; then
-    cp "$TMP/wave-bin" "$PREFIX/bin/wave-bin"
-    chmod +x "$PREFIX/bin/wave-bin"
+    cp "$TMP/wave-bin" "$BIN_STAGE/wave-bin"
+    chmod +x "$BIN_STAGE/wave-bin"
+  fi
+  if [ -f "$TMP/wave-webkit.py" ]; then
+    cp "$TMP/wave-webkit.py" "$BIN_STAGE/wave-webkit.py"
+  fi
+  if [ -f "$BIN_STAGE/wave-bin" ]; then
+    mv -f "$BIN_STAGE/wave-bin" "$PREFIX/bin/wave-bin"
   else
     rm -f "$PREFIX/bin/wave-bin"
   fi
-  if [ -f "$TMP/wave-webkit.py" ]; then
-    cp "$TMP/wave-webkit.py" "$PREFIX/bin/wave-webkit.py"
+  if [ -f "$BIN_STAGE/wave-webkit.py" ]; then
+    mv -f "$BIN_STAGE/wave-webkit.py" "$PREFIX/bin/wave-webkit.py"
   else
     rm -f "$PREFIX/bin/wave-webkit.py"
   fi
-  chmod +x "$PREFIX/bin/wave"
+  mv -f "$BIN_STAGE/wave" "$PREFIX/bin/wave"
   : > "$PREFIX/share/wave/musl-install"
   for icon in scalable:wave.svg 128x128:wave-128.png 256x256:wave-256.png; do
     size="${icon%%:*}"

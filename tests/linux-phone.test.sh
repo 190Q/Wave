@@ -161,6 +161,33 @@ MOCK_CURL_FAIL=1 sh "$work/archive/install.sh" --local --dir "$prefix" --install
 [ -x "$prefix/bin/wave-bin" ] && [ -f "$prefix/bin/wave-webkit.py" ]
 printf 'extracted phone archives install without downloading another archive\n'
 
+cp /bin/sleep "$prefix/bin/running-wave"
+mv -f "$prefix/bin/running-wave" "$prefix/bin/wave-bin"
+"$prefix/bin/wave-bin" 30 &
+running_pid=$!
+MOCK_DEPS_INSTALLED=1 sh "$work/archive/install.sh" --local --dir "$prefix"
+kill "$running_pid" 2>/dev/null || true
+wait "$running_pid" 2>/dev/null || true
+cmp "$work/archive/wave-bin" "$prefix/bin/wave-bin"
+printf 'running phone executables are replaced without overwriting them\n'
+
+cat > "$work/bin/cp" <<'MOCK'
+#!/bin/sh
+case "$*" in
+  *'.wave-update.'*'/wave-bin') exit 1 ;;
+  *) exec /bin/cp "$@" ;;
+esac
+MOCK
+chmod +x "$work/bin/cp"
+if MOCK_DEPS_INSTALLED=1 sh "$work/archive/install.sh" --local --dir "$prefix" > "$work/stage.log" 2>&1; then
+  printf 'failed staging unexpectedly succeeded\n' >&2
+  exit 1
+fi
+rm "$work/bin/cp"
+cmp "$work/archive/wave" "$prefix/bin/wave"
+cmp "$work/archive/wave-bin" "$prefix/bin/wave-bin"
+printf 'failed staging preserves the installed executables\n'
+
 : > "$MOCK_LOG"
 sh "$work/archive/install.sh" --local --dir "$prefix" --skip-deps > "$work/manual.log" 2> "$work/manual.err"
 [ ! -s "$MOCK_LOG" ]

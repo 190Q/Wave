@@ -4,10 +4,8 @@
 //! this platform is picked out of its assets, and Wave installs it itself
 //! rather than sending the user to the release page.
 //!
-//! Windows runs the installer, an AppImage replaces itself, and a phone has no
-//! way to replace its own install: there the download is handed to the system
-//! installer, which asks the user to confirm it. Anywhere else the three
-//! commands say so rather than pretending.
+//! Windows and Linux install their matching release, while Android hands the
+//! download to the system installer for confirmation.
 
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -16,6 +14,10 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::state::Store;
+
+#[cfg(any(target_os = "linux", test))]
+#[path = "linux_update.rs"]
+mod linux;
 
 /// The latest release, from the public releases API.
 const RELEASES_URL: &str = "https://api.github.com/repos/190Q/Wave/releases/latest";
@@ -120,8 +122,37 @@ fn check(app: &AppHandle) -> Result<Option<UpdateInfo>, String> {
         return Ok(None);
     }
 
+    let info = release_info(release, version);
+    let saved = store.update_saved(app, |state| {
+        #[cfg(target_os = "linux")]
+        if state.update.as_ref().is_some_and(|stored| {
+            !stored.asset_name.is_empty() && !linux::matches_install(&stored.asset_name)
+        }) {
+            state.update = None;
+        }
+        state.update = Some(merge_offer(state.update.take(), info));
+    })?;
+    Ok(saved.update)
+}
+
+fn release_info(release: Release, version: String) -> UpdateInfo {
+    #[cfg(target_os = "linux")]
+    let asset = {
+        let kind = linux::detect().kind();
+        let candidates: Vec<_> = release
+            .assets
+            .iter()
+            .filter(|asset| linux::matches_version(kind, &version, &asset.name))
+            .cloned()
+            .collect();
+        pick_asset(
+            &candidates,
+            linux::installer_names(kind, std::env::consts::ARCH),
+        )
+    };
+    #[cfg(not(target_os = "linux"))]
     let asset = installer_asset(&release.assets);
-    let info = UpdateInfo {
+    UpdateInfo {
         version,
         url: release.html_url,
         features: feature_lines(&release.body),
@@ -135,12 +166,7 @@ fn check(app: &AppHandle) -> Result<Option<UpdateInfo>, String> {
             .map(|asset| asset.browser_download_url.clone())
             .unwrap_or_default(),
         automatic: asset.is_some() && can_install_itself(),
-    };
-
-    let saved = store.update_saved(app, |state| {
-        state.update = Some(merge_offer(state.update.take(), info));
-    })?;
-    Ok(saved.update)
+    }
 }
 
 fn merge_offer(stored: Option<UpdateInfo>, found: UpdateInfo) -> UpdateInfo {
@@ -167,6 +193,16 @@ pub fn update_status(app: AppHandle, store: State<'_, Store>) -> Option<UpdateIn
     let stored = store.snapshot().update?;
     let current = app.package_info().version.to_string();
     if is_newer(&stored.version, &current) {
+        #[cfg(target_os = "linux")]
+        if !stored.asset_name.is_empty() && !linux::matches_install(&stored.asset_name) {
+            let _ = store.update_saved(&app, |state| state.update = None);
+            return None;
+        }
+        #[cfg(target_os = "linux")]
+        let stored = UpdateInfo {
+            automatic: !stored.asset_name.is_empty() && can_install_itself(),
+            ..stored
+        };
         return Some(stored);
     }
 
@@ -174,19 +210,39 @@ pub fn update_status(app: AppHandle, store: State<'_, Store>) -> Option<UpdateIn
     None
 }
 
-/// Downloads the stored installer and hands it over: Windows and an AppImage
-/// run it and close the app, a phone leaves the install to the system.
+/// Downloads and installs the stored release.
 fn install_stored(app: &AppHandle) -> Result<(), String> {
     if !release_install_allowed() {
         return Err("development builds cannot install release updates".to_string());
     }
 
     let store = app.state::<Store>();
-    let Some(info) = store.snapshot().update else {
+    let Some(_stored) = store.snapshot().update else {
         return Err("there is no update to install".to_string());
     };
 
+    #[cfg(not(target_os = "linux"))]
+    let info = _stored;
+
+    #[cfg(target_os = "linux")]
+    let info = {
+        let current = app.package_info().version.to_string();
+        let release = latest_release(&client()?, &current)?;
+        let tag = release.tag_name.trim();
+        let version = tag.strip_prefix('v').unwrap_or(tag).to_string();
+        if !is_newer(&version, &current) {
+            return Err("Wave is already up to date".to_string());
+        }
+        let info = release_info(release, version);
+        linux::validate_release_asset(&info)?;
+        store.update_saved(app, |state| state.update = Some(info.clone()))?;
+        info
+    };
+
     if !info.automatic {
+        #[cfg(target_os = "linux")]
+        return Err("this copy of Wave does not have a compatible installer".to_string());
+        #[cfg(not(target_os = "linux"))]
         return Err(format!(
             "this install cannot update itself, so the update has to come from {}",
             info.url
@@ -194,20 +250,22 @@ fn install_stored(app: &AppHandle) -> Result<(), String> {
     }
 
     let downloaded = download_path(app, &info)?;
-    let progress = download(app, &info.asset_url, &downloaded)?;
-    let _ = app.emit(
-        UPDATE_PROGRESS_EVENT,
-        Progress {
-            installing: true,
-            ..progress
-        },
-    );
-    install(app, &downloaded, &info)
+    let result = download(app, &info.asset_url, &downloaded).and_then(|progress| {
+        let _ = app.emit(
+            UPDATE_PROGRESS_EVENT,
+            Progress {
+                installing: true,
+                ..progress
+            },
+        );
+        install(app, &downloaded, &info)
+    });
+    #[cfg(target_os = "linux")]
+    linux::remove_download(&downloaded);
+    result
 }
 
-/// Where the installer is written. A phone keeps it in its own cache, which is
-/// the folder its FileProvider shares with the system installer; everywhere
-/// else the system's temporary folder is what the installer expects.
+/// Where the installer is written for this platform.
 fn download_path(app: &AppHandle, info: &UpdateInfo) -> Result<PathBuf, String> {
     if !valid_asset_name(&info.asset_name) {
         return Err("the installer has an invalid filename".to_string());
@@ -224,7 +282,12 @@ fn download_path(app: &AppHandle, info: &UpdateInfo) -> Result<PathBuf, String> 
         Ok(dir.join(&info.asset_name))
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::download_path(app, &info.asset_name)
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "linux")))]
     {
         let _ = app;
         Ok(std::env::temp_dir().join(&info.asset_name))
@@ -377,6 +440,7 @@ fn feature_lines(body: &str) -> Vec<String> {
 }
 
 /// The installer to offer for this platform, if the release carries one.
+#[cfg(not(target_os = "linux"))]
 fn installer_asset(assets: &[Asset]) -> Option<Asset> {
     pick_asset(assets, installer_names())
 }
@@ -401,20 +465,6 @@ fn pick_asset(assets: &[Asset], names: (&str, &str)) -> Option<Asset> {
 #[cfg(windows)]
 fn installer_names() -> (&'static str, &'static str) {
     ("-setup-slim.exe", "-setup.exe")
-}
-
-#[cfg(target_os = "linux")]
-fn installer_names() -> (&'static str, &'static str) {
-    linux_installer_names(std::env::consts::ARCH)
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn linux_installer_names(arch: &str) -> (&'static str, &'static str) {
-    match arch {
-        "x86_64" => ("_amd64-slim.AppImage", "_amd64.AppImage"),
-        "aarch64" => ("_aarch64-slim.AppImage", "_aarch64.AppImage"),
-        _ => ("", ""),
-    }
 }
 
 #[cfg(target_os = "android")]
@@ -449,11 +499,9 @@ fn can_install_itself() -> bool {
     release_install_allowed()
 }
 
-/// An AppImage can replace itself. A `.deb` or `.rpm` install needs root, so
-/// it is left to the release page.
 #[cfg(target_os = "linux")]
 fn can_install_itself() -> bool {
-    release_install_allowed() && std::env::var_os("APPIMAGE").is_some()
+    release_install_allowed() && linux::detect().supported()
 }
 
 #[cfg(target_os = "android")]
@@ -486,34 +534,9 @@ fn install(app: &AppHandle, downloaded: &Path, _info: &UpdateInfo) -> Result<(),
     Ok(())
 }
 
-/// Replaces the running AppImage with the download and starts it again.
 #[cfg(target_os = "linux")]
 fn install(app: &AppHandle, downloaded: &Path, info: &UpdateInfo) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let appimage_os = std::env::var_os("APPIMAGE")
-        .ok_or_else(|| "this install is not an AppImage, so it cannot update itself".to_string())?;
-    let appimage = Path::new(&appimage_os);
-    let folder = appimage
-        .parent()
-        .ok_or_else(|| "the AppImage has no folder to write into".to_string())?;
-
-    // Staged beside the AppImage so the rename stays on one filesystem, which
-    // a running executable can be swapped through and written to can not.
-    let staged = folder.join(format!("{}.part", info.asset_name));
-    std::fs::copy(downloaded, &staged)
-        .map_err(|e| format!("could not write {}: {e}", staged.display()))?;
-    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))
-        .map_err(|e| format!("could not make {} runnable: {e}", staged.display()))?;
-    std::fs::rename(&staged, appimage)
-        .map_err(|e| format!("could not replace {}: {e}", appimage.display()))?;
-
-    std::process::Command::new(appimage)
-        .spawn()
-        .map_err(|e| format!("the new AppImage could not be started: {e}"))?;
-
-    exit_soon(app);
-    Ok(())
+    linux::install(app, downloaded, info)
 }
 
 #[cfg(target_os = "android")]
@@ -761,29 +784,5 @@ Installers for Windows and Linux.
         for name in ["", ".", "..", "../Wave.apk", r"..\Wave.apk", "/Wave.apk"] {
             assert!(!valid_asset_name(name));
         }
-    }
-
-    #[test]
-    fn linux_updates_match_the_running_architecture() {
-        let assets = vec![
-            asset("Wave_0.3.0_aarch64-slim.AppImage"),
-            asset("Wave_0.3.0_amd64.AppImage"),
-            asset("Wave_0.3.0_amd64-slim.AppImage"),
-            asset("Wave_0.3.0_aarch64.AppImage"),
-        ];
-
-        assert_eq!(
-            pick_asset(&assets, linux_installer_names("x86_64"))
-                .unwrap()
-                .name,
-            "Wave_0.3.0_amd64-slim.AppImage"
-        );
-        assert_eq!(
-            pick_asset(&assets, linux_installer_names("aarch64"))
-                .unwrap()
-                .name,
-            "Wave_0.3.0_aarch64-slim.AppImage"
-        );
-        assert!(pick_asset(&assets, linux_installer_names("unknown")).is_none());
     }
 }

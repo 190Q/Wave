@@ -39,7 +39,6 @@ pub struct Sync {
     pub report: Report,
     pub tracks: Vec<NativeTrack>,
     pub equaliser_enabled: bool,
-    pub output_id: String,
     pub replace: bool,
 }
 
@@ -49,7 +48,6 @@ impl Default for Sync {
             report: Report::default(),
             tracks: Vec::new(),
             equaliser_enabled: false,
-            output_id: String::new(),
             replace: false,
         }
     }
@@ -220,12 +218,6 @@ impl Queue {
             self.transition("fallback", previous_track_id);
             return Ok(Effect::None);
         }
-        if !sync.output_id.trim().is_empty() {
-            self.deactivate("a selected audio output needs the WebKit playback path");
-            self.transition("fallback", previous_track_id);
-            return Ok(Effect::None);
-        }
-
         let previous = self.report.clone();
         let previous_track = self.track().cloned();
         let was_active = self.active;
@@ -1128,7 +1120,6 @@ pub(crate) mod runtime {
                     report,
                     tracks,
                     equaliser_enabled: saved.settings.eq_enabled,
-                    output_id: saved.settings.eq_output_id,
                     replace: true,
                 },
             );
@@ -2608,19 +2599,13 @@ mod tests {
     }
 
     #[test]
-    fn equaliser_and_output_routing_keep_the_webkit_fallback() {
+    fn equaliser_keeps_the_webkit_fallback() {
         let mut queue = Queue::default();
         let mut eq = sync(false);
         eq.equaliser_enabled = true;
         queue.sync(eq).unwrap();
         assert!(!queue.active);
         assert!(queue.reason.as_deref().unwrap().contains("equaliser"));
-
-        let mut output = sync(false);
-        output.output_id = "headphones".into();
-        queue.sync(output).unwrap();
-        assert!(!queue.active);
-        assert!(queue.reason.as_deref().unwrap().contains("output"));
     }
 
     #[test]

@@ -13,7 +13,6 @@ import type {
   EqBand,
   EqContextKind,
   EqContextRule,
-  EqOutput,
   EqPreset,
   EqPresetSource,
   GenresOutcome,
@@ -329,9 +328,7 @@ const state: AppState = {
     eqLimiter: true,
     eqPresets: [],
     eqActivePresetId: null,
-    eqDeviceRules: {},
     eqContextRules: [],
-    eqOutputId: "",
   },
   filter: "all",
   query: "",
@@ -608,7 +605,7 @@ function syncNativePlaybackSettings(): void {
 let nativeEqualiserSent = "";
 
 function applyEqualiser(): void {
-  eq.apply(nativeAudio ? { ...state.settings, eqOutputId: "" } : state.settings);
+  eq.apply(state.settings);
   if (linuxNativeAudio && state.ready) {
     syncLinuxNativePlayback();
   }
@@ -881,7 +878,6 @@ function linuxQueueKey(snapshot: ReturnType<Player["snapshot"]>): string {
     coloursCurrent: state.colours === nativeQueueColours,
     normaliseCurrent: state.settings.normalizeVolume === nativeQueueNormalise,
     equaliserEnabled: state.settings.eqEnabled,
-    outputId: state.settings.eqOutputId,
   });
 }
 
@@ -1030,7 +1026,7 @@ function syncLinuxNativePlayback(): void {
     return;
   }
 
-  const compatible = !state.settings.eqEnabled && !state.settings.eqOutputId;
+  const compatible = !state.settings.eqEnabled;
   if (!compatible) {
     linuxNativeActivationBlocked = false;
     linuxNativeActivationBlockedKey = "";
@@ -1056,7 +1052,6 @@ function syncLinuxNativePlayback(): void {
     report,
     tracks,
     equaliserEnabled: state.settings.eqEnabled,
-    outputId: state.settings.eqOutputId,
     replace,
   }).catch((error) => {
     if (operation !== linuxNativeOperation) {
@@ -1209,7 +1204,7 @@ function applyLinuxNativeStatus(status: LinuxNativePlaybackStatus): void {
       linuxNativeQueueSent = linuxQueueKey(snapshot);
       linuxNativeReportSent = status.report;
     } else if (wasActive || linuxNativeFallback) {
-      const compatible = !state.settings.eqEnabled && !state.settings.eqOutputId;
+      const compatible = !state.settings.eqEnabled;
       restoreLinuxFallback(status.report);
       if (compatible) {
         blockLinuxNativeActivation();
@@ -1803,7 +1798,6 @@ export async function init(): Promise<string | null> {
     const session = newestSession(persisted.session, recovery ? readSessionRecovery(recovery) : null);
     lastSessionSavedAt = Math.max(persisted.session?.savedAt ?? 0, session?.savedAt ?? 0);
     applyPersisted(persisted, true, true, true);
-    seedEqOrigin();
     applySession(session);
     if (!nativeSnapshot?.live && !linuxNativeStatus?.active) player.setVolume(state.settings.volume);
     const linuxPlayback = linuxNativeStatus?.active
@@ -1850,6 +1844,7 @@ export async function init(): Promise<string | null> {
     if (nativeSnapshot?.live) player.setVolume(state.settings.volume);
     wirePersistence();
     state.ready = true;
+    seedEqOrigin();
     wireLinuxNativePlayback();
     if (linuxNativeStatus) {
       applyLinuxNativeStatus(linuxNativeStatus);
@@ -4162,15 +4157,6 @@ let eqManual: { presetId: string; key: string } | null = null;
 /** The origin that last set the bands, so the same one is not applied twice. */
 let eqApplied: string | null = null;
 
-/** The outputs the engine last admitted to, so a rule can be named. */
-let eqOutputsKnown: EqOutput[] = [];
-let eqSinkOutputs: EqOutput[] = [];
-let eqActiveOutputs: string[] = [];
-let eqNativeOutputs = false;
-let eqRouteKnown = false;
-let eqOutputRefresh = 0;
-let eqAwaitingInitialOutput = false;
-
 /** How long a burst of changes is left to settle before the curve is written. */
 const EQ_SAVE_MS = 400;
 let eqTimer: number | null = null;
@@ -4178,32 +4164,10 @@ let eqUnsaved: Partial<Settings> | null = null;
 let eqSaving = 0;
 let eqWired = false;
 
-eq.onOutputChange(() => {
-  syncEqOrigin();
-  emit();
-});
-
-function activeEqOutputs(): string[] {
-  if (nativeAudio) return eqActiveOutputs;
-  const selected = eq.outputId;
-  if (!selected || selected === "default") {
-    return eqActiveOutputs;
-  }
-  const sink = eqSinkOutputs.find((output) => output.id === selected);
-  if (!sink) {
-    return [];
-  }
-  if (!eqNativeOutputs) {
-    return [selected];
-  }
-  const matches = eqOutputsKnown.filter((output) => output.label === sink.label);
-  return matches.length === 1 ? [matches[0].id] : [];
-}
-
 /** Where the curve in force came from, so the overlay can say what picked it. */
 export interface EqOrigin {
-  kind: EqContextKind | "device" | "preset" | "manual";
-  /** The album, artist, playlist, genre or output the rule matched. */
+  kind: EqContextKind | "preset" | "manual";
+  /** The album, artist, playlist or genre the rule matched. */
   label: string;
   presetId: string;
 }
@@ -4215,12 +4179,6 @@ export interface EqStatus {
   spectrumAvailable: boolean;
   preampDb: number;
   autoPreampDb: number;
-  canChooseOutput: boolean;
-  outputs: EqOutput[];
-  sinkOutputs: EqOutput[];
-  activeOutputIds: string[];
-  nativeOutputs: boolean;
-  routeKnown: boolean;
   origin: EqOrigin | null;
 }
 
@@ -4232,12 +4190,6 @@ export function eqStatus(): EqStatus {
     spectrumAvailable: !nativeAudio,
     preampDb: nativeAudio ? nativePreamp : eq.preampDb,
     autoPreampDb: nativeAudio ? nativePreamp - state.settings.eqPreampDb : eq.autoPreampDb(),
-    canChooseOutput: nativeAudio ? false : eq.canChooseOutput,
-    outputs: eqOutputsKnown,
-    sinkOutputs: eqSinkOutputs,
-    activeOutputIds: activeEqOutputs(),
-    nativeOutputs: eqNativeOutputs,
-    routeKnown: eqRouteKnown,
     origin: eqOrigin(),
   };
 }
@@ -4312,7 +4264,7 @@ async function flushEq(): Promise<void> {
   await settingsWrites;
 }
 
-/** Follows what is playing and what is plugged in, so a rule can pick a curve. */
+/** Follows what is playing, so a rule can pick a curve. */
 function wireEq(): void {
   if (eqWired) {
     return;
@@ -4322,79 +4274,6 @@ function wireEq(): void {
   player.onChange(() => eq.resume());
   window.addEventListener("pointerdown", () => eq.resume(), true);
   window.addEventListener("keydown", () => eq.resume(), true);
-  void refreshEqOutputs();
-  navigator.mediaDevices?.addEventListener("devicechange", () => {
-    void refreshEqOutputs();
-  });
-  window.addEventListener("wave:audio-outputs-changed", () => void refreshEqOutputs());
-  window.addEventListener("focus", () => void refreshEqOutputs());
-  if (isTauri() && (isAndroidPlatform || /Windows/i.test(navigator.userAgent))) {
-    window.setInterval(() => {
-      if (!document.hidden || Object.keys(state.settings.eqDeviceRules).length > 0) {
-        void refreshEqOutputs();
-      }
-    }, 5000);
-  }
-}
-
-export async function refreshEqOutputs(): Promise<void> {
-  const request = ++eqOutputRefresh;
-  const nativeSupported = isTauri() && (isAndroidPlatform || /Windows/i.test(navigator.userAgent));
-  const devices = navigator.mediaDevices;
-  const sinksRequest = nativeSupported && document.hidden
-    ? Promise.resolve(eqSinkOutputs)
-    : (async (): Promise<EqOutput[]> => {
-        try {
-          const found = await devices?.enumerateDevices?.() ?? [];
-          return found
-            .filter((device) => device.kind === "audiooutput")
-            .map((device, index) => ({
-              id: device.deviceId,
-              label: device.label || `Output ${index + 1}`,
-            }))
-            .filter((output) => output.id && output.id !== "default" && output.id !== "communications");
-        } catch {
-          return [];
-        }
-      })();
-  let native = null;
-  if (nativeSupported) {
-    try {
-      native = await ipc.audioOutputs();
-    } catch {
-      // Keep the webview fallback.
-    }
-  }
-  if (request !== eqOutputRefresh) {
-    return;
-  }
-  if (native) {
-    updateEqOutputs(native.outputs, eqSinkOutputs, native.activeIds, true, native.routeKnown);
-  } else if (nativeSupported && eqNativeOutputs) {
-    updateEqOutputs(eqOutputsKnown, eqSinkOutputs, [], true, false);
-  }
-  const sinks = await sinksRequest;
-  if (request === eqOutputRefresh) {
-    const keepNative = native !== null || (nativeSupported && eqNativeOutputs);
-    updateEqOutputs(native?.outputs ?? (keepNative ? eqOutputsKnown : sinks), sinks,
-      native?.activeIds ?? [], keepNative, native?.routeKnown ?? false);
-  }
-}
-
-function updateEqOutputs(
-  outputs: EqOutput[], sinks: EqOutput[], active: string[], native: boolean, routeKnown: boolean,
-): void {
-  const before = JSON.stringify([eqOutputsKnown, eqSinkOutputs, eqActiveOutputs, eqNativeOutputs, eqRouteKnown]);
-  eqOutputsKnown = outputs;
-  eqSinkOutputs = sinks;
-  eqActiveOutputs = active;
-  eqNativeOutputs = native;
-  eqRouteKnown = routeKnown;
-  if (before === JSON.stringify([eqOutputsKnown, eqSinkOutputs, eqActiveOutputs, eqNativeOutputs, eqRouteKnown])) {
-    return;
-  }
-  syncEqOrigin();
-  emit();
 }
 
 export function setEqEnabled(on: boolean): void {
@@ -4412,11 +4291,6 @@ export function setEqPreampDb(db: number): void {
 
 export function setEqLimiter(on: boolean): void {
   applyEqPatch({ eqLimiter: on });
-}
-
-export function setEqOutput(id: string): void {
-  applyEqPatch({ eqOutputId: id });
-  syncEqOrigin();
 }
 
 /** Fills an empty curve with the bands a flat one starts from. */
@@ -4526,16 +4400,9 @@ export function importEqProfile(profile: EqProfile, name: string): void {
 }
 
 export function deleteEqPreset(id: string): void {
-  const deviceRules = { ...state.settings.eqDeviceRules };
-  for (const [device, presetId] of Object.entries(deviceRules)) {
-    if (presetId === id) {
-      delete deviceRules[device];
-    }
-  }
   applyEqPatch({
     eqPresets: state.settings.eqPresets.filter((preset) => preset.id !== id),
     eqContextRules: state.settings.eqContextRules.filter((rule) => rule.presetId !== id),
-    eqDeviceRules: deviceRules,
     eqActivePresetId: state.settings.eqActivePresetId === id
       ? null
       : state.settings.eqActivePresetId,
@@ -4588,17 +4455,6 @@ export function removeEqContextRule(kind: EqContextKind, value: string): void {
   syncEqOrigin();
 }
 
-export function setEqDeviceRule(deviceId: string, presetId: string): void {
-  const deviceRules = { ...state.settings.eqDeviceRules };
-  if (presetId) {
-    deviceRules[deviceId] = presetId;
-  } else {
-    delete deviceRules[deviceId];
-  }
-  applyEqPatch({ eqDeviceRules: deviceRules });
-  syncEqOrigin();
-}
-
 function presetById(id: string | null): EqPreset | undefined {
   return id ? state.settings.eqPresets.find((preset) => preset.id === id) : undefined;
 }
@@ -4612,7 +4468,6 @@ function eqContextKey(): string {
     track?.album ?? "",
     track?.artist ?? "",
     track?.genre ?? "",
-    ...activeEqOutputs(),
   ].join("\u0000");
 }
 
@@ -4643,13 +4498,6 @@ function eqRule(): EqOrigin | null {
     }
   }
 
-  for (const outputId of activeEqOutputs()) {
-    const byDevice = state.settings.eqDeviceRules[outputId];
-    if (byDevice && presetById(byDevice)) {
-      return { kind: "device", label: outputLabel(outputId), presetId: byDevice };
-    }
-  }
-
   return null;
 }
 
@@ -4669,25 +4517,10 @@ export function eqOrigin(): EqOrigin | null {
   return active ? { kind: "preset", label: active.name, presetId: active.id } : null;
 }
 
-function outputLabel(id: string): string {
-  return [...eqOutputsKnown, ...eqSinkOutputs].find((output) => output.id === id)?.label ?? "This output";
-}
-
 /** Follows what is playing, so a rule picks the curve that goes with it. */
 function syncEqOrigin(): void {
+  if (!state.ready) return;
   const key = eqContextKey();
-  if (eqAwaitingInitialOutput && activeEqOutputs().length > 0) {
-    eqAwaitingInitialOutput = false;
-    if (eqManual) {
-      eqManual.key = key;
-    } else {
-      const initial = eqRule();
-      if (initial && initial.presetId === state.settings.eqActivePresetId) {
-        eqApplied = `${initial.kind}\u0000${initial.presetId}`;
-        return;
-      }
-    }
-  }
   if (eqManual && eqManual.key !== key) {
     eqManual = null;
   }
@@ -4708,7 +4541,6 @@ function syncEqOrigin(): void {
  * curve where it was left rather than putting a preset back over the edits.
  */
 function seedEqOrigin(): void {
-  eqAwaitingInitialOutput = activeEqOutputs().length === 0;
   const rule = eqRule();
   if (rule && rule.presetId !== state.settings.eqActivePresetId) {
     eqApplied = null;

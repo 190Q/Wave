@@ -139,18 +139,6 @@ export interface EqContextRule {
   presetId: string;
 }
 
-/** An audio output as the system or webview identifies it. */
-export interface EqOutput {
-  id: string;
-  label: string;
-}
-
-export interface AudioOutputs {
-  outputs: EqOutput[];
-  activeIds: string[];
-  routeKnown: boolean;
-}
-
 export interface Settings {
   /** `adaptive`, or a `#rrggbb` the user picked. */
   theme: string;
@@ -205,12 +193,8 @@ export interface Settings {
   eqPresets: EqPreset[];
   /** The preset the bands were last taken from, `null` when they were not. */
   eqActivePresetId: string | null;
-  /** Output device -> preset id. */
-  eqDeviceRules: Record<string, string>;
   /** Album, artist, playlist or genre -> preset id. */
   eqContextRules: EqContextRule[];
-  /** Where playback is sent. Empty means the system default. */
-  eqOutputId: string;
 }
 
 /** What the system's own controls and Discord are told about the song playing. */
@@ -345,7 +329,6 @@ export interface LinuxNativePlaybackSync {
   report: PlayerReport;
   tracks: NativePlaybackTrack[];
   equaliserEnabled: boolean;
-  outputId: string;
   replace: boolean;
 }
 

@@ -6,7 +6,6 @@ import type {
   AnalyticsEvent,
   AnalyticsStats,
   AudioCut,
-  AudioOutputs,
   CoversOutcome,
   DeezerStatus,
   GenerateOutcome,
@@ -48,10 +47,6 @@ export function loadState(): Promise<PersistedState> {
 
 export function audioStreamBase(): Promise<string> {
   return invoke("audio_stream_base");
-}
-
-export function audioOutputs(): Promise<AudioOutputs> {
-  return invoke("get_audio_outputs");
 }
 
 export function reportPlaybackActivity(playing: boolean): Promise<void> {

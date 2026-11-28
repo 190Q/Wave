@@ -219,15 +219,18 @@ test("newer backend state wins and disabling resume still takes precedence", asy
 test("unavailable web storage falls back to frequent backend checkpoints", async () => {
   values.clear();
   storageFails = true;
-  const app = await boot(session(30, 1, 1000));
-  app.player.play();
-  audio.at(-1).currentTime = 17;
-  const before = writes.length;
-  checkpoint();
-  await tick();
-  assert.equal(writes.length, before + 1);
-  assert.equal(backend.session.playback.positionMs, 17000);
-  storageFails = false;
+  try {
+    const app = await boot(session(30, 1, 1000));
+    app.player.play();
+    audio.at(-1).currentTime = 17;
+    const before = writes.length;
+    checkpoint();
+    await tick();
+    assert.equal(writes.length, before + 1);
+    assertPosition(backend.session.playback.positionMs, 17000);
+  } finally {
+    storageFails = false;
+  }
 });
 
 test("backgrounding captures the current position without stopping future checkpoints", async () => {
@@ -621,49 +624,33 @@ test("recovery validates saved playlist queues without rejecting older sessions"
   assert.equal(readSessionRecovery(storage), null);
 });
 
-test("a delayed initial output preserves edits to the matching saved curve", async () => {
+test("legacy output rules do not replace the restored equaliser curve", async () => {
   values.clear();
   const edited = { id: "band", kind: "peaking", freq: 1000, gain: 4, q: 1, enabled: true };
   const curve = { id: "curve", name: "Curve", source: "manual", bands: [{ ...edited, gain: 0 }],
     autoPreamp: false, preampDb: 0, limiter: false };
-  let finishOutput;
-  globalThis.isTauri = true;
-  globalThis.__recoveryIpc.audioOutputs = () => new Promise((resolve) => { finishOutput = resolve; });
-  try {
-    const app = await boot(null, false, {
-      eqPresets: [curve], eqActivePresetId: curve.id,
-      eqBands: [edited], eqDeviceRules: { speaker: curve.id },
-    });
-    assert.equal(app.getState().settings.eqBands[0].gain, 4);
-    finishOutput({ outputs: [{ id: "speaker", label: "Speaker" }], activeIds: ["speaker"], routeKnown: true });
-    await tick();
-    assert.equal(app.getState().settings.eqBands[0].gain, 4);
-    assert.equal(app.eqStatus().origin?.kind, "device");
-  } finally {
-    delete globalThis.__recoveryIpc.audioOutputs;
-    delete globalThis.isTauri;
-  }
+  const app = await boot(null, false, {
+    eqPresets: [curve], eqActivePresetId: null,
+    eqBands: [edited], eqDeviceRules: { speaker: curve.id }, eqOutputId: "speaker",
+  });
+  win.dispatch("wave:audio-outputs-changed");
+  await tick();
+  assert.equal(app.getState().settings.eqActivePresetId, null);
+  assert.equal(app.getState().settings.eqBands[0].gain, 4);
+  assert.equal(app.eqStatus().origin, null);
 });
 
-test("a delayed initial output applies a different device curve", async () => {
-  values.clear();
-  const band = { id: "band", kind: "peaking", freq: 1000, gain: 0, q: 1, enabled: true };
-  const curve = { id: "curve", name: "Curve", source: "manual", bands: [band],
+test("restoring a playback-context curve preserves edits only when the preset matches", async () => {
+  const edited = { id: "band", kind: "peaking", freq: 1000, gain: 4, q: 1, enabled: true };
+  const curve = { id: "curve", name: "Curve", source: "manual", bands: [{ ...edited, gain: 0 }],
     autoPreamp: false, preampDb: 0, limiter: false };
-  let finishOutput;
-  globalThis.isTauri = true;
-  globalThis.__recoveryIpc.audioOutputs = () => new Promise((resolve) => { finishOutput = resolve; });
-  try {
-    const app = await boot(null, false, {
-      eqPresets: [curve], eqActivePresetId: null,
-      eqBands: [{ ...band, gain: 4 }], eqDeviceRules: { speaker: curve.id },
+  for (const active of [curve.id, null]) {
+    values.clear();
+    const app = await boot(session(100, 1, 1000), true, {
+      eqPresets: [curve], eqActivePresetId: active, eqBands: [edited],
+      eqContextRules: [{ kind: "playlist", value: "all", presetId: curve.id }],
     });
-    finishOutput({ outputs: [{ id: "speaker", label: "Speaker" }], activeIds: ["speaker"], routeKnown: true });
-    await tick();
     assert.equal(app.getState().settings.eqActivePresetId, curve.id);
-    assert.equal(app.getState().settings.eqBands[0].gain, 0);
-  } finally {
-    delete globalThis.__recoveryIpc.audioOutputs;
-    delete globalThis.isTauri;
+    assert.equal(app.getState().settings.eqBands[0].gain, active ? 4 : 0);
   }
 });

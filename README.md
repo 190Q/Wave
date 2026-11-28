@@ -296,8 +296,7 @@ roots on newer versions.
 3. In Wave, open **Settings → Playback → Equaliser**, choose **Open**, then
    select **Import a profile** under **Curves** and pick the downloaded file.
 4. Wave saves and enables the profile. Select it under **Curves** to use it
-   again later. If output selection is supported, you can also choose your
-   headset under **Follows the output** and assign the profile to it.
+   again later.
 
 Wave imports the filters and calculates its own automatic preamp rather than
 using the preamp value in the file.

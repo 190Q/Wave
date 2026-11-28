@@ -53,9 +53,6 @@ type Curve = Float32Array<ArrayBuffer>;
 
 const EMPTY: Curve = new Float32Array(0);
 
-/** A context that can be told where to send its output, where the engine allows. */
-type SinkableContext = AudioContext & { setSinkId?: (deviceId: string) => Promise<void> };
-
 /** The filter chain that sits behind the audio element. */
 export class EqChain {
   private context: AudioContext | null = null;
@@ -72,7 +69,6 @@ export class EqChain {
   private readonly elements = new Set<HTMLAudioElement>();
   private readonly sources = new Map<HTMLAudioElement, MediaElementAudioSourceNode>();
   private readonly statusListeners = new Set<() => void>();
-  private readonly outputListeners = new Set<() => void>();
   private readonly routingListeners = new Set<() => void>();
   private lastLive = false;
   private suspendTimer: ReturnType<typeof setTimeout> | null = null;
@@ -80,9 +76,6 @@ export class EqChain {
   private settings: Settings | null = null;
   private blocked: EqBlocked = null;
   private preampDbValue = 0;
-  private appliedOutput = "";
-  private pendingOutput: string | null = null;
-  private desiredOutput = "";
 
   /** The shape the chain is currently wired in, so it is only rebuilt when it moves. */
   private wiring = "";
@@ -91,6 +84,7 @@ export class EqChain {
   private magnitudes: Curve = EMPTY;
   private phases: Curve = EMPTY;
   private response: Curve = EMPTY;
+  private readonly bandResponses = new Map<string, Curve>();
   private curveDirty = true;
 
   constructor(private readonly contextOptions?: AudioContextOptions) {}
@@ -119,9 +113,7 @@ export class EqChain {
   }
 
   get canBypass(): boolean {
-    const defaultOutput = (id: string): boolean => !id || id === "default";
-    return !this.enabled && this.pendingOutput === null &&
-      defaultOutput(this.appliedOutput) && defaultOutput(this.desiredOutput);
+    return !this.enabled;
   }
 
   hasSource(element: HTMLAudioElement): boolean {
@@ -165,21 +157,6 @@ export class EqChain {
     return this.analyser;
   }
 
-  /** Whether this engine lets the output device be picked at all. */
-  get canChooseOutput(): boolean {
-    const constructor = audioContextConstructor();
-    return constructor !== null && "setSinkId" in constructor.prototype;
-  }
-
-  get outputId(): string {
-    return this.context && (this.enabled || this.sources.size > 0) ? this.appliedOutput : "";
-  }
-
-  onOutputChange(listener: () => void): () => void {
-    this.outputListeners.add(listener);
-    return () => this.outputListeners.delete(listener);
-  }
-
   /** The frequencies the curve is sampled at, empty until the chain is started. */
   get frequencies(): Curve {
     return this.freqs;
@@ -199,38 +176,6 @@ export class EqChain {
     this.notifyStatus();
     this.notifyRouting();
     this.pauseIfIdle();
-  }
-
-  /** Points the graph at an output, where the engine supports choosing one. */
-  setOutput(deviceId: string): void {
-    const context = this.context as SinkableContext | null;
-    if (!context?.setSinkId) {
-      return;
-    }
-    this.desiredOutput = deviceId;
-    if (this.pendingOutput !== null || deviceId === this.appliedOutput) {
-      this.notifyRouting();
-      return;
-    }
-    this.pendingOutput = deviceId;
-    this.notifyRouting();
-    void context.setSinkId(deviceId).then(() => {
-      this.appliedOutput = deviceId;
-    }).catch(() => {}).finally(() => {
-      this.pendingOutput = null;
-      if (this.desiredOutput !== deviceId) {
-        this.setOutput(this.desiredOutput);
-      }
-      for (const listener of this.outputListeners) {
-        listener();
-      }
-      this.notifyRouting();
-      if (this.canBypass) {
-        this.pauseIfIdle();
-      } else if (!this.enabled && this.appliedOutput && this.appliedOutput !== "default") {
-        this.resume();
-      }
-    });
   }
 
   /** Wakes the context, which a browser may have started suspended. */
@@ -295,6 +240,7 @@ export class EqChain {
     this.magnitudes = EMPTY;
     this.phases = EMPTY;
     this.response = EMPTY;
+    this.bandResponses.clear();
     this.curveDirty = true;
     void context.close().catch(() => {});
   }
@@ -337,13 +283,9 @@ export class EqChain {
     this.curveDirty = true;
 
     if (!this.enabled) {
-      if (!this.context && settings.eqOutputId && settings.eqOutputId !== "default" && this.canChooseOutput) {
-        this.start();
-      }
       if (this.context) {
         this.rebuild();
         this.applyPreamp();
-        this.setOutput(settings.eqOutputId);
       }
       this.notifyStatus();
       this.notifyRouting();
@@ -358,7 +300,6 @@ export class EqChain {
     this.prune(settings.eqBands ?? []);
     this.rebuild();
     this.applyPreamp();
-    this.setOutput(settings.eqOutputId);
     this.routePending();
     this.notifyStatus();
     if (this.context?.state !== "running") {
@@ -380,6 +321,7 @@ export class EqChain {
     }
     const db = this.response;
     db.fill(0);
+    this.bandResponses.clear();
     this.curveDirty = false;
 
     const settings = this.settings;
@@ -396,11 +338,19 @@ export class EqChain {
         continue;
       }
       node.getFrequencyResponse(this.freqs, this.magnitudes, this.phases);
+      const response = new Float32Array(this.freqs.length);
       for (let index = 0; index < db.length; index += 1) {
-        db[index] += 20 * Math.log10(Math.max(this.magnitudes[index], MIN_MAGNITUDE));
+        response[index] = 20 * Math.log10(Math.max(this.magnitudes[index], MIN_MAGNITUDE));
+        db[index] += response[index];
       }
+      this.bandResponses.set(band.id, response);
     }
     return db;
+  }
+
+  bandCurve(id: string): Curve {
+    this.curve();
+    return this.bandResponses.get(id) ?? EMPTY;
   }
 
   /** The automatic preamp figure alone, in decibels, as a negative number. */
@@ -496,9 +446,7 @@ export class EqChain {
 
   /** Builds a source node for an element, once, and feeds it into the chain. */
   private route(element: HTMLAudioElement): void {
-    const retainedOutput = this.sources.size > 0 ||
-      (this.appliedOutput !== "" && this.appliedOutput !== "default");
-    if ((!this.enabled && (this.canBypass || !retainedOutput)) || !this.start()) {
+    if (!this.enabled || !this.start()) {
       return;
     }
     if (this.sources.has(element)) {

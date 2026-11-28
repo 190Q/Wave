@@ -15,17 +15,14 @@ import {
   getState,
   importEqProfile,
   player,
-  refreshEqOutputs,
   removeEqBand,
   removeEqContextRule,
   saveEqPreset,
   seedEqBands,
   setEqAutoPreamp,
   setEqContextRule,
-  setEqDeviceRule,
   setEqEnabled,
   setEqLimiter,
-  setEqOutput,
   setEqPreampDb,
   setNotice,
   subscribe,
@@ -143,7 +140,7 @@ export function mountEq(): void {
 
   let colours = { accent: "#4f6484", dim: "#8f8f9c", soft: "rgb(59 74 99 / 0.28)" };
 
-  /** The band the pointer is on in the list, so the curve can show it. */
+  /** The band under the pointer in the graph or list. */
   let hovered: string | null = null;
 
   // The dropdowns. A select opens a list the system draws, which cannot be
@@ -162,15 +159,7 @@ export function mountEq(): void {
     const none = { value: "", label: "None" };
     const presets = settings.eqPresets.map((preset) => ({ value: preset.id, label: preset.name }));
 
-    if (key === "output") {
-      const outputs = eqStatus().sinkOutputs.map((output) => ({ value: output.id, label: output.label }));
-      return { chosen: settings.eqOutputId, options: [{ value: "", label: "System default" }, ...outputs] };
-    }
-
     const [kind, subject] = splitKey(key);
-    if (kind === "output-rule") {
-      return { chosen: settings.eqDeviceRules[subject] ?? "", options: [none, ...presets] };
-    }
     if (kind === "shape") {
       const band = settings.eqBands.find((entry) => entry.id === subject);
       return {
@@ -186,16 +175,7 @@ export function mountEq(): void {
   };
 
   const applyDropChoice = (key: string, value: string): void => {
-    if (key === "output") {
-      setEqOutput(value);
-      return;
-    }
     const [kind, subject] = splitKey(key);
-    if (kind === "output-rule") {
-      setEqDeviceRule(subject, value);
-      return;
-    }
-
     if (kind === "shape") {
       updateEqBand(subject, { kind: value as EqBandKind });
       return;
@@ -449,7 +429,7 @@ export function mountEq(): void {
     const chosen = choices?.options.find((option) => option.value === choices.chosen);
     return `
       <button class="eq-drop" type="button" data-drop="${escapeHtml(key)}" aria-haspopup="listbox" aria-expanded="false" aria-label="${escapeHtml(label)}">
-        <span class="eq-drop-label">${escapeHtml(chosen?.label ?? (key === "output" ? "Unavailable output" : "None"))}</span>
+        <span class="eq-drop-label">${escapeHtml(chosen?.label ?? "None")}</span>
         <span class="sort-chevron" aria-hidden="true"></span>
       </button>`;
   };
@@ -483,14 +463,13 @@ export function mountEq(): void {
 
   const sizeCanvas = (): { width: number; height: number } | null => {
     const ctx = context;
-    const rect = canvas.getBoundingClientRect();
-    if (!ctx || rect.width < 1 || rect.height < 1) {
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    if (!ctx || width < 1 || height < 1) {
       return null;
     }
     const ratio = window.devicePixelRatio || 1;
-    const width = Math.round(rect.width);
-    const height = Math.round(rect.height);
-    if (canvas.width !== width * ratio || canvas.height !== height * ratio) {
+    if (canvas.width !== Math.round(width * ratio) || canvas.height !== Math.round(height * ratio)) {
       canvas.width = Math.round(width * ratio);
       canvas.height = Math.round(height * ratio);
     }
@@ -571,10 +550,15 @@ export function mountEq(): void {
 
     const curve = eqChain.curve();
     const freqs = eqChain.frequencies;
-    ctx.lineWidth = 2;
+    const bands = getState().settings.eqBands.map((band, index) => ({ band, index }));
+    const rank = (id: string): number => (id === selected ? 2 : id === hovered ? 1 : 0);
+    bands.sort((left, right) => rank(left.band.id) - rank(right.band.id));
+
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = colours.accent;
+    ctx.beginPath();
     if (curve.length > 1 && freqs.length === curve.length) {
-      ctx.strokeStyle = colours.accent;
-      ctx.beginPath();
       for (let index = 0; index < curve.length; index += 1) {
         const x = xFor(freqs[index], width);
         const y = yFor(curve[index], height);
@@ -584,18 +568,30 @@ export function mountEq(): void {
           ctx.lineTo(x, y);
         }
       }
-      ctx.stroke();
     } else {
-      ctx.strokeStyle = colours.dim;
-      ctx.beginPath();
       ctx.moveTo(0, flat);
       ctx.lineTo(width, flat);
+    }
+    ctx.stroke();
+
+    for (const { band, index } of bands) {
+      const response = eqChain.bandCurve(band.id);
+      if (response.length !== freqs.length || response.length < 2) {
+        continue;
+      }
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = bandColour(colours.accent, index);
+      ctx.globalAlpha = band.id === hovered || band.id === selected ? 0.95 : 0.55;
+      ctx.beginPath();
+      for (let point = 0; point < response.length; point += 1) {
+        const x = xFor(freqs[point], width);
+        const y = yFor(response[point], height);
+        if (point === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
       ctx.stroke();
     }
-
-    const bands = getState().settings.eqBands.map((band, index) => ({ band, index }));
-    const rank = (id: string): number => (id === selected ? 2 : id === hovered ? 1 : 0);
-    bands.sort((left, right) => rank(left.band.id) - rank(right.band.id));
+    ctx.globalAlpha = 1;
 
     for (const { band, index } of bands) {
       const colour = bandColour(colours.accent, index);
@@ -626,8 +622,7 @@ export function mountEq(): void {
 
   /** A canvas with no box has nothing to draw on, so the loop parks instead. */
   const canvasSized = (): boolean => {
-    const rect = canvas.getBoundingClientRect();
-    return rect.width >= 1 && rect.height >= 1;
+    return canvas.clientWidth >= 1 && canvas.clientHeight >= 1;
   };
 
   const spectrumMoving = (): boolean => eqChain.live && player.snapshot().playing && !reduceMotionActive();
@@ -675,11 +670,13 @@ export function mountEq(): void {
 
   const pointAt = (event: MouseEvent): { x: number; y: number; width: number; height: number } => {
     const rect = canvas.getBoundingClientRect();
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
     return {
-      x: event.clientX - rect.left,
-      y: event.clientY - rect.top,
-      width: rect.width,
-      height: rect.height,
+      x: rect.width > 0 ? (event.clientX - rect.left) * width / rect.width : 0,
+      y: rect.height > 0 ? (event.clientY - rect.top) * height / rect.height : 0,
+      width,
+      height,
     };
   };
 
@@ -699,6 +696,15 @@ export function mountEq(): void {
     return found;
   };
 
+  const setHovered = (id: string | null): void => {
+    if (id === hovered) return;
+    hovered = id;
+    for (const row of bands.querySelectorAll<HTMLElement>("[data-band-row]")) {
+      row.classList.toggle("is-hovered", row.dataset.bandRow === id);
+    }
+    if (frame === null) draw();
+  };
+
   canvas.addEventListener("pointerdown", (event) => {
     const point = pointAt(event);
     const band = bandAt(point.x, point.y, point.width, point.height);
@@ -709,15 +715,12 @@ export function mountEq(): void {
     }
     selected = band.id;
     dragging = band.id;
+    setHovered(band.id);
     canvas.style.cursor = "grab";
     canvas.setPointerCapture(event.pointerId);
     canvas.focus();
     paint();
   });
-
-  /** The cursor a pointer sitting at this spot should carry. */
-  const cursorAt = (point: { x: number; y: number; width: number; height: number }): string =>
-    bandAt(point.x, point.y, point.width, point.height) ? "pointer" : "";
 
   canvas.addEventListener("pointermove", (event) => {
     const point = pointAt(event);
@@ -728,12 +731,15 @@ export function mountEq(): void {
       });
       return;
     }
-    canvas.style.cursor = cursorAt(point);
+    const band = bandAt(point.x, point.y, point.width, point.height);
+    canvas.style.cursor = band ? "pointer" : "";
+    setHovered(band?.id ?? null);
   });
 
   canvas.addEventListener("pointerleave", () => {
     if (dragging === null) {
       canvas.style.cursor = "";
+      setHovered(null);
     }
   });
 
@@ -745,7 +751,12 @@ export function mountEq(): void {
     if (canvas.hasPointerCapture(event.pointerId)) {
       canvas.releasePointerCapture(event.pointerId);
     }
-    canvas.style.cursor = cursorAt(pointAt(event));
+    const point = pointAt(event);
+    const band = point.x >= 0 && point.x <= point.width && point.y >= 0 && point.y <= point.height
+      ? bandAt(point.x, point.y, point.width, point.height)
+      : null;
+    canvas.style.cursor = band ? "pointer" : "";
+    setHovered(band?.id ?? null);
   };
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
@@ -881,6 +892,7 @@ export function mountEq(): void {
     for (const band of list) {
       const row = bands.querySelector<HTMLElement>(`[data-band-row="${band.id}"]`);
       row?.classList.toggle("is-on", band.id === selected);
+      row?.classList.toggle("is-hovered", band.id === hovered);
       setValue(bands, `[data-band-freq="${band.id}"]`, String(Math.round(band.freq)));
       setValue(bands, `[data-band-gain="${band.id}"]`, band.gain.toFixed(1));
       setValue(bands, `[data-band-q="${band.id}"]`, band.q.toFixed(2));
@@ -889,24 +901,11 @@ export function mountEq(): void {
 
   bands.addEventListener("pointerover", (event) => {
     const row = (event.target as HTMLElement).closest<HTMLElement>("[data-band-row]");
-    const id = row?.dataset.bandRow ?? null;
-    if (id === hovered) {
-      return;
-    }
-    hovered = id;
-    if (frame === null) {
-      draw();
-    }
+    setHovered(row?.dataset.bandRow ?? null);
   });
 
   bands.addEventListener("pointerleave", () => {
-    if (hovered === null) {
-      return;
-    }
-    hovered = null;
-    if (frame === null) {
-      draw();
-    }
+    setHovered(null);
   });
 
   bands.addEventListener("click", (event) => {
@@ -951,7 +950,7 @@ export function mountEq(): void {
 
   // The panel beside the curve.
 
-  const sideHtml = (state: AppState, status: EqStatus): string => {
+  const sideHtml = (state: AppState): string => {
     const settings = state.settings;
 
     const field = (label: string, key: string, title: string): string => `
@@ -972,17 +971,6 @@ export function mountEq(): void {
     followRow("album", "Album", currentTrack()?.album);
     followRow("artist", "Artist", currentTrack()?.artist);
     followRow("genre", "Genre", currentTrack()?.genre);
-
-    const outputRows = status.outputs.map((output) =>
-      field(
-        `${shorten(output.label)}${status.activeOutputIds.includes(output.id) ? " (matched route)" : ""}`,
-        `output-rule|${output.id}`,
-        output.label,
-      ),
-    ).join("");
-    const canRoute = status.canChooseOutput && status.sinkOutputs.some(
-      (output) => !/^Output \d+$/.test(output.label),
-    );
 
     const presetRows =
       settings.eqPresets.length === 0
@@ -1040,35 +1028,16 @@ export function mountEq(): void {
       <div class="eq-group">
         <span class="eq-group-title">Follows what plays</span>
         ${followRows.join("") || `<p class="eq-note">Nothing is playing, so there is nothing to key a curve on.</p>`}
-      </div>
-
-      <div class="eq-group">
-        <span class="eq-group-title">Follows the output</span>
-        ${status.canChooseOutput && (canRoute || settings.eqOutputId) ? field("Send audio to", "output", "Send audio to") : ""}
-        ${outputRows || `<p class="eq-note">No named outputs are available.</p>`}
-        ${status.nativeOutputs && !status.routeKnown
-          ? `<p class="eq-note">The current media output cannot be detected automatically.</p>`
-          : !status.nativeOutputs
-            ? `<p class="eq-note">Output names and automatic detection depend on this webview.</p>`
-            : `<p class="eq-note">Curves follow the selected or system media output.</p>`}
       </div>`;
   };
 
-  const paintSide = (state: AppState, status: EqStatus): void => {
+  const paintSide = (state: AppState): void => {
     const shape = JSON.stringify([
       state.settings.eqPresets.map((preset) => [preset.id, preset.name, preset.source]),
       state.settings.eqActivePresetId,
       state.settings.eqContextRules,
-      state.settings.eqDeviceRules,
-      state.settings.eqOutputId,
       state.settings.eqAutoPreamp,
       state.settings.eqLimiter,
-      status.outputs,
-      status.sinkOutputs,
-      status.activeOutputIds,
-      status.nativeOutputs,
-      status.routeKnown,
-      status.canChooseOutput,
       player.snapshot().sourceName,
       currentTrack()?.album ?? "",
       currentTrack()?.artist ?? "",
@@ -1080,7 +1049,7 @@ export function mountEq(): void {
         closePicker();
       }
       closeNames();
-      side.innerHTML = sideHtml(state, status);
+      side.innerHTML = sideHtml(state);
       fillIcons(side);
     }
     setValue(side, "#eq-preamp", state.settings.eqPreampDb.toFixed(1));
@@ -1223,7 +1192,7 @@ export function mountEq(): void {
     paintPower(status);
     paintOrigin(status);
     paintBands(state.settings.eqBands);
-    paintSide(state, status);
+    paintSide(state);
     paintReadout(status);
     if (pickerOwner) {
       placeList(pickerOwner);
@@ -1257,6 +1226,7 @@ export function mountEq(): void {
     closePicker();
     closeNames();
     selected = null;
+    setHovered(null);
     stopDrawing();
     if (reduceMotionActive()) {
       finishClose();
@@ -1277,7 +1247,6 @@ export function mountEq(): void {
 
     claimPopup(close);
     modal.hidden = false;
-    void refreshEqOutputs();
     // A first look at the equaliser starts from a full set of bands.
     seedEqBands();
     paint();
@@ -1374,7 +1343,10 @@ function shellHtml(): string {
   return `
     <section class="eq-graph">
       <canvas class="eq-canvas" id="eq-canvas" tabindex="0" aria-label="Frequency response"></canvas>
-      <p class="settings-hint eq-readout" id="eq-readout"></p>
+      <div class="eq-graph-footer">
+        <p class="settings-hint eq-readout" id="eq-readout"></p>
+        <span class="eq-legend"><span class="eq-legend-line" aria-hidden="true"></span>Combined response</span>
+      </div>
     </section>
 
     <section class="eq-bands-wrap">
@@ -1393,8 +1365,6 @@ function originWord(origin: EqOrigin): string {
   switch (origin.kind) {
     case "manual":
       return "you";
-    case "device":
-      return "the output";
     case "preset":
       return "the saved curve";
     default:

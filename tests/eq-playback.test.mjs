@@ -138,50 +138,6 @@ test("enabling EQ keeps the playing element, then disabling replaces it with dir
   assert.equal(FakeContext.instances.at(-1).state, "closed");
 });
 
-test("disabling EQ keeps the selected output through an overlapping track transition", async () => {
-  FakeContext.prototype.setSinkId = function(id) { this.sinkId = id; return Promise.resolve(); };
-  try {
-    app.setEqEnabled(true);
-    app.setEqOutput("headphones");
-    await new Promise((resolve) => setImmediate(resolve));
-    const context = FakeContext.instances.at(-1);
-    const previous = FakeAudio.instances.at(-1);
-    const previousSource = context.sourceNodes.get(previous);
-    assert.equal(app.eqChain.outputId, "headphones");
-    app.setEqEnabled(false);
-    assert.equal(previous.paused, false);
-    assert.equal(previous.currentTime, 42);
-    assert.equal(previousSource.disconnected, false);
-
-    document.hidden = false;
-    previous.volume = 0.5;
-    app.player.next();
-    const next = FakeAudio.instances.at(-1);
-    const nextSource = context.sourceNodes.get(next);
-    assert.notEqual(previous, next);
-    assert.equal(previous.paused, false);
-    assert.equal(next.paused, false);
-    assert.equal(previousSource.disconnected, false);
-    assert.equal(nextSource.disconnected, false);
-    assert.equal(context.sinkId, "headphones");
-    assert.equal(app.eqChain.outputId, "headphones");
-
-    app.player.finishTransitions();
-    assert.equal(previous.paused, true);
-    assert.equal(previousSource.disconnected, true);
-    assert.equal(next.paused, false);
-    assert.equal(nextSource.disconnected, false);
-    assert.equal(app.eqChain.outputId, "headphones");
-  } finally {
-    document.hidden = true;
-    app.setEqOutput("");
-    await new Promise((resolve) => setImmediate(resolve));
-    delete FakeContext.prototype.setSinkId;
-    app.player.previous();
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-});
-
 test("tracks loaded with EQ off can be routed without reloading", () => {
   app.player.next();
   const audio = FakeAudio.instances.at(-1);

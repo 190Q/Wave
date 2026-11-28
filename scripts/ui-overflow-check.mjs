@@ -45,6 +45,7 @@ after(async () => {
 async function openApp(viewport) {
   const context = await browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
+    deviceScaleFactor: viewport.deviceScaleFactor ?? 1,
     reducedMotion: "reduce",
     userAgent: viewport.device === "android"
       ? "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Mobile Safari/537.36"
@@ -191,6 +192,95 @@ test("equaliser pickers survive unrelated updates and close when rebuilt", async
     await names.getByRole("button", { name: "Example", exact: true }).click();
     assert.equal(await name.inputValue(), "Example");
     assert.equal(await names.isHidden(), true);
+  } finally {
+    await context.close();
+  }
+});
+
+test("equaliser graph starts sharp and highlights individual bands", async () => {
+  const { context, page } = await openApp({ ...viewports[0], deviceScaleFactor: 1.25 });
+  try {
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    const initial = await page.evaluate(async () => {
+      const state = await import("/src/lib/state.ts");
+      const ui = await import("/src/ui/eq.ts");
+      state.seedEqBands();
+      const [first, second] = state.getState().settings.eqBands;
+      state.updateEqBand(first.id, { gain: 5 });
+      state.updateEqBand(second.id, { gain: -4 });
+      state.setEqEnabled(true);
+
+      const stroke = CanvasRenderingContext2D.prototype.stroke;
+      window.eqTestStrokes = [];
+      CanvasRenderingContext2D.prototype.stroke = function (...args) {
+        if (this.canvas.id === "eq-canvas") {
+          window.eqTestStrokes.push({
+            width: this.lineWidth, colour: this.strokeStyle, alpha: this.globalAlpha, dash: this.getLineDash(),
+          });
+        }
+        return stroke.apply(this, args);
+      };
+      ui.openEq();
+      const canvas = document.querySelector("#eq-canvas");
+      return {
+        width: canvas.width,
+        height: canvas.height,
+        expectedWidth: Math.round(canvas.clientWidth * devicePixelRatio),
+        expectedHeight: Math.round(canvas.clientHeight * devicePixelRatio),
+        first: first.id,
+        second: second.id,
+        firstResponse: [...state.eqChain.bandCurve(first.id)],
+        secondResponse: [...state.eqChain.bandCurve(second.id)],
+        accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(),
+        strokes: window.eqTestStrokes,
+      };
+    });
+    assert.equal(initial.width, initial.expectedWidth);
+    assert.equal(initial.height, initial.expectedHeight);
+    assert.ok(initial.firstResponse.some((value) => value > 1));
+    assert.ok(initial.secondResponse.some((value) => value < -1));
+    const combined = initial.strokes.findIndex(
+      (stroke) => stroke.width === 4 && stroke.colour === initial.accent && stroke.dash.length === 0,
+    );
+    const firstBand = initial.strokes.findIndex((stroke) => stroke.width === 1 && stroke.alpha === 0.55);
+    assert.ok(combined >= 0 && firstBand > combined);
+    assert.ok(initial.strokes.filter((stroke) => stroke.width === 1 && stroke.alpha === 0.55).length >= 2);
+    assert.deepEqual(initial.strokes[firstBand].dash, []);
+    assert.equal(await page.locator(".eq-legend").textContent(), "Combined response");
+    assert.equal(await page.locator("#eq-side").getByText("Follows the output").count(), 0);
+
+    await page.waitForTimeout(350);
+    const canvas = page.locator("#eq-canvas");
+    const settled = await canvas.evaluate((element) => ({
+      width: element.width,
+      height: element.height,
+      expectedWidth: Math.round(element.clientWidth * devicePixelRatio),
+      expectedHeight: Math.round(element.clientHeight * devicePixelRatio),
+    }));
+    assert.equal(settled.width, settled.expectedWidth);
+    assert.equal(settled.height, settled.expectedHeight);
+    const point = await canvas.evaluate(async (element) => {
+      const state = await import("/src/lib/state.ts");
+      const band = state.getState().settings.eqBands[0];
+      const frequencies = state.eqChain.frequencies;
+      const rect = element.getBoundingClientRect();
+      const x = (Math.log(band.freq) - Math.log(frequencies[0])) /
+        (Math.log(frequencies[frequencies.length - 1]) - Math.log(frequencies[0]));
+      return { x: rect.left + rect.width * x, y: rect.top + rect.height * (18 - band.gain) / 36 };
+    });
+    await page.mouse.move(point.x, point.y);
+    const row = page.locator(`[data-band-row="${initial.first}"]`);
+    assert.equal(await row.evaluate((element) => element.classList.contains("is-hovered")), true);
+    assert.equal(await page.locator(`[data-band-row="${initial.second}"]`).evaluate(
+      (element) => element.classList.contains("is-hovered"),
+    ), false);
+    await page.mouse.move(2, 2);
+    assert.equal(await row.evaluate((element) => element.classList.contains("is-hovered")), false);
+
+    await page.evaluate(() => { window.eqTestStrokes = []; });
+    await row.hover();
+    const strokes = await page.evaluate(() => window.eqTestStrokes);
+    assert.ok(strokes.some((stroke) => stroke.width === 1.5));
   } finally {
     await context.close();
   }

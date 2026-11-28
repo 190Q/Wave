@@ -169,12 +169,8 @@ pub struct Settings {
     pub eq_presets: Vec<EqPreset>,
     /// The preset the bands were last taken from.
     pub eq_active_preset_id: Option<String>,
-    /// Output device -> preset id.
-    pub eq_device_rules: HashMap<String, String>,
     /// Album, artist, playlist or genre -> preset id.
     pub eq_context_rules: Vec<EqContextRule>,
-    /// Where playback is sent. Empty means the system default.
-    pub eq_output_id: String,
 }
 
 impl Default for Settings {
@@ -211,9 +207,7 @@ impl Default for Settings {
             eq_limiter: true,
             eq_presets: Vec::new(),
             eq_active_preset_id: None,
-            eq_device_rules: HashMap::new(),
             eq_context_rules: Vec::new(),
-            eq_output_id: String::new(),
         }
     }
 }
@@ -1512,6 +1506,22 @@ mod tests {
     }
 
     #[test]
+    fn legacy_equaliser_output_settings_do_not_affect_restored_curves() {
+        let value = serde_json::json!({
+            "eqDeviceRules": { "device": "preset" },
+            "eqOutputId": "device",
+            "eqActivePresetId": "preset",
+            "eqBands": [{ "id": "band", "gain": 4.0 }]
+        });
+        let settings: Settings = serde_json::from_value(value).unwrap();
+        assert_eq!(settings.eq_active_preset_id.as_deref(), Some("preset"));
+        assert_eq!(settings.eq_bands[0].gain, 4.0);
+        let saved = serde_json::to_value(settings).unwrap();
+        assert!(saved.get("eqDeviceRules").is_none());
+        assert!(saved.get("eqOutputId").is_none());
+    }
+
+    #[test]
     fn window_slots_keep_mini_player_state_and_load_older_frames() {
         let raw = r#"{
             "windowSlots": [
@@ -1752,14 +1762,14 @@ mod tests {
         let store = test_store(initial);
         let (_, result) = patch_settings_at_path(&store, &path, patch(serde_json::json!({
             "showTitlebar": null,
-            "eqDeviceRules": { "device": "preset" }
+            "eqContextRules": [{ "kind": "album", "value": "album", "presetId": "preset" }]
         }))).unwrap();
         assert_eq!(result.settings.show_titlebar, None);
-        assert_eq!(result.settings.eq_device_rules.get("device").map(String::as_str), Some("preset"));
+        assert_eq!(result.settings.eq_context_rules[0].preset_id, "preset");
         assert_eq!(result.settings.volume, 70);
         let saved = read_state_at_path(&path).unwrap();
         assert_eq!(saved.settings.show_titlebar, None);
-        assert_eq!(saved.settings.eq_device_rules.get("device").map(String::as_str), Some("preset"));
+        assert_eq!(saved.settings.eq_context_rules[0].preset_id, "preset");
         fs::remove_dir_all(dir).unwrap();
     }
 

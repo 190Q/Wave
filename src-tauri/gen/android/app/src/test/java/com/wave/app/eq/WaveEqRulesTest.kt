@@ -19,32 +19,26 @@ class WaveEqRulesTest {
     WaveEqPreset("album-preset", presetSettings),
     WaveEqPreset("artist-preset", presetSettings),
     WaveEqPreset("genre-preset", presetSettings),
-    WaveEqPreset("device-preset", presetSettings),
-    WaveEqPreset("second-device-preset", presetSettings),
   )
-  private val context = WaveEqRuleContext("playlist", "album", "artist", "genre", listOf("one", "two"))
+  private val context = WaveEqRuleContext("playlist", "album", "artist", "genre")
   private val rules = listOf(
     WaveEqContextRule(WaveEqRuleKind.GENRE, "genre", "genre-preset"),
     WaveEqContextRule(WaveEqRuleKind.ARTIST, "artist", "artist-preset"),
     WaveEqContextRule(WaveEqRuleKind.ALBUM, "album", "album-preset"),
     WaveEqContextRule(WaveEqRuleKind.PLAYLIST, "playlist", "playlist-preset"),
   )
-  private val devices = mapOf("one" to "device-preset", "two" to "second-device-preset")
-
   private fun resolve(
     context: WaveEqRuleContext = this.context,
     presets: List<WaveEqPreset> = this.presets,
     rules: List<WaveEqContextRule> = this.rules,
-    devices: Map<String, String> = this.devices,
     state: WaveEqRuleState = WaveEqRuleState(edited),
-  ) = WaveEqRules.resolve(context, presets, rules, devices, state)
+  ) = WaveEqRules.resolve(context, presets, rules, state)
 
   private fun seed(
     context: WaveEqRuleContext = this.context,
     rules: List<WaveEqContextRule> = this.rules,
-    devices: Map<String, String> = this.devices,
     state: WaveEqRuleState = WaveEqRuleState(edited),
-  ) = WaveEqRules.seed(context, presets, rules, devices, state)
+  ) = WaveEqRules.seed(context, presets, rules, state)
 
   @Test fun contextRulesHaveFixedPrecedenceAndSkipMissingPresets() {
     val expected = listOf(
@@ -52,7 +46,6 @@ class WaveEqRulesTest {
       WaveEqRuleKind.ALBUM,
       WaveEqRuleKind.ARTIST,
       WaveEqRuleKind.GENRE,
-      WaveEqRuleKind.DEVICE,
     )
     var remaining = presets
     for (kind in expected) {
@@ -60,18 +53,6 @@ class WaveEqRulesTest {
       assertEquals(kind, result.rule?.kind)
       remaining = remaining.filterNot { it.id == result.rule?.presetId }
     }
-  }
-
-  @Test fun outputRulesFollowTheActiveOutputOrderAndIgnoreInvalidIds() {
-    val first = resolve(rules = emptyList())
-    assertEquals("one", first.rule?.value)
-    assertEquals("device-preset", first.appliedPresetId)
-    val reversed = resolve(context = context.copy(activeOutputIds = listOf("two", "one")), rules = emptyList())
-    assertEquals("two", reversed.rule?.value)
-    assertEquals("second-device-preset", reversed.appliedPresetId)
-    val missing = resolve(rules = emptyList(), devices = mapOf("one" to "missing", "two" to "device-preset"))
-    assertEquals("two", missing.rule?.value)
-    assertEquals("device-preset", missing.appliedPresetId)
   }
 
   @Test fun contextValuesMatchExactlyAndEmptyValuesDoNotMatch() {
@@ -82,7 +63,6 @@ class WaveEqRulesTest {
         WaveEqContextRule(WaveEqRuleKind.ALBUM, "album", "album-preset"),
         WaveEqContextRule(WaveEqRuleKind.ARTIST, "artist", "artist-preset"),
       ),
-      devices = emptyMap(),
     )
     assertNull(unmatched.rule)
     assertSame(edited, unmatched.state.settings)
@@ -151,7 +131,6 @@ class WaveEqRulesTest {
       context.copy(album = "new album"),
       context.copy(artist = "new artist"),
       context.copy(genre = "new genre"),
-      context.copy(activeOutputIds = listOf("two", "one")),
     )
     for (changed in changes) {
       val result = resolve(context = changed, state = same.state)
@@ -163,7 +142,7 @@ class WaveEqRulesTest {
 
   @Test fun noRulePreservesSettingsAndClearsTheAppliedSignature() {
     val state = WaveEqRuleState(edited, "old", appliedSignature = "album\u0000old")
-    val result = resolve(rules = emptyList(), devices = emptyMap(), state = state)
+    val result = resolve(rules = emptyList(), state = state)
     assertSame(edited, result.state.settings)
     assertEquals("old", result.state.activePresetId)
     assertEquals("", result.state.appliedSignature)
@@ -176,7 +155,6 @@ class WaveEqRulesTest {
     assertSame(edited, result.state.settings)
     assertEquals("playlist\u0000playlist-preset", result.state.appliedSignature)
     assertNull(result.appliedPresetId)
-    assertFalse(result.state.awaitingInitialOutput)
   }
 
   @Test fun startupAppliesMatchingRuleWhenTheActivePresetDiffers() {
@@ -186,52 +164,10 @@ class WaveEqRulesTest {
     assertTrue(result.state.settings.enabled)
   }
 
-  @Test fun firstDiscoveredOutputSeedsTheRuleWithoutOverwritingEdits() {
-    val waiting = seed(
-      context = WaveEqRuleContext(),
-      rules = emptyList(),
-      state = WaveEqRuleState(edited, "device-preset"),
-    )
-    assertTrue(waiting.state.awaitingInitialOutput)
-    val discovered = resolve(
-      context = WaveEqRuleContext(activeOutputIds = listOf("one")),
-      rules = emptyList(),
-      state = waiting.state,
-    )
-    assertFalse(discovered.state.awaitingInitialOutput)
-    assertEquals("device\u0000device-preset", discovered.state.appliedSignature)
-    assertSame(edited, discovered.state.settings)
-    assertNull(discovered.appliedPresetId)
-  }
-
-  @Test fun firstDiscoveredOutputRebasesManualOverride() {
-    val empty = WaveEqRuleContext()
-    val manual = WaveEqManualSelection("manual", empty.key())
-    val waiting = WaveEqRuleState(edited, "manual", manual, "", awaitingInitialOutput = true)
-    val discovered = WaveEqRuleContext(activeOutputIds = listOf("one"))
-    val result = resolve(context = discovered, state = waiting, rules = emptyList())
-    assertEquals(discovered.key(), result.state.manual?.contextKey)
-    assertFalse(result.state.awaitingInitialOutput)
-    assertNull(result.appliedPresetId)
-    assertSame(edited, result.state.settings)
-  }
-
-  @Test fun firstDiscoveredOutputAppliesDifferentPreset() {
-    val waiting = WaveEqRuleState(edited, "old", appliedSignature = "", awaitingInitialOutput = true)
-    val result = resolve(
-      context = WaveEqRuleContext(activeOutputIds = listOf("one")),
-      rules = emptyList(),
-      state = waiting,
-    )
-    assertEquals("device-preset", result.appliedPresetId)
-    assertTrue(result.state.settings.enabled)
-  }
-
-  @Test fun keyUsesTheSameNullEmptyAndOrderedOutputEncodingAsTheWebPlayer() {
-    assertEquals("source\u0000\u0000artist\u0000genre\u0000a\u0000b", WaveEqRuleContext(
-      "source", null, "artist", "genre", listOf("a", "b"),
+  @Test fun keyUsesTheSameNullAndEmptyEncodingAsTheWebPlayer() {
+    assertEquals("source\u0000\u0000artist\u0000genre", WaveEqRuleContext(
+      "source", null, "artist", "genre",
     ).key())
     assertEquals(WaveEqRuleContext().key(), WaveEqRuleContext("", "", "", "").key())
-    assertFalse(context.key() == context.copy(activeOutputIds = listOf("two", "one")).key())
   }
 }

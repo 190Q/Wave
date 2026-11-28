@@ -7,8 +7,6 @@ mod api;
 #[cfg(target_os = "android")]
 mod apk;
 mod artwork;
-#[cfg(any(windows, target_os = "android"))]
-mod audio_outputs;
 #[cfg(any(target_os = "android", target_os = "linux", test))]
 mod audio_stream;
 mod catalog;
@@ -420,8 +418,6 @@ pub fn run() {
             report_frontend_startup,
             #[cfg(target_os = "linux")]
             screen::screen_blanked,
-            #[cfg(any(windows, target_os = "android"))]
-            audio_outputs::get_audio_outputs,
             state::get_state,
             state::set_settings,
             state::patch_settings,

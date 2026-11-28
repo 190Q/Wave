@@ -77,7 +77,6 @@ const settings = (enabled = true) => ({
   eqLimiter: false,
   eqAutoPreamp: false,
   eqPreampDb: 0,
-  eqOutputId: "",
 });
 
 test("the equalizer uses the requested playback latency without starting for disabled EQ", () => {
@@ -154,12 +153,16 @@ test("the response is cached until the equalizer settings or availability change
   const response = eq.curve();
   assert.equal(filter.responseCalls, 1);
   assert.ok(response[0] > 0);
+  assert.equal(eq.bandCurve("boost")[0], response[0]);
+  assert.equal(eq.bandCurve("missing").length, 0);
   assert.equal(eq.curve(), response);
   assert.equal(filter.responseCalls, 1);
 
   eq.apply({ ...settings(), eqBands: [{ ...band, gain: 3 }] });
   eq.curve();
   assert.equal(filter.responseCalls, 2);
+  eq.apply({ ...settings(), eqBands: [{ ...band, enabled: false }] });
+  assert.equal(eq.bandCurve("boost").length, 0);
   eq.apply(settings(false));
   assert.equal(eq.curve().length, 0);
   assert.equal(filter.responseCalls, 2);
@@ -378,36 +381,4 @@ test("the audio graph drains paused audio and stays awake if playback resumes", 
   context.finishResume();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(context.state, "running");
-});
-
-test("output changes are confirmed, serialized, and still work with a disabled graph", async () => {
-  const requests = [];
-  FakeContext.prototype.setSinkId = function(id) {
-    return new Promise((resolve, reject) => requests.push({ id, resolve, reject }));
-  };
-  const eq = new EqChain();
-  eq.attach({ crossOrigin: "anonymous" });
-  eq.apply(settings());
-  const context = FakeContext.instances.at(-1);
-  context.finishResume();
-  await Promise.resolve();
-
-  eq.setOutput("first");
-  eq.setOutput("second");
-  assert.equal(eq.outputId, "");
-  assert.deepEqual(requests.map((request) => request.id), ["first"]);
-  requests[0].resolve();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(eq.outputId, "first");
-  assert.deepEqual(requests.map((request) => request.id), ["first", "second"]);
-  requests[1].reject(new Error("unavailable"));
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(eq.outputId, "first");
-
-  eq.apply({ ...settings(false), eqOutputId: "" });
-  assert.equal(requests[2].id, "");
-  requests[2].resolve();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(eq.outputId, "");
-  delete FakeContext.prototype.setSinkId;
 });

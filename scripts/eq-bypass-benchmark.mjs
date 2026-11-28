@@ -143,7 +143,7 @@ try {
     let eq;
     const settings = {
       eqEnabled: true, eqBands: DEFAULT_EQ_BANDS, eqLimiter: true,
-      eqAutoPreamp: false, eqPreampDb: -3, eqOutputId: "",
+      eqAutoPreamp: false, eqPreampDb: -3,
     };
     window.chooseMode = async (mode) => {
       if (mode === "native") {

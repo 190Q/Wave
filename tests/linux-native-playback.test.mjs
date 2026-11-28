@@ -85,7 +85,7 @@ globalThis.__linuxNativeIpc = new Proxy({
         failNextNativeSync = false;
         throw new Error("native activation failed");
       }
-      const active = !sync.equaliserEnabled && !sync.outputId && sync.report.currentId !== null;
+      const active = !sync.equaliserEnabled && sync.report.currentId !== null;
       nativeStatus = {
         active,
         reason: active ? null : "WebKit fallback requested",

@@ -124,9 +124,7 @@ function defaultSettings(): Settings {
     eqLimiter: true,
     eqPresets: [],
     eqActivePresetId: null,
-    eqDeviceRules: {},
     eqContextRules: [],
-    eqOutputId: "",
   };
 }
 

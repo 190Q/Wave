@@ -54,7 +54,6 @@ class FakeContext {
   sampleRate = 48000;
   destination = new FakeNode();
   sources = new Map();
-  requests = [];
 
   constructor() { FakeContext.instances.push(this); }
   createGain() { return new FakeNode(); }
@@ -66,9 +65,6 @@ class FakeContext {
     const node = new FakeNode();
     this.sources.set(element, node);
     return node;
-  }
-  setSinkId(id) {
-    return new Promise((resolve, reject) => this.requests.push({ id, resolve, reject }));
   }
   suspend() { this.state = "suspended"; return Promise.resolve(); }
   resume() { this.state = "running"; this.onstatechange?.(); return Promise.resolve(); }
@@ -89,9 +85,9 @@ const vite = await createServer({
 after(() => vite.close());
 const { AudioEngine } = await vite.ssrLoadModule("/src/lib/audio.ts");
 const { EqChain } = await vite.ssrLoadModule("/src/lib/eq.ts");
-const settings = (enabled, output = "") => ({
+const settings = (enabled) => ({
   eqEnabled: enabled, eqBands: [], eqLimiter: false, eqAutoPreamp: false,
-  eqPreampDb: 0, eqOutputId: output,
+  eqPreampDb: 0,
 });
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -217,34 +213,6 @@ test("a visible handover fades both elements before closing the graph", async ()
   }
 });
 
-test("selecting a non-default output after bypass starts a flat graph for that device", async () => {
-  const { eq, engine, context } = player();
-  eq.apply(settings(false));
-  const direct = FakeAudio.instances.at(-1);
-  await settle();
-  direct.metadata();
-  await settle();
-  assert.equal(context.state, "closed");
-  assert.equal(eq.hasSource(direct), false);
-
-  eq.apply(settings(false, "headphones"));
-  const selected = FakeContext.instances.at(-1);
-  assert.notEqual(selected, context);
-  assert.equal(eq.hasSource(direct), false);
-  selected.requests.at(-1).resolve();
-  await settle();
-  assert.equal(engine.element, direct);
-  assert.equal(eq.hasSource(direct), true);
-  assert.equal(eq.outputId, "headphones");
-
-  eq.apply(settings(false));
-  selected.requests.at(-1).reject(new Error("unavailable"));
-  await settle();
-  assert.equal(eq.hasSource(direct), true);
-  assert.equal(eq.outputId, "headphones");
-  assert.notEqual(selected.state, "closed");
-});
-
 test("reenabling EQ cancels a pending replacement without rerouting the original", async () => {
   const { eq, engine, original, context } = player();
   eq.apply(settings(false));
@@ -287,33 +255,5 @@ test("a new track does not reuse a paused routed element while bypass is pending
   assert.notEqual(engine.element, candidate);
   assert.equal(candidate.src, "");
   assert.equal(eq.hasSource(engine.element), false);
-  assert.equal(context.state, "closed");
-});
-
-test("a pending non-default output cancels bypass and keeps the selected output", async () => {
-  const { eq, engine, original, context } = player();
-  eq.apply(settings(false));
-  const candidate = FakeAudio.instances.at(-1);
-  await settle();
-  eq.apply(settings(false, "headphones"));
-  assert.equal(candidate.src, "");
-  assert.equal(context.requests.at(-1).id, "headphones");
-  context.requests.at(-1).resolve();
-  await settle();
-  assert.equal(engine.element, original);
-  assert.equal(eq.outputId, "headphones");
-  assert.equal(eq.hasSource(original), true);
-  engine.load("http://127.0.0.1:1234/two", { autoplay: true });
-  assert.equal(eq.hasSource(engine.element), true);
-  assert.equal(eq.outputId, "headphones");
-
-  eq.apply(settings(false));
-  assert.equal(context.requests.at(-1).id, "");
-  context.requests.at(-1).resolve();
-  await settle();
-  const direct = FakeAudio.instances.at(-1);
-  direct.metadata();
-  await settle();
-  assert.equal(engine.element, direct);
   assert.equal(context.state, "closed");
 });

@@ -31,8 +31,32 @@
   touch-action: none;
 }
 
-.eq-readout {
+.eq-graph-footer {
+  display: flex;
   flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 1rem;
+}
+
+.eq-readout {
+  flex: 1 1 15rem;
+}
+
+.eq-legend {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 0.4rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.eq-legend-line {
+  width: 1.5rem;
+  height: 4px;
+  border-radius: 1rem;
+  background: var(--accent);
 }
 
 .eq-bands-wrap {
@@ -58,7 +82,8 @@
   grid-template-columns: 1.4rem 5.6rem minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 2rem;
 }
 
-.eq-band:hover {
+.eq-band:hover,
+.eq-band.is-hovered {
   background: var(--raise);
   box-shadow: inset 0 0 0 0.0625rem var(--eq-band-colour, var(--accent));
 }

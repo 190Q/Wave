@@ -789,7 +789,7 @@ function libraryHtml(state: AppState, exportId: string): string {
     </div>
     <div class="settings-row is-stacked">
       <span class="settings-label">Export playlist</span>
-      <p class="settings-hint">Save an ordered song list, including songs waiting for audio, with its tags and genres as a .wavelist file. Only the list itself is saved.</p>
+      <p class="settings-hint">Save an ordered song list with its tags and lyrics as a .wavelist file. Edited audio is included and can make the export larger; other audio is not included.</p>
       <div class="import-field">
         <input class="import-combo" type="text" data-export-collection
           value="${escapeHtml(collection?.name ?? "")}"

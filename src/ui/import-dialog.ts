@@ -411,7 +411,7 @@ export function mountImportDialog(): void {
       case "wavelist":
         void importWaveList(() => askWithoutClosing(() => choiceDialog({
           title: "Import this Wave playlist",
-          message: "Add the songs to your library, or also create a playlist? Songs already in your library are reused.",
+          message: "Add the songs to your library, or also create a playlist? Existing songs are reused, but included edited audio is kept as a separate recording when necessary.",
           confirmLabel: "As a playlist",
           cancelLabel: "Songs only",
         })));

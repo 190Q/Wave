@@ -356,6 +356,7 @@ mod tests {
         assert_eq!(saved.title, row.title);
         assert_eq!(saved.artist, row.artist);
         assert_eq!(saved.added_at, row.added_at);
+        assert_eq!(catalog.meta(&format!("edited-audio:{}", row.id)).as_deref(), Some("1"));
         assert!(saved.rel_path.ends_with(".flac"));
         assert!((saved.duration_ms as i64 - 6000).abs() < 50, "{}", saved.duration_ms);
         assert_eq!(current_lyrics(&root, &saved).as_deref(), Some("[00:05.000]Words\n"));

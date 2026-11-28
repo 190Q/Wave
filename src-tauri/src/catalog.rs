@@ -279,6 +279,13 @@ impl Catalog {
             )
             .map_err(|e| format!("could not clear the old loudness reading: {e}"))?;
         transaction
+            .execute(
+                "INSERT INTO meta (key, value) VALUES ('edited-audio:' || ?1, '1') \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![row.id],
+            )
+            .map_err(|e| format!("could not record the audio edit: {e}"))?;
+        transaction
             .commit()
             .map_err(|e| format!("could not finish a catalog write: {e}"))
     }
@@ -654,8 +661,8 @@ impl Catalog {
 
         for id in ids {
             transaction
-                .execute("DELETE FROM meta WHERE key = 'youtube:' || ?1", params![id])
-                .map_err(|e| format!("could not remove the YouTube source: {e}"))?;
+                .execute("DELETE FROM meta WHERE key IN ('youtube:' || ?1, 'edited-audio:' || ?1)", params![id])
+                .map_err(|e| format!("could not remove the song details: {e}"))?;
             transaction
                 .execute("DELETE FROM playlist_tracks WHERE track_id = ?1", params![id])
                 .map_err(|e| format!("could not drop a playlist entry: {e}"))?;
@@ -1756,12 +1763,14 @@ mod tests {
         let root = scratch("delete");
         let catalog = Catalog::open(&root).unwrap();
         catalog.upsert_track(&song("one", "One", "h")).unwrap();
+        catalog.set_meta("edited-audio:one", "1").unwrap();
         let id = catalog.create_playlist("A playlist").unwrap();
         catalog.set_playlist_entries(&id, &["one".into()]).unwrap();
 
         catalog.delete_tracks(&["one".to_string()]).unwrap();
         assert!(catalog.track("one").unwrap().is_none());
         assert!(catalog.playlist_entries(&id).unwrap().is_empty());
+        assert!(catalog.meta("edited-audio:one").is_none());
     }
 
     #[test]

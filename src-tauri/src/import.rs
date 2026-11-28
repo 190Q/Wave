@@ -114,6 +114,19 @@ pub fn land_download(app: &AppHandle, file: &crate::download::Downloaded) -> Res
 fn land_with_source(app: &AppHandle, path: &Path, youtube_id: Option<&str>) -> Result<Landed, String> {
     let root = library_root(app)?;
     let catalog = app.state::<Catalog>();
+    let landed = land_at(&root, &catalog, path)?;
+    if let Some(video_id) = youtube_id {
+        catalog.set_youtube_id(&landed.id, video_id)?;
+    }
+
+    if let Some(row) = catalog.track(&landed.id)? {
+        let _ = app.emit(LANDED_EVENT, vec![library::to_track(&row, &root)]);
+    }
+
+    Ok(landed)
+}
+
+pub(crate) fn land_at(root: &Path, catalog: &Catalog, path: &Path) -> Result<Landed, String> {
     let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -121,32 +134,21 @@ fn land_with_source(app: &AppHandle, path: &Path, youtube_id: Option<&str>) -> R
 
     // A song that arrives on its own has no folder of sidecars to match against.
     let (placed, id) = import_one(
-        &root,
-        &catalog,
+        root,
+        catalog,
         path,
         &file_name,
         &SidecarIndex::default(),
         &SidecarIndex::default(),
         false,
     )?;
-    if let Some(video_id) = youtube_id {
-        catalog.set_youtube_id(&id, video_id)?;
-    }
-
-    let landed = Landed {
-        id: id.clone(),
+    Ok(Landed {
+        id,
         duplicate: matches!(placed, Placed::Duplicate),
         similar: matches!(placed, Placed::Added { similar: true, .. }),
         cover: matches!(placed, Placed::Added { cover: true, .. }),
         lyrics: matches!(placed, Placed::Added { lyrics: true, .. }),
-    };
-
-    // The row is the one just written, so the UI can show the song at once.
-    if let Some(row) = catalog.track(&id)? {
-        let _ = app.emit(LANDED_EVENT, vec![library::to_track(&row, &root)]);
-    }
-
-    Ok(landed)
+    })
 }
 
 /// What a song was still missing when it landed.

@@ -6348,7 +6348,7 @@ dependencies = [
 
 [[package]]
 name = "wave"
-version = "0.5.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "blake3",

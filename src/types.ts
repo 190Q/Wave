@@ -165,6 +165,8 @@ export interface Settings {
   resumeCollections: boolean;
   /** Allows Android playback and media resumption while Wave is not visible. */
   backgroundPlayback: boolean;
+  /** Boosts Android headphone and Bluetooth playback. */
+  headphoneBoost?: boolean;
   /** Overrides the system animation preference. */
   reduceMotion: ReduceMotionMode;
   /** Remembers the window size and position between launches. */

@@ -137,6 +137,7 @@ class NativePlaybackConnectionService : Service() {
         }
         "visibility" -> NativePlayback.setUiVisible(this, json.optBoolean("visible"))
         "background" -> NativePlayback.setBackgroundEnabled(this, json.optBoolean("enabled", true))
+        "headphoneBoost" -> NativePlayback.setHeadphoneBoostEnabled(this, json.optBoolean("enabled", true))
         "controls" -> MediaPlayback.setControls(this, json.optBoolean("enabled", true))
         "queue" -> NativePlayback.updateQueue(this, json)
         "equaliser" -> NativePlayback.updateEqualiser(this, json)

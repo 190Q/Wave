@@ -309,6 +309,7 @@ const state: AppState = {
     resumeOnLaunch: true,
     resumeCollections: true,
     backgroundPlayback: true,
+    headphoneBoost: true,
     reduceMotion: "system",
     rememberWindow: true,
     showTitlebar: null,
@@ -418,7 +419,7 @@ function applySettingsFields(
     }
   }
   state.settings = { ...state.settings, ...patch };
-  syncNativeBackgroundPlayback();
+  syncNativePlaybackSettings();
   applyEqualiser();
 }
 
@@ -588,13 +589,20 @@ let linuxNativeStatus: LinuxNativePlaybackStatus | null = null;
 let applyingLinuxNativeStatus = false;
 
 let nativeBackgroundPlaybackSent: boolean | undefined;
+let nativeHeadphoneBoostSent: boolean | undefined;
 
-function syncNativeBackgroundPlayback(): void {
+function syncNativePlaybackSettings(): void {
   if (!nativeAudio) return;
-  const enabled = state.settings.backgroundPlayback ?? true;
-  if (enabled === nativeBackgroundPlaybackSent) return;
-  nativeBackgroundPlaybackSent = enabled;
-  nativeAudio.send({ type: "background", enabled });
+  const background = state.settings.backgroundPlayback ?? true;
+  if (background !== nativeBackgroundPlaybackSent) {
+    nativeBackgroundPlaybackSent = background;
+    nativeAudio.send({ type: "background", enabled: background });
+  }
+  const boost = state.settings.headphoneBoost ?? true;
+  if (boost !== nativeHeadphoneBoostSent) {
+    nativeHeadphoneBoostSent = boost;
+    nativeAudio.send({ type: "headphoneBoost", enabled: boost });
+  }
 }
 
 let nativeEqualiserSent = "";
@@ -3727,7 +3735,7 @@ function applyPersisted(next: PersistedState, settings = false, likes = false, p
       ...eqUnsaved,
       ...(volumeUnsaved ? { volume: player.snapshot().volume } : {}),
     };
-    syncNativeBackgroundPlayback();
+    syncNativePlaybackSettings();
     if (!volumeUnsaved && next.settings.volume !== player.snapshot().volume) {
       player.setVolume(next.settings.volume);
     }

@@ -134,6 +134,8 @@ pub struct Settings {
     pub resume_on_launch: bool,
     pub resume_collections: bool,
     pub background_playback: bool,
+    #[cfg(target_os = "android")]
+    pub headphone_boost: bool,
     pub reduce_motion: String,
     pub remember_window: bool,
     pub show_titlebar: Option<bool>,
@@ -185,6 +187,8 @@ impl Default for Settings {
             resume_on_launch: true,
             resume_collections: true,
             background_playback: true,
+            #[cfg(target_os = "android")]
+            headphone_boost: true,
             reduce_motion: "system".to_string(),
             remember_window: true,
             show_titlebar: None,
@@ -1587,6 +1591,23 @@ mod tests {
         let restored: Settings = serde_json::from_str(&json).unwrap();
         assert!(!restored.background_playback);
         assert_eq!(restored.volume, 42);
+    }
+
+    #[test]
+    fn headphone_boost_defaults_on_for_android_only() {
+        let old: Settings = serde_json::from_str(r#"{"volume":42}"#).unwrap();
+        let json = serde_json::to_value(&old).unwrap();
+        assert_eq!(json.get("headphoneBoost").is_some(), cfg!(target_os = "android"));
+        let result = merge_settings(&old, patch(serde_json::json!({ "headphoneBoost": false })));
+        #[cfg(target_os = "android")]
+        {
+            assert!(old.headphone_boost);
+            let disabled = result.unwrap();
+            let restored: Settings = serde_json::from_value(serde_json::to_value(disabled).unwrap()).unwrap();
+            assert!(!restored.headphone_boost);
+        }
+        #[cfg(not(target_os = "android"))]
+        assert!(result.is_err());
     }
 
     #[test]

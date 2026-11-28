@@ -54,6 +54,7 @@ type ToggleKey =
   | "resumeOnLaunch"
   | "resumeCollections"
   | "backgroundPlayback"
+  | "headphoneBoost"
   | "rememberWindow"
   | "showTitlebar"
   | "normalizeVolume"
@@ -319,6 +320,8 @@ export function mountSettings(): void {
           getState().settings.showTitlebar == null && visible === titlebarVisible(null)
             ? null
             : visible;
+      } else if (key === "headphoneBoost") {
+        next.headphoneBoost = !(next.headphoneBoost ?? true);
       } else {
         next[key] = !next[key];
       }
@@ -611,6 +614,12 @@ function playbackHtml(settings: Settings, android: boolean): string {
       "Background playback",
       "Keep playing when Wave is not visible and allow playback to resume from system media controls. When off, playback pauses as Wave leaves the screen.",
       settings.backgroundPlayback ?? true,
+    ) : ""}
+    ${android ? toggleRow(
+      "headphoneBoost",
+      "Boost headphone volume",
+      "Add a 3 dB boost for headphones and Bluetooth audio. Bluetooth speakers may also be affected.",
+      settings.headphoneBoost ?? true,
     ) : ""}
     ${toggleRow(
       "normalizeVolume",

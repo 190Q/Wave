@@ -53,7 +53,8 @@ an equaliser and a theme that follows the artwork.
   controls or media keys. Desktop Discord presence is available as an opt-in
   setting.
 - **Phone layout:** Use touch-friendly controls on Android and Linux phones.
-  Android also provides notification and lock-screen playback controls.
+  Android also provides notification and lock-screen playback controls, and a
+  headphone volume boost that can be switched off in playback settings.
 - **Updates:** Check for new releases from settings and install them from Wave.
   Linux updates use the matching package for the running installation; system
   packages require graphical administrator authorisation. On Android, allow

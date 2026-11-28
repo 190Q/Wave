@@ -104,6 +104,7 @@ function defaultSettings(): Settings {
     resumeOnLaunch: true,
     resumeCollections: true,
     backgroundPlayback: true,
+    headphoneBoost: true,
     reduceMotion: "system",
     rememberWindow: true,
     showTitlebar: null,

@@ -307,6 +307,31 @@ test("background playback is an Android-only setting and saves both choices", as
   assert.deepEqual(context.saved[1], { backgroundPlayback: true });
 });
 
+test("headphone boost is Android-only and can be switched off", async () => {
+  for (const [device, androidPlatform, visible] of [
+    ["desktop", false, false],
+    ["linuxPhone", false, false],
+    ["android", false, true],
+    ["desktop", true, true],
+  ]) {
+    const { body } = setup(device, androidPlatform);
+    mountSettings();
+    openSettings();
+    assert.equal(body.innerHTML.includes('data-toggle="headphoneBoost"'), visible);
+    if (visible) assert.match(body.innerHTML, /aria-checked="true" data-toggle="headphoneBoost"/);
+  }
+
+  const { body, context, save } = setup("android", true);
+  mountSettings();
+  openSettings();
+  const toggle = new Element();
+  toggle.dataset.toggle = "headphoneBoost";
+  body.dispatch("click", { target: toggle });
+  save.dispatch("click");
+  await Promise.resolve();
+  assert.deepEqual(context.saved, [{ headphoneBoost: false }]);
+});
+
 test("the local API developer setting is hidden on Android and off by default", () => {
   for (const [device, androidPlatform, visible] of [
     ["desktop", false, true],

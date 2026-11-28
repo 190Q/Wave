@@ -1,7 +1,10 @@
 package com.wave.app
 
 import android.content.Context
+import android.media.AudioRouting
+import android.media.AudioTrack
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -14,6 +17,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.audio.AudioCapabilities
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
@@ -32,13 +36,20 @@ internal object NativePlayback {
   private const val POSITION = "position"
   private const val EQUALISER = "equaliser"
   private const val BACKGROUND = "background-playback"
+  private const val HEADPHONE_BOOST = "headphone-boost"
   private const val CHECKPOINT_MS = 2000L
 
   private val handler = Handler(Looper.getMainLooper())
   private var context: Context? = null
   private var player: ExoPlayer? = null
   private val equaliser = WaveEqAudioProcessor()
+  private val headphoneBoost = WaveEqAudioProcessor()
   private var equaliserSettings = WaveEqSettings()
+  private var headphoneBoostEnabled = true
+  private var headphoneBoostActive = false
+  private var audioTrack: AudioTrack? = null
+  private var routeListener: AudioRouting.OnRoutingChangedListener? = null
+  private var audioTrackGeneration = 0
   private var saved = JSONObject()
   private var path: String? = null
   private var position = 0L
@@ -72,6 +83,14 @@ internal object NativePlayback {
     context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit()
       .putBoolean(BACKGROUND, enabled).apply()
     if (!enabled && !uiVisible) pauseInBackground()
+  }
+
+  fun setHeadphoneBoostEnabled(context: Context, enabled: Boolean) {
+    initialise(context)
+    headphoneBoostEnabled = enabled
+    context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit()
+      .putBoolean(HEADPHONE_BOOST, enabled).apply()
+    updateHeadphoneBoost()
   }
 
   fun setUiVisible(context: Context, visible: Boolean) {
@@ -152,6 +171,7 @@ internal object NativePlayback {
     this.context = context.applicationContext
     val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
     backgroundEnabled = preferences.getBoolean(BACKGROUND, true)
+    headphoneBoostEnabled = preferences.getBoolean(HEADPHONE_BOOST, true)
     val encoded = preferences.getString(STATE, null)
     saved = try {
       if (encoded == null) JSONObject() else JSONObject(encoded)
@@ -340,6 +360,8 @@ internal object NativePlayback {
     handler.removeCallbacks(checkpoint)
     pendingPlay = false
     pendingSystemPlay = false
+    audioTrackGeneration++
+    clearAudioTrack()
     player?.let {
       position = it.currentPosition.coerceAtLeast(0)
       saved.put("positionMs", position)
@@ -350,14 +372,55 @@ internal object NativePlayback {
     path = null
   }
 
+  private fun clearAudioTrack() {
+    routeListener?.let { listener -> audioTrack?.removeOnRoutingChangedListener(listener) }
+    routeListener = null
+    audioTrack = null
+    updateHeadphoneBoost()
+  }
+
+  private fun followAudioTrack(track: AudioTrack) {
+    clearAudioTrack()
+    audioTrack = track
+    val listener = AudioRouting.OnRoutingChangedListener {
+      if (audioTrack === track) updateHeadphoneBoost()
+    }
+    routeListener = listener
+    track.addOnRoutingChangedListener(listener, handler)
+    updateHeadphoneBoost()
+  }
+
+  private fun updateHeadphoneBoost() {
+    val routes = try {
+      val track = audioTrack
+      if (track == null) emptyList()
+      else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) track.routedDevices.map { it.type }
+      else listOfNotNull(track.routedDevice?.type)
+    } catch (_: IllegalStateException) {
+      emptyList()
+    }
+    val active = headphoneBoostActive(headphoneBoostEnabled, routes)
+    if (active == headphoneBoostActive) return
+    headphoneBoostActive = active
+    headphoneBoost.setSettings(headphoneBoostSettings(active))
+  }
+
   private fun ensurePlayer(): ExoPlayer {
     player?.let { return it }
     val app = context!!
+    val generation = ++audioTrackGeneration
     val renderers = object : DefaultRenderersFactory(app) {
       override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean): AudioSink =
         DefaultAudioSink.Builder(context)
           .setAudioCapabilities(AudioCapabilities.DEFAULT_AUDIO_CAPABILITIES)
-          .setAudioProcessors(arrayOf(equaliser))
+          .setAudioProcessors(arrayOf(equaliser, headphoneBoost))
+          .setAudioTrackProvider { config, attributes, sessionId ->
+            val track = DefaultAudioSink.AudioTrackProvider.DEFAULT.getAudioTrack(config, attributes, sessionId)
+            handler.post {
+              if (audioTrackGeneration == generation) followAudioTrack(track)
+            }
+            track
+          }
           .setEnableFloatOutput(false)
           .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
           .build()
@@ -369,6 +432,11 @@ internal object NativePlayback {
     )
     playback.setHandleAudioBecomingNoisy(true)
     playback.volume = volume
+    playback.addAnalyticsListener(object : AnalyticsListener {
+      override fun onAudioPositionAdvancing(eventTime: AnalyticsListener.EventTime, playoutStartSystemTimeMs: Long) {
+        updateHeadphoneBoost()
+      }
+    })
     playback.addListener(object : Player.Listener {
       override fun onPlayerError(error: PlaybackException) {
         Log.w("Wave", "native playback failed", error)

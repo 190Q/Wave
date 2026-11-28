@@ -26,6 +26,12 @@ test("release builds run after signing checks and publish only after every platf
   assert.match(workflow, /node scripts\/release\.mjs slim --reuse-build/);
 });
 
+test("Ubuntu release builds request the GStreamer unwind dependency explicitly", () => {
+  for (const source of [workflow, flatpakRecovery]) {
+    assert.match(source, /libgstreamer1\.0-dev libunwind-dev/);
+  }
+});
+
 test("the ARM release builds, tests and publishes the phone Flatpak", () => {
   assert.match(workflow, /name: Set up the phone Flatpak runtime\n        if: matrix\.platform == 'ubuntu-22\.04-arm'/);
   assert.match(workflow, /apt-get install -y flatpak .*x11-utils/);
